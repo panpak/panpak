@@ -26,15 +26,15 @@ fn bad_field(field: &str, why: &str) -> anyhow::Error {
     coded(ErrorCode::E0007, format!("invalid manifest field {field}: {why}"))
 }
 
-/// `app.id`: reverse DNS, ASCII only.
+/// `app.id`: a D-Bus and Flatpak style name, ASCII only. The XDG portals identify
+/// an app by this id.
 ///
 /// ```text
-/// app-id = label 1*( "." label )          ; 2 labels or more, 128 bytes at most
-/// label  = alnum [ *( alnum / "-" ) alnum ]   ; 1 to 63 bytes
-/// alnum  = %x30-39 / %x41-5A / %x61-7A
+/// app-id  = segment 1*( "." segment )     ; 2 segments or more, 128 bytes at most
+/// segment = ( ALPHA / "_" / "-" ) *62( ALPHA / DIGIT / "_" / "-" )   ; 1 to 63 bytes
 /// ```
-/// So an id has no `/`, no empty or leading-dot segment, no `..`, no control
-/// character and no NUL.
+/// So an id has no segment starting with a digit, no `/`, no empty or leading or
+/// trailing dot segment, no `..`, no control character and no NUL.
 pub fn validate_app_id(id: &str) -> Result<()> {
     let bad = |why: &str| coded(ErrorCode::E0006, format!("invalid app.id {}: {why}", shown(id)));
     if id.is_empty() {
@@ -46,22 +46,22 @@ pub fn validate_app_id(id: &str) -> Result<()> {
     if !id.is_ascii() {
         return Err(bad("not ASCII"));
     }
-    let labels: Vec<&str> = id.split('.').collect();
-    if labels.len() < 2 {
-        return Err(bad("reverse DNS needs at least two segments, e.g. org.example.app"));
+    let segments: Vec<&str> = id.split('.').collect();
+    if segments.len() < 2 {
+        return Err(bad("needs at least two segments, e.g. org.example.app"));
     }
-    for l in labels {
-        if l.is_empty() {
+    for seg in segments {
+        if seg.is_empty() {
             return Err(bad("empty segment (leading, trailing or doubled dot)"));
         }
-        if l.len() > MAX_LABEL_LEN {
+        if seg.len() > MAX_LABEL_LEN {
             return Err(bad(&format!("segment longer than {MAX_LABEL_LEN} bytes")));
         }
-        if !l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
-            return Err(bad("segments may contain only A-Z, a-z, 0-9 and '-'"));
+        if !seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+            return Err(bad("segments may contain only A-Z, a-z, 0-9, '_' and '-'"));
         }
-        if l.starts_with('-') || l.ends_with('-') {
-            return Err(bad("a segment must not start or end with '-'"));
+        if seg.as_bytes()[0].is_ascii_digit() {
+            return Err(bad("a segment must not start with a digit"));
         }
     }
     Ok(())
@@ -174,8 +174,11 @@ mod tests {
     }
 
     #[test]
-    fn app_id_accepts_reverse_dns() {
-        for id in ["org.example.app", "a.b", "io.github.AppImageLauncher", "com.x-y.app9", "org.example.1app", &format!("a.{}", "b".repeat(63))] {
+    fn app_id_accepts_dbus_style_names() {
+        for id in [
+            "org.example.app", "a.b", "io.github.AppImageLauncher", "com.x-y.app9", "org.example.my_app", "_a._b", "a.b1",
+            "org.example.app-name", &format!("a.{}", "b".repeat(63)),
+        ] {
             assert!(validate_app_id(id).is_ok(), "{id}");
         }
     }
@@ -187,7 +190,7 @@ mod tests {
         for id in [
             "", "app", ".org.example", "org.example.", "org..example", "../x.y", "a/b.c", "org.example/../x", "org.exa mple.app",
             "org.example.app\n", "org.example.app\nExec=/bin/sh", "org.exa\0mple.app", "org.example.\u{1b}app", "org.exämple.app",
-            "-org.example.app", "org.-example.app", "org.example-.app", "org.example.a_b", "org.example.app\u{7f}", "/etc.x",
+            "org.example.app\u{7f}", "/etc.x", "org.example.1app", "1org.example.app", "org.7.app", "org.example.a+b", "org.example.a:b",
             &long_label, &too_long,
         ] {
             let e = validate_app_id(id).expect_err(id);
