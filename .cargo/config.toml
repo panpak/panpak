@@ -13,8 +13,3 @@ AR_x86_64_unknown_linux_musl = { value = "scripts/zig-ar", relative = true }
 [target.x86_64-unknown-linux-musl]
 linker = "scripts/zig-cc"
 rustflags = ["-C", "link-self-contained=no"]
-
-# aarch64 is not covered by the pinned Zig toolchain: it needs an aarch64 musl
-# cross compiler of your own.
-[target.aarch64-unknown-linux-musl]
-linker = "aarch64-linux-musl-gcc"

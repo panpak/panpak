@@ -1,4 +1,4 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 [toolchain]
 channel = "1.99.1"
-targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+targets = ["x86_64-unknown-linux-musl"]

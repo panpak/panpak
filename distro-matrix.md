@@ -24,6 +24,10 @@ execution container (the profile is ephemeral across `docker run`s).
 
 ## aarch64 (qemu-user, OB6)
 
+Builds for aarch64 are not supported yet: no CI job builds that target and the
+repository carries no aarch64 linker configuration, so the notes below record
+a one-off manual experiment.
+
 - Toolchain: rustup target `aarch64-unknown-linux-musl` + an aarch64 musl
   cross compiler (linker via
   `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER`), `panpak-stub` and
