@@ -134,7 +134,7 @@ fn coalesce_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 /// file before publishing it; current stays intact on error.
 fn cmd_update(app_id: &str, allow_downgrade: bool, allow_insecure: bool, timeout_secs: u64) -> Result<PathBuf> {
     use std::collections::HashMap;
-    ensure!(is_reverse_dns(app_id), "invalid app-id (reverse-DNS required, e.g. org.example.app)");
+    panpak_core::validate_app_id(app_id)?;
     let store = store_dir()?;
     let appdir = store.join("apps").join(app_id);
     let pin =
@@ -164,6 +164,7 @@ fn cmd_update(app_id: &str, allow_downgrade: bool, allow_insecure: bool, timeout
     // The key MUST be the pin OR a succession signed by the pin.
     // The pin only updates on verified atomic install (below).
     let new_key = man.update.as_ref().context("manifest without [update].key")?.key.trim().to_string();
+    panpak_core::validate_manifest(&man)?;
     let mut rotated_to: Option<String> = None;
     if new_key != pin {
         let u = man.update.as_ref().unwrap();
@@ -309,6 +310,7 @@ fn cmd_update(app_id: &str, allow_downgrade: bool, allow_insecure: bool, timeout
 }
 
 fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
+    panpak_core::validate_app_id(app_id)?;
     let appdir = store_dir()?.join("apps").join(app_id);
     let current = appdir.join("current");
     let previous = appdir.join("previous");
@@ -329,7 +331,7 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
 /// Without a file, ask the host picker (outside the sandbox).
 fn cmd_open(app_id: &str, file: Option<&str>, write: bool, rename: bool) -> Result<()> {
     use std::os::unix::process::CommandExt;
-    ensure!(is_reverse_dns(app_id), "invalid app-id (reverse-DNS required, e.g. org.example.app)");
+    panpak_core::validate_app_id(app_id)?;
     let store = store_dir()?;
     let current = store.join("apps").join(app_id).join("current");
     let pkg = fs::read_link(&current).with_context(|| format!("{app_id} not installed: run `panpak install` first"))?;
@@ -436,20 +438,6 @@ fn load_secret(flag: Option<&str>) -> Result<String> {
         _ => bail_code!(ErrorCode::E5002, "--secret-file <f> or PANPAK_SECRET_FILE required\n{usage}", usage = usage()),
     };
     panpak_core::read_secret_file(&path)
-}
-
-fn is_reverse_dns(id: &str) -> bool {
-    let labels: Vec<&str> = id.split('.').collect();
-    if labels.len() < 2 {
-        return false;
-    }
-    labels.iter().all(|l| {
-        !l.is_empty()
-            && l.len() <= 63
-            && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            && !l.starts_with('-')
-            && !l.ends_with('-')
-    })
 }
 
 struct PayloadEntry {
@@ -567,9 +555,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
     // Strict schema in pack: future keys must not silently disappear.
     panpak_core::check_panpak_toml_schema(&input_toml)?;
     let mut man: Manifest = toml::from_str(&input_toml).context("invalid panpak.toml")?;
-    ensure!(!man.app.id.is_empty() && is_reverse_dns(&man.app.id), "app.id must be reverse-DNS (e.g. org.example.app)");
-    ensure!(!man.app.name.is_empty(), "app.name is required");
-    ensure!(!man.app.version.is_empty(), "app.version is required");
+    panpak_core::validate_manifest(&man)?;
     let entry_rel = panpak_core::safe_path(&man.app.entry).context("unsafe app.entry")?;
     // [permissions] coherence: ports without network=true refused (fail-closed
     // in pack, not at runtime); sockets with valid syntax (absolute or $VAR).
@@ -1002,7 +988,7 @@ fn valid_squashfs_sb(b: &[u8]) -> bool {
 fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     use std::io::Read;
     let ConvertArgs { src, id, stub, secret, name_ov, version_ov, entry_ov, allow_missing, out } = a;
-    ensure!(is_reverse_dns(id), "--id must be reverse-DNS (e.g. org.example.app)");
+    panpak_core::validate_app_id(id)?;
     let mut f = File::open(src)?;
     // Look for the squashfs v4 magic ("hsqs") in the first 64 MiB, validating the
     // superblock (the ELF runtime contains false positives).
@@ -1169,7 +1155,10 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
         panpak_core::hex(&h.finalize())
     };
     let src_name = src.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
-    let mut toml = format!("[app]\nid = \"{id}\"\nname = \"{name}\"\nversion = \"{version}\"\nentry = \"{entry}\"\n");
+    // Strings from the AppImage (names, versions, paths) go through the TOML
+    // serializer: a quote or a newline in them must not add keys or sections.
+    let q = toml_str;
+    let mut toml = format!("[app]\nid = {}\nname = {}\nversion = {}\nentry = {}\n", q(id), q(&name), q(&version), q(&entry));
     if x11 {
         eprintln!("panpak convert: xcb-only app detected: declaring [permissions] x11 = true (verify before distributing)");
         toml.push_str("[permissions]\nx11 = true\n");
@@ -1180,16 +1169,21 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
             if i > 0 {
                 toml.push_str(", ");
             }
-            toml.push_str(&format!("\"{g}\""));
+            toml.push_str(&q(g));
         }
         toml.push_str("]\n");
     }
-    toml.push_str(&format!("[origin]\nconverted_from = \"{src_name}\"\nversion = \"{version}\"\nsha256 = \"{src_sha256}\"\nsigned_by_upstream = false\n"));
-    toml.push_str(&format!("[update]\nkey = \"{key}\"\n"));
+    toml.push_str(&format!("[origin]\nconverted_from = {}\nversion = {}\nsha256 = {}\nsigned_by_upstream = false\n", q(&src_name), q(&version), q(&src_sha256)));
+    toml.push_str(&format!("[update]\nkey = {}\n", q(&key)));
     fs::write(tree.join("panpak.toml"), &toml)?;
     let r = cmd_pack(&tree, stub, secret, None, out);
     let _ = fs::remove_dir_all(&tree);
     r
+}
+
+/// A TOML basic string, quoted and escaped.
+fn toml_str(s: &str) -> String {
+    toml::Value::String(s.to_string()).to_string()
 }
 
 /// Conservative evidence: a script forcing QT_QPA_PLATFORM=xcb or
@@ -1967,9 +1961,9 @@ mod tests {
         // Unsupported scheme: untyped, falls back to the generic code.
         let c = code(agent_for("ftp://example.org/x", true, 5).map(|_| ()), ErrorCode::E4000);
         assert_eq!(c, ErrorCode::E4000);
-        // open: invalid id and missing app are untyped store errors.
+        // open: an invalid id has its own code, a missing app is an untyped store error.
         let c = code(cmd_open("non-un-id", Some("/tmp/x"), false, false).map(|_| ()), ErrorCode::E2000);
-        assert_eq!(c, ErrorCode::E2000);
+        assert_eq!(c, ErrorCode::E0006);
         let e = cmd_open("org.example.never-installed", Some("/tmp/x"), false, false).unwrap_err();
         assert_eq!(panpak_core::code_of(&e, ErrorCode::E2000), ErrorCode::E2000);
         // Printed form: code first, no internal dumps.
