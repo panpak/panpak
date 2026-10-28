@@ -25,7 +25,7 @@ jobs:
   build-test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Pinned Rust toolchain
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
@@ -57,7 +57,7 @@ jobs:
   clippy:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Pinned Rust toolchain
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
@@ -90,7 +90,7 @@ jobs:
           - fuzz_squash
           - fuzz_http
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Nightly toolchain (libfuzzer)
         run: |
           rustup toolchain install "$FUZZ_NIGHTLY" --profile minimal
@@ -103,7 +103,7 @@ jobs:
   repro:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Pinned Rust toolchain
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
@@ -137,7 +137,7 @@ jobs:
     # SPDX headers on every source file; dependency licenses, bans and sources.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: SPDX headers
         run: ./scripts/check-spdx.sh
       - name: No large tracked files outside the allow-list
@@ -178,7 +178,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Signed-off-by on every commit
@@ -188,7 +188,7 @@ jobs:
     # Scans the whole git history for leaked secrets.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: gitleaks (official release, pinned version and checksum)
@@ -208,7 +208,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Security contact defined
         run: |
           if grep -qF '[SECURITY-CONTACT-TO-BE-SET]' SECURITY.md || ! grep -qF 'security@panpak.org' SECURITY.md; then
