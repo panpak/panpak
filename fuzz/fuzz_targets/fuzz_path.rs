@@ -16,7 +16,7 @@ fuzz_target!(|data: &[u8]| {
             let base = std::path::Path::new("/base");
             assert_eq!(base.join(s).parent(), Some(base), "app id is not one component: {s:?}");
             assert!(s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_'));
-            assert!(s.split('.').all(|seg| !seg.is_empty() && !seg.as_bytes()[0].is_ascii_digit()), "segment starts with a digit: {s:?}");
+            assert!(s.split('.').all(|seg| !seg.is_empty() && !seg.as_bytes()[0].is_ascii_digit() && seg.as_bytes()[0] != b'-'), "segment starts with a digit or '-': {s:?}");
         }
         let _ = panpak_core::target_escapes(s);
     }
