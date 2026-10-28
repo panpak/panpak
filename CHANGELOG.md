@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Private folders for each app.** The stub gives every app its own
+  config, data, state, tmp and cache folders (mode 0700, outside the store) and
+  points `XDG_*`, `TMPDIR` and `SQLITE_TMPDIR` at them. Writes go only there,
+  to `/tmp` and to the `home_paths` of the manifest. The app can read the
+  user's theme, font and icon settings and nothing else of the real config.
+  `~/.local/share/<id>` is no longer used and is not migrated: move the files
+  by hand with `panpak data path <id>`. New commands `panpak data path|clear`.
+- **Manifest: `[launch]` and `permissions.home_paths`.** Extra start arguments
+  and environment (with placeholders for the private folders), and fixed home
+  paths as a last resort. `install` shows the permissions; `update` asks before
+  it adds any. A package that asks for the D-Bus socket gets a warning.
+- **GTK3 dark theme** from `gsettings` at start (at most 200 ms).
 - **Security: paths and text from the manifest.** `app.id` has one strict
   grammar (spec §3.1.1) and every manifest field that becomes a path, a file
   name, a `.desktop` line or terminal text is checked in `verify`, so a signed

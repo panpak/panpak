@@ -12,9 +12,12 @@ Status values:
 
 | App | Version | Status | Notes | Tested |
 |---|---|---|---|---|
-| Joplin | 3.7.21 | works with notes | See "Joplin" below. | 2026-10-28 |
+| Joplin | 3.7.21 | works with notes | Needs `launch.args` for the profile, the network ports for 2658 and `--allow-missing libdbus-glib-1.so.2`. See "Joplin" below. | 2026-10-28 |
+| Mu | 1.2.0 | not working | Crashes with SIGSEGV in `QApplication(...)`, also without panpak. See "Mu" below. | 2026-10-28 |
 
-Not tested yet: Kdenlive, Mu, QOwnNotes, Simplenote.
+Not tested yet: Kdenlive, QOwnNotes, Simplenote.
+
+Apps get private config, data, state and cache folders (see `panpak data path <id>`), so a profile written by an older panpak in `~/.local/share/<id>` is not used any more.
 
 ## Joplin
 
@@ -24,6 +27,18 @@ existing profile, in 30 of 30 starts with a new profile at every start, and in
 sandbox was on in all runs. Three things need a step.
 
 ### Configuration directory
+
+With the private app folders, Joplin needs no link and no home path. The package
+sets the profile with `--profile`, which Joplin accepts:
+
+```toml
+[launch]
+args = ["--profile", "${XDG_CONFIG_HOME}/joplin-desktop"]
+```
+
+Ten starts in an isolated HOME with no adapter link gave a window every time,
+the profile was created in the private config folder and nothing was created
+under `~/.config`. The text below explains why the older versions needed a link.
 
 Joplin stores its profile in `~/.config/joplin-desktop`. It builds this path
 from the home directory and ignores `XDG_CONFIG_HOME`. The sandbox allows
@@ -40,7 +55,7 @@ the main executable does not link. Hosts without the library fail at start with
 `PANPAK-E2000` unless the package is converted with
 `--allow-missing libdbus-glib-1.so.2`. With the option, Joplin starts.
 
-### Port 2658
+### Port 2658 (with the private folders)
 
 Joplin opens a local server on `127.0.0.1:2658` for its IPC. Without network permissions the sandbox denies both the connect and
 the bind, and the log shows `listen EACCES: permission denied 127.0.0.1:2658`.
@@ -67,6 +82,28 @@ installed tree directly, with no panpak, shows the same sequence (start, exit,
 start, exit). Removing the `lock` file before the start avoids it. The test scripts stop
 apps with SIGTERM, wait for the exit and use SIGKILL only for what is left;
 a script that restarts Joplin on the same profile must remove the file first.
+
+## Mu
+
+Mu 1.2.0 does not start: the process dies with SIGSEGV at the call
+`QApplication(sys.argv)` in `mu/app.py` (Python's faulthandler shows line 322),
+right after Mu logs that it found no `venv.json`. The same crash happens, with
+a new profile in an isolated HOME and the same Xvfb display, in all three ways
+tested: through panpak (3 of 3 starts), from the extracted tree with no sandbox
+(4 of 4) and from the original AppImage with no panpak at all (4 of 4). So it
+is not caused by panpak or by its sandbox. The package set `IPYTHONDIR` to the private config folder and a `mu_code` home path (read
+and write). The home path was created and Mu looked for its settings in the private data
+folder, but `IPYTHONDIR` could not be exercised because Mu crashes before it opens the
+editor, so the application never shows a window. Missing libraries
+are still handled with `--allow-missing` (48 libraries).
+
+## GTK3 dark theme
+
+GTK3 apps read the dark preference from dconf, which they cannot reach with a
+private config folder. The stub reads it once at start with `gsettings` (at most
+200 ms) and sets `GTK_THEME=<theme>:dark`. It costs about 4 ms with the real
+`gsettings` (two queries at the same time, 40 runs, median; p95 5 ms). The theme does not change while the app is
+open. The settings portal is planned to replace this.
 
 ## Update size
 

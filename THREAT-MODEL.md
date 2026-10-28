@@ -30,7 +30,8 @@ The local store (`~/.local/share/panpak`) is considered **trusted**
 - **Read-only tree**: Landlock r-x on the tree + `chmod a-w` on trees
   and blobs. An app cannot modify shared files (fork tests:
   write/truncate/create/rename/unlink/hardlink denied; blobs unchanged).
-- **Confined writes** to `~/.local/share/<id>` and `/tmp` (fork tests).
+- **Confined writes** to the two private roots of the app, the `rw` home paths
+  of its manifest and `/tmp` (fork tests and `tests/app_dirs.py`, see §2.2).
 - **No silent fallback**: without Landlock the stub aborts;
   post-restrict self-test (`/dev/null` openable, create on tree denied).
 - **TOFU + pin**: the key is self-signed (proves no identity); at the
@@ -56,11 +57,11 @@ The local store (`~/.local/share/panpak`) is considered **trusted**
   the folder, which also covers them; deletion requires RemoveFile).
   Warning printed at every use. The "whole folder RW" alternative is
   NOT offered.
-- **SQLite temp**: the stub points `$SQLITE_TMPDIR` (unless the user
-  set it) at a private writable `<appdata>/tmp`. Without this, SQLite
-  used `/var/tmp` (default-deny) and temp-file operations (FTS
-  indexes) failed even with a writable DB. Only SQLite reads this
-  variable; `/tmp` stays shared as above.
+- **Temporary files**: the stub points `$TMPDIR` and `$SQLITE_TMPDIR` at the
+  private `tmp` folder of the app. Without this, SQLite used `/var/tmp`
+  (default-deny) and temp-file operations (FTS indexes) failed even with
+  a writable DB. `/tmp` stays shared and writable as below; it will be
+  narrowed in a later step.
 
 ### 2.1 Installation: paths, `.desktop` files and links (tested)
 
@@ -85,6 +86,44 @@ purpose. The test and bench scripts are development tools; they refuse to run
 with a HOME outside their work directory and never delete outside it
 (`tests/isolation.py`).
 
+### 2.2 Private folders, user settings and home paths (tested)
+
+Each app has its own folders (spec §9.1), created with mode 0700 outside the store:
+`$XDG_DATA_HOME/panpak/userdata/<id>/{config,data,state,tmp}` and
+`$XDG_CACHE_HOME/panpak/<id>`. The stub points `XDG_CONFIG_HOME`,
+`XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `TMPDIR` and
+`SQLITE_TMPDIR` at them, and these are the only writable places besides
+`/tmp` and the `rw` home paths of the manifest. `HOME` and `XDG_RUNTIME_DIR`
+do not change. The old `~/.local/share/<id>` is not touched and not writable.
+`tests/app_dirs.py` runs an app in an isolated HOME and checks that:
+
+- writes through each XDG variable and `TMPDIR` land in the right folders;
+- a write to `~/.config/<anything>` or to the home is denied;
+- `~/.config/gtk-3.0` and `~/.local/share/icons` can be read and not written;
+- `~/.config/gh` with a fake token file cannot be read, and `~/.config` cannot
+  be listed;
+- missing optional paths do not stop the start;
+- `panpak data clear` deletes only the two roots, follows no link and refuses a
+  root that is a link.
+
+The user's settings the app may read are listed in spec §9.1. They are
+read-only and only if they exist: never the whole config or data folder.
+The theme files can reveal which software the user runs; they hold no secret.
+
+`permissions.home_paths` (spec §3.1.2) is the last resort for apps that insist on
+a fixed place in the home folder. The manifest validation refuses broad
+folders and a list of places that run code at login or hold credentials. The
+list is incomplete by nature: a path outside it is not thereby harmless, and
+`install` shows the line "Partial access to your home" so the user can judge.
+At start the stub refuses a path that is, or has above it, a symbolic link.
+Landlock ties each rule to the folder opened when the rules are built, so
+replacing a path by a link afterwards does not widen the access. An `rw` path is
+readable and writable by the app and by every other process of the user.
+
+An update that adds permissions (X11, network, a port, a socket, a home path or
+`ro` raised to `rw`) is not published without a yes (`PANPAK-E1003`, or
+`PANPAK-E5004` without a terminal and without `--yes`).
+
 ## 3. What the sandbox does NOT guarantee
 
 **X11 opt-in (`[permissions] x11 = true`)**: default false. The opt-in
@@ -101,10 +140,32 @@ default refused, opt-in works; signals to the parent still denied.
   Verified: X11 socket reachable. On X11 a malicious Panpak app can spy
   on other windows. Real mitigation only on Wayland (compositor-level
   isolation).
-- **Unix sockets**: `connect()` is not mediated by Landlock V1..V9
-  (only `open()` is). The app reaches Wayland, PulseAudio/PipeWire and
-  the session D-Bus if the sockets are where it looks for them. D-Bus
-  = wide surface (service activation, secrets if unlocked, etc.).
+- **Unix sockets and D-Bus (known way out of the sandbox).** Landlock
+  filters `connect()` to a path socket only from ABI V9. On older kernels
+  it does not, and the sandbox grants `/run` for reading, so the app
+  reaches Wayland, PulseAudio/PipeWire and the session bus through
+  `$XDG_RUNTIME_DIR/bus` with no permission asked. Checked on kernel
+  7.0 (Landlock V8) with a test app in an isolated HOME and the real
+  session bus: the app reads `NameHasOwner` for `org.freedesktop.secrets`
+  (true), introspects `org.freedesktop.systemd1` and `org.freedesktop.secrets`,
+  and a call to `org.freedesktop.systemd1.Manager.StartTransientUnit` reaches
+  systemd, which only rejected the deliberately wrong arguments. Nothing was
+  started and no secret was read. With a correct call, the user's systemd
+  would start a unit outside the sandbox. `sockets_allow` cannot change this
+  below V9 (the stub refuses it there). On V9 the default is the opposite: a
+  path socket is denied unless `sockets_allow` lists it. A package that lists
+  a bus socket makes `install` and `update` print "Full access to desktop
+  services (D-Bus): this app is not isolated". `panpak doctor` prints a note
+  on kernels below V9. A D-Bus filter is planned for phase 3.
+- **Network ports**: `network_allow_tcp` and `network_bind_tcp` use the Landlock
+  network rules (ABI V4, kernel 6.7 or later). They filter by TCP port, not by
+  address: a port opened for `127.0.0.1` is open for any address the app
+  uses. UDP is not filtered. Checked with Joplin, whose local server on port
+  2658 needs both a connect and a bind rule.
+- **Dark theme**: the stub reads `gsettings` once at start (at most 200 ms,
+  before the sandbox) to set `GTK_THEME`. The app does not follow a later change.
+  GTK3 apps cannot read dconf with a private config folder; the settings
+  portal is planned to replace this.
 - **Shared `/tmp`**: visible and writable by all user processes,
   inside and outside the sandbox. Predictable names = race/symlink
   attacks between apps. Use private subdirs or `O_NOFOLLOW|O_EXCL`.
