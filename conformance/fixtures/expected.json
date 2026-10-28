@@ -1,4 +1,11 @@
 {
+ "invalid-abi-name.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "abi.needs"
+  ],
+  "ok": false
+ },
  "invalid-abspath.panpak": {
   "err": [
    "unsafe"
@@ -37,9 +44,85 @@
   ],
   "ok": false
  },
+ "invalid-entry-abs.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "app.entry"
+  ],
+  "ok": false
+ },
+ "invalid-entry-dotdot.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "app.entry"
+  ],
+  "ok": false
+ },
  "invalid-flags.panpak": {
   "err": [
    "nonzero flags"
+  ],
+  "ok": false
+ },
+ "invalid-id-dotdot.panpak": {
+  "code": "PANPAK-E0006",
+  "err": [
+   "app.id"
+  ],
+  "ok": false
+ },
+ "invalid-id-leading-dot.panpak": {
+  "code": "PANPAK-E0006",
+  "err": [
+   "app.id"
+  ],
+  "ok": false
+ },
+ "invalid-id-long-label.panpak": {
+  "code": "PANPAK-E0006",
+  "err": [
+   "app.id"
+  ],
+  "ok": false
+ },
+ "invalid-id-long.panpak": {
+  "code": "PANPAK-E0006",
+  "err": [
+   "app.id"
+  ],
+  "ok": false
+ },
+ "invalid-id-newline.panpak": {
+  "code": "PANPAK-E0006",
+  "err": [
+   "app.id"
+  ],
+  "ok": false
+ },
+ "invalid-id-nul.panpak": {
+  "code": "PANPAK-E0006",
+  "err": [
+   "app.id"
+  ],
+  "ok": false
+ },
+ "invalid-id-one-label.panpak": {
+  "code": "PANPAK-E0006",
+  "err": [
+   "app.id"
+  ],
+  "ok": false
+ },
+ "invalid-id-slash.panpak": {
+  "code": "PANPAK-E0006",
+  "err": [
+   "app.id"
+  ],
+  "ok": false
+ },
+ "invalid-index-control.panpak": {
+  "err": [
+   "control character"
   ],
   "ok": false
  },
@@ -60,6 +143,13 @@
    "consistent",
    "truncated",
    "signature"
+  ],
+  "ok": false
+ },
+ "invalid-name-newline.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "app.name"
   ],
   "ok": false
  },
@@ -100,6 +190,13 @@
    "too short",
    "magic",
    "consistent"
+  ],
+  "ok": false
+ },
+ "invalid-version-path.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "app.version"
   ],
   "ok": false
  },

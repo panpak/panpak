@@ -46,12 +46,22 @@ def main():
             fails.append(name)
         else:
             print(f"pass {name} ({status})")
-    # Cross-check valid fixtures with Rust (panpak doctor).
+    # Cross-check with Rust (panpak doctor): valid fixtures are accepted, invalid
+    # ones rejected (with the expected PANPAK code when the fixture names one).
     if "--rust" in sys.argv:
         root = os.path.dirname(HERE)
         panpak = os.path.join(root, "target/x86_64-unknown-linux-musl/release/panpak")
         for name, exp in sorted(EXPECTED.items()):
             if not exp["ok"]:
+                r = subprocess.run([panpak, "doctor", os.path.join(FIX, name)], capture_output=True, text=True)
+                if "INVALID package" not in r.stdout:
+                    print(f"FAIL {name}: Rust accepted an invalid package:\n{r.stdout[-500:]}")
+                    fails.append(name + "#rust")
+                elif exp.get("code") and exp["code"] not in r.stdout:
+                    print(f"FAIL {name}: Rust did not report {exp['code']}:\n{r.stdout[-500:]}")
+                    fails.append(name + "#rust")
+                else:
+                    print(f"pass {name} (Rust agrees: invalid)")
                 continue
             r = subprocess.run([panpak, "doctor", os.path.join(FIX, name)], capture_output=True, text=True)
             if "verified package" not in r.stdout or "INVALID package" in r.stdout:

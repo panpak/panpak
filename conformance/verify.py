@@ -11,9 +11,11 @@ Exit 0 if valid (prints VALID), 1 if invalid (reason on stderr / JSON).
 """
 
 import json
+import re
 import struct
 import subprocess
 import sys
+import unicodedata
 
 sys.path.insert(0, __import__("os").path.dirname(__file__))
 from b3 import blake3
@@ -76,6 +78,57 @@ def ed25519_verify(vk_hex: str, msg: bytes, sig: bytes):
         raise Fail(f"malformed key/signature: {e}")
 
 
+APP_ID = re.compile(r"[0-9A-Za-z](?:[0-9A-Za-z-]{0,61}[0-9A-Za-z])?(?:\.[0-9A-Za-z](?:[0-9A-Za-z-]{0,61}[0-9A-Za-z])?)+")
+VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z._+~-]{0,63}")
+UNSAFE_TEXT = set("\u2028\u2029\u200e\u200f") | {chr(c) for c in range(0x202A, 0x202F)} | {chr(c) for c in range(0x2066, 0x206A)}
+
+
+def text_ok(s, max_bytes):
+    return (
+        isinstance(s, str)
+        and 1 <= len(s.encode("utf-8", "surrogatepass")) <= max_bytes
+        and not any(unicodedata.category(c) == "Cc" or c in UNSAFE_TEXT for c in s)
+    )
+
+
+def check_fields(man):
+    """Field rules of PANPAK-FORMAT.md section 3.1.1 (applied even to signed manifests)."""
+    app = man["app"]
+    app_id = app["id"]
+    if not (isinstance(app_id, str) and len(app_id) <= 128 and app_id.isascii() and APP_ID.fullmatch(app_id)):
+        raise Fail(f"invalid app.id: {app_id!r}"[:120])
+    if not text_ok(app["name"], 256):
+        raise Fail("invalid manifest field app.name")
+    if not (isinstance(app["version"], str) and VERSION.fullmatch(app["version"])):
+        raise Fail("invalid manifest field app.version")
+    entry = app["entry"]
+    if not (
+        isinstance(entry, str)
+        and 1 <= len(entry.encode()) <= 4096
+        and not any(unicodedata.category(c) == "Cc" for c in entry)
+        and all(seg not in ("", ".", "..") for seg in entry.split("/"))
+    ):
+        raise Fail(f"invalid app.entry: {entry!r}")
+    for key in ("needs", "prefer_host", "allow_missing"):
+        for n in man.get("abi", {}).get(key, []):
+            if not (isinstance(n, str) and 1 <= len(n) <= 255 and n not in (".", "..") and all(0x21 <= ord(c) <= 0x7E and c != "/" for c in n)):
+                raise Fail(f"invalid manifest field abi.{key}")
+    for s in man.get("permissions", {}).get("sockets_allow", []):
+        if not (isinstance(s, str) and 1 <= len(s.encode()) <= 4096 and not any(unicodedata.category(c) == "Cc" for c in s)):
+            raise Fail("invalid manifest field permissions.sockets_allow")
+    if "origin" in man:
+        o = man["origin"]
+        if not text_ok(o.get("converted_from"), 256) or "/" in o["converted_from"]:
+            raise Fail("invalid manifest field origin.converted_from")
+        if not text_ok(o.get("version"), 64):
+            raise Fail("invalid manifest field origin.version")
+        if not (isinstance(o.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", o["sha256"])):
+            raise Fail("invalid manifest field origin.sha256")
+    url = man["update"].get("url")
+    if url is not None and not (isinstance(url, str) and len(url.encode()) <= 2048 and all(0x20 < b != 0x7F for b in url.encode())):
+        raise Fail("invalid manifest field update.url")
+
+
 def parse_index(raw: bytes):
     """Return (chunks, entries). chunks: list[dict]; entries: list[dict]."""
     p = 0
@@ -110,6 +163,8 @@ def parse_index(raw: bytes):
         except UnicodeDecodeError:
             raise Fail("non-UTF-8 path")
         p += ln
+        if any(unicodedata.category(c) == "Cc" for c in path):
+            raise Fail(f"unsafe path (control character): {path!r}")
         parts = path.split("/")
         if any(c in ("", ".", "..") for c in parts):
             raise Fail(f"unsafe path (empty, . or ..): {path!r}")
@@ -151,6 +206,8 @@ def parse_index(raw: bytes):
             p += ln
             if not tgt:
                 raise Fail("empty symlink target")
+            if any(unicodedata.category(c) == "Cc" for c in tgt):
+                raise Fail("unsafe symlink target (control character)")
             entries.append({"path": path, "mode": mode, "kind": "symlink", "target": tgt})
         else:
             raise Fail(f"unknown kind: {kind}")
@@ -201,6 +258,8 @@ def check(data: bytes):
         raise Fail(f"manifest: missing field {e}")
     # Verify signature over manifest_toml || root_hash (raw).
     ed25519_verify(key, toml_b + root, sig)
+    # Field rules: a valid signature does not make the fields safe (spec 3.1.1).
+    check_fields(man)
     # stub_hash REQUIRED, verified over bytes [0:first chunk].
     try:
         want_stub = man["runtime"]["stub_hash"]

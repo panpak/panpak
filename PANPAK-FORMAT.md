@@ -126,7 +126,7 @@ intended ones.
 
 ```toml
 [app]
-id = "org.example.editor"      # REQUIRED, reverse-DNS format
+id = "org.example.editor"      # REQUIRED, reverse-DNS format (§3.1.1)
 name = "Editor"                # REQUIRED
 version = "1.4.2"              # REQUIRED
 entry = "bin/editor"           # REQUIRED, relative path inside the tree
@@ -167,6 +167,43 @@ version = "1.0"                    # version declared at conversion time
 sha256 = "<64 hex>"                # SHA-256 of the original converted file
 signed_by_upstream = false         # always false: the upstream author did not sign
 ```
+
+### 3.1.1 Field rules [NORMATIVE]
+
+A valid signature only says who wrote the manifest. A Reader MUST reject a
+manifest whose fields do not follow the rules below even when the signature
+is valid, and a Writer MUST NOT produce one. These fields become file names,
+paths, shell words, `.desktop` lines and terminal text, so a Reader MUST NOT
+use any of them before this check passes.
+
+`app.id` MUST match this grammar (RFC 5234), in at most 128 bytes:
+
+```
+app-id = label 1*( "." label )
+label  = alnum / ( alnum *61( alnum / "-" ) alnum )     ; 1 to 63 bytes
+alnum  = %x30-39 / %x41-5A / %x61-7A
+```
+
+So an id is ASCII, has at least two non-empty segments, does not start or end
+with a dot, and contains no `/`, no `..`, no control character and no NUL.
+
+| Field | Rule |
+|---|---|
+| `app.name` | 1 to 256 bytes of UTF-8. MUST NOT contain a control character (U+0000..U+001F, U+007F..U+009F), U+2028, U+2029, U+200E, U+200F, U+202A..U+202E or U+2066..U+2069 |
+| `app.version` | `alnum *63( alnum / "." / "_" / "+" / "~" / "-" )` |
+| `app.entry` | A relative path: no empty, `.` or `..` segment, no leading `/`, no control character, at most 4096 bytes |
+| `[abi]` `needs`, `prefer_host`, `allow_missing` | Each item: 1 to 255 bytes of printable ASCII (%x21-7E), without `/`, and not `.` or `..` |
+| `origin.converted_from` | Like `app.name`, and without `/` |
+| `origin.version` | Like `app.name`, at most 64 bytes |
+| `origin.sha256` | 64 lowercase hexadecimal digits |
+| `update.url` | At most 2048 bytes, no byte %x00-20 or %x7F |
+| `permissions.sockets_allow` | Each item: 1 to 4096 bytes, no control character |
+
+Paths and symlink targets in the index MUST NOT contain a control character
+(U+0000..U+001F, U+007F..U+009F) either.
+
+*Informative note.* `panpak` reports a bad `app.id` as `PANPAK-E0006` and any
+other bad field as `PANPAK-E0007` (docs/ERRORS.md).
 
 ### 3.2 Public key and TOFU [NORMATIVE]
 
@@ -250,7 +287,7 @@ A Reader MUST run these checks, in this order, and MUST reject the
 package at the first failure:
 
 1. Read the footer, check magic and version.
-2. Verify the manifest signature.
+2. Verify the manifest signature, then check the field rules of §3.1.1.
 3. Verify that the stub bytes (`[0..first chunk)`) match
    `[runtime].stub_hash` (REQUIRED; absent = previous format, rejected).
    No path ever runs or installs a stub different from the signed one:
@@ -258,7 +295,8 @@ package at the first failure:
    the installed runtime.
 4. Decompress the index, verify `BLAKE3(index) == root_hash`.
 5. Every chunk MUST be verified (`BLAKE3(raw) == hash`) **before** being written to the store.
-6. Reject paths with `..`, absolute paths, or symlinks whose target —
+6. Reject paths with `..`, absolute paths, paths or symlink targets with
+   control characters, or symlinks whose target —
    resolved against the directory containing the link — escapes the
    root. Absolute symlinks are always rejected; `..` staying inside
    the root is legal (e.g. `usr/translations/x -> ../share/...`,

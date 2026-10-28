@@ -36,10 +36,15 @@ PUBHEX = "ed25519:" + PUB.public_bytes_raw().hex()
 STUB = b"PANPAKTEST-STUB-v1\x00"
 
 
-def manifest(key=PUBHEX, extra="", version="1.0", entry="bin/hello", iid="org.example.conf"):
+def tstr(s):
+    """TOML basic string (JSON string syntax is a subset: \\n, \\uXXXX, \\", \\\\)."""
+    return json.dumps(s)
+
+
+def manifest(key=PUBHEX, extra="", version="1.0", entry="bin/hello", iid="org.example.conf", name="Conf"):
     stub_hash = blake3(STUB).hex()
     return (
-        f'[app]\nid = "{iid}"\nname = "Conf"\nversion = "{version}"\nentry = "{entry}"\n'
+        f'[app]\nid = {tstr(iid)}\nname = {tstr(name)}\nversion = {tstr(version)}\nentry = {tstr(entry)}\n'
         f"{extra}"
         f'[runtime]\nstub_hash = "{stub_hash}"\n'
         f'[update]\nkey = "{key}"\n'
@@ -219,6 +224,33 @@ def main():
     ml = struct.unpack_from("<Q", good, len(good) - 40)[0]
     struct.pack_into("<Q", good, len(good) - 40, ml + 1)
     put("invalid-manlen.panpak", bytes(good), False, ["consistent", "truncated", "signature"])
+
+    # ---- invalid manifest fields (correctly signed): spec 3.1.1 ----
+    def bad_manifest(name, man, *errs, code):
+        put(name, assemble(STUB, encode_index(*std_index()[:2]), man, blobs=std_index()[2]), False, list(errs))
+        EXPECTED[name]["code"] = code
+
+    for fname, iid in [
+        ("invalid-id-dotdot", "../../escape.app"),
+        ("invalid-id-slash", "org/example.app"),
+        ("invalid-id-newline", "org.example.app\nExec=/bin/sh"),
+        ("invalid-id-nul", "org.example.\u0000app"),
+        ("invalid-id-leading-dot", ".org.example.app"),
+        ("invalid-id-one-label", "app"),
+        ("invalid-id-long", ".".join(["a" * 60] * 3)),
+        ("invalid-id-long-label", "org." + "a" * 64),
+    ]:
+        bad_manifest(fname + ".panpak", manifest(iid=iid), "app.id", code="PANPAK-E0006")
+    bad_manifest("invalid-name-newline.panpak", manifest(name="Evil\nExec=/bin/sh"), "app.name", code="PANPAK-E0007")
+    bad_manifest("invalid-version-path.panpak", manifest(version="../1"), "app.version", code="PANPAK-E0007")
+    bad_manifest("invalid-entry-dotdot.panpak", manifest(entry="../../bin/sh"), "app.entry", code="PANPAK-E0007")
+    bad_manifest("invalid-entry-abs.panpak", manifest(entry="/bin/sh"), "app.entry", code="PANPAK-E0007")
+    bad_manifest("invalid-abi-name.panpak", manifest(extra='[abi]\nneeds = ["../../x"]\n'), "abi.needs", code="PANPAK-E0007")
+    # index path with a control character
+    _d = b"xy"
+    _c = zstd_enc(_d)
+    _idx = encode_index([(blake3(_d), len(STUB), len(_c), len(_d))], [{"path": "a\nb", "mode": 0o644, "kind": "file", "size": 2, "chunks": [0]}])
+    put("invalid-index-control.panpak", assemble(STUB, _idx, manifest(), blobs=[_c]), False, ["control character"])
 
     # Negative fixture: a magic other than the one defined by the format is rejected.
     EXPECTED["unknown-magic.bin"] = {"ok": False, "err": ["magic"]}
