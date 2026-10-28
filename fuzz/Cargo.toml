@@ -1,0 +1,55 @@
+[package]
+name = "panpak-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+backhand = "0.25"
+panpak-core = { path = "../panpak-core" }
+toml = "0.8"
+
+[[bin]]
+name = "fuzz_index"
+path = "fuzz_targets/fuzz_index.rs"
+
+[[bin]]
+name = "fuzz_manifest"
+path = "fuzz_targets/fuzz_manifest.rs"
+
+[[bin]]
+name = "fuzz_pubkey"
+path = "fuzz_targets/fuzz_pubkey.rs"
+
+[[bin]]
+name = "fuzz_path"
+path = "fuzz_targets/fuzz_path.rs"
+
+[[bin]]
+name = "fuzz_footer"
+path = "fuzz_targets/fuzz_footer.rs"
+
+[[bin]]
+name = "fuzz_elf"
+path = "fuzz_targets/fuzz_elf.rs"
+
+[[bin]]
+name = "fuzz_zstd"
+path = "fuzz_targets/fuzz_zstd.rs"
+
+[[bin]]
+name = "fuzz_squash"
+path = "fuzz_targets/fuzz_squash.rs"
+
+[[bin]]
+name = "fuzz_http"
+path = "fuzz_targets/fuzz_http.rs"
+
+[[bin]]
+name = "fuzz_rotation"
+path = "fuzz_targets/fuzz_rotation.rs"

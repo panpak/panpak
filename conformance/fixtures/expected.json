@@ -1,0 +1,130 @@
+{
+ "invalid-abspath.panpak": {
+  "err": [
+   "unsafe"
+  ],
+  "ok": false
+ },
+ "invalid-chunk.panpak": {
+  "err": [
+   "chunk",
+   "zstd"
+  ],
+  "ok": false
+ },
+ "invalid-chunkid.panpak": {
+  "err": [
+   "beyond table",
+   "size"
+  ],
+  "ok": false
+ },
+ "invalid-dotdot.panpak": {
+  "err": [
+   "unsafe"
+  ],
+  "ok": false
+ },
+ "invalid-dotseg.panpak": {
+  "err": [
+   "unsafe"
+  ],
+  "ok": false
+ },
+ "invalid-dup.panpak": {
+  "err": [
+   "duplicate"
+  ],
+  "ok": false
+ },
+ "invalid-flags.panpak": {
+  "err": [
+   "nonzero flags"
+  ],
+  "ok": false
+ },
+ "invalid-layout.panpak": {
+  "err": [
+   "consistent"
+  ],
+  "ok": false
+ },
+ "invalid-magic.panpak": {
+  "err": [
+   "wrong magic"
+  ],
+  "ok": false
+ },
+ "invalid-manlen.panpak": {
+  "err": [
+   "consistent",
+   "truncated",
+   "signature"
+  ],
+  "ok": false
+ },
+ "invalid-no-stubhash.panpak": {
+  "err": [
+   "stub_hash",
+   "previous format"
+  ],
+  "ok": false
+ },
+ "invalid-root.panpak": {
+  "err": [
+   "root hash"
+  ],
+  "ok": false
+ },
+ "invalid-sig.panpak": {
+  "err": [
+   "signature"
+  ],
+  "ok": false
+ },
+ "invalid-stub.panpak": {
+  "err": [
+   "stub does not match"
+  ],
+  "ok": false
+ },
+ "invalid-trailing.panpak": {
+  "err": [
+   "trailing"
+  ],
+  "ok": false
+ },
+ "invalid-truncated.panpak": {
+  "err": [
+   "truncated",
+   "too short",
+   "magic",
+   "consistent"
+  ],
+  "ok": false
+ },
+ "invalid-version.panpak": {
+  "err": [
+   "unsupported version"
+  ],
+  "ok": false
+ },
+ "unknown-magic.bin": {
+  "err": [
+   "magic"
+  ],
+  "ok": false
+ },
+ "valid-empty-tree.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-min.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-multi.panpak": {
+  "err": [],
+  "ok": true
+ }
+}

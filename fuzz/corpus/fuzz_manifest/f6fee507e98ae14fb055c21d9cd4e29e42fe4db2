@@ -1,0 +1,28 @@
+[app]
+id = "org.exams"
+name = "Cropus"
+version = "0.0"
+entry = "bin/run"
+
+[abm]
+needs = ["libc.so'	","""e.corpus"""","""r",""","""*,"r.6",""","""]
+pref66",""","""]
+pref6",""","""]
+prefer_ho""","""r",""","""*,"r.6",""r",""","""*,"r.st'=[""""",""",'reho"",",,"""","""",'rehost'st'=[",,"""",""",'rehost["""",""""'rehlst'=["",,"""",""",'rehost'=[",=["""",""",'rehost'"!"=[""""",""",'rehost'=["""",""",'rehos[armsiisate.port]
+ffer_host =[ "lIb*"]
+ffer_host = ["t'=[""'=["",,"""",""",'rehost'=[",,"""",""",'rehost["""",""",'rehoseho=ons#"!">""",""",'reho"'rehost'=[.	"",,"""",""",'rehos["""",""",'r0ehost'=[""""",""",'reho"",",,"""",""""r(host'st'=[",,"""",""",'reho(st["""",""""'rt'=["""",""",'rehos'rehost'=["""",""",'rehost'=[""""",""",'reho"",",,"""","""",'rehost'st'=[",,"""",""",'rehost["""",""""'[""""",""",']eho"",",,"""","""",'rehosd'st'=[",,"""",""",'rehost["""",""""'rehlst'=["",,"""",""",'rehost'=[",=["""",""",'rehost'"!"=[""""",""",'rehost','rehost'=[""#"!">""",""",'reho"'rehost'=["",,"""",""",'rehost',[=","""",""",'rehost["""",""",'rehoseho"",",,"""","""",'r?Ih["""",""""',"""",""",'rehos>""",""","""",""",'re$host'=["",,"""","""'rlesoht'=["",,"""",""",'rehost'=entry#["""",""",'rehost'"!"=[""""",""",'rehos*t'=["host'`=[",,"""",""",'rehost["""",""",'rehoseho"rehost'=["""",""",'rehost'=[""""",""",'reho"",",,"""","""",'rehoqt'st'=[",,"""",""",'reho(st["""",""""'rt'=["""",""",'rehos'rehost'=["""",""",'rehost'=[""""",""",'reho"",",,"""","""",'rehost'st'=[",,"""",""",'rehost["""",""""ehlr'st'=["",,"""",""",'rehost'=[",=["""",""",'rehost'"!"=[""""",""",'rehost'=["host'`=[",,"""",""",'rehost["""",""",'reh"""",""",'rehost'=["""",""",'reho
+st'=[""""",""",'rehost'=[""#"!">""",""",'reho"'rehost'=["",,"""","""t["""",""",'rehoseho"",",,"""","""",'r?Ih["""",""""',"""",""",'rehos>""",""","""",""",'re$host'=["",,"""","""'rhost'=["""",""",'rehost'=[""""",""",'reho"",",,"""","""",'rehost'st'=[",,"""",""",'reho(st["""",""""'rt'=["""",""",'rehos'rehost'=["""",""",'rehost'=[""""",""",'reho"",",,"""","""",'rehost'st'=[",,"""",""",'rehost["""",""""ehlr'st'=["",,"""",""",'rehost'=[",=[""st["""",""",'rehoseho"",",,"""","""",'rehost'=[",,"""",""",'reh"
+ost'=[""#"!">""",""",'reho,'reho"'rehost'=["",,"""",""",'rehost'=[",,"'rehost'=[""#"!">""",""",'reho"'rehossdiGL*"]t["""",""""'rehlsoseho"",",,"""","""",'rehost'=[",,"""",""",'reh"
+ost'=[""#"!">""",""",'reho,'reho"'rehost'=["",,"""",""""",'rehost'=[",,"""",""",'rehost["""",""",'rehost,"""",""",'reh",'rehos'rehost'=["""",""",'r0ehost'=[""""",""",'reho"",",,"""","""",'rehost'st'=[",,"""",""",'reho(st["""",""""'""",""",'rehos'rehost'=["""",""",ens6'rehost'=[""""",""",'h,oe""r",,"""","""",'rehost'st'=[",,"""",""",'rehost["""",""""'rehlst
+'=["",,"""",""",'re6",""","""]
+pref6r_ho""","""r",""","""*,"r.6",""","""]
+pref6",""","""]
+prefer_host = [st = [s]
+ile,"""]
+prefer_host = ["libGL*"]
+
+[permissions]
+-etiles = "pi#ker"
+
+[update]
+url = "https:00"

@@ -1,0 +1,7 @@
+[app]
+id="a.b"
+name="N"
+version="0"
+entry="x"
+[update]
+key=""

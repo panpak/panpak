@@ -1,0 +1,20 @@
+[package]
+name = "panpak-stub"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+panpak-core = { path = "../panpak-core" }
+blake3 = "1"
+landlock = "0.4"
+dirs = "6"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+ed25519-dalek = "2"
+blake3 = "1"
+zstd = "0.14"
+libc = "0.2"

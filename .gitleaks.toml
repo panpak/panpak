@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# gitleaks configuration: the default rules plus the allowlist below.
+title = "panpak gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known non-secrets"
+paths = [
+  # Fuzzer corpus: random manifest bytes that happen to look like `key = "..."`.
+  '''^fuzz/corpus/''',
+]

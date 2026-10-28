@@ -1,0 +1,9 @@
+[app]
+id = "ams"
+name = "Copus"
+version = "0."
+entry = "bin/rtn"
+
+[abi]
+needs = ["libc.so'	","""e.cpu3r.6",""","","""""","""""*,"r.6",""","","""*,"""]
+prefhost = ["libGL*"]

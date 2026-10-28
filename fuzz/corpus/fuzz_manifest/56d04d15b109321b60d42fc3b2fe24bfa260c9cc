@@ -1,0 +1,27 @@
+[app]
+id = "orgn"
+
+[abi]
+needs = ["6"]
+prefer_host = ["libGL*"]
+
+[iions]
+network = true
+
+[permissions.portal]
+network = true
+
+[pl]
+network = true
+
+[permissio]
+ff = ["libGL*"]
+
+[pruntimeermissions]
+nrefost = ["lGL*"]
+
+[pateions]
+network = true
+
+[l]
+ibGioeeds tw

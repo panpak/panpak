@@ -1,0 +1,8 @@
+target/
+.git/
+fuzz/target/
+fuzz/coverage/
+fuzz/corpus/
+tests/__pycache__/
+*.panpak
+/tmp/

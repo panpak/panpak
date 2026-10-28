@@ -1,0 +1,165 @@
+# Panpak QUICKSTART: from a folder to a signed `.panpak` in 5 commands
+
+Prerequisites: `panpak` + `panpak-stub` built (`cargo build --release
+--target x86_64-unknown-linux-musl`; the stub lives in
+`target/x86_64-unknown-linux-musl/release/`).
+
+## 1. Prepare the tree
+
+```sh
+mkdir -p hello/bin
+printf '#!/bin/sh\necho hello from Panpak\n' > hello/bin/hello
+chmod +x hello/bin/hello
+```
+
+Any Linux tree works (binaries, `.so` in `lib/`, symlinks);
+`panpak pack` refuses setuid/setgid.
+
+## 2. Generate the key
+
+```sh
+panpak keygen -o hello.key
+# secret key written to: hello.key
+# key:    ed25519:<64 hex>
+# fingerprint (TOFU, first 16 hex): <...>
+```
+
+The secret key is written only to the file, created with mode 0600; `keygen`
+never overwrites an existing file and never prints the secret. Signing
+commands read it with `--secret-file <file>` or the `PANPAK_SECRET_FILE`
+environment variable (a path, never the key itself). The file must be a
+regular file (no symlink) with no group/other permissions; otherwise run
+`chmod 600 <file>`. There is no option to pass the key on the command line.
+
+## 3. Write `hello/panpak.toml`
+
+```toml
+[app]
+id = "org.example.hello"   # reverse-DNS, REQUIRED
+name = "Hello"
+version = "0.1.0"
+entry = "bin/hello"        # relative, no ..
+
+[update]
+key = "ed25519:<64 hex>"   # the public key from before
+```
+
+## 4. Pack (sign + join to the stub)
+
+```sh
+panpak pack hello --stub ./target/x86_64-unknown-linux-musl/release/panpak-stub \
+  --secret-file hello.key -o hello.panpak
+# pack: 1 references, 1 unique chunks, 2 entries, root=<...>
+```
+
+The official extension is `.panpak`: without `-o`, `pack` and `convert` write
+`<app-id>.panpak`. `.pan` is an accepted alias (`-o hello.pan` writes exactly
+that name). Every command that reads a package accepts `.panpak`, `.pan` or
+any other name, because a file is identified by its magic and signature, never
+by its extension.
+
+To rotate the update key, sign with the new key and add
+`--rotate-from-file <old-key-file>` (same permission rules as
+`--secret-file`).
+
+`panpak pack` chunks (FastCDC 16K/64K/256K), compresses (zstd),
+dedups by BLAKE3 hash, signs `manifest || root_hash` and appends
+index + manifest + 80-byte footer to the stub.
+
+## 5. Verify and run
+
+```sh
+./hello.panpak
+# panpak: org.example.hello 0.1.0 — key fingerprint: <...>
+# hello from Panpak
+```
+
+The first line is the passed verification: signature, root-hash and
+every chunk are checked *before* running anything. The app runs in a
+Landlock sandbox (read-only tree; data in
+`~/.local/share/org.example.hello`).
+
+## Then: install and update
+
+```sh
+panpak install-runtime ./target/x86_64-unknown-linux-musl/release/panpak-stub
+panpak install hello.panpak               # TOFU: confirm with y/yes to pin the key
+# panpak install --yes hello.panpak       # explicit non-interactive confirmation
+~/.local/bin/org.example.hello       # launcher on the installed runtime
+```
+
+### Trust on first use (TOFU) prompt
+
+At the first install `panpak install` prints the key fingerprint (first 16
+hex characters) and asks `Install and trust this key? [y/N]`. Only `y` or
+`yes` (case-insensitive) accepts; any other input, including an empty line,
+rejects (`PANPAK-E1003`). Verify the fingerprint out of band before answering.
+With no terminal on stdin the command refuses to continue
+(`PANPAK-E5004`) unless you pass `--yes`, the explicit non-interactive
+confirmation; use it only after checking the fingerprint. The rule itself
+(pin, rotation, atomic update) is specified in `PANPAK-FORMAT.md` §3.2.
+
+## Open files (double click and `panpak open`)
+
+```sh
+panpak open org.example.hello ~/doc.txt              # read-only
+panpak open --write org.example.hello ~/doc.txt      # write to the file
+panpak open --write-rename org.example.hello ~/doc.txt  # + atomic save
+```
+
+The sandbox grants only that file. `--write-rename` (opt-in, with
+warning) also allows temp+rename in the folder (e.g. vim with backup,
+gedit), without reading/listing neighbors — but neighbors stay
+overwritable and deletable. Double click is read-only (`--write` from
+CLI only).
+
+See `PANPAK-FORMAT.md` (format), `THREAT-MODEL.md` (guarantees and
+limits), `distro-matrix.md` (multi-distro tests).
+
+## Convert an AppImage (notes)
+
+```sh
+panpak convert Etcher.AppImage --id io.example.app \
+  --stub .../panpak-stub --secret-file app.key -o app.panpak
+```
+
+The manifest declares `[origin]` (file, version, SHA-256, never signed
+by upstream): `panpak install` reports it explicitly and `panpak
+doctor` shows it. See `distro-matrix.md` for the real cases tried.
+
+## Reproducible builds
+
+Pinned toolchain in `rust-toolchain.toml` (Rust 1.99.1) and `Cargo.lock`
+(`cargo build --locked`). C cross-compiler: musl.cc
+`x86_64-linux-musl-cross` (SHA-256 recorded in
+`scripts/repro-build.sh`; alternative with verified signatures:
+`musl-tools` from the Ubuntu archive).
+
+Check: `scripts/repro-build.sh` builds twice in different directories
+and compares hashes — the `panpak` and `panpak-stub` binaries come out
+identical (`--remap-path-prefix` on sources and registry zeroes
+absolute paths).
+
+## Trust (read before running other people's .panpak)
+
+Directly running a `.panpak` (`./app.panpak`) runs the stub *contained
+in the file*: after verification (signature, stub, index, chunks) you
+know the file is intact and self-consistent, but the author is who
+they claim to be only if *you* verified the key out of band. For
+third-party apps always use `panpak install` (shows the fingerprint,
+asks for confirmation, pins the key) and launch from
+`~/.local/bin/<id>`: that way only the installed runtime runs and
+every start re-verifies package and pin.
+
+### C toolchain and cross-machine comparison
+
+Binaries are identical given the full toolchain, *including* the C
+compiler (musl): musl.cc (gcc 11.2, SHA-256 recorded in
+`scripts/repro-build.sh`) and Ubuntu musl-tools (gcc 13.3) produce
+different but both valid and internally reproducible binaries. For
+official releases, also pin the C toolchain (`Dockerfile.repro`).
+
+## Error codes
+
+Every error starts with a stable code such as `PANPAK-E1001`. The full list,
+with causes and fixes, is in `docs/ERRORS.md`.

@@ -1,0 +1,6 @@
+[app]
+id = "x"
+name = "X"
+version = ".0"
+entry = ""
+[abi]

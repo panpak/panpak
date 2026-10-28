@@ -1,0 +1,18 @@
+[app]
+id = "org.eorpus"
+name = "Corpus"
+version = "1.0"
+entry = "bin/run"
+
+[abi]
+needs = ["libc.so.6"]
+prefer_host = ["GL*"]
+
+[pjs]
+network = true
+
+[permissions.portal]
+files = "pick+r"
+
+[update]
+url= "h//example.od4c60"

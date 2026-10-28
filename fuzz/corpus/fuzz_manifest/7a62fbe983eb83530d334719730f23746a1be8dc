@@ -1,0 +1,20 @@
+[app]
+id = "org.example.corpus"
+name = "Co"
+version = "1.0"
+entry = "bin/run"
+
+[abi]
+needs = ["li=c.so.6"]
+pre = ["libGL*"]
+
+[permisioss]
+-etwork = true
+
+[pertal]
+fil= "pi#ker"
+
+[update]
+rl= "hkamp'e.or"
+key = "ed51038?x"
+k_ey = "%d25c600"

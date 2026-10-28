@@ -1,0 +1,196 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Panpak CI: build, test, clippy, fuzz smoke, reproducibility, distro matrix.
+# Run on push/PR to main. No secrets (only the default read-only token), no publish.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+
+jobs:
+  build-test:
+    runs-on: ubuntu-24.04
+    env:
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
+          rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
+          echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+      - name: musl dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools zstd python3 python3-cryptography
+      - name: Test (musl)
+        run: cargo test --locked --target x86_64-unknown-linux-musl
+      - name: Release build (conformance and artifacts)
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl
+      - name: Format conformance (independent verifier)
+        run: |
+          python3 conformance/gen.py
+          python3 conformance/run.py --rust
+      - name: Artifacts (static stub for the distro matrix)
+        uses: actions/upload-artifact@v4
+        with:
+          name: panpak-stub-musl
+          path: target/x86_64-unknown-linux-musl/release/panpak-stub
+
+  clippy:
+    runs-on: ubuntu-24.04
+    env:
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
+          rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
+          echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+      - name: musl dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - name: Clippy (zero warnings)
+        run: cargo clippy --locked --all-targets --target x86_64-unknown-linux-musl -- -D warnings
+
+  fuzz-smoke:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_index
+          - fuzz_manifest
+          - fuzz_footer
+          - fuzz_pubkey
+          - fuzz_rotation
+          - fuzz_path
+          - fuzz_zstd
+          - fuzz_elf
+          - fuzz_squash
+          - fuzz_http
+    steps:
+      - uses: actions/checkout@v4
+      - name: Nightly toolchain (libfuzzer)
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+      - name: Fuzz smoke for 2 minutes
+        run: |
+          cd fuzz
+          cargo +nightly fuzz run "${{ matrix.target }}" -- -max_total_time=120 -print_final_stats=1
+
+  repro:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
+          echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+      - name: Pinned C cross-compiler (musl.cc, verified SHA)
+        run: |
+          curl -sSL -o /tmp/musl-cross.tgz https://musl.cc/x86_64-linux-musl-cross.tgz
+          echo "c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea  /tmp/musl-cross.tgz" | sha256sum -c -
+          sudo mkdir -p /opt/musl-cross && sudo tar xzf /tmp/musl-cross.tgz -C /opt/musl-cross --strip-components=1
+          echo "/opt/musl-cross/bin" >> "$GITHUB_PATH"
+      - name: Double-build and compare
+        run: |
+          ./scripts/repro-build.sh | tee /tmp/repro.log
+          grep -q IDENTICAL /tmp/repro.log
+      - name: Compare with tracked reference hashes
+        run: |
+          grep -E '^[0-9a-f]{64}  ' /tmp/repro.log | awk '{print $1}' | sort -u > /tmp/actual.txt
+          grep -E '^[0-9a-f]{64}  ' REPRODUCIBLE-HASHES.md | awk '{print $1}' | sort -u > /tmp/expected.txt
+          diff /tmp/expected.txt /tmp/actual.txt
+
+  licenses:
+    # SPDX headers on every source file; dependency licenses, bans and sources.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: SPDX headers
+        run: ./scripts/check-spdx.sh
+      - name: No large tracked files outside the allow-list
+        run: ./scripts/check-large-files.sh
+      - name: panpak-core and panpak-stub use only zstd 0.14
+        run: ./scripts/check-zstd-copies.sh
+      - name: cargo-deny (licenses, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans sources
+      - name: cargo-deny (advisories)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories
+
+  distro:
+    needs: build-test
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - debian:12
+          - ubuntu:24.04
+          - fedora:43
+          - alpine:3.22
+    steps:
+      - name: Static stub from the build-test job
+        uses: actions/download-artifact@v4
+        with:
+          name: panpak-stub-musl
+          path: /tmp/panpak-stub-dir
+      - name: Static stub in container ${{ matrix.image }}
+        run: |
+          chmod +x /tmp/panpak-stub-dir/panpak-stub
+          docker run --rm -v /tmp/panpak-stub-dir/panpak-stub:/panpak-stub:ro "${{ matrix.image }}" /panpak-stub --abi-version
+
+  dco:
+    # Developer Certificate of Origin: every commit of a PR must be signed off.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Signed-off-by on every commit
+        run: ./scripts/check-dco.sh "origin/${{ github.base_ref }}" "${{ github.event.pull_request.head.sha }}"
+
+  secrets:
+    # Scans the whole git history for leaked secrets.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (official release, pinned version and checksum)
+        # The gitleaks program itself, not gitleaks-action (which needs a paid
+        # licence for organisation repositories). Config: .gitleaks.toml.
+        run: |
+          GITLEAKS_VERSION=8.30.1
+          GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          curl -sSfL -o gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks" && tar xzf gitleaks.tgz -C "$RUNNER_TEMP/gitleaks" gitleaks
+          rm gitleaks.tgz
+          "$RUNNER_TEMP/gitleaks/gitleaks" git --log-opts="--all" --redact --no-banner .
+
+  release-guard:
+    # Only on release tags: the security contact must be set, not a placeholder.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Security contact defined
+        run: |
+          if grep -qF '[SECURITY-CONTACT-TO-BE-SET]' SECURITY.md || ! grep -qF 'security@panpak.org' SECURITY.md; then
+            echo "SECURITY.md must name security@panpak.org and contain no placeholder before a release"
+            exit 1
+          fi

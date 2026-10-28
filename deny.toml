@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# cargo-deny configuration (development/CI tool, not a project dependency).
+# Run: cargo deny check
+
+[graph]
+# Release targets only: licenses of what is actually redistributed.
+# No third-party binary is redistributed in the repository itself (see
+# scripts/check-large-files.sh).
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+
+[advisories]
+version = 2
+yanked = "deny"
+# panpak-core, panpak-stub and panpak use zstd 0.14 (enforced by
+# scripts/check-zstd-copies.sh for core and stub). The zstd 0.13 / zstd-safe 7
+# copy that remains is pulled in only by backhand (panpak CLI, `convert`).
+ignore = [
+    { id = "RUSTSEC-2026-0391", reason = "present only through backhand 0.25.5, which pins zstd 0.13 / zstd-safe 7; backhand uses only zstd::bulk, none of the affected APIs; revisit when backhand is updated" },
+    { id = "RUSTSEC-2026-0398", reason = "present only through backhand 0.25.5, which pins zstd 0.13 / zstd-safe 7; backhand uses only zstd::bulk, none of the affected APIs; revisit when backhand is updated" },
+    { id = "RUSTSEC-2026-0403", reason = "present only through backhand 0.25.5, which pins zstd 0.13 / zstd-safe 7; backhand uses only zstd::bulk, none of the affected APIs; revisit when backhand is updated" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+# Documented exceptions. Each is a single crate; none is modified by panpak.
+exceptions = [
+    # MPL-2.0 (file-level copyleft): option-ext, used UNMODIFIED. Pulled in by
+    # `dirs` (dirs -> dirs-sys -> option-ext), so it is linked into BOTH panpak
+    # and panpak-stub. The license text and the source link are in
+    # THIRD-PARTY-LICENSES, which is also embedded in every .panpak package.
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+    # CDLA-Permissive-2.0: webpki-roots (Mozilla CA bundle as data), pulled in by
+    # ureq/rustls for HTTPS updates. Linked into the panpak CLI only, not the stub.
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+    # BSL-1.0 (permissive, Boost): xxhash-rust, pulled in by backhand
+    # (AppImage squashfs reading) for `panpak convert`. panpak CLI only, not the stub.
+    { allow = ["BSL-1.0"], crate = "xxhash-rust" },
+]
+
+[bans]
+multiple-versions = "warn"
+# The workspace crates depend on each other by path only (not published).
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

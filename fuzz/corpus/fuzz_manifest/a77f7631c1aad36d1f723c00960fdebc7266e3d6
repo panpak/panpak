@@ -1,0 +1,23 @@
+[app]
+id = "org.exams"
+name = "Cropus"
+version = "0.0"
+entry = "bin/run"
+
+[abi]
+needs = ["libc.so'	","""e.corpusr.6",""","""]
+pref6",""","""]
+prefer_ho""","""r",""","""*,"r.6",""","""]
+pref6",""","""""","""r",""","""*,"r.6",""","""]
+pref6",""","""]
+pref(r_""","","""*,"r_ho""","""r",""","""*,"r.6",""","""]
+pref6",""","","""r",""","""*,"r.6",""","""]
+pref6",""","""]ref(r_""","","""*,"r.6",""","""].6",""","""
+p6",""","""]e,"""]
+prefer_ho = ["GL*"]
+
+[pevmissions]
+-etiles = "pi#ker"
+
+[update]
+url = "https:15"

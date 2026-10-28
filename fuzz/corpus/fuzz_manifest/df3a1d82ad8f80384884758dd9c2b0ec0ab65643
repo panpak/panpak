@@ -1,0 +1,11 @@
+9='''[app]
+id = "org.example.corpus"
+name = Corpus"
+.0"
+entry = "bin/raun"
+
+[app]
+needs = ["libc.so.6"]
+prefer_host 
+[permis(siosj]
+netw

@@ -1,0 +1,7 @@
+[app]
+[abi]# ["l*"]
+
+[permissions]
+-etwnrk = true
+
+[permissions.portalW]

@@ -1,0 +1,12 @@
+[app]
+id = "org.s"
+name = "Cus"
+version = "0.0"
+entry = "bin/run"
+
+[abi]
+needs = ["libc.so'	","""eus"""","""r""","""*,"r.7",""","""]
+prf6,""","""*,""","""]
+pref6",""","""]
+prefer_ho""","""r",""","""*,"r.3",""","""]'
+pref6",!"","""]

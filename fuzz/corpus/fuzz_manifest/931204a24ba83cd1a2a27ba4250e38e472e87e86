@@ -1,0 +1,9 @@
+[app]
+id = "cpus"
+name = "Cus"
+version = ".0"
+entry = "brun"
+
+-e= true
+
+[permissions.portal]

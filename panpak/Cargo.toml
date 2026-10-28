@@ -1,0 +1,24 @@
+[package]
+name = "panpak"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+panpak-core = { path = "../panpak-core" }
+fastcdc = "5"
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+blake3 = "1"
+zstd = "0.14"
+ed25519-dalek = "2"
+dirs = "6"
+ureq = { version = "3.4.2", features = ["rustls"] }
+http = "1.5.0"
+libc = "0.2"
+landlock = "0.4"
+backhand = "0.25"
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1"

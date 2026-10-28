@@ -1,0 +1,283 @@
+{
+ "startup": {
+  "ail22-panpak": {
+   "hot": {
+    "ok": true,
+    "n": 10,
+    "median": 0.365,
+    "min": 0.315,
+    "max": 0.367,
+    "stdev": 0.025
+   },
+   "cold": {
+    "ok": true,
+    "n": 10,
+    "median": 0.465,
+    "min": 0.365,
+    "max": 0.465,
+    "stdev": 0.034
+   }
+  },
+  "ail22-appimage": {
+   "hot": {
+    "ok": true,
+    "n": 10,
+    "median": 0.032,
+    "min": 0.032,
+    "max": 0.032,
+    "stdev": 0.0
+   },
+   "cold": {
+    "ok": true,
+    "n": 10,
+    "median": 0.115,
+    "min": 0.115,
+    "max": 0.117,
+    "stdev": 0.001
+   }
+  },
+  "ail30-panpak": {
+   "hot": {
+    "ok": true,
+    "n": 10,
+    "median": 0.265,
+    "min": 0.264,
+    "max": 0.266,
+    "stdev": 0.001
+   },
+   "cold": {
+    "ok": true,
+    "n": 10,
+    "median": 0.365,
+    "min": 0.315,
+    "max": 0.415,
+    "stdev": 0.022
+   }
+  },
+  "ail30-appimage": {
+   "hot": {
+    "ok": true,
+    "n": 10,
+    "median": 0.032,
+    "min": 0.032,
+    "max": 0.032,
+    "stdev": 0.0
+   },
+   "cold": {
+    "ok": true,
+    "n": 10,
+    "median": 0.115,
+    "min": 0.114,
+    "max": 0.116,
+    "stdev": 0.0
+   }
+  },
+  "qon8-panpak": {
+   "hot": {
+    "ok": true,
+    "n": 10,
+    "median": 0.515,
+    "min": 0.465,
+    "max": 0.517,
+    "stdev": 0.025
+   },
+   "cold": {
+    "ok": true,
+    "n": 10,
+    "median": 0.565,
+    "min": 0.515,
+    "max": 0.616,
+    "stdev": 0.03
+   }
+  },
+  "qon8-appimage": {
+   "hot": {
+    "ok": true,
+    "n": 10,
+    "median": 0.264,
+    "min": 0.264,
+    "max": 0.267,
+    "stdev": 0.001
+   },
+   "cold": {
+    "ok": true,
+    "n": 10,
+    "median": 0.366,
+    "min": 0.365,
+    "max": 0.368,
+    "stdev": 0.001
+   }
+  },
+  "qon9-panpak": {
+   "hot": {
+    "ok": true,
+    "n": 10,
+    "median": 0.49,
+    "min": 0.465,
+    "max": 0.516,
+    "stdev": 0.025
+   },
+   "cold": {
+    "ok": true,
+    "n": 10,
+    "median": 0.565,
+    "min": 0.565,
+    "max": 0.617,
+    "stdev": 0.02
+   }
+  },
+  "qon9-appimage": {
+   "hot": {
+    "ok": true,
+    "n": 10,
+    "median": 0.264,
+    "min": 0.264,
+    "max": 0.315,
+    "stdev": 0.02
+   },
+   "cold": {
+    "ok": true,
+    "n": 10,
+    "median": 0.366,
+    "min": 0.365,
+    "max": 0.367,
+    "stdev": 0.0
+   }
+  },
+  "sn-appimage-marker": {
+   "hot": {
+    "name": "sn-hot",
+    "ok": true,
+    "n": 10,
+    "median": 3.9864008465374354,
+    "min": 3.7294537519919686,
+    "max": 4.0668763860012405,
+    "stdev": 0.12806629340790487
+   },
+   "cold": {
+    "name": "sn-cold",
+    "ok": true,
+    "n": 10,
+    "median": 3.8208741409762297,
+    "min": 3.7163472800166346,
+    "max": 3.973285478015896,
+    "stdev": 0.07018309458596812
+   }
+  }
+ },
+ "disk": {
+  "appimages_total": 497948708,
+  "panpak_store_total": 976510364,
+  "panpak_packages": 534883406,
+  "panpak_trees": 439337696,
+  "panpak_runtimes": 2262784,
+  "pair_ail": {
+   "appimage": 78929682,
+   "panpak_pkgs": 88400778,
+   "panpak_trees_joint": 216142446,
+   "shared": 6313493
+  },
+  "pair_qon": {
+   "appimage": 124624942,
+   "panpak_pkgs": 135173204,
+   "panpak_trees_joint": 226796825,
+   "shared": 115730717
+  },
+  "pair_sn": {
+   "appimage": 294394388,
+   "panpak_pkgs": 311313673,
+   "panpak_trees_joint": 0,
+   "shared": 0
+  }
+ },
+ "update": {
+  "ail22_30": {
+   "new_chunks": "1293/1361",
+   "analytic_bytes": 41739734,
+   "full_bytes": 43143504,
+   "pct": 96.7
+  },
+  "qon8_9": {
+   "new_chunks": "151/3195",
+   "analytic_bytes": 7543266,
+   "full_bytes": 67613182,
+   "pct": 11.2
+  },
+  "sn0_1": {
+   "new_chunks": "78/5414",
+   "analytic_bytes": 3967373,
+   "full_bytes": 155655580,
+   "pct": 2.5
+  },
+  "implemented_behavior": "full-prefix re-download (~100% measured on small-app HTTP update: 2263402/2263365 bytes)",
+  "root_cause": "cmd_update fetches [0..index_off) then overwrites reused chunks; chunk-level saving not realized"
+ },
+ "install": {
+  "ail22": 0.04,
+  "ail30": 0.04,
+  "qon8": 0.04,
+  "qon9": 0.06,
+  "ail30_panpak_10x": {
+   "median": 0.07525176100898534,
+   "min": 0.02740796300349757,
+   "max": 0.08521824900526553
+  },
+  "ail30_appimage_10x": {
+   "median": 0.07067598699359223,
+   "min": 0.030184567032847553,
+   "max": 0.08852871000999585
+  },
+  "qon9_panpak_10x": {
+   "median": 0.11381747602717951,
+   "min": 0.04492783301975578,
+   "max": 0.1353060569963418
+  },
+  "qon9_appimage_10x": {
+   "median": 0.12089855695376173,
+   "min": 0.028989986050873995,
+   "max": 0.12862281902926043
+  },
+  "sn0_panpak_10x": {
+   "median": 0.27900082198902965,
+   "min": 0.11392328998772427,
+   "max": 0.285178687016014
+  },
+  "sn1_panpak_10x": {
+   "median": 0.2657925710082054,
+   "min": 0.13511806400492787,
+   "max": 0.29123551602242514
+  },
+  "sn1_appimage_10x": {
+   "median": 0.26629090099595487,
+   "min": 0.10009414900559932,
+   "max": 0.289287569001317
+  },
+  "ail22_panpak_10x": {
+   "median": 0.08636560698505491,
+   "min": 0.04015862103551626,
+   "max": 0.11940223997225985
+  },
+  "ail22_appimage_10x": {
+   "median": 0.08385664195520803,
+   "min": 0.032973296009004116,
+   "max": 0.09577204898232594
+  },
+  "qon8_panpak_10x": {
+   "median": 0.11522845696890727,
+   "min": 0.07562812801916152,
+   "max": 0.1280035799718462
+  },
+  "qon8_appimage_10x": {
+   "median": 0.11168479098705575,
+   "min": 0.04180340300081298,
+   "max": 0.13040905102388933
+  }
+ },
+ "env": {
+  "kernel": "7.0.0-38-generic",
+  "cpu": "AMD Ryzen 7 7735HS",
+  "fs_home": "ext4",
+  "rustc": "1.99.1",
+  "landlock": "V8"
+ }
+}

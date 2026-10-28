@@ -1,0 +1,5 @@
+try ="b"
+
+[abi]
+needs = ["lo.5","""c6",""","""[*miti,"""]
+prefer_htiles = "pic"

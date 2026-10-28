@@ -1,0 +1,12 @@
+{
+  "method": "Kdenlive GUI on a dedicated Xvfb; ffmpeg clip added and inserted (key v), project saved",
+  "project": "home/.local/share/org.example.kdenlive/saved-clip.kdenlive",
+  "chains": 2,
+  "timeline_refs": 3,
+  "chain_out": [
+    "00:00:04.960",
+    "00:00:04.960"
+  ],
+  "bytes": 20654,
+  "sha256": "fc3d91aeafe4e067f51864e85883eb8bb1ace6e3f2bed066034617cf22811525"
+}

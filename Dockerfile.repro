@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Clean container for the reproducibility check (OB4).
+# Toolchain downloaded from scratch and VERIFIED:
+# - rustup stable + toolchain 1.99.1 (pin: rust-toolchain.toml)
+# - musl.cc x86_64-linux-musl-cross, SHA-256 pinned below (verified here).
+# Base image pinned by digest (not by floating tag).
+# Usage: docker build -f Dockerfile.repro -t panpak-repro . && docker run --rm panpak-repro
+FROM ubuntu@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates gcc libc6-dev musl-tools \
+ && rm -rf /var/lib/apt/lists
+# Pinned Rust toolchain (same as rust-toolchain.toml).
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+  | sh -s -- -y --profile minimal --default-toolchain 1.99.1
+ENV PATH="/root/.cargo/bin:/usr/local/bin:${PATH}"
+# C cross-compiler: musl.cc, verified checksum (same value
+# recorded in scripts/repro-build.sh).
+ARG MUSL_SHA=c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea
+RUN set -e; \
+  curl -sSL -o /tmp/musl-cross.tgz https://musl.cc/x86_64-linux-musl-cross.tgz; \
+  echo "$MUSL_SHA  /tmp/musl-cross.tgz" | sha256sum -c -; \
+  mkdir -p /opt/musl-cross && tar xzf /tmp/musl-cross.tgz -C /opt/musl-cross --strip-components=1; \
+  ln -sf /opt/musl-cross/bin/x86_64-linux-musl-gcc /usr/local/bin/x86_64-linux-musl-gcc; \
+  rm /tmp/musl-cross.tgz; \
+  x86_64-linux-musl-gcc --version
+ENV CC_x86_64_unknown_linux_musl=x86_64-linux-musl-gcc
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc
+WORKDIR /panpak
+COPY . .
+CMD ["./scripts/repro-build.sh"]

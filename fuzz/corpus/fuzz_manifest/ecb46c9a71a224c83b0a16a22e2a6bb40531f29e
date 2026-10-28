@@ -1,0 +1,11 @@
+ ["G*"]
+[permissions]
+network = true
+
+[permissions.portal]
+_= ["libGL"]
+
+[peple.resfiseo]
+
+
+[peple.crlis]

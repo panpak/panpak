@@ -1,0 +1,3 @@
+# Tracked files allowed to exceed 1 MiB (see check-large-files.sh).
+# The list is empty on purpose: no third-party binary is redistributed in
+# this repository. Add a path here only with a reason in the commit message.

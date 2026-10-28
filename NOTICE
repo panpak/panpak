@@ -1,0 +1,11 @@
+panpak
+Copyright 2026 The panpak Authors
+
+This product is licensed under either of the Apache License, Version 2.0
+(LICENSE-APACHE) or the MIT license (LICENSE-MIT), at your option.
+
+The panpak runtime stub is redistributed inside .panpak packages built by
+third parties. It includes third-party components under their own licenses,
+listed in THIRD-PARTY-LICENSES. A .panpak package carries this notice and
+those license texts under .panpak/licenses/; show them with
+`<package> --panpak-licenses` or `panpak licenses <package>`.

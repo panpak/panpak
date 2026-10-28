@@ -1,0 +1,3 @@
+k = true
+[permissions.portal]
+camera = "p0"

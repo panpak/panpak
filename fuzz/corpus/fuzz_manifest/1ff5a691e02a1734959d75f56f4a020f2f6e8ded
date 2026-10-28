@@ -1,0 +1,14 @@
+[app]
+id = "org,epun"
+
+[abi]
+ne= [""]
+
+[pm]
+netwo= true
+
+[p]
+files = "picer"
+
+[update]
+u= "https:a931c600"

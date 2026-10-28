@@ -1,0 +1,6 @@
+try = "bin/n"
+
+prA =["li*"]
+
+[permissions]
+network= "hy = xa"

@@ -1,0 +1,18 @@
+[app]
+id= ["libGL*"]
+
+[iions]
+network = true
+
+[permissions.portal]
+netwok = true
+
+[pl]
+network = true
+
+[per]
+
+[pateis]
+network = true
+
+[oa0x7

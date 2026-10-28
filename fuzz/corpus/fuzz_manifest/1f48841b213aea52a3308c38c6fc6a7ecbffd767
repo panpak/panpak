@@ -1,0 +1,6 @@
+entr= [""]
+
+[permissions]
+-k = true
+
+[permissions.ose]

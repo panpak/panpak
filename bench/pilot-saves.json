@@ -1,0 +1,22 @@
+{
+  "method": "GUI saves on dedicated Xvfb; validated afterwards",
+  "files": {
+    "krita": {
+      "path": "home/.local/share/org.example.krita/saved-cycle.kra",
+      "bytes": 191030,
+      "sha256": "a5ffe3a16cb8073ea17a9bd40b91f934fe25500b5601cabc94324ff8deb5d43e"
+    },
+    "kdenlive": {
+      "path": "home/.local/share/org.example.kdenlive/saved-cycle.kdenlive",
+      "bytes": 12564,
+      "sha256": "4da279295e3df153ad6ab3866e010c2c56de3047884e7fc278f73f481cb317e6"
+    },
+    "rawtherapee": {
+      "path": "home/.local/share/org.example.rawtherapee/saved-cycle.jpg",
+      "bytes": 10983,
+      "sha256": "9003493e64aecb58b33baa8e88c9e52fbabfc2b218cdc4fede87cccf6b9d38f1"
+    }
+  },
+  "rawtherapee_decode": "JPEG 640x480",
+  "rawtherapee_exposure_ev": 1.91
+}

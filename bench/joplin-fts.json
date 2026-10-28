@@ -1,0 +1,86 @@
+{
+  "direct-real": {
+    "alive": true,
+    "db": "target/pilot-current/home/.config/joplin-desktop/database.sqlite",
+    "state": {
+      "notes": 5,
+      "version": [
+        [
+          54,
+          54
+        ]
+      ],
+      "fts": [
+        "items_fts",
+        "items_fts_docsize",
+        "items_fts_segdir",
+        "items_fts_segments",
+        "items_fts_stat",
+        "notes_fts",
+        "notes_fts_docsize",
+        "notes_fts_segdir",
+        "notes_fts_segments",
+        "notes_fts_stat"
+      ]
+    },
+    "warnings": [
+      "2026-10-27 01:03:17: Migration failed with fallback and will not be repeated - saving version number"
+    ]
+  },
+  "direct-profile": {
+    "alive": true,
+    "db": "target/pilot-current/home/.local/share/org.example.joplin/probe-direct-profile/database.sqlite",
+    "state": {
+      "notes": 5,
+      "version": [
+        [
+          54,
+          54
+        ]
+      ],
+      "fts": [
+        "items_fts",
+        "items_fts_docsize",
+        "items_fts_segdir",
+        "items_fts_segments",
+        "items_fts_stat",
+        "notes_fts",
+        "notes_fts_docsize",
+        "notes_fts_segdir",
+        "notes_fts_segments",
+        "notes_fts_stat"
+      ]
+    },
+    "warnings": [
+      "2026-10-27 01:04:10: Migration failed with fallback and will not be repeated - saving version number"
+    ]
+  },
+  "sandbox-profile": {
+    "alive": true,
+    "db": "target/pilot-current/home/.local/share/org.example.joplin/probe-sandbox-profile/database.sqlite",
+    "state": {
+      "notes": 5,
+      "version": [
+        [
+          54,
+          54
+        ]
+      ],
+      "fts": [
+        "items_fts",
+        "items_fts_docsize",
+        "items_fts_segdir",
+        "items_fts_segments",
+        "items_fts_stat",
+        "notes_fts",
+        "notes_fts_docsize",
+        "notes_fts_segdir",
+        "notes_fts_segments",
+        "notes_fts_stat"
+      ]
+    },
+    "warnings": [
+      "2026-10-27 01:05:02: Migration failed with fallback and will not be repeated - saving version number"
+    ]
+  }
+}

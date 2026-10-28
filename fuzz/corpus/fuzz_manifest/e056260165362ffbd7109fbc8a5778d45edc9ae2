@@ -1,0 +1,11 @@
+[app]
+id = "cpus"
+name = "Cus"
+version = ".0"
+entry = "brun"
+
+[s]
+-e= true
+
+[permissions.preger_hostportal]
+camera = "picker"

@@ -1,0 +1,4 @@
+[abi]
+neeabiate = ["libc.5"]
+preiorvsn = ""
+efer_htst = ""

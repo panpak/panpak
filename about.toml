@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# cargo-about configuration: generates THIRD-PARTY-LICENSES.
+# Regenerate with: cargo about generate about.hbs -o THIRD-PARTY-LICENSES
+# (a development tool, not a dependency of the project).
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    # Documented exceptions, see deny.toml:
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+    # Alternatives offered by dual-licensed crates (we pick the permissive one).
+    "0BSD",
+    "Unlicense",
+    "CC0-1.0",
+    "MIT-0",
+    "BSD-1-Clause",
+]
+# Release targets only: the licenses that are actually redistributed.
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+ignore-dev-dependencies = true
+ignore-build-dependencies = false

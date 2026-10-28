@@ -1,0 +1,39 @@
+{
+  "method": "50 starts per config, dedicated Xvfb, fresh Mu profile each run, 8s timeout; same Qt/X11 env for all configs",
+  "configs": {
+    "sandbox": "launcher via panpak-stub (Landlock on)",
+    "direct": "converted tree AppRun directly (no Landlock)",
+    "original": "upstream AppImage via userspace libfuse2"
+  },
+  "results": {
+    "sandbox": {
+      "n": 50,
+      "returncodes": {
+        "-11": 50
+      },
+      "elapsed_median": 3.6,
+      "elapsed_min": 3.4,
+      "elapsed_max": 4.0
+    },
+    "direct": {
+      "n": 50,
+      "returncodes": {
+        "-11": 50
+      },
+      "elapsed_median": 3.4,
+      "elapsed_min": 2.6,
+      "elapsed_max": 4.0
+    },
+    "original": {
+      "n": 50,
+      "returncodes": {
+        "-11": 50
+      },
+      "elapsed_median": 1.8,
+      "elapsed_min": 1.2,
+      "elapsed_max": 2.2
+    }
+  },
+  "backtrace": "SIGSEGV in libX11 (XOpenDisplay -> XCreateGC) called from bundled PyQt5 QXcb integration, identical frames sandbox vs original; faulthandler: crash right after loading bundled libqxcb.so in mu/app.py run (QApplication creation)",
+  "cause": "app/environment: Mu 1.2.0 bundled Qt5 incompatible with host X11 stack; not Landlock (direct crashes too), not farm mix (original uses system libX11 and crashes identically)"
+}
