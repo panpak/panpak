@@ -1,31 +1,32 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Clean container for the reproducibility check (OB4).
-# Toolchain downloaded from scratch and VERIFIED:
-# - rustup stable + toolchain 1.99.1 (pin: rust-toolchain.toml)
-# - musl.cc x86_64-linux-musl-cross, SHA-256 pinned below (verified here).
-# Base image pinned by digest (not by floating tag).
+# Clean container for the reproducibility check.
+# - Base image pinned by digest (not by a floating tag).
+# - Rust: rustup-init from static.rust-lang.org, checked against the published
+#   SHA-256, then the toolchain pinned in rust-toolchain.toml (no `curl | sh`).
+# - C compiler and linker: Zig, from the ziglang wheel with the hash pinned in
+#   tools/requirements-zig.txt (pip --require-hashes).
+# The apt packages are not version-pinned; they only provide curl, the host
+# compiler for build scripts and Python.
 # Usage: docker build -f Dockerfile.repro -t panpak-repro . && docker run --rm panpak-repro
 FROM ubuntu@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates gcc libc6-dev musl-tools \
+    curl ca-certificates gcc libc6-dev python3 python3-venv \
  && rm -rf /var/lib/apt/lists
-# Pinned Rust toolchain (same as rust-toolchain.toml).
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-  | sh -s -- -y --profile minimal --default-toolchain 1.99.1
-ENV PATH="/root/.cargo/bin:/usr/local/bin:${PATH}"
-# C cross-compiler: musl.cc, verified checksum (same value
-# recorded in scripts/repro-build.sh).
-ARG MUSL_SHA=c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea
+ARG RUSTUP_VERSION=1.29.1
+ARG RUSTUP_INIT_SHA=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
 RUN set -e; \
-  curl -sSL -o /tmp/musl-cross.tgz https://musl.cc/x86_64-linux-musl-cross.tgz; \
-  echo "$MUSL_SHA  /tmp/musl-cross.tgz" | sha256sum -c -; \
-  mkdir -p /opt/musl-cross && tar xzf /tmp/musl-cross.tgz -C /opt/musl-cross --strip-components=1; \
-  ln -sf /opt/musl-cross/bin/x86_64-linux-musl-gcc /usr/local/bin/x86_64-linux-musl-gcc; \
-  rm /tmp/musl-cross.tgz; \
-  x86_64-linux-musl-gcc --version
-ENV CC_x86_64_unknown_linux_musl=x86_64-linux-musl-gcc
-ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc
+  curl --proto '=https' --tlsv1.2 -sSf -o /tmp/rustup-init \
+    "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init"; \
+  echo "${RUSTUP_INIT_SHA}  /tmp/rustup-init" | sha256sum -c -; \
+  chmod +x /tmp/rustup-init; \
+  /tmp/rustup-init -y --profile minimal --default-toolchain 1.99.1 --target x86_64-unknown-linux-musl; \
+  rm /tmp/rustup-init
+COPY tools/requirements-zig.txt /tmp/requirements-zig.txt
+RUN python3 -m venv /opt/zig \
+ && /opt/zig/bin/pip install --no-cache-dir --require-hashes -r /tmp/requirements-zig.txt \
+ && rm /tmp/requirements-zig.txt
+ENV PATH="/opt/zig/bin:/root/.cargo/bin:${PATH}"
 WORKDIR /panpak
 COPY . .
 CMD ["./scripts/repro-build.sh"]

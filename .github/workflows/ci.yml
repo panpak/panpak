@@ -15,9 +15,6 @@ env:
 jobs:
   build-test:
     runs-on: ubuntu-24.04
-    env:
-      CC_x86_64_unknown_linux_musl: musl-gcc
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
     steps:
       - uses: actions/checkout@v4
       - name: Pinned Rust toolchain
@@ -25,8 +22,15 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
-      - name: musl dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools zstd python3 python3-cryptography
+      - name: Zig (pinned PyPI wheel, hash-checked)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --require-hashes -r tools/requirements-zig.txt
+          # Only the directory with the zig binary goes on PATH: the venv's python3
+          # would hide the system Python that the conformance scripts need.
+          "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
+      - name: Test dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd python3 python3-cryptography
       - name: Test (musl)
         run: cargo test --locked --target x86_64-unknown-linux-musl
       - name: Release build (conformance and artifacts)
@@ -43,9 +47,6 @@ jobs:
 
   clippy:
     runs-on: ubuntu-24.04
-    env:
-      CC_x86_64_unknown_linux_musl: musl-gcc
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
     steps:
       - uses: actions/checkout@v4
       - name: Pinned Rust toolchain
@@ -53,8 +54,13 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
-      - name: musl dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+      - name: Zig (pinned PyPI wheel, hash-checked)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --require-hashes -r tools/requirements-zig.txt
+          # Only the directory with the zig binary goes on PATH: the venv's python3
+          # would hide the system Python that the conformance scripts need.
+          "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Clippy (zero warnings)
         run: cargo clippy --locked --all-targets --target x86_64-unknown-linux-musl -- -D warnings
 
@@ -94,12 +100,20 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
-      - name: Pinned C cross-compiler (musl.cc, verified SHA)
+      - name: Cache the cargo registry (never target/)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cache/pip
+          key: repro-${{ hashFiles('Cargo.lock', 'tools/requirements-zig.txt') }}
+      - name: Zig (pinned PyPI wheel, hash-checked)
         run: |
-          curl -sSL -o /tmp/musl-cross.tgz https://musl.cc/x86_64-linux-musl-cross.tgz
-          echo "c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea  /tmp/musl-cross.tgz" | sha256sum -c -
-          sudo mkdir -p /opt/musl-cross && sudo tar xzf /tmp/musl-cross.tgz -C /opt/musl-cross --strip-components=1
-          echo "/opt/musl-cross/bin" >> "$GITHUB_PATH"
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --require-hashes -r tools/requirements-zig.txt
+          # Only the directory with the zig binary goes on PATH: the venv's python3
+          # would hide the system Python that the conformance scripts need.
+          "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Double-build and compare
         run: |
           ./scripts/repro-build.sh | tee /tmp/repro.log
