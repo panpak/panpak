@@ -10,9 +10,12 @@
 #   - pull_request: everything. The heavy jobs are skipped when the pull request
 #     touches only documentation (*.md and docs/**); a change to
 #     REPRODUCIBLE-HASHES.md always starts repro.
-#   - workflow_dispatch and the weekly schedule: everything, with a longer fuzz
+#   - workflow_dispatch and the monthly schedule: everything, with a longer fuzz
 #     run on the schedule. This catches new advisories, new nightly toolchains
 #     and drift in the base images even when nobody opens a pull request.
+#     The schedule is monthly, not weekly, only while the repository is private
+#     (every minute is billed): make it weekly again when the repository goes
+#     public, where Actions minutes are free.
 
 name: ci
 
@@ -22,11 +25,13 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    # Mondays, 03:17 UTC.
-    - cron: "17 3 * * 1"
+    # First Monday of the month, 03:17 UTC. Cron cannot say that: with both a
+    # day of the month and a weekday, it fires when either matches. So the
+    # trigger fires on days 1 to 7 and the gate job below lets only Monday through.
+    - cron: "17 3 1-7 * *"
 
 # One run per ref: a new push cancels the previous run of the same branch or pull
-# request. The weekly and manual runs have their own group, so a push to main
+# request. The scheduled and manual runs have their own group, so a push to main
 # does not cancel them.
 concurrency:
   group: ci-${{ (github.event_name == 'push' || github.event_name == 'pull_request') && github.ref || format('{0}-{1}', github.event_name, github.ref) }}
@@ -45,10 +50,27 @@ env:
   FUZZ_NIGHTLY: "nightly-2026-10-20"
 
 jobs:
+  gate:
+    # Scheduled runs only: continue on the first Monday of the month, stop on the
+    # other days 1 to 7. Every other job lists this one in needs and starts unless
+    # the answer is exactly "false" (the job is skipped on other events, which
+    # leaves the answer empty).
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.monday.outputs.run }}
+    steps:
+      - name: First Monday of the month
+        id: monday
+        run: |
+          if [ "$(date -u +%u)" = 1 ]; then run=true; else run=false; fi
+          echo "run=$run" | tee -a "$GITHUB_OUTPUT"
+
   changes:
     # Decides whether the heavy jobs are needed for a pull request. Plain git,
     # no third-party action. Not needed on push: the heavy jobs never run there.
-    if: github.event_name != 'push'
+    needs: gate
+    if: ${{ !cancelled() && github.event_name != 'push' && needs.gate.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
     outputs:
       heavy: ${{ steps.classify.outputs.heavy }}
@@ -71,6 +93,8 @@ jobs:
           fi
 
   build-test:
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -113,6 +137,8 @@ jobs:
           path: target/x86_64-unknown-linux-musl/release/panpak-stub
 
   clippy:
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -146,7 +172,7 @@ jobs:
     if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     env:
-      # 30 s per target on pull requests and manual runs, 5 min in the weekly run.
+      # 30 s per target on pull requests and manual runs, 5 min in the scheduled run.
       FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '300' || '30' }}
     strategy:
       fail-fast: false
@@ -222,6 +248,8 @@ jobs:
 
   licenses:
     # SPDX headers on every source file; dependency licenses, bans and sources.
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -298,6 +326,8 @@ jobs:
 
   secrets:
     # Scans the whole git history for leaked secrets.
+    needs: gate
+    if: ${{ !cancelled() && needs.gate.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
