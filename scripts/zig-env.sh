@@ -31,6 +31,10 @@ zig_run() {
 }
 
 zig_check() {
+  if [ -z "$PANPAK_ZIG_PINNED" ]; then
+    echo "error: no ziglang version found in tools/requirements-zig.txt." >&2
+    return 1
+  fi
   have="$(zig_run version 2>/dev/null || true)"
   if [ "$have" != "$PANPAK_ZIG_PINNED" ]; then
     echo "error: Zig ${PANPAK_ZIG_PINNED} is required (tools/requirements-zig.txt), found '${have:-none}'." >&2
