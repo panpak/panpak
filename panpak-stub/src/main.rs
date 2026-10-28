@@ -318,9 +318,96 @@ struct OpenGrant {
     rename: bool,
 }
 
+/// Paths the sandbox opens besides the system ones, the tree and /tmp.
+#[derive(Debug, Default)]
+struct Access {
+    /// Read and write: the two app roots and the `rw` home paths.
+    rw: Vec<PathBuf>,
+    /// Read only: the user's theme, font and icon files and the `ro` home paths.
+    ro: Vec<PathBuf>,
+}
+
+/// Refuse a link in `rel` below `home`: every part that exists must be a real
+/// directory (the last one may be a file). Missing parts end the check.
+fn reject_links(home: &Path, rel: &str) -> Result<()> {
+    let mut cur = home.to_path_buf();
+    for part in rel.split('/') {
+        cur.push(part);
+        match fs::symlink_metadata(&cur) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e).with_context(|| format!("check {}", cur.display())),
+            Ok(m) => ensure_code!(
+                !m.file_type().is_symlink(),
+                ErrorCode::E3000,
+                "home path {rel}: {} is a symbolic link, refused (a link could point outside the granted folder)",
+                cur.display()
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Resolve what the sandbox opens: the app roots, the readable user settings and the
+/// `home_paths` of the manifest. An `rw` home path is created if missing and must be a
+/// folder. Runs before Landlock is applied.
+fn access_for(man: &panpak_core::Manifest, dirs: &panpak_core::AppDirs) -> Result<Access> {
+    let mut access = Access::default();
+    access.rw.extend(dirs.roots().iter().map(|p| p.to_path_buf()));
+    access.ro.extend(panpak_core::readonly_user_paths());
+    let paths = man.permissions.as_ref().and_then(|p| p.home_paths.as_deref()).unwrap_or_default();
+    if paths.is_empty() {
+        return Ok(access);
+    }
+    let home = dirs::home_dir().context("no home dir")?;
+    for h in paths {
+        reject_links(&home, &h.path)?;
+        let full = home.join(&h.path);
+        if h.access == "rw" {
+            match fs::symlink_metadata(&full) {
+                Ok(m) => ensure_code!(m.is_dir(), ErrorCode::E3000, "home path {}: rw needs a folder, found a file", h.path),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    fs::create_dir_all(&full).with_context(|| format!("create {}", full.display()))?;
+                }
+                Err(e) => return Err(e).with_context(|| format!("check {}", full.display())),
+            }
+            access.rw.push(full);
+        } else if full.exists() {
+            access.ro.push(full);
+        }
+    }
+    Ok(access)
+}
+
+/// Write `$XDG_CONFIG_HOME/fontconfig/fonts.conf` in the private folder, so fontconfig finds the
+/// user's own configuration and font folders. A file without the marker is the user's and stays.
+fn write_fonts_conf(dirs: &panpak_core::AppDirs) -> Result<()> {
+    let (Some(config), Some(data), Some(home)) = (dirs::config_dir(), dirs::data_dir(), dirs::home_dir()) else {
+        return Ok(());
+    };
+    let want = panpak_core::fonts_conf(&config, &data, &home);
+    let folder = dirs.config.join("fontconfig");
+    let path = folder.join("fonts.conf");
+    match fs::symlink_metadata(&path) {
+        Ok(m) if m.is_file() => {
+            let cur = fs::read_to_string(&path).unwrap_or_default();
+            if !cur.contains(panpak_core::FONTS_CONF_MARKER) || cur == want {
+                return Ok(());
+            }
+        }
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("check {}", path.display())),
+    }
+    fs::create_dir_all(&folder)?;
+    let tmp = folder.join(format!(".fonts.conf.{}", std::process::id()));
+    fs::write(&tmp, want)?;
+    fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
 fn apply_landlock(
     tree: &Path,
-    appdata: &Path,
+    access: &Access,
     man: &panpak_core::Manifest,
     allow_unfiltered: bool,
     open: Option<(&Path, OpenGrant)>,
@@ -328,11 +415,11 @@ fn apply_landlock(
     let abi = panpak_core::detect_abi().context("Landlock unsupported by kernel")?;
     // /dev single nodes first; if the kernel refuses them (build or
     // restrict), explicit fallback to whole /dev. Never a silent denial.
-    let rs = match build_ruleset(tree, appdata, man, abi, true, allow_unfiltered, open) {
+    let rs = match build_ruleset(tree, access, man, abi, true, allow_unfiltered, open) {
         Ok(rs) => rs,
         Err(_) => {
             eprintln!("panpak: cannot build per-node /dev rules on this kernel, using whole /dev");
-            build_ruleset(tree, appdata, man, abi, false, allow_unfiltered, open)?
+            build_ruleset(tree, access, man, abi, false, allow_unfiltered, open)?
         }
     };
     let res = rs.restrict_self();
@@ -340,7 +427,7 @@ fn apply_landlock(
         Ok(st) => st,
         Err(_) => {
             eprintln!("panpak: kernel rejected per-node /dev rules, using whole /dev (DAC still applies)");
-            build_ruleset(tree, appdata, man, abi, false, allow_unfiltered, open)?
+            build_ruleset(tree, access, man, abi, false, allow_unfiltered, open)?
                 .restrict_self()
                 .map_err(|_| anyhow::anyhow!("cannot enforce sandbox on this kernel: cannot run safely, upgrade the kernel (>= 5.13)"))?
         }
@@ -361,7 +448,7 @@ fn apply_landlock(
 /// otherwise error only if the manifest really requires them.
 fn build_ruleset(
     tree: &Path,
-    appdata: &Path,
+    access: &Access,
     man: &panpak_core::Manifest,
     abi: landlock::ABI,
     fine_dev: bool,
@@ -457,12 +544,23 @@ fn build_ruleset(
     // across trees and apps: a write would alter them everywhere).
     let rx = AccessFs::from_read(abi) | AccessFs::Execute;
     rs = rs.add_rule(PathBeneath::new(PathFd::new(tree)?, rx))?;
-    // Writable dirs (appdata, tmp, dev): everything EXCEPT Refer. From ABI V2
+    // Writable dirs (app roots, rw home paths, tmp, dev): everything EXCEPT Refer. From ABI V2
     // from_all includes Refer (link/rename across different dirs): granting it
     // would allow hardlinks to tree files. Without Refer, same-dir
     // renames stay possible (atomic-save) but no external links.
     let rw = AccessFs::from_all(abi) & !AccessFs::Refer;
-    rs = rs.add_rule(PathBeneath::new(PathFd::new(appdata)?, rw))?;
+    for dir in &access.rw {
+        rs = rs.add_rule(PathBeneath::new(PathFd::new(dir)?, rw))?;
+    }
+    // Read only: theme, fonts and icons of the user, ro home paths. A missing or
+    // unreadable entry is skipped. Files get file rights only (the kernel refuses
+    // directory rights on a file); nothing here can be executed.
+    for path in &access.ro {
+        if let Ok(fd) = PathFd::new(path) {
+            let rights = if path.is_dir() { AccessFs::ReadFile | AccessFs::ReadDir } else { AccessFs::ReadFile.into() };
+            rs = rs.add_rule(PathBeneath::new(fd, rights))?;
+        }
+    }
     // Shared /tmp (RW): nearly all apps require it; denying it by
     // default would break even trivial scripts. Future: [permissions]tmp.
     if let Ok(fd) = PathFd::new("/tmp") {
@@ -531,17 +629,15 @@ fn build_ruleset(
 
 /// Landlock from the manifest permissions (spec §3.1, policy in PANPAK-FORMAT.md §9):
 /// - app tree: read + execute, never write;
-/// - ~/.local/share/<id> and /tmp: read+write (app data and temp);
+/// - the private app folders (`panpak_core::AppDirs`), the `rw` home paths and /tmp: read+write;
+/// - theme, font and icon files of the user and the `ro` home paths: read only;
 /// - /usr /lib /etc /proc /sys /run: read-only (host runtime);
 /// - /dev: only null/zero/full/urandom/random/tty nodes + dri/shm dirs
 ///   (explicit fallback to whole /dev if the kernel refuses per-file rules);
 /// - network: denied by default (V4+), allowlist from the manifest;
 ///   on kernels without V4, explicit --network-unfiltered is required (warning at every start).
-fn sandbox(tree: &Path, man: &panpak_core::Manifest, allow_unfiltered: bool, open: Option<(&Path, OpenGrant)>) -> Result<()> {
-    // App data from the manifest: ~/.local/share/<id> (RW, created if missing).
-    let appdata = dirs::data_dir().context("no data dir")?.join(&man.app.id);
-    fs::create_dir_all(&appdata)?;
-    let st = apply_landlock(tree, &appdata, man, allow_unfiltered, open)?;
+fn sandbox(tree: &Path, man: &panpak_core::Manifest, access: &Access, allow_unfiltered: bool, open: Option<(&Path, OpenGrant)>) -> Result<()> {
+    let st = apply_landlock(tree, access, man, allow_unfiltered, open)?;
     // No silent fallback: if not applied, explicit consent is required.
     ensure_code!(
         st.ruleset != landlock::RulesetStatus::NotEnforced,
@@ -561,17 +657,85 @@ fn sandbox(tree: &Path, man: &panpak_core::Manifest, allow_unfiltered: bool, ope
     Ok(())
 }
 
-/// Private directory for SQLite temp files (`<appdata>/tmp`).
-/// SQLite looks in `$SQLITE_TMPDIR`, then `/var/tmp`, `/usr/tmp`,
-/// `/tmp`: the first two are outside the sandbox's writable areas
-/// (observed: Joplin's FTS indexes failed with CANTOPEN even with
-/// a writable DB). Only SQLite reads this variable: minimal blast radius,
-/// no global `TMPDIR`. Respected if the user already set it
-/// explicitly.
-fn sqlite_tmp_dir(appdata: &Path) -> Result<PathBuf> {
-    let dir = appdata.join("tmp");
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
+/// How long the start waits for `gsettings` in total.
+const GSETTINGS_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// First `gsettings` found in `PATH`.
+fn find_gsettings() -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join("gsettings")).find(|p| p.is_file())
+}
+
+/// Ask `gsettings` for a key of `org.gnome.desktop.interface`; both queries run at once and share
+/// `timeout`. Returns `(color-scheme, gtk-theme)` without the quotes, or None on any failure.
+fn read_interface_settings(gsettings: &Path, timeout: std::time::Duration) -> Option<(String, String)> {
+    use std::io::Read as _;
+    use std::process::Stdio;
+    let spawn = |key: &str| {
+        Command::new(gsettings)
+            .args(["get", "org.gnome.desktop.interface", key])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()
+    };
+    let mut kids = [spawn("color-scheme"), spawn("gtk-theme")];
+    let deadline = std::time::Instant::now() + timeout;
+    let mut out: [Option<String>; 2] = [None, None];
+    while out.iter().any(Option::is_none) {
+        for (i, kid) in kids.iter_mut().enumerate() {
+            let Some(c) = kid else {
+                // Could not start: nothing to wait for.
+                out[i] = Some(String::new());
+                continue;
+            };
+            if out[i].is_some() {
+                continue;
+            }
+            if let Ok(Some(status)) = c.try_wait() {
+                let mut text = String::new();
+                if status.success() {
+                    if let Some(mut so) = c.stdout.take() {
+                        let _ = so.read_to_string(&mut text);
+                    }
+                }
+                out[i] = Some(text);
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    // Whatever is still running after the deadline is stopped and reaped.
+    for kid in kids.iter_mut().flatten() {
+        if kid.try_wait().ok().flatten().is_none() {
+            let _ = kid.kill();
+            let _ = kid.wait();
+        }
+    }
+    let unquote = |s: &str| s.trim().trim_matches('\'').to_string();
+    let [Some(scheme), Some(theme)] = out else { return None };
+    Some((unquote(&scheme), unquote(&theme)))
+}
+
+/// `GTK_THEME` for a dark desktop. GTK3 reads the dark preference from dconf, which the app
+/// cannot reach with its private config folder. If the user prefers dark, the stub hands the
+/// theme over as `<gtk-theme>:dark` (`Adwaita:dark` when no theme is set). The value is read once
+/// at start: the app does not follow later changes. None when GTK_THEME is already set,
+/// `gsettings` is missing, slow or fails, or the scheme is not `prefer-dark`.
+fn gtk_dark_theme(gsettings: Option<&Path>, timeout: std::time::Duration) -> Option<String> {
+    if std::env::var_os("GTK_THEME").is_some() {
+        return None;
+    }
+    let (scheme, theme) = read_interface_settings(gsettings?, timeout)?;
+    if scheme != "prefer-dark" {
+        return None;
+    }
+    // A theme name is a folder name: refuse anything odd rather than pass it on.
+    let ok = theme.bytes().all(|b| b.is_ascii_alphanumeric() || b" ._+-".contains(&b));
+    let theme = if theme.is_empty() { "Adwaita" } else { theme.as_str() };
+    ok.then(|| format!("{theme}:dark"))
 }
 
 /// True if the file starts with the ELF magic. Decides whether to use the included loader.
@@ -700,16 +864,30 @@ fn real_main() -> Result<()> {
     let ld_path =
         std::env::join_paths(plan.ld_path.iter()).context("non-UTF-8 LD_LIBRARY_PATH")?;
 
-    sandbox(&tree, &man, allow_unfiltered, open_file.as_ref().map(|(p, w)| (p.as_path(), *w)))?;
+    // Private folders (0700), created before the sandbox closes the rest of the disk.
+    let app_dirs = panpak_core::app_dirs(&man.app.id)?;
+    app_dirs.create()?;
+    write_fonts_conf(&app_dirs)?;
+    let access = access_for(&man, &app_dirs)?;
+    let (config_dirs, data_dirs) =
+        panpak_core::xdg_search_dirs(std::env::var("XDG_CONFIG_DIRS").ok(), std::env::var("XDG_DATA_DIRS").ok())?;
+    // Before Landlock: `gsettings` and dconf are outside the sandbox.
+    let dark_theme = gtk_dark_theme(find_gsettings().as_deref(), GSETTINGS_TIMEOUT);
+    let launch = man.launch.as_ref();
+    let launch_args = launch
+        .and_then(|l| l.args.as_deref())
+        .unwrap_or_default()
+        .iter()
+        .map(|a| app_dirs.expand(a))
+        .collect::<Result<Vec<_>>>()?;
+    let launch_env = launch
+        .and_then(|l| l.env.as_ref())
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| Ok((k.clone(), app_dirs.expand(v)?)))
+        .collect::<Result<Vec<_>>>()?;
 
-    // SQLite temp in a private area (see sqlite_tmp_dir): without it, /var/tmp
-    // denied breaks operations using temp files (FTS).
-    let appdata = dirs::data_dir().context("no data dir")?.join(&man.app.id);
-    let sqlite_tmp = if std::env::var_os("SQLITE_TMPDIR").is_none() {
-        Some(sqlite_tmp_dir(&appdata)?)
-    } else {
-        None
-    };
+    sandbox(&tree, &man, &access, allow_unfiltered, open_file.as_ref().map(|(p, w)| (p.as_path(), *w)))?;
 
     let mut cmd = match &plan.loader {
         // Included glibc: all of user-space uses it, loader included.
@@ -723,10 +901,21 @@ fn real_main() -> Result<()> {
         }
         _ => Command::new(tree.join(&man.app.entry)),
     };
-    if let Some(dir) = &sqlite_tmp {
-        cmd.env("SQLITE_TMPDIR", dir);
+    // HOME and XDG_RUNTIME_DIR stay as they are. The app writes only to its private folders.
+    cmd.env("XDG_CONFIG_HOME", &app_dirs.config)
+        .env("XDG_DATA_HOME", &app_dirs.data)
+        .env("XDG_STATE_HOME", &app_dirs.state)
+        .env("XDG_CACHE_HOME", &app_dirs.cache)
+        .env("TMPDIR", &app_dirs.tmp)
+        .env("SQLITE_TMPDIR", &app_dirs.tmp)
+        .env("XDG_CONFIG_DIRS", config_dirs)
+        .env("XDG_DATA_DIRS", data_dirs)
+        .envs(launch_env);
+    if let Some(theme) = dark_theme {
+        cmd.env("GTK_THEME", theme);
     }
     let err = cmd
+        .args(&launch_args)
         .args(&app_args)
         .env("PANPAK_APP_ID", &man.app.id)
         .env("LD_LIBRARY_PATH", &ld_path)
@@ -929,7 +1118,8 @@ mod tests {
         let mut f = File::open(panpak).map_err(|_| "open panpak")?;
         let ft = read_footer(&mut f).map_err(|_| "footer")?;
         let (man, _) = verify(&mut f, &ft).map_err(|_| "verify")?;
-        let st = apply_landlock(tree, appdata, &man, false, open).map_err(|_| "apply")?;
+        let access = Access { rw: vec![appdata.to_path_buf()], ro: vec![] };
+        let st = apply_landlock(tree, &access, &man, false, open).map_err(|_| "apply")?;
         if st.ruleset == landlock::RulesetStatus::NotEnforced {
             return Err("notenforced");
         }
@@ -1600,35 +1790,28 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_tmp_private_and_var_tmp_denied() {
+    fn private_tmp_writable_and_var_tmp_denied() {
         use std::io::Write as _;
-        // Helper: <appdata>/tmp created and writable (outside the sandbox).
-        let dir = tmpdir("sqlitetmp");
-        let appdata = dir.join("appdata");
-        fs::create_dir_all(&appdata).unwrap();
-        let tmp = sqlite_tmp_dir(&appdata).unwrap();
-        assert_eq!(tmp, appdata.join("tmp"));
-        assert!(tmp.is_dir());
-        fs::write(tmp.join("probe"), b"x").unwrap();
-        // Under sandbox: SQLite-style (O_EXCL 0600 like etilqs_*) ok in
-        // appdata/tmp, denied in /var/tmp (default-deny).
-        let (dir2, panpak, tree, appdata2) = fixture_tree("sqlitetmp-sandbox", "");
-        let results = appdata2.join("results.txt");
+        // Under sandbox: SQLite-style (O_EXCL 0600 like etilqs_*) ok in the
+        // private tmp folder, denied in /var/tmp (default-deny).
+        let (dir, panpak, tree, appdata) = fixture_tree("private-tmp-sandbox", "");
+        let private_tmp = appdata.join("tmp");
+        fs::create_dir_all(&private_tmp).unwrap();
+        let results = appdata.join("results.txt");
         let res = fork_lines(&results, |res| {
-            let _man = child_sandboxed(res, &panpak, &tree, &appdata2, None)?;
-            let tmp = sqlite_tmp_dir(&appdata2).map_err(|_| "mktmp")?;
-            let probe = tmp.join("etilqs_probe");
+            let _man = child_sandboxed(res, &panpak, &tree, &appdata, None)?;
+            let probe = private_tmp.join("etilqs_probe");
             let ok_tmp = fs::OpenOptions::new().read(true).write(true).create_new(true)
                 .open(&probe)
                 .and_then(|mut o| o.write_all(b"x").map(|_| ()))
                 .is_ok();
-            res.push(format!("sqlitetmp={}\n", if ok_tmp { "ok" } else { "FAIL" }));
-            denied(res, "vartmp", File::create(format!("/var/tmp/panpak-sqlitetmp-{}", std::process::id())).is_err());
+            res.push(format!("privatetmp={}\n", if ok_tmp { "ok" } else { "FAIL" }));
+            denied(res, "vartmp", File::create(format!("/var/tmp/panpak-privatetmp-{}", std::process::id())).is_err());
             Ok(())
         });
-        assert!(res.contains("sqlitetmp=ok"), "SQLite tmp not writable:\n{res}");
+        assert!(res.contains("privatetmp=ok"), "private tmp not writable:\n{res}");
         assert!(res.contains("vartmp=deny"), "/var/tmp writable in sandbox:\n{res}");
-        let _ = (dir, dir2);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1733,6 +1916,55 @@ mod tests {
         assert_eq!(decide_net(false, false, true), UnfilteredWarn);
     }
 
+    /// A fake `gsettings` printing the given values (and sleeping `delay` seconds first).
+    fn fake_gsettings(tag: &str, scheme: &str, theme: &str, delay: &str, exit: i32) -> PathBuf {
+        let dir = tmpdir(tag);
+        let path = dir.join("gsettings");
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nsleep {delay}\ncase \"$3\" in color-scheme) echo \"{scheme}\";; gtk-theme) echo \"{theme}\";; esac\nexit {exit}\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn dark_theme_from_gsettings() {
+        // GTK_THEME may be set in the environment of the test run: the function respects it.
+        if std::env::var_os("GTK_THEME").is_some() {
+            eprintln!("SKIP: GTK_THEME is set");
+            return;
+        }
+        let t = std::time::Duration::from_millis(1000);
+        let g = fake_gsettings("gs-dark", "'prefer-dark'", "'Yaru'", "0", 0);
+        assert_eq!(gtk_dark_theme(Some(&g), t).as_deref(), Some("Yaru:dark"));
+        let g = fake_gsettings("gs-empty", "'prefer-dark'", "''", "0", 0);
+        assert_eq!(gtk_dark_theme(Some(&g), t).as_deref(), Some("Adwaita:dark"));
+        let g = fake_gsettings("gs-light", "'default'", "'Yaru'", "0", 0);
+        assert_eq!(gtk_dark_theme(Some(&g), t), None);
+        let g = fake_gsettings("gs-odd", "'prefer-dark'", "'a;b'", "0", 0);
+        assert_eq!(gtk_dark_theme(Some(&g), t), None, "theme names with odd characters are not passed on");
+        let g = fake_gsettings("gs-fail", "'prefer-dark'", "'Yaru'", "0", 1);
+        assert_eq!(gtk_dark_theme(Some(&g), t), None);
+        assert_eq!(gtk_dark_theme(None, t), None);
+        assert_eq!(gtk_dark_theme(Some(Path::new("/nonexistent/gsettings")), t), None);
+    }
+
+    #[test]
+    fn slow_gsettings_is_stopped_at_the_deadline() {
+        if std::env::var_os("GTK_THEME").is_some() {
+            return;
+        }
+        let g = fake_gsettings("gs-slow", "'prefer-dark'", "'Yaru'", "5", 0);
+        let t0 = std::time::Instant::now();
+        assert_eq!(gtk_dark_theme(Some(&g), GSETTINGS_TIMEOUT), None);
+        let took = t0.elapsed();
+        assert!(took < std::time::Duration::from_millis(900), "waited {took:?}");
+    }
+
     #[test]
     fn landlock_abi_detected() {
         let abi = panpak_core::detect_abi().expect("Landlock unavailable on this kernel");
@@ -1759,9 +1991,11 @@ mod tests {
             network_allow_tcp: None,
             network_bind_tcp: None,
             sockets_allow: Some(vec!["/run/dbus.sock".into()]),
+            home_paths: None,
             portal: None,
         });
-        let err = build_ruleset(&tree, &appdata, &man, abi, true, false, None).unwrap_err();
+        let access = Access { rw: vec![appdata.clone()], ro: vec![] };
+        let err = build_ruleset(&tree, &access, &man, abi, true, false, None).unwrap_err();
         assert!(format!("{err:?}").contains("V9"), "missing V9 guard: {err:?}");
         let _ = (_dir, panpak, tree, appdata);
     }
