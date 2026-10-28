@@ -11,7 +11,8 @@ fuzz_target!(|data: &[u8]| {
             let id = &man.app.id;
             assert!(id.len() <= panpak_core::MAX_APP_ID_LEN && id.is_ascii() && id.contains('.'));
             assert!(!id.starts_with('.') && !id.ends_with('.') && !id.contains("..") && !id.contains('/'));
-            assert!(id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'));
+            assert!(id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_'));
+            assert!(id.split('.').all(|s| !s.is_empty() && !s.as_bytes()[0].is_ascii_digit()), "segment starts with a digit: {id:?}");
             let base = std::path::Path::new("/base");
             assert_eq!(base.join(id).parent(), Some(base), "id is not one path component: {id:?}");
             assert!(!man.app.name.chars().any(char::is_control), "control character in name");
