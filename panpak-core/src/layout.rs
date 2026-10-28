@@ -230,10 +230,26 @@ impl SocketIsolation {
     }
 }
 
-/// True if the manifest lists a D-Bus socket in `sockets_allow`. The stub then keeps
-/// `DBUS_SESSION_BUS_ADDRESS` as it is.
+/// True if a `sockets_allow` entry names the D-Bus system bus (`.../system_bus_socket`).
+pub fn is_system_bus_socket(path: &str) -> bool {
+    path.split('/').any(|p| p == "system_bus_socket")
+}
+
+/// True if the manifest lists a session D-Bus socket in `sockets_allow` (a bus socket that is not
+/// the system bus). The stub then keeps `DBUS_SESSION_BUS_ADDRESS` as it is.
+pub fn allows_session_bus(perms: Option<&crate::Permissions>) -> bool {
+    perms.is_some_and(|p| p.sockets_allow.iter().flatten().any(|s| is_bus_socket(s) && !is_system_bus_socket(s)))
+}
+
+/// True if the manifest lists the system bus in `sockets_allow`. The stub then keeps
+/// `DBUS_SYSTEM_BUS_ADDRESS` as it is.
+pub fn allows_system_bus(perms: Option<&crate::Permissions>) -> bool {
+    perms.is_some_and(|p| p.sockets_allow.iter().flatten().any(|s| is_system_bus_socket(s)))
+}
+
+/// True if the manifest lists any D-Bus socket.
 pub fn allows_desktop_bus(perms: Option<&crate::Permissions>) -> bool {
-    perms.is_some_and(|p| p.sockets_allow.iter().flatten().any(|s| is_bus_socket(s)))
+    allows_session_bus(perms) || allows_system_bus(perms)
 }
 
 /// The isolation level of an app from local sockets: `abi` is the Landlock ABI of the kernel
@@ -438,6 +454,25 @@ mod tests {
         assert_eq!(SocketIsolation::Isolated.warning(), None);
         assert_eq!(SocketIsolation::ManifestAllowsBus.warning(), None);
         assert!(allows_desktop_bus(bus.permissions.as_ref()) && !allows_desktop_bus(plain.permissions.as_ref()));
+    }
+
+    #[test]
+    fn session_and_system_bus_are_told_apart() {
+        let sess = man("[permissions]\nsockets_allow=[\"$XDG_RUNTIME_DIR/bus\"]\n");
+        let sys = man("[permissions]\nsockets_allow=[\"/run/dbus/system_bus_socket\"]\n");
+        let both = man("[permissions]\nsockets_allow=[\"$XDG_RUNTIME_DIR/bus\", \"/var/run/dbus/system_bus_socket\"]\n");
+        let none = man("[permissions]\nsockets_allow=[\"$XDG_RUNTIME_DIR/wayland-0\"]\n");
+        let f = |m: &Manifest| (allows_session_bus(m.permissions.as_ref()), allows_system_bus(m.permissions.as_ref()));
+        assert_eq!(f(&sess), (true, false));
+        assert_eq!(f(&sys), (false, true));
+        assert_eq!(f(&both), (true, true));
+        assert_eq!(f(&none), (false, false));
+        assert_eq!(f(&man("")), (false, false));
+        assert!(is_system_bus_socket("/run/dbus/system_bus_socket") && !is_system_bus_socket("/run/user/1000/bus"));
+        // Either bus listed makes the isolation level "manifest allows the bus" on a V9 kernel.
+        let v9 = Some(landlock::ABI::V9);
+        assert_eq!(socket_isolation(v9, sys.permissions.as_ref()), SocketIsolation::ManifestAllowsBus);
+        assert_eq!(socket_isolation(v9, sess.permissions.as_ref()), SocketIsolation::ManifestAllowsBus);
     }
 
     #[test]
