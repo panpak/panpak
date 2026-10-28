@@ -9,6 +9,13 @@ on:
     branches: [main]
   pull_request:
 
+defaults:
+  run:
+    # An explicit shell makes GitHub run bash -eo pipefail: a failing command
+    # anywhere in a pipe fails the step. Every job runs directly on the
+    # ubuntu-24.04 runner, none inside a container.
+    shell: bash
+
 env:
   RUST_TOOLCHAIN: "1.99.1"
   # Nightly used only by the fuzz-smoke job (libfuzzer needs -Z flags).
