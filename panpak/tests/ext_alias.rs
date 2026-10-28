@@ -117,7 +117,7 @@ fn pan_file_with_wrong_magic_is_rejected_with_e0001() {
     for name in ["bad.pan", "bad.panpak"] {
         fs::write(env.dir.join(name), &bytes).unwrap();
         let d = cli(&env, &["doctor", name]);
-        assert!(!d.status.success() && text(&d).contains("INVALID package: wrong magic"), "doctor {name}: {}", text(&d));
+        assert!(!d.status.success() && text(&d).contains("INVALID package: PANPAK-E0001: wrong magic"), "doctor {name}: {}", text(&d));
         let i = cli(&env, &["install", "--yes", name]);
         assert!(!i.status.success(), "install accepted a wrong magic: {name}");
         assert!(text(&i).contains("PANPAK-E0001"), "install {name}: {}", text(&i));

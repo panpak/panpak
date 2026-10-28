@@ -1532,7 +1532,7 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                     }
                 }
             }
-            Err(e) => line(false, &format!("INVALID package: {}", panpak_core::err_text(&e))),
+            Err(e) => line(false, &format!("INVALID package: {}", panpak_core::render(&e, generic_code(Some("doctor"))))),
         }
     }
     Ok(ok)
