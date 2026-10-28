@@ -80,7 +80,8 @@ Origin, version 1.1:
 > open source license(s) involved.
 
 CI checks the sign-off on every commit of a pull request
-(`scripts/check-dco.sh`). To fix missing sign-offs:
+(`scripts/check-dco.sh`). Commits authored by Dependabot are exempt from the
+sign-off. To fix missing sign-offs:
 `git rebase --signoff <base>` and force-push your branch.
 
 ## Name and trademark
