@@ -18,7 +18,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import signal
 import sqlite3
 import struct
 import subprocess
@@ -113,11 +112,8 @@ def main():
                                  start_new_session=True, cwd=str(appdata))
             time.sleep(WAIT)
             alive = p.poll() is None
-            try:
-                os.killpg(p.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-            p.wait(timeout=10)
+            # SIGTERM first, SIGKILL only for what is left (see isolation.stop_group).
+            isolation.stop_group(p.pid, p)
             logf.close()
             time.sleep(2)
             isolation.safe_rmtree(env['XDG_RUNTIME_DIR'], work)

@@ -19,7 +19,6 @@ Environment variables (see bench/README.md):
 import json
 import os
 import shutil
-import signal
 import statistics
 import struct
 import subprocess
@@ -180,12 +179,8 @@ def main():
                                     break
                                 time.sleep(0.2)
                         finally:
-                            try:
-                                os.killpg(p.pid, signal.SIGKILL)
-                            except (ProcessLookupError, PermissionError):
-                                pass
-                            p.wait(timeout=10)
-                            assert gone(), 'Joplin does not exit after kill'
+                            isolation.stop_group(p.pid, p)
+                            assert gone(), 'Joplin does not exit after stop'
                         if dt is not None:
                             return dt, fails
                         fails += 1
@@ -217,11 +212,7 @@ def main():
                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                          start_new_session=True, cwd=str(cwd))
                     time.sleep(45)
-                    try:
-                        os.killpg(p.pid, signal.SIGKILL)
-                    except (ProcessLookupError, PermissionError):
-                        pass
-                    p.wait(timeout=10)
+                    isolation.stop_group(p.pid, p)
                 isolation.safe_rmtree(env_n['XDG_RUNTIME_DIR'], WORK)
 
                 tree = home / '.local/share/panpak/trees' / pkg_root(jp)

@@ -13,7 +13,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -57,9 +56,9 @@ def main():
         state = json.loads(statefile.read_text())
         env = dict(os.environ, DISPLAY=state['display'])
         if action == 'stop':
+            # The app first (SIGTERM, then SIGKILL for what is left), then Xvfb.
             for pid in (state['pid'], state['server']):
-                try: os.killpg(pid, signal.SIGKILL)
-                except ProcessLookupError: pass
+                isolation.stop_group(pid)
             isolation.safe_rmtree(state.get('runtime', '/nonexistent'), work)
         elif action == 'screenshot':
             subprocess.run(['import', '-window', 'root', work / 'gui.png'], env=env, check=True)

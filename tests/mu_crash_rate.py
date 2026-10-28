@@ -9,7 +9,7 @@ Configs:
   direct   tree AppRun executed directly, same env (no Landlock)
   original upstream AppImage with userspace libfuse (no panpak at all)
 Each run wipes the Mu profile dirs first, waits up to TIMEOUT, records
-exit code/signal vs still-alive, then kills the process group.
+exit code/signal vs still-alive, then stops the process group (SIGTERM, SIGKILL for what is left).
 Environment variables: PANPAK_PILOT_DIR (original AppImages,
 default ~/panpak-bench/pilot), PANPAK_FUSE_LIB (userspace libfuse,
 default ~/fuse).
@@ -18,7 +18,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import signal
 import struct
 import subprocess
 import sys
@@ -75,14 +74,7 @@ def one_run(argv, env, cwd):
         time.sleep(0.2)
     dt = time.perf_counter() - t0
     alive = rc is None
-    try:
-        os.killpg(p.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
-    try:
-        p.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        pass
+    isolation.stop_group(p.pid, p)
     return {'alive': alive, 'returncode': rc, 'elapsed': round(dt, 2)}
 
 

@@ -129,11 +129,9 @@ def main():
                                      capture_output=True, text=True).stdout
             results[app] = {'alive': p.poll() is None, 'returncode': p.poll(), 'windows': windows}
             print(app, json.dumps(results[app]), flush=True)
-            # Kill the isolated process group, never unrelated desktop apps.
-            if p.poll() is None:
-                import signal
-                os.killpg(p.pid, signal.SIGKILL)
-            p.wait(timeout=10)
+            # Stop the isolated process group (SIGTERM first, SIGKILL only for
+            # what is left), never unrelated desktop apps.
+            isolation.stop_group(p.pid, p)
             isolation.safe_rmtree(env['XDG_RUNTIME_DIR'], work)
             log.close()
             (work / 'results.json').write_text(json.dumps(results, indent=2))

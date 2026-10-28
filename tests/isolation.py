@@ -12,12 +12,21 @@ file they create or delete MUST stay inside their own work directory:
 - `safe_rmtree` and `safe_unlink`: delete only inside the work directory, or a
   runtime directory made by `owned_mkdtemp`. There is no way to turn this off.
 - `require_inside(path, work, what)`: stop unless `path` is inside `work`.
+- `stop_group(pgid, proc, grace)`: end a process group started by a script.
+  It sends SIGTERM, waits for the group to exit and sends SIGKILL only to
+  what is left after the grace time, so applications can flush their data.
+  Note: Joplin keeps a `lock` file in its profile and does not remove it on
+  SIGTERM either. A start after such an end quits at once, with or without
+  panpak. Scripts that start Joplin again on the same profile MUST remove
+  that file first.
 """
 import os
 import pwd
 import shutil
 import sys
+import signal
 import tempfile
+import time
 from pathlib import Path
 
 OVERRIDE = 'PANPAK_ALLOW_REAL_HOME'
@@ -86,3 +95,32 @@ def safe_unlink(path, work):
     if not _may_delete(path, work):
         raise SystemExit(f'refusing to delete {path}: outside the work directory {work}')
     Path(path).unlink(missing_ok=True)
+
+
+def stop_group(pgid, proc=None, grace=15.0):
+    """SIGTERM the process group, wait up to `grace` seconds, then SIGKILL
+    what is still there. `proc` is the Popen of the group leader, if any: it
+    is reaped so the leader does not stay a zombie."""
+    def alive():
+        if proc is not None:
+            proc.poll()
+        try:
+            os.killpg(pgid, 0)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    deadline = time.monotonic() + grace
+    while alive() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    if alive():
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if proc is not None:
+        proc.wait(timeout=10)
