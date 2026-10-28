@@ -64,6 +64,34 @@
   ],
   "ok": false
  },
+ "invalid-home-path-autostart.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "home_paths"
+  ],
+  "ok": false
+ },
+ "invalid-home-path-config-whole.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "home_paths"
+  ],
+  "ok": false
+ },
+ "invalid-home-path-dotdot.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "home_paths"
+  ],
+  "ok": false
+ },
+ "invalid-home-path-local-bin.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "home_paths"
+  ],
+  "ok": false
+ },
  "invalid-id-digit-segment.panpak": {
   "code": "PANPAK-E0006",
   "err": [
@@ -144,6 +172,20 @@
  "invalid-index-control.panpak": {
   "err": [
    "control character"
+  ],
+  "ok": false
+ },
+ "invalid-launch-env-ld-preload.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "launch.env"
+  ],
+  "ok": false
+ },
+ "invalid-launch-placeholder.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "launch.args"
   ],
   "ok": false
  },
@@ -238,6 +280,10 @@
   "ok": true
  },
  "valid-id-underscore.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-launch-home.panpak": {
   "err": [],
   "ok": true
  },

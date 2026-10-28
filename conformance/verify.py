@@ -91,6 +91,158 @@ def text_ok(s, max_bytes):
     )
 
 
+# Launch fields and home paths (PANPAK-FORMAT.md section 3.1.2). Written out here on
+# purpose: the verifier does not import the Rust lists.
+PLACEHOLDERS = (
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "TMPDIR",
+)
+FORBIDDEN_ENV = (
+    "PATH",
+    "HOME",
+    "XDG_RUNTIME_DIR",
+    "PYTHONPATH",
+    "PYTHONHOME",
+    "PERL5LIB",
+    "NODE_OPTIONS",
+    "ELECTRON_RUN_AS_NODE",
+    "GIO_MODULE_DIR",
+    "GTK_MODULES",
+    "GTK_PATH",
+    "QT_PLUGIN_PATH",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_DIRS",
+    "XDG_DATA_DIRS",
+    "TMPDIR",
+    "SQLITE_TMPDIR",
+)
+FORBIDDEN_ENV_PREFIXES = ("LD_", "PANPAK_")
+BROAD_HOME_PATHS = (
+    ".config",
+    ".local",
+    ".local/share",
+    ".cache",
+)
+FORBIDDEN_HOME_PATHS = (
+    ".config/autostart",
+    ".config/systemd",
+    ".config/environment.d",
+    ".local/bin",
+    ".local/share/applications",
+    ".xinitrc",
+    ".xsession",
+    ".xsessionrc",
+    ".xprofile",
+    ".Xresources",
+    ".bashrc",
+    ".bash_profile",
+    ".bash_login",
+    ".profile",
+    ".zshrc",
+    ".zprofile",
+    ".zshenv",
+    ".pam_environment",
+    ".local/share/nautilus",
+    ".local/share/nemo",
+    ".local/share/kio",
+    ".config/mimeapps.list",
+    ".config/panpak",
+    ".local/share/panpak",
+    ".cache/panpak",
+    ".config/git",
+    ".gitconfig",
+    ".config/fish",
+    ".config/nvim",
+    ".vimrc",
+    ".vim",
+    ".emacs",
+    ".emacs.d",
+    ".config/i3",
+    ".config/sway",
+    ".config/hypr",
+    ".config/openbox",
+    ".config/kitty",
+    ".config/alacritty",
+    ".ssh",
+    ".gnupg",
+    ".pki",
+    ".password-store",
+    ".local/share/keyrings",
+    ".mozilla",
+    ".config/google-chrome",
+    ".config/chromium",
+    ".netrc",
+    ".git-credentials",
+    ".config/gh",
+    ".docker",
+    ".kube",
+    ".aws",
+    ".cargo",
+    ".npmrc",
+)
+ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
+
+
+def check_launch_text(field, v):
+    if not (isinstance(v, str) and len(v.encode()) <= 4096 and not any(unicodedata.category(c) == "Cc" for c in v)):
+        raise Fail(f"invalid manifest field {field}")
+    rest = v
+    while "${" in rest:
+        after = rest[rest.index("${") + 2 :]
+        if "}" not in after or after[: after.index("}")] not in PLACEHOLDERS:
+            raise Fail(f"invalid manifest field {field}: placeholder")
+        rest = after[after.index("}") + 1 :]
+
+
+def check_launch(man):
+    launch = man.get("launch")
+    if launch is None:
+        return
+    args = launch.get("args", [])
+    if len(args) > 64:
+        raise Fail("invalid manifest field launch.args")
+    for a in args:
+        check_launch_text("launch.args", a)
+    env = launch.get("env", {})
+    if len(env) > 64:
+        raise Fail("invalid manifest field launch.env")
+    for k, v in env.items():
+        if not (len(k) <= 128 and ENV_NAME.fullmatch(k)) or k in FORBIDDEN_ENV or k.startswith(FORBIDDEN_ENV_PREFIXES):
+            raise Fail(f"invalid manifest field launch.env: {k[:40]!r}")
+        check_launch_text("launch.env", v)
+
+
+def check_home_paths(man):
+    seen = []
+    items = man.get("permissions", {}).get("home_paths", [])
+    if len(items) > 32:
+        raise Fail("invalid manifest field permissions.home_paths")
+    for h in items:
+        p, a = h.get("path"), h.get("access")
+        ok = (
+            isinstance(p, str)
+            and 1 <= len(p) <= 4096
+            and p != "."
+            and all(0x20 <= ord(c) <= 0x7E for c in p)
+            and not p.startswith("/")
+            and not p.endswith("/")
+            and all(seg not in ("", ".", "..") for seg in p.split("/"))
+            and p not in BROAD_HOME_PATHS
+            and not any(p == f or p.startswith(f + "/") or f.startswith(p + "/") for f in FORBIDDEN_HOME_PATHS)
+            and a in ("ro", "rw")
+            and p not in seen
+        )
+        if not ok:
+            raise Fail(f"invalid manifest field permissions.home_paths: {str(p)[:60]!r}")
+        seen.append(p)
+
+
 def check_fields(man):
     """Field rules of PANPAK-FORMAT.md section 3.1.1 (applied even to signed manifests)."""
     app = man["app"]
@@ -116,6 +268,8 @@ def check_fields(man):
     for s in man.get("permissions", {}).get("sockets_allow", []):
         if not (isinstance(s, str) and 1 <= len(s.encode()) <= 4096 and not any(unicodedata.category(c) == "Cc" for c in s)):
             raise Fail("invalid manifest field permissions.sockets_allow")
+    check_home_paths(man)
+    check_launch(man)
     if "origin" in man:
         o = man["origin"]
         if not text_ok(o.get("converted_from"), 256) or "/" in o["converted_from"]:

@@ -36,7 +36,7 @@ after the code always describes the actual problem.
 | PANPAK-E0007 | invalid manifest field | Another manifest field is unsafe to use: `app.name`, `origin.converted_from` or `origin.version` with control, line-separator or bidirectional characters; `app.version` outside `[0-9A-Za-z._+~-]`; `app.entry` not a safe relative path; a library name in `[abi]` with `/` or spaces; a bad `origin.sha256`, `update.url` or `sockets_allow` | Fix the field in `panpak.toml` and repack, or ask the author for a corrected package |
 | PANPAK-E1001 | invalid manifest signature / invalid remote signature | Signature does not verify against the key in the manifest | Redownload from a trusted source and verify the key fingerprint |
 | PANPAK-E1002 | stub does not match the signed one | The runtime part of the file was replaced or damaged | Reinstall from a `.panpak` published by the author |
-| PANPAK-E1003 | installation cancelled: key not trusted | The key fingerprint was not confirmed at the TOFU prompt | Verify the fingerprint out of band and answer `y` or `yes`, or pass `--yes` |
+| PANPAK-E1003 | installation cancelled: key not trusted / new permissions not accepted / deletion not accepted | The key fingerprint, the permissions an update adds, or `data clear` was not confirmed at the prompt | Verify the fingerprint or the permissions, then answer `y` or `yes`, or pass `--yes` |
 | PANPAK-E1004 | key differs from TOFU pin / release key differs from pin | The signing key is not the one pinned at first install: author changed key or possible attack | Verify with the author; a legitimate change must use a signed rotation or a manual reinstall (see RELEASE.md) |
 | PANPAK-E1005 | rotation refused / invalid succession / rotation_sig ... | Key changed without a valid signed succession from the pinned key | Ask the author for a package with a correct `rotation_old` / `rotation_sig` |
 | PANPAK-E2001 | refusing to replace launcher / refusing to replace desktop entry | The launcher in `~/.local/bin` or the `.desktop` file is a symbolic link, is not a regular file, or is a file that panpak did not create (it lacks the `X-Panpak-App-Id` marker for this app) | Check the file; move or remove it yourself if it is yours, then run the command again |
@@ -46,7 +46,7 @@ after the code always describes the actual problem.
 | PANPAK-E5001 | unknown flag / unexpected argument / invalid option value | Mistyped or removed option (e.g. `--secret`, `--rotate-from`) | See the usage text printed with the error |
 | PANPAK-E5002 | missing option or argument | A required argument or option value is absent, e.g. no `--secret-file` / `PANPAK_SECRET_FILE`, `keygen` without `-o` | Supply it as shown in the usage text |
 | PANPAK-E5003 | secret file ... permissions / symlink / not a regular file | Key file readable by group or others, a symlink, or not a regular file | `chmod 600 <file>`; use a regular file |
-| PANPAK-E5004 | non-interactive stdin | `install` needs a TOFU confirmation but stdin is not a terminal | Verify the fingerprint, then pass `--yes` |
+| PANPAK-E5004 | non-interactive stdin | `install`, `update` (new permissions) or `data clear` needs a confirmation but stdin is not a terminal | Check what is asked, then pass `--yes` |
 
 ## Generic codes
 
@@ -55,7 +55,7 @@ after the code always describes the actual problem.
 | PANPAK-E0000 | Untyped format or index error (truncated file, bad index entry, invalid `panpak.toml`, unsafe path) | `pack`, `convert`, `dump-index`, `dump-manifest` |
 | PANPAK-E1000 | Untyped signature, trust or release error (for example tarball SHA-256 mismatch, invalid release key) | `keygen`, `release`, `install-runtime` |
 | PANPAK-E2000 | Untyped store or materialization error (missing app, unwritable store, unresolved libraries); also the default for `panpak-stub` | `install`, `rollback`, `open`, `doctor`, `desktop-integration`, `panpak-stub` |
-| PANPAK-E3000 | Sandbox or permission refusal without a more specific code (partial Landlock, network not filterable, `sockets_allow` unsupported) | `panpak-stub` |
+| PANPAK-E3000 | Sandbox or permission refusal without a more specific code (partial Landlock, network not filterable, `sockets_allow` unsupported, a `home_paths` entry that is a symbolic link or, for `rw`, a file; an app folder that is a link or a file) | `panpak-stub` |
 | PANPAK-E4000 | Untyped update or network error (HTTP failure, file changed during download) | `update` |
 | PANPAK-E5000 | Unknown or missing subcommand, or an untyped CLI error | any |
 

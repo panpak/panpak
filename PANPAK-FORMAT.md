@@ -144,6 +144,15 @@ network_bind_tcp = []          # listen ports (bind); only with network=true
 sockets_allow = ["$XDG_RUNTIME_DIR/bus"]  # path Unix sockets (requires ABI V9);
                                # leading $XDG_RUNTIME_DIR and $HOME expanded
 
+[[permissions.home_paths]]     # last resort, §3.1.2: a fixed path in the home folder
+path = ".config/editor"        # relative to the home, no ".."
+access = "rw"                  # "ro" or "rw"
+
+[launch]                       # §3.1.2
+args = ["--profile", "${XDG_CONFIG_HOME}/editor"]   # put before the user's arguments
+[launch.env]
+EDITOR_DIR = "${XDG_DATA_HOME}/editor"              # added to the environment
+
 [permissions.portal]           # requested at use time
 files = "picker"
 camera = "ask"
@@ -200,12 +209,73 @@ no control character and no NUL.
 | `origin.sha256` | 64 lowercase hexadecimal digits |
 | `update.url` | At most 2048 bytes, no byte %x00-20 or %x7F |
 | `permissions.sockets_allow` | Each item: 1 to 4096 bytes, no control character |
+| `permissions.home_paths` | At most 32 items, see §3.1.2 |
+| `launch.args`, `launch.env` | At most 64 items each, see §3.1.2 |
 
 Paths and symlink targets in the index MUST NOT contain a control character
 (U+0000..U+001F, U+007F..U+009F) either.
 
 *Informative note.* `panpak` reports a bad `app.id` as `PANPAK-E0006` and any
 other bad field as `PANPAK-E0007` (docs/ERRORS.md).
+
+### 3.1.2 Launch fields and home paths [NORMATIVE]
+
+**`[launch]`.** `args` is a list of strings put before the arguments the user
+gives; `env` is a table of variable names and string values added to the
+environment of the app. The runtime passes `args` to the executable as a vector:
+there is no shell and no word splitting. In every `args` item and every `env`
+value, the text `${NAME}` is replaced by the private folder of the app
+(§9.1) when `NAME` is one of:
+
+```
+XDG_CONFIG_HOME  XDG_DATA_HOME  XDG_STATE_HOME  XDG_CACHE_HOME  TMPDIR
+```
+
+Any other `${...}`, and an unterminated `${`, make the manifest invalid; a `$` not
+followed by `{` is plain text. A value has at most 4096 bytes and no control
+character. A variable name matches `[A-Z_][A-Z0-9_]*` (at most 128 bytes). These
+names MUST NOT be set, because they change how code is loaded or what the
+sandbox protects, or because the runtime sets them itself:
+
+```
+LD_*  PANPAK_*
+PATH  HOME  XDG_RUNTIME_DIR  PYTHONPATH  PYTHONHOME  PERL5LIB  NODE_OPTIONS
+ELECTRON_RUN_AS_NODE  GIO_MODULE_DIR  GTK_MODULES  GTK_PATH  QT_PLUGIN_PATH
+XDG_CONFIG_HOME  XDG_DATA_HOME  XDG_STATE_HOME  XDG_CACHE_HOME
+XDG_CONFIG_DIRS  XDG_DATA_DIRS  TMPDIR  SQLITE_TMPDIR
+```
+
+**`permissions.home_paths`.** An app that insists on a fixed place in the home
+folder can ask for it: a list of tables with `path` and `access`. This is the last
+resort: prefer `launch.args` or `launch.env` to point the app at its private
+folders. `path` is relative to the home folder: printable ASCII (%x20-7E), no
+leading or trailing `/`, no empty, `.` or `..` segment, at most 4096 bytes. `access`
+is `ro` or `rw`. A path appears once. These are refused:
+
+- the home folder itself (`.` or an empty path), `.config`, `.local`,
+  `.local/share` and `.cache` (the broad folders);
+- any path equal to, below, or containing one of these protected paths:
+
+```
+.config/autostart  .config/systemd  .config/environment.d  .local/bin
+.local/share/applications  .local/share/nautilus  .local/share/nemo
+.local/share/kio  .config/panpak  .local/share/panpak  .cache/panpak
+.config/mimeapps.list  .config/git  .gitconfig  .config/fish  .config/nvim
+.vimrc  .vim  .emacs  .emacs.d  .config/i3  .config/sway  .config/hypr
+.config/openbox  .config/kitty  .config/alacritty  .xinitrc  .xsession
+.xsessionrc  .xprofile  .Xresources  .bashrc  .bash_profile  .bash_login
+.profile  .zshrc  .zprofile  .zshenv  .pam_environment  .ssh  .gnupg  .pki
+.password-store  .local/share/keyrings  .mozilla  .config/google-chrome
+.config/chromium  .netrc  .git-credentials  .config/gh  .docker  .kube
+.aws  .cargo  .npmrc
+```
+
+The protected list is incomplete by nature: it names places that run code at
+login or hold credentials, and a Writer SHOULD NOT ask for any other place of that kind.
+At start, the runtime MUST refuse to run if the path, or any folder above it
+inside the home, exists and is a symbolic link. For `rw`, a missing folder is created
+and an existing file is an error; for `ro`, a missing path is skipped. The access
+is granted by Landlock to the folder opened at start (§9.1).
 
 ### 3.2 Public key and TOFU [NORMATIVE]
 
@@ -415,22 +485,24 @@ before distributing the converted package.
   tree and blob files and dirs lose their write bits (`chmod a-w`,
   marker `trees/<hash>.readonly`): blobs are shared across trees and
   apps, a write would alter them everywhere.
-- Writable: `~/.local/share/<id>` (app data) and `/tmp`, all EXCEPT
-  `Refer` (from ABI V2 `from_all` would include it: it would allow
-  hardlinks to tree files; without it, same-dir renames stay possible).
-- SQLite temp: the stub creates `<appdata>/tmp` and points
-  `$SQLITE_TMPDIR` there (only if the user has not already set it).
-  SQLite looks in `$SQLITE_TMPDIR`, then `/var/tmp` (denied by the
-  sandbox): without this, operations using temp files (e.g. Joplin's
-  FTS indexes) failed with CANTOPEN even though the DB was writable.
-  Only SQLite reads this variable; no global `TMPDIR`.
+- Writable: the two app roots of §9.1, the `rw` home paths (§3.1.2) and
+  `/tmp`, all EXCEPT `Refer` (from ABI V2 `from_all` would include it: it
+  would allow hardlinks to tree files; without it, same-dir renames stay
+  possible). `~/.local/share/<id>` is no longer writable.
+- Read-only: the user's theme, font and icon files listed in §9.1 and the
+  `ro` home paths.
 - Read-only: `/usr` `/lib` `/lib64` `/etc` `/proc` `/sys` `/run`.
+  On Landlock below V9 this also lets an app connect to any Unix socket
+  under `/run`, including the D-Bus session bus (THREAT-MODEL.md §3).
 - `/dev`: only nodes `null`, `zero`, `full`, `urandom`, `random`, `tty`
   + dirs `dri`, `shm`. Explicit fallback (with warning) to whole
   `/dev` if the kernel rejects per-file rules; privileged nodes stay
   protected by DAC/capabilities.
 - TCP networking: denied by default (`network = false`); with
-  `network = true` only manifest-allowlisted ports. On kernels without
+  `network = true` only manifest-allowlisted ports (`network_allow_tcp`
+  for connect, `network_bind_tcp` for listen). Landlock filters the TCP
+  port, not the address: a granted port is open to every address,
+  loopback or not. Needs Landlock V4 (kernel 6.7 or later). On kernels without
   Landlock V4 the network is not filterable: the runtime MUST refuse
   by default, and MAY start ONLY with `--network-unfiltered` from the
   CLI (never from the manifest), with a warning at every start. UDP is
@@ -441,6 +513,57 @@ before distributing the converted package.
 - Fail-closed self-test after `restrict`: `/dev/null` MUST open and
   creating a file in the tree MUST fail, otherwise hard error.
 - If Landlock is not applicable: hard error, NEVER silent fallback.
+
+### 9.1 Private folders and environment [NORMATIVE]
+
+Before the sandbox is applied, and after the manifest has been verified, the
+runtime creates these folders with mode 0700 (an existing folder is kept; a symbolic link
+or a file in its place is an error):
+
+| Folder | Path |
+|---|---|
+| persistent root | `$XDG_DATA_HOME/panpak/userdata/<id>` (default `~/.local/share/...`) |
+| config, data, state, tmp | `config`, `data`, `state`, `tmp` below the persistent root |
+| cache | `$XDG_CACHE_HOME/panpak/<id>` (default `~/.cache/...`) |
+
+They are not inside the store. The runtime sets, for the app:
+
+| Variable | Value |
+|---|---|
+| `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` | `config`, `data`, `state` |
+| `XDG_CACHE_HOME` | the cache folder |
+| `TMPDIR`, `SQLITE_TMPDIR` | `tmp` |
+| `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS` | the existing value, or the XDG default (`/etc/xdg`; `/usr/local/share:/usr/share`), then the user's real config or data folder |
+| `GTK_THEME` | see below |
+| from `[launch]` | `env` values, and `args` before the user's arguments |
+
+`HOME` and `XDG_RUNTIME_DIR` are not changed. The app can write only in the two roots,
+the `rw` home paths and `/tmp` (to be narrowed later). Landlock grants these
+read-only rights, for the entries that exist, and nothing else of the user's real
+folders:
+
+- in the config folder: `fontconfig`, `gtk-3.0`, `gtk-4.0`, `kdeglobals`,
+  `user-dirs.dirs`, `mimeapps.list`, `qt5ct`, `qt6ct`, `Trolltech.conf`;
+- in the data folder: `fonts`, `icons`, `themes`, `mime`;
+- in the home folder: `.fonts`, `.icons`.
+
+*Fonts.* Fontconfig reads user fonts only from `$XDG_DATA_HOME/fonts` and the
+configuration in `$XDG_CONFIG_HOME/fontconfig`, which are private now. At every start the runtime
+writes `$XDG_CONFIG_HOME/fontconfig/fonts.conf` in the private folder. It includes (with
+`ignore_missing`) the user's real `fonts.conf` and `conf.d`, and adds as `<dir>` the real
+font folder and `~/.fonts`. The file carries the marker `X-Panpak-Generated`; a file
+without the marker is the user's and the runtime does not touch it.
+
+*Dark theme.* GTK3 reads the dark preference from dconf, which the app cannot reach
+with a private config folder. If `GTK_THEME` is not set and `gsettings` is in `PATH`,
+the runtime reads `org.gnome.desktop.interface` `color-scheme` and `gtk-theme` before
+the sandbox, waiting at most 200 ms in total. If the scheme is `prefer-dark`, it sets
+`GTK_THEME=<gtk-theme>:dark` (`Adwaita:dark` when `gtk-theme` is empty). Any failure
+is ignored. The value is read once at start: the theme does not follow changes while
+the app is open. The settings portal is planned to replace this.
+
+Landlock binds each rule to the folder opened when the rules are built, so a later
+replacement of a path by a link does not extend the access.
 
 ## Appendix A — test vectors [NORMATIVE]
 

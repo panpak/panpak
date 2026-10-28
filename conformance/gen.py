@@ -251,6 +251,20 @@ def main():
     bad_manifest("invalid-entry-dotdot.panpak", manifest(entry="../../bin/sh"), "app.entry", code="PANPAK-E0007")
     bad_manifest("invalid-entry-abs.panpak", manifest(entry="/bin/sh"), "app.entry", code="PANPAK-E0007")
     bad_manifest("invalid-abi-name.panpak", manifest(extra='[abi]\nneeds = ["../../x"]\n'), "abi.needs", code="PANPAK-E0007")
+    # launch fields and home paths (PANPAK-FORMAT.md section 3.1.2)
+    put("valid-launch-home.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=(
+        '[permissions]\nnetwork = true\nnetwork_allow_tcp = [2658]\nnetwork_bind_tcp = [2658]\n'
+        '[[permissions.home_paths]]\npath = ".config/example-app"\naccess = "rw"\n'
+        '[[permissions.home_paths]]\npath = "Documents/Notes"\naccess = "ro"\n'
+        '[launch]\nargs = ["--profile", "${XDG_CONFIG_HOME}/example"]\n[launch.env]\nEXAMPLE_DIR = "${XDG_DATA_HOME}/x:${TMPDIR}"\n')),
+        blobs=std_index()[2]), True)
+    bad_manifest("invalid-launch-env-ld-preload.panpak", manifest(extra='[launch.env]\nLD_PRELOAD = "/tmp/x.so"\n'), "launch.env", code="PANPAK-E0007")
+    bad_manifest("invalid-launch-placeholder.panpak", manifest(extra='[launch]\nargs = ["${HOME}/x"]\n'), "launch.args", code="PANPAK-E0007")
+    for fname, path in [
+        ("dotdot", "a/../b"), ("autostart", ".config/autostart"), ("local-bin", ".local/bin"), ("config-whole", ".config"),
+    ]:
+        bad_manifest(f"invalid-home-path-{fname}.panpak",
+                     manifest(extra=f'[[permissions.home_paths]]\npath = "{path}"\naccess = "rw"\n'), "home_paths", code="PANPAK-E0007")
     # index path with a control character
     _d = b"xy"
     _c = zstd_enc(_d)
