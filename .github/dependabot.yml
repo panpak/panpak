@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Proposes updates for the commit SHAs that pin the actions in the workflows.
+# Cargo is deliberately not enabled: dependencies are updated by hand.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
