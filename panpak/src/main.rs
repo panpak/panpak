@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // panpak CLI: pack a tree into an executable .panpak file (stub + payload).
+
+// `pack` allocates and frees a large zstd context for every chunk; the musl
+// allocator turns each of those into an mmap/munmap pair and fresh page faults.
+// mimalloc reuses the memory (CLI only; the stub keeps the default allocator).
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use anyhow::{bail, ensure, Context, Result};
 use panpak_core::{bail_code, coded, ensure_code, ErrorCode};
 use panpak_core::{
