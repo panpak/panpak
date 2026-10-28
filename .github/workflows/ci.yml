@@ -1,6 +1,18 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Panpak CI: build, test, clippy, fuzz smoke, reproducibility, distro matrix.
-# Run on push/PR to main. No secrets (only the default read-only token), no publish.
+# No secrets (only the default read-only token), no publish.
+#
+# Where each job runs (the minutes budget is the reason for this split):
+#   - push to main: only the fast checks (build-test with conformance, clippy,
+#     licenses with cargo-deny, DCO, secrets). main receives only fast-forwards
+#     of commits that already passed every job in their pull request, so the
+#     heavy jobs (fuzz-smoke, distro, repro) would repeat that result.
+#   - pull_request: everything. The heavy jobs are skipped when the pull request
+#     touches only documentation (*.md and docs/**); a change to
+#     REPRODUCIBLE-HASHES.md always starts repro.
+#   - workflow_dispatch and the weekly schedule: everything, with a longer fuzz
+#     run on the schedule. This catches new advisories, new nightly toolchains
+#     and drift in the base images even when nobody opens a pull request.
 
 name: ci
 
@@ -8,6 +20,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    # Mondays, 03:17 UTC.
+    - cron: "17 3 * * 1"
+
+# One run per ref: a new push cancels the previous run of the same branch or pull
+# request. The weekly and manual runs have their own group, so a push to main
+# does not cancel them.
+concurrency:
+  group: ci-${{ (github.event_name == 'push' || github.event_name == 'pull_request') && github.ref || format('{0}-{1}', github.event_name, github.ref) }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -22,10 +45,45 @@ env:
   FUZZ_NIGHTLY: "nightly-2026-10-20"
 
 jobs:
+  changes:
+    # Decides whether the heavy jobs are needed for a pull request. Plain git,
+    # no third-party action. Not needed on push: the heavy jobs never run there.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    outputs:
+      heavy: ${{ steps.classify.outputs.heavy }}
+      repro: ${{ steps.classify.outputs.repro }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Classify the changed files
+        id: classify
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            ./scripts/ci-changes.sh "$BASE_SHA" "$HEAD_SHA" | tee -a "$GITHUB_OUTPUT"
+          else
+            printf 'heavy=true\nrepro=true\n' | tee -a "$GITHUB_OUTPUT"
+          fi
+
   build-test:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache the Rust build (registry and target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: build-test-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            build-test-${{ env.RUST_TOOLCHAIN }}-
       - name: Pinned Rust toolchain
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
@@ -58,6 +116,16 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache the Rust build (registry and target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: clippy-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            clippy-${{ env.RUST_TOOLCHAIN }}-
       - name: Pinned Rust toolchain
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
@@ -74,7 +142,12 @@ jobs:
         run: cargo clippy --locked --all-targets --target x86_64-unknown-linux-musl -- -D warnings
 
   fuzz-smoke:
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
+    env:
+      # 30 s per target on pull requests and manual runs, 5 min in the weekly run.
+      FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '300' || '30' }}
     strategy:
       fail-fast: false
       matrix:
@@ -92,16 +165,36 @@ jobs:
           - fuzz_http
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache the cargo-fuzz binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-0.13.2-${{ runner.os }}
+      - name: Cache the fuzz build (registry and fuzz/target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: fuzz-${{ env.FUZZ_NIGHTLY }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.lock') }}
+          restore-keys: |
+            fuzz-${{ env.FUZZ_NIGHTLY }}-
       - name: Nightly toolchain (libfuzzer)
         run: |
           rustup toolchain install "$FUZZ_NIGHTLY" --profile minimal
-          cargo install cargo-fuzz --locked --version 0.13.2
-      - name: Fuzz smoke for 2 minutes
+          if ! ~/.cargo/bin/cargo-fuzz --version 2>/dev/null | grep -qF 0.13.2; then
+            cargo install cargo-fuzz --locked --version 0.13.2
+          fi
+      - name: Fuzz smoke
         run: |
           cd fuzz
-          cargo "+$FUZZ_NIGHTLY" fuzz run "${{ matrix.target }}" -- -max_total_time=120 -print_final_stats=1
+          cargo "+$FUZZ_NIGHTLY" fuzz run "${{ matrix.target }}" -- -max_total_time="$FUZZ_SECONDS" -print_final_stats=1
 
   repro:
+    # No cache of any kind: the double build must start from nothing.
+    needs: changes
+    if: needs.changes.outputs.repro == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -110,13 +203,6 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
-      - name: Cache the cargo registry (never target/)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cache/pip
-          key: repro-${{ hashFiles('Cargo.lock', 'tools/requirements-zig.txt') }}
       - name: Zig (pinned PyPI wheel, hash-checked)
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
@@ -145,15 +231,26 @@ jobs:
         run: ./scripts/check-large-files.sh
       - name: panpak-core and panpak-stub use only zstd 0.14
         run: ./scripts/check-zstd-copies.sh
+      - name: CI helper scripts
+        run: ./tests/ci-changes-test.sh
+      - name: Cache the cargo-deny binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-0.20.2-${{ runner.os }}
       - name: cargo-deny (pinned version)
-        run: cargo install cargo-deny --locked --version 0.20.2
+        run: |
+          if ! ~/.cargo/bin/cargo-deny --version 2>/dev/null | grep -qF 0.20.2; then
+            cargo install cargo-deny --locked --version 0.20.2
+          fi
       - name: cargo-deny (licenses, bans, sources, advisories)
         # The RustSec advisory database is fetched fresh on every run, so new
         # advisories are reported even when nothing in the repository changed.
         run: cargo deny check
 
   distro:
-    needs: build-test
+    needs: [build-test, changes]
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -175,15 +272,29 @@ jobs:
           docker run --rm -v /tmp/panpak-stub-dir/panpak-stub:/panpak-stub:ro "${{ matrix.image }}" /panpak-stub --abi-version
 
   dco:
-    # Developer Certificate of Origin: every commit of a PR must be signed off.
-    if: github.event_name == 'pull_request'
+    # Developer Certificate of Origin: every new commit must be signed off. On a
+    # pull request that is base..head; on a push to main, the pushed range.
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Signed-off-by on every commit
-        run: ./scripts/check-dco.sh "origin/${{ github.base_ref }}" "${{ github.event.pull_request.head.sha }}"
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            ./scripts/check-dco.sh "origin/$BASE_REF" "$PR_HEAD"
+          elif [ "$PUSH_BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            echo "new branch: no previous commit to compare with"
+          else
+            ./scripts/check-dco.sh "$PUSH_BEFORE" "$PUSH_AFTER"
+          fi
 
   secrets:
     # Scans the whole git history for leaked secrets.
