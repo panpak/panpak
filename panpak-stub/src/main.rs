@@ -12,6 +12,9 @@ use std::{
     process::Command,
 };
 
+#[cfg(target_arch = "x86_64")]
+mod probe;
+
 /// Files past this threshold are assembled streaming, not in RAM.
 const MAX_ASSEMBLE: u64 = 8 << 20;
 
@@ -674,14 +677,18 @@ const AGENT_VARS: &[&str] = &["SSH_AUTH_SOCK", "GPG_AGENT_INFO", "SSH_AGENT_PID"
 /// Value that D-Bus libraries (libdbus, GDBus, sd-bus) read as "no bus": an unknown transport.
 const NO_BUS_ADDRESS: &str = "disabled:";
 
-/// Hide the local sockets the environment points to. This is hygiene, not a barrier: below
+/// Hide the local sockets the environment points to. `allows_session` and `allows_system` are true when
+/// the manifest lists that bus; its address variable is then left alone. This is hygiene, not a barrier: below
 /// Landlock V9 the app can still open `$XDG_RUNTIME_DIR/bus` or an agent socket by path.
-fn hide_local_sockets(cmd: &mut Command, allows_bus: bool) {
+fn hide_local_sockets(cmd: &mut Command, allows_session: bool, allows_system: bool) {
     for v in AGENT_VARS {
         cmd.env_remove(v);
     }
-    if !allows_bus {
+    if !allows_session {
         cmd.env("DBUS_SESSION_BUS_ADDRESS", NO_BUS_ADDRESS);
+    }
+    if !allows_system {
+        cmd.env("DBUS_SYSTEM_BUS_ADDRESS", NO_BUS_ADDRESS);
     }
 }
 
@@ -891,6 +898,14 @@ fn real_main() -> Result<()> {
     let access = access_for(&man, &app_dirs)?;
     let (config_dirs, data_dirs) =
         panpak_core::xdg_search_dirs(std::env::var("XDG_CONFIG_DIRS").ok(), std::env::var("XDG_DATA_DIRS").ok())?;
+    // Socket probe (measurement only, off unless asked): the log is opened before Landlock closes the disk.
+    let probe_log = match std::env::var_os("PANPAK_SOCKET_PROBE").filter(|v| !v.is_empty()) {
+        #[cfg(target_arch = "x86_64")]
+        Some(path) => Some(probe::open_log(Path::new(&path))?),
+        #[cfg(not(target_arch = "x86_64"))]
+        Some(_) => bail!("PANPAK_SOCKET_PROBE is only available on x86-64"),
+        None => None,
+    };
     // Before Landlock: `gsettings` and dconf are outside the sandbox.
     let dark_theme = gtk_dark_theme(find_gsettings().as_deref(), GSETTINGS_TIMEOUT);
     let launch = man.launch.as_ref();
@@ -931,16 +946,27 @@ fn real_main() -> Result<()> {
         .env("XDG_CONFIG_DIRS", config_dirs)
         .env("XDG_DATA_DIRS", data_dirs)
         .envs(launch_env);
-    hide_local_sockets(&mut cmd, panpak_core::allows_desktop_bus(man.permissions.as_ref()));
+    hide_local_sockets(
+        &mut cmd,
+        panpak_core::allows_session_bus(man.permissions.as_ref()),
+        panpak_core::allows_system_bus(man.permissions.as_ref()),
+    );
     if let Some(theme) = dark_theme {
         cmd.env("GTK_THEME", theme);
     }
-    let err = cmd
-        .args(&launch_args)
+    cmd.args(&launch_args)
         .args(&app_args)
         .env("PANPAK_APP_ID", &man.app.id)
         .env("LD_LIBRARY_PATH", &ld_path)
-        .exec(); // Replaces the process.
+        .env_remove("PANPAK_SOCKET_PROBE");
+    #[cfg(target_arch = "x86_64")]
+    if let Some(log) = probe_log {
+        // The app runs as a child and this process stays as the supervisor.
+        std::process::exit(probe::run(cmd, log)?);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = probe_log;
+    let err = cmd.exec(); // Replaces the process.
     bail!("exec failed: {err}")
 }
 
@@ -1990,16 +2016,23 @@ mod tests {
     fn local_sockets_are_hidden_from_the_environment() {
         use std::ffi::OsStr;
         let state = |cmd: &Command, name: &str| cmd.get_envs().find(|(k, _)| *k == OsStr::new(name)).map(|(_, v)| v.map(|v| v.to_owned()));
+        let hidden = Some(Some("disabled:".into()));
         let mut cmd = Command::new("true");
-        hide_local_sockets(&mut cmd, false);
+        hide_local_sockets(&mut cmd, false, false);
         for v in ["SSH_AUTH_SOCK", "GPG_AGENT_INFO", "SSH_AGENT_PID"] {
             assert_eq!(state(&cmd, v), Some(None), "{v} must be removed");
         }
-        assert_eq!(state(&cmd, "DBUS_SESSION_BUS_ADDRESS"), Some(Some("disabled:".into())));
-        // With the bus declared in the manifest the address is left alone; the agents still go.
+        assert_eq!(state(&cmd, "DBUS_SESSION_BUS_ADDRESS"), hidden);
+        assert_eq!(state(&cmd, "DBUS_SYSTEM_BUS_ADDRESS"), hidden);
+        // Each bus is kept only when the manifest lists it; the agents always go.
         let mut cmd = Command::new("true");
-        hide_local_sockets(&mut cmd, true);
+        hide_local_sockets(&mut cmd, true, false);
         assert_eq!(state(&cmd, "DBUS_SESSION_BUS_ADDRESS"), None);
+        assert_eq!(state(&cmd, "DBUS_SYSTEM_BUS_ADDRESS"), hidden);
+        let mut cmd = Command::new("true");
+        hide_local_sockets(&mut cmd, false, true);
+        assert_eq!(state(&cmd, "DBUS_SESSION_BUS_ADDRESS"), hidden);
+        assert_eq!(state(&cmd, "DBUS_SYSTEM_BUS_ADDRESS"), None);
         assert_eq!(state(&cmd, "SSH_AUTH_SOCK"), Some(None));
     }
 
