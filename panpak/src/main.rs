@@ -1266,9 +1266,12 @@ fn launcher_sh(runtime: &Path, current_link: &Path) -> String {
     )
 }
 
+/// The entry declares no MimeType: the manifest has no field for MIME types, and
+/// `application/x-panpak` is the type of the packages themselves, not of the
+/// files an app opens.
 fn desktop_file(name: &str, launcher: &Path) -> String {
     format!(
-        "[Desktop Entry]\nType=Application\nName={name}\nExec={} %U\nTerminal=false\nCategories=Utility;\nMimeType=application/x-panpak;\n",
+        "[Desktop Entry]\nType=Application\nName={name}\nExec={} %U\nTerminal=false\nCategories=Utility;\n",
         launcher.display()
     )
 }
@@ -2049,6 +2052,6 @@ mod tests {
         let d = desktop_file("X App", Path::new("/home/u/.local/bin/org.x"));
         assert!(d.contains("Name=X App"));
         assert!(d.contains("Exec=/home/u/.local/bin/org.x"));
-        assert!(d.contains("MimeType=application/x-panpak;"));
+        assert!(!d.contains("MimeType"), "an app must not claim the package type: {d}");
     }
 }

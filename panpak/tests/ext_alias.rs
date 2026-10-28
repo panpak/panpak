@@ -133,3 +133,14 @@ fn correct_magic_with_other_extension_is_accepted() {
     let i = cli(&env, &["install", "--yes", "whatever.bin"]);
     assert!(i.status.success(), "{}", text(&i));
 }
+
+#[test]
+fn installed_desktop_entry_does_not_claim_the_package_type() {
+    let env = setup("desktop");
+    assert!(pack(&env, Some("a.panpak")).status.success());
+    let i = cli(&env, &["install", "--yes", "a.panpak"]);
+    assert!(i.status.success(), "{}", text(&i));
+    let entry = fs::read_to_string(env.dir.join("data/applications/org.example.ext.desktop")).unwrap();
+    assert!(entry.contains("Name=Ext"), "{entry}");
+    assert!(!entry.contains("MimeType"), "{entry}");
+}
