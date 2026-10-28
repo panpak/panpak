@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tempfile
 
+import isolation
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 from incremental import BIN, PUBLIC, run
@@ -16,6 +18,7 @@ from incremental import BIN, PUBLIC, run
 def main():
     with tempfile.TemporaryDirectory(prefix='panpak-sqlitetmp-') as tmp:
         tmp = Path(tmp)
+        isolation.require_isolated_home(tmp, tmp)
         env = dict(os.environ, HOME=str(tmp), XDG_DATA_HOME=str(tmp / 'data'))
         env.pop('SQLITE_TMPDIR', None)
         tree = tmp / 'tree'

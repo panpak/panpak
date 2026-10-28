@@ -29,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / 'target/x86_64-unknown-linux-musl/release'
 sys.path.insert(0, str(ROOT / 'tests'))
 from pilot_cycle import environment  # noqa: E402
+import isolation  # noqa: E402
 
 ORIG = Path(os.environ.get('PANPAK_PILOT_DIR', str(Path.home() / 'panpak-bench/pilot'))) / 'Joplin-3.7.21.AppImage'
 FUSE = os.environ.get('PANPAK_FUSE_LIB', str(Path.home() / 'fuse2')) + '/lib/x86_64-linux-gnu'
@@ -57,6 +58,7 @@ def main():
     out = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else None
     home = ROOT / 'target/pilot-current/home'
     work = ROOT / 'target/pilot-current'
+    isolation.require_isolated_home(home, work)
     pkg = work / 'packages/joplin.panpak'
     tree = home / '.local/share/panpak/trees' / pkg_root(pkg)
     appdata = home / '.local/share/org.example.joplin'
@@ -77,11 +79,11 @@ def main():
         def fresh_real(path):
             link = home / '.config/joplin-desktop'
             if link.is_symlink() or link.is_file():
-                link.unlink()
+                isolation.safe_unlink(link, work)
             elif link.is_dir():
-                shutil.rmtree(link)
+                isolation.safe_rmtree(link, work, ignore_errors=False)
             if path.exists():
-                shutil.rmtree(path)
+                isolation.safe_rmtree(path, work, ignore_errors=False)
             path.mkdir(parents=True)
             return path
 
@@ -101,7 +103,7 @@ def main():
             # environment() recreates the adapter symlink: real dirs needed here
             link = home / '.config/joplin-desktop'
             if link.is_symlink():
-                link.unlink()
+                isolation.safe_unlink(link, work)
             argv = ([home / '.local/bin/org.example.joplin'] if mode == 'sandbox'
                     else [tree / 'joplin']) + extra + ['--no-sandbox', '--disable-gpu']
             logf = open(work / f'probe-{name}.log', 'w')
@@ -118,7 +120,7 @@ def main():
             p.wait(timeout=10)
             logf.close()
             time.sleep(2)
-            shutil.rmtree(env['XDG_RUNTIME_DIR'], ignore_errors=True)
+            isolation.safe_rmtree(env['XDG_RUNTIME_DIR'], work)
             db = profdir / 'database.sqlite'
             log = profdir / 'log.txt'
             warns = [l[:160] for l in log.read_text(errors='replace').splitlines()
@@ -132,7 +134,7 @@ def main():
         server.wait(timeout=5)
         os.close(fd)
         try:
-            (work / 'display-probe').unlink()
+            isolation.safe_unlink(work / 'display-probe', work)
         except FileNotFoundError:
             pass
     if out:

@@ -20,6 +20,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pilot_cycle import environment
+import isolation
 
 
 def main():
@@ -30,6 +31,7 @@ def main():
     if action == 'start':
         app = sys.argv[3]
         home = work / 'home'
+        isolation.require_isolated_home(home, work)
         appdata = home / '.local/share' / f'org.example.{app}'
         fd = os.open(work / 'gui-display', os.O_CREAT | os.O_RDWR | os.O_TRUNC, 0o600)
         xvfb = shutil.which('Xvfb') or str(Path.home() / 'xvfb/usr/bin/Xvfb')
@@ -58,7 +60,7 @@ def main():
             for pid in (state['pid'], state['server']):
                 try: os.killpg(pid, signal.SIGKILL)
                 except ProcessLookupError: pass
-            shutil.rmtree(state.get('runtime', '/nonexistent'), ignore_errors=True)
+            isolation.safe_rmtree(state.get('runtime', '/nonexistent'), work)
         elif action == 'screenshot':
             subprocess.run(['import', '-window', 'root', work / 'gui.png'], env=env, check=True)
             print(work / 'gui.png')

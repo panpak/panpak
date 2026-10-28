@@ -7,7 +7,10 @@ dedicated directory (PANPAK_STORE or <bench-home>/.local/share/panpak),
 never the user's ~/.local/share/panpak.
 Environment variables (see bench/README.md): PANPAK_BENCH_DIR,
 PANPAK_PKGS_DIR, PANPAK_PKG_EXT, PANPAK_STORE, PANPAK_BENCH_HOME,
-PANPAK_BENCH_WIPE.
+PANPAK_BENCH_WIPE, PANPAK_APPIMAGE_DIR.
+The bench HOME, the bench store and the AppImage copy directory MUST be inside
+PANPAK_BENCH_DIR (the work directory) and the HOME must not be your real home;
+PANPAK_ALLOW_REAL_HOME=1 skips only the HOME check (see tests/isolation.py).
 """
 import argparse
 import json
@@ -17,6 +20,8 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests"))
+import isolation
 import measure as M
 from measure import bench, du, install_panpak
 
@@ -28,6 +33,8 @@ OFF = M.OFF
 
 
 def wipe_store(store):
+    # Never delete outside the work directory.
+    isolation.require_inside(store, B, "the bench store")
     # Read-only trees: chmod first.
     for d in ["apps", "packages", "trees", "blobs", "chunks", "farms"]:
         p = os.path.join(store, d)
@@ -45,7 +52,12 @@ def main():
     # Dedicated bench HOME BEFORE any user path: Rust runtime
     # (store, launchers, desktop) and Python paths all follow from here.
     os.environ["HOME"] = os.environ.get("PANPAK_BENCH_HOME", os.path.join(B, "home"))
+    isolation.require_isolated_home(os.environ["HOME"], B)
     store = M.store_dir()
+    isolation.require_inside(store, B, "the bench store")
+    # AppImage copies go inside the work directory, never to ~/Applications.
+    APPIMG_DIR = os.environ.get("PANPAK_APPIMAGE_DIR", os.path.join(B, "appimages"))
+    isolation.require_inside(APPIMG_DIR, B, "the AppImage directory")
     launch = M.launch_dir()
     confirmed = args.yes or os.environ.get("PANPAK_BENCH_WIPE") == "1"
     if not confirmed:
@@ -80,7 +92,6 @@ def main():
 
     # install 10x per app (panpak) + appimage-cp 10x
     import shutil
-    APPIMG_DIR = os.path.expanduser("~/Applications")
     os.makedirs(APPIMG_DIR, exist_ok=True)
 
     INSTALL_PLAN = [

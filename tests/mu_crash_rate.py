@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / 'target/x86_64-unknown-linux-musl/release'
 sys.path.insert(0, str(ROOT / 'tests'))
 from pilot_cycle import environment  # noqa: E402
+import isolation  # noqa: E402
 
 RUNS = int(sys.argv[1]) if len(sys.argv) > 1 else 50
 WORK = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else (ROOT / 'target/mu-rate')
@@ -48,9 +49,9 @@ def wipe_mu_profile(home):
                 '.ipython', 'mu_code', '.config/mu', '.cache/mu'):
         p = home / rel
         if p.is_symlink() or p.is_file():
-            p.unlink()
+            isolation.safe_unlink(p, WORK)
         elif p.is_dir():
-            shutil.rmtree(p, ignore_errors=True)
+            isolation.safe_rmtree(p, WORK)
 
 
 def install(home):
@@ -86,6 +87,8 @@ def one_run(argv, env, cwd):
 
 
 def main():
+    isolation.require_isolated_home(WORK / 'home', WORK)
+    isolation.require_isolated_home(WORK / 'home-orig', WORK)
     WORK.mkdir(parents=True, exist_ok=True)
     (WORK / 'packages').mkdir(exist_ok=True)
     if not (WORK / 'packages/mu.panpak').exists():
@@ -115,7 +118,7 @@ def main():
             env0 = environment(home, 'mu', display)
             one_run([home / '.local/bin/org.example.mu'], env0,
                     home / '.local/share/org.example.mu')
-            shutil.rmtree(env0['XDG_RUNTIME_DIR'], ignore_errors=True)
+            isolation.safe_rmtree(env0['XDG_RUNTIME_DIR'], WORK)
             wipe_mu_profile(home)
         assert (tree / 'AppRun').exists(), tree
 
@@ -146,7 +149,7 @@ def main():
                                XDG_RUNTIME_DIR=str(rt),
                                LD_LIBRARY_PATH=FUSE + ':' + os.environ.get('LD_LIBRARY_PATH', ''))
                     rows.append(one_run([ORIG], env, home_orig))
-                    shutil.rmtree(rt, ignore_errors=True)
+                    isolation.safe_rmtree(rt, WORK)
                 else:
                     wipe_mu_profile(home)
                     env = environment(home, 'mu', display)
@@ -156,7 +159,7 @@ def main():
                     else:
                         argv = [tree / 'AppRun']
                     rows.append(one_run(argv, env, appdata))
-                    shutil.rmtree(env['XDG_RUNTIME_DIR'], ignore_errors=True)
+                    isolation.safe_rmtree(env['XDG_RUNTIME_DIR'], WORK)
                 results[cfg] = rows
                 results_path.write_text(json.dumps(results, indent=2))
                 if (i + 1) % 10 == 0:

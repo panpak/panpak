@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 sys.path.insert(0, str(ROOT / 'bench'))
 from bench import evict, BASE_ENV  # noqa: E402
+import isolation  # noqa: E402
 
 BIN = ROOT / 'target/x86_64-unknown-linux-musl/release'
 FUSE = os.environ.get('PANPAK_FUSE_LIB', str(Path.home() / 'fuse2/lib/x86_64-linux-gnu'))
@@ -96,6 +97,8 @@ def install(home, pkg):
 def main():
     only = sys.argv[2] if len(sys.argv) > 2 else 'all'
     out_path = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else WORK / 'warm-compare.json'
+    isolation.require_isolated_home(WORK / 'home', WORK)
+    isolation.require_isolated_home(WORK / 'home-orig', WORK)
     WORK.mkdir(parents=True, exist_ok=True)
     res = json.loads(out_path.read_text()) if out_path.exists() else {}
     home = WORK / 'home'
@@ -199,8 +202,7 @@ def main():
                 for d in (prof_n, prof_o):
                     d.mkdir(parents=True, exist_ok=True)
                 env_n = environment(home, 'joplin', display)
-                rt = Path(f'/tmp/ngrt-warm-{os.getpid()}')
-                rt.mkdir(exist_ok=True)
+                rt = Path(isolation.owned_mkdtemp('ngrt-warm-'))
                 env_o = dict(BASE_ENV, HOME=str(WORK / 'home-orig'), DISPLAY=display,
                              XDG_SESSION_TYPE='x11', XDG_RUNTIME_DIR=str(rt),
                              LD_LIBRARY_PATH=FUSE + ':' + BASE_ENV.get('LD_LIBRARY_PATH', ''))
@@ -220,7 +222,7 @@ def main():
                     except (ProcessLookupError, PermissionError):
                         pass
                     p.wait(timeout=10)
-                shutil.rmtree(env_n['XDG_RUNTIME_DIR'], ignore_errors=True)
+                isolation.safe_rmtree(env_n['XDG_RUNTIME_DIR'], WORK)
 
                 tree = home / '.local/share/panpak/trees' / pkg_root(jp)
                 cols = dict(res.get('joplin', {}))
@@ -256,7 +258,7 @@ def main():
                     cols[cname] = out
                     res['joplin'] = cols
                     out_path.write_text(json.dumps(res, indent=2))
-                shutil.rmtree(rt, ignore_errors=True)
+                isolation.safe_rmtree(rt, WORK)
             finally:
                 server.terminate()
                 server.wait(timeout=5)

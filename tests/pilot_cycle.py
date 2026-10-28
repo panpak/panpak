@@ -3,6 +3,8 @@
 """Repeat pilot in an isolated HOME, dedicated Xvfb, without using desktop data.
 
 Usage: python3 tests/pilot_cycle.py package-directory work-directory
+HOME is work-directory/home; the script refuses to run unless that is inside the
+work directory and is not your real home (see tests/isolation.py).
 Rebuild release first. Existing converted payloads retained; only metadata
 (test key, X11 for xcb apps) is re-signed. No blanket allow_missing.
 """
@@ -20,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / 'target/x86_64-unknown-linux-musl/release'
 sys.path.insert(0, str(ROOT / 'tests'))
 from incremental import KEY, PUBLIC
+import isolation
 
 APPS = ['audacity', 'qbittorrent', 'kdenlive', 'krita', 'darktable',
         'rawtherapee', 'bitwarden', 'joplin', 'openshot', 'mu']
@@ -27,6 +30,7 @@ APPS = ['audacity', 'qbittorrent', 'kdenlive', 'krita', 'darktable',
 
 def prepare(source, work):
     home = work / 'home'
+    isolation.require_isolated_home(home, work)
     home.mkdir(parents=True, exist_ok=True)
     packages = work / 'packages'
     packages.mkdir(exist_ok=True)
@@ -54,6 +58,7 @@ def prepare(source, work):
 
 
 def environment(home, app, display):
+    isolation.require_isolated_home(home, home.parent)
     appdata = home / '.local/share' / f'org.example.{app}'
     appdata.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(home / '.local/share'),
@@ -62,8 +67,7 @@ def environment(home, app, display):
                QT_QPA_PLATFORM='xcb', XAUTHORITY='', GSETTINGS_BACKEND='memory')
     # sockaddr_un paths are limited to 108 bytes: long work directories
     # otherwise make KIO/QLocalServer fail with "Unknown error 18".
-    import tempfile
-    env['XDG_RUNTIME_DIR'] = tempfile.mkdtemp(prefix='ngrt-')
+    env['XDG_RUNTIME_DIR'] = isolation.owned_mkdtemp('ngrt-')
     for name in ('config', 'cache'):
         (appdata / name).mkdir(exist_ok=True)
     # Documented path adapters, not new Landlock rules.
@@ -130,7 +134,7 @@ def main():
                 import signal
                 os.killpg(p.pid, signal.SIGKILL)
             p.wait(timeout=10)
-            shutil.rmtree(env['XDG_RUNTIME_DIR'], ignore_errors=True)
+            isolation.safe_rmtree(env['XDG_RUNTIME_DIR'], work)
             log.close()
             (work / 'results.json').write_text(json.dumps(results, indent=2))
     finally:

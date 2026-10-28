@@ -14,6 +14,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+
+import isolation
 import time
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -60,6 +62,7 @@ def resign(data, version, port):
 def main():
     with tempfile.TemporaryDirectory(prefix="panpak-incremental-") as tmp:
         tmp = Path(tmp)
+        isolation.require_isolated_home(tmp, tmp)
         env = dict(os.environ, HOME=str(tmp), XDG_DATA_HOME=str(tmp / "data"))
         env['PANPAK_RANGE_LOG'] = str(tmp / 'ranges.jsonl')
         sock = socket.socket()

@@ -13,7 +13,9 @@ no hardcoded usernames.
 | `PANPAK_PILOT_ORIG` | directory with the original Joplin AppImage (only `warm_compare.py`) | `~/panpak-bench/pilot` |
 | `PANPAK_BENCH_WIPE` | `=1` confirms the bench store wipe (otherwise `--yes` is required) | unset |
 | `PANPAK_STORE` | dedicated bench store (never the user one) | `<bench-home>/.local/share/panpak` |
-| `PANPAK_BENCH_HOME` | dedicated bench HOME (store, launchers, desktop follow it) | `<PANPAK_BENCH_DIR>/home` |
+| `PANPAK_BENCH_HOME` | dedicated bench HOME (store, launchers, desktop follow it); MUST be inside `PANPAK_BENCH_DIR` | `<PANPAK_BENCH_DIR>/home` |
+| `PANPAK_APPIMAGE_DIR` | where `campaign.py` copies AppImages for the install timing; MUST be inside `PANPAK_BENCH_DIR` | `<PANPAK_BENCH_DIR>/appimages` |
+| `PANPAK_ALLOW_REAL_HOME` | `=1` skips ONLY the check that HOME is inside the work directory and is not your real home (deleting outside the work directory stays refused) | unset |
 
 `campaign.py` does nothing on import (everything in `main()`); without
 `--yes` or `PANPAK_BENCH_WIPE=1` it refuses to wipe and prints the exact

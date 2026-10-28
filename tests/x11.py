@@ -12,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 
+import isolation
+
 ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / 'target/x86_64-unknown-linux-musl/release'
 sys.path.insert(0, str(ROOT / 'tests'))
@@ -22,6 +24,7 @@ def main():
     xvfb = shutil.which('Xvfb') or str(Path.home() / 'xvfb/usr/bin/Xvfb')
     with tempfile.TemporaryDirectory(prefix='panpak-x11-') as tmp:
         tmp = Path(tmp)
+        isolation.require_isolated_home(tmp, tmp)
         fd = os.open(tmp / 'display', os.O_CREAT | os.O_RDWR, 0o600)
         server = subprocess.Popen([xvfb, '-displayfd', str(fd), '-ac', '-screen', '0', '1280x800x24'],
                                   pass_fds=[fd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
