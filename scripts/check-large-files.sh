@@ -4,20 +4,29 @@
 # scripts/large-files-allowed.txt (one path per line, '#' starts a comment).
 # Keeps third-party binaries and other bulky blobs out of the repository.
 # Usage: scripts/check-large-files.sh
+# Exit status: 0 ok, 1 a file is too large, 2 git, stat or allow-list failure.
 set -eu
 cd "$(dirname "$0")/.."
 LIMIT=1048576
 ALLOW=scripts/large-files-allowed.txt
-allowed=$(grep -v '^#' "$ALLOW" | grep -v '^$' || true)
-bad=$(git ls-files -z | xargs -0 stat -c '%s %n' |
-  awk -v l="$LIMIT" '$1 > l { print }' |
-  while IFS= read -r line; do
-    path=${line#* }
-    printf '%s\n' "$allowed" | grep -qxF -- "$path" || printf '%s\n' "$line"
-  done)
-if [ -n "$bad" ]; then
+if [ ! -r "$ALLOW" ]; then
+  echo "error: cannot read $ALLOW" >&2
+  exit 2
+fi
+tmp=$(mktemp -d) || { echo "error: cannot create a temporary directory" >&2; exit 2; }
+trap 'rm -rf "$tmp"' EXIT
+fail() { echo "error: $1" >&2; exit 2; }
+
+git ls-files -z > "$tmp/files" || fail "git ls-files failed"
+[ -s "$tmp/files" ] || fail "no tracked files found"
+xargs -0 stat -c '%s %n' < "$tmp/files" > "$tmp/sizes" || fail "stat failed on a tracked file"
+awk -v l="$LIMIT" -v allow="$ALLOW" '
+  FILENAME == allow { if ($0 !~ /^#/ && $0 != "") ok[$0] = 1; next }
+  $1 > l { p = substr($0, index($0, " ") + 1); if (!(p in ok)) print }
+' "$ALLOW" "$tmp/sizes" > "$tmp/bad" || fail "awk failed"
+if [ -s "$tmp/bad" ]; then
   echo "tracked files over $LIMIT bytes and not listed in $ALLOW:"
-  printf '%s\n' "$bad"
+  cat "$tmp/bad"
   exit 1
 fi
 echo "large files: ok"
