@@ -25,7 +25,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [-o <out.panpak>]\n  panpak install-runtime <stub>
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--runtime <stub>] <package>\n  panpak update [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak rollback <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--runtime <stub>] <package>\n  panpak update [--yes] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak rollback <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -132,7 +132,7 @@ fn coalesce_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 /// local package (byte-identical), index/manifest/footer from remote.
 /// Only missing chunks travel the network. Full verification of the assembled
 /// file before publishing it; current stays intact on error.
-fn cmd_update(app_id: &str, allow_downgrade: bool, allow_insecure: bool, timeout_secs: u64) -> Result<PathBuf> {
+fn cmd_update(app_id: &str, yes: bool, allow_downgrade: bool, allow_insecure: bool, timeout_secs: u64) -> Result<PathBuf> {
     use std::collections::HashMap;
     panpak_core::validate_app_id(app_id)?;
     let store = store_dir()?;
@@ -288,6 +288,19 @@ fn cmd_update(app_id: &str, allow_downgrade: bool, allow_insecure: bool, timeout
         let comp = panpak_core::read_at(&mut vf, c.off, c.comp as u64)?;
         dec.decode(&comp, c.raw as u64, &mut raw)?;
         panpak_core::verify_chunk(c, &raw)?;
+    }
+    // New permissions need a yes before the update is published (current stays on a no).
+    print_permissions(&vman);
+    let added = panpak_core::added_permissions(&old_man, &vman);
+    if !added.is_empty() {
+        println!("WARNING: this update asks for permissions the installed version did not have:");
+        for a in &added {
+            println!("  {a}");
+        }
+        if let Err(e) = confirm("Accept them and update?", yes, ErrorCode::E1003, "new permissions") {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
     }
     fs::rename(&tmp, &dest)?;
 
@@ -1442,6 +1455,73 @@ fn tofu_confirmation(input: &str) -> bool {
     matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
+/// Ask a yes/no question on the terminal. Without a terminal the caller needs `--yes`.
+fn confirm(question: &str, yes: bool, cancelled: ErrorCode, what: &str) -> Result<()> {
+    if yes {
+        return Ok(());
+    }
+    ensure_code!(
+        std::io::IsTerminal::is_terminal(&std::io::stdin()),
+        ErrorCode::E5004,
+        "non-interactive stdin: pass --yes after checking the {what}"
+    );
+    print!("{question} [y/N] ");
+    std::io::stdout().flush()?;
+    let mut ans = String::new();
+    std::io::stdin().read_line(&mut ans)?;
+    ensure_code!(tofu_confirmation(&ans), cancelled, "{what} not accepted: cancelled");
+    Ok(())
+}
+
+/// Print what the package may do: permissions and extra start arguments or variables.
+fn print_permissions(man: &panpak_core::Manifest) {
+    let lines = panpak_core::describe_permissions(man);
+    if lines.is_empty() {
+        println!("permissions: none beyond the private app folders");
+    } else {
+        println!("permissions:");
+        for l in &lines {
+            // Warnings stand out: no indent.
+            if l.starts_with("WARNING:") {
+                println!("{l}");
+            } else {
+                println!("  {l}");
+            }
+        }
+    }
+    if let Some(l) = &man.launch {
+        let args = l.args.as_deref().unwrap_or_default();
+        if !args.is_empty() {
+            println!("extra start arguments: {}", args.join(" "));
+        }
+        for (k, v) in l.env.iter().flatten() {
+            println!("extra environment: {k}={v}");
+        }
+    }
+}
+
+/// `panpak data path|clear <app-id>`: the private folders of an app.
+fn cmd_data(action: &str, app_id: &str, yes: bool) -> Result<()> {
+    let dirs = panpak_core::app_dirs(app_id)?;
+    match action {
+        "path" => {
+            println!("data:  {}", dirs.root.display());
+            println!("cache: {}", dirs.cache.display());
+            Ok(())
+        }
+        _ => {
+            println!("This deletes the settings and data of {app_id}:");
+            for root in dirs.roots() {
+                println!("  {}", root.display());
+            }
+            confirm("Delete them?", yes, ErrorCode::E1003, "deletion")?;
+            let removed = dirs.clear()?;
+            println!("deleted {} folder(s)", removed.len());
+            Ok(())
+        }
+    }
+}
+
 fn cmd_install(pkg: &Path, yes: bool, runtime_opt: Option<&Path>) -> Result<PathBuf> {
     let store = store_dir()?;
     if let Some(rt) = runtime_opt {
@@ -1480,8 +1560,10 @@ fn cmd_install(pkg: &Path, yes: bool, runtime_opt: Option<&Path>) -> Result<Path
     if pin.exists() {
         let old = fs::read_to_string(&pin)?;
         ensure_code!(old.trim() == key.trim(), ErrorCode::E1004, "key DIFFERS from TOFU pin: possible attack or changed author; manual reinstall required");
+        print_permissions(&man);
     } else {
         println!("app: {} {} ({})", man.app.id, man.app.name, man.app.version);
+        print_permissions(&man);
         println!("key fingerprint (TOFU, first 16 hex): {fp}");
         if let Some(o) = man.origin.as_ref() {
             println!("WARNING: THIRD-PARTY CONVERTED package, not verified by the upstream author:");
@@ -1555,6 +1637,11 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
     match panpak_core::detect_abi() {
         Ok(abi) => line(true, &format!("kernel {release}, Landlock {abi:?} ({})", abi_features(abi))),
         Err(e) => line(false, &format!("kernel {release}, Landlock unavailable ({}); kernel >= 5.13 with CONFIG_SECURITY_LANDLOCK=y required", panpak_core::err_text(&e))),
+    }
+    if let Ok(abi) = panpak_core::detect_abi() {
+        if abi < landlock::ABI::V9 {
+            println!("NOTE kernel Landlock {abi:?} cannot filter Unix socket paths (V9): every app can reach the desktop session bus; see THREAT-MODEL.md");
+        }
     }
     // User namespaces (needed by containers/tooling, not the stub).
     match fs::read_to_string("/proc/sys/user/max_user_namespaces") {
@@ -1698,7 +1785,7 @@ fn generic_code(sub: Option<&str>) -> ErrorCode {
     match sub {
         Some("pack" | "convert" | "dump-index" | "dump-manifest") => ErrorCode::E0000,
         Some("keygen" | "release" | "install-runtime") => ErrorCode::E1000,
-        Some("install" | "rollback" | "open" | "doctor" | "desktop-integration") => ErrorCode::E2000,
+        Some("install" | "rollback" | "open" | "doctor" | "desktop-integration" | "data") => ErrorCode::E2000,
         Some("update") => ErrorCode::E4000,
         _ => ErrorCode::E5000,
     }
@@ -1892,7 +1979,27 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             }
             Ok(())
         }
+        Some("data") => {
+            let mut yes = false;
+            let mut words: Vec<&str> = Vec::new();
+            for a in &args[2..] {
+                match a.as_str() {
+                    "--yes" => yes = true,
+                    x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    x => words.push(x),
+                }
+            }
+            match words.as_slice() {
+                [action @ ("path" | "clear"), id] => {
+                    ensure_code!(yes <= (*action == "clear"), ErrorCode::E5001, "--yes only goes with `data clear`");
+                    cmd_data(action, id, yes)
+                }
+                [] | ["path" | "clear"] => bail_code!(ErrorCode::E5002, "data path <app-id> | data clear [--yes] <app-id>"),
+                _ => bail_code!(ErrorCode::E5001, "unexpected argument\n{usage}", usage = usage()),
+            }
+        }
         Some("update") => {
+            let mut yes = false;
             let mut allow = false;
             let mut insecure = false;
             let mut timeout = 30u64;
@@ -1900,6 +2007,10 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
+                    "--yes" => {
+                        yes = true;
+                        i += 1;
+                    }
                     "--allow-downgrade" => {
                         allow = true;
                         i += 1;
@@ -1920,7 +2031,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                     }
                 }
             }
-            cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, allow, insecure, timeout)?;
+            cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, yes, allow, insecure, timeout)?;
             Ok(())
         }
         Some("dump-index") | Some("dump-manifest") => {
