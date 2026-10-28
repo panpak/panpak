@@ -62,6 +62,29 @@ The local store (`~/.local/share/panpak`) is considered **trusted**
   indexes) failed even with a writable DB. Only SQLite reads this
   variable; `/tmp` stays shared as above.
 
+### 2.1 Installation: paths, `.desktop` files and links (tested)
+
+A signed package is attacker-controlled data, as in A1: the signature proves
+who wrote the manifest, not that its text is harmless. Several fields become
+file names or file content outside the store.
+
+| Threat | Defence |
+|---|---|
+| `app.id` such as `../../x` or `/etc/x` makes `install`, `update`, `rollback`, `open` or the stub build a path outside the store, the launcher directory or the data directory | One grammar for `app.id` (spec §3.1.1), checked inside `panpak_core::verify`, so every command and the stub refuse it even when the package is signed (`PANPAK-E0006`). Ids given on the command line use the same check. Test: `hostile_manifest_fields_write_nothing`, conformance fixtures `invalid-id-*` |
+| `app.name` or another text field with a line break adds keys such as `Exec=` to the `.desktop` file, or terminal escape sequences to the TOFU prompt | Text fields reject control, line-separator and bidirectional characters (`PANPAK-E0007`). The `.desktop` writer also escapes values as the Desktop Entry Specification requires and quotes the `Exec` path (spaces, `"`, `` ` ``, `$`, `\`, `%`). Test: `desktop_entry_values_cannot_start_a_line`, fixture `invalid-name-newline` |
+| `app.entry`, `[abi]` library names or index paths with `..`, `/` or control characters reach `Command::new(tree.join(entry))` or `farm.join(name)` | Same field rules in `verify`; index paths and symlink targets reject control characters. Fixtures `invalid-entry-*`, `invalid-abi-name`, `invalid-index-control` |
+| A symbolic link planted at `~/.local/bin/<id>` or `applications/<id>.desktop` makes `install` or `update` overwrite another file | The destination is checked with `lstat`; a link, a directory or a non-regular file is refused (`PANPAK-E2001`). The file is written to a temporary file in the same directory (O_EXCL, O_NOFOLLOW) and renamed over the destination, which replaces a link instead of following it. Test: `symlink_in_place_of_the_launcher_is_refused` |
+| `install` overwrites a launcher or `.desktop` file of another program | A file is replaced only if it carries panpak's marker for the same app (`# X-Panpak-App-Id:` in the launcher, `X-Panpak-App-Id=` in the `.desktop` file) or is one written by an older panpak. The check runs before the store is touched. Test: `foreign_files_are_not_overwritten` |
+| `panpak convert` copies strings from an untrusted AppImage (names, versions, file names) into `panpak.toml` or into a shell wrapper, so a quote or a newline adds a `[permissions]` section or shell code | The strings go through the TOML serializer and are single-quoted for the shell. Test: `convert_strings_cannot_add_keys_or_sections` |
+| A launcher path with shell metacharacters (`$`, backtick, `'`) in `$HOME` runs code when the launcher starts | Paths are single-quoted in the generated launcher; control characters in them are refused |
+
+Not covered: a same-uid process that swaps a destination between the check and
+the rename (the home directory is trusted, see §1), and a parent directory
+(for example `~/.local/bin`) that is itself a link, which users may set up on
+purpose. The test and bench scripts are development tools; they refuse to run
+with a HOME outside their work directory and never delete outside it
+(`tests/isolation.py`).
+
 ## 3. What the sandbox does NOT guarantee
 
 **X11 opt-in (`[permissions] x11 = true`)**: default false. The opt-in

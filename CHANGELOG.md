@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **Security: paths and text from the manifest.** `app.id` has one strict
+  grammar (spec §3.1.1) and every manifest field that becomes a path, a file
+  name, a `.desktop` line or terminal text is checked in `verify`, so a signed
+  package cannot make `panpak` or the stub write outside the store (new codes
+  `PANPAK-E0006`, `PANPAK-E0007`). `rollback` and `open` check the id they are
+  given. Index paths and symlink targets reject control characters.
+- **Security: launchers and `.desktop` files.** Written through a temporary
+  file and a rename, never through a symbolic link, and only over a file that
+  panpak wrote for the same app (`PANPAK-E2001`). Values are escaped as the
+  Desktop Entry Specification requires and the `Exec` path is quoted.
+  `panpak convert` escapes the strings it copies from an AppImage.
+- **Test and bench scripts** refuse to run when HOME is not inside their work
+  directory and never delete outside it; `bench/campaign.py` no longer copies
+  into `~/Applications`.
+
 ## 0.1.0
 
 First version. Format v1, runtime ABI 1.
