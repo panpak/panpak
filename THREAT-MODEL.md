@@ -121,8 +121,10 @@ replacing a path by a link afterwards does not widen the access. An `rw` path is
 readable and writable by the app and by every other process of the user.
 
 An update that adds permissions (X11, network, a port, a socket, a home path or
-`ro` raised to `rw`) is not published without a yes (`PANPAK-E1003`, or
-`PANPAK-E5004` without a terminal and without `--yes`).
+`ro` raised to `rw`) is not published without an explicit yes: an answer at a
+terminal, or `--accept-new-permissions`. `--yes` never accepts them
+(`PANPAK-E5004`; `PANPAK-E1003` when the answer is no). Installing a package over an
+installed app follows the same rule.
 
 ## 3. What the sandbox does NOT guarantee
 
@@ -155,8 +157,25 @@ default refused, opt-in works; signals to the parent still denied.
   below V9 (the stub refuses it there). On V9 the default is the opposite: a
   path socket is denied unless `sockets_allow` lists it. A package that lists
   a bus socket makes `install` and `update` print "Full access to desktop
-  services (D-Bus): this app is not isolated". `panpak doctor` prints a note
-  on kernels below V9. A D-Bus filter is planned for phase 3.
+  services (D-Bus): this app is not isolated". A D-Bus filter is planned for
+  phase 3.
+
+  What the stub does today, and what it does not: it removes `SSH_AUTH_SOCK`,
+  `GPG_AGENT_INFO` and `SSH_AGENT_PID` from the environment of every app, and it
+  sets `DBUS_SESSION_BUS_ADDRESS=disabled:` unless the manifest lists a D-Bus
+  socket. Libdbus, GDBus and sd-bus then report no bus (tested against a
+  private bus; sd-bus would otherwise find `$XDG_RUNTIME_DIR/bus`). This is
+  hygiene. An app that opens the socket by path still reaches the bus below
+  Landlock V9. The system bus (`DBUS_SYSTEM_BUS_ADDRESS`) is not touched.
+  One function (`panpak_core::socket_isolation`) decides from the kernel and
+  the permissions whether an app is isolated from local sockets. `panpak doctor`
+  shows the level, and `install` and `update` print "WARNING: on this kernel the
+  sandbox cannot block local sockets (D-Bus, ssh-agent, gpg-agent): this app is
+  only partially isolated" when it is not (also when the manifest asks for X11,
+  which leaves abstract sockets open).
+- **`gsettings` is run outside the sandbox.** The stub looks for it only at
+  `/usr/bin/gsettings` and `/bin/gsettings`, never in `PATH`, so a program
+  placed in a folder of the user's `PATH` is not run by the stub.
 - **Network ports**: `network_allow_tcp` and `network_bind_tcp` use the Landlock
   network rules (ABI V4, kernel 6.7 or later). They filter by TCP port, not by
   address: a port opened for `127.0.0.1` is open for any address the app

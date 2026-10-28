@@ -46,7 +46,7 @@ after the code always describes the actual problem.
 | PANPAK-E5001 | unknown flag / unexpected argument / invalid option value | Mistyped or removed option (e.g. `--secret`, `--rotate-from`) | See the usage text printed with the error |
 | PANPAK-E5002 | missing option or argument | A required argument or option value is absent, e.g. no `--secret-file` / `PANPAK_SECRET_FILE`, `keygen` without `-o` | Supply it as shown in the usage text |
 | PANPAK-E5003 | secret file ... permissions / symlink / not a regular file | Key file readable by group or others, a symlink, or not a regular file | `chmod 600 <file>`; use a regular file |
-| PANPAK-E5004 | non-interactive stdin | `install`, `update` (new permissions) or `data clear` needs a confirmation but stdin is not a terminal | Check what is asked, then pass `--yes` |
+| PANPAK-E5004 | non-interactive stdin | `install` needs a confirmation but stdin is not a terminal, or `install`/`update` found new permissions (`--yes` does not accept them) | Check what is asked, then pass `--yes` for the key, or `--accept-new-permissions` for new permissions; `data clear` needs `--yes` |
 
 ## Generic codes
 

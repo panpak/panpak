@@ -316,6 +316,21 @@ A client updating a package MUST:
   the runtime in `runtimes/` and the stub verifies its pin at every
   start; direct execution of a `.panpak` only shows the fingerprint.
 
+A client MUST NOT publish a new version that asks for permissions the
+installed version did not have (§3.1, §3.1.2: a feature turned on, a port,
+a socket, a home path, `ro` raised to `rw`) unless the user accepted them.
+The same holds for installing a package over an installed app. The client
+MUST show the new permissions and then either ask at a terminal or take an
+explicit option (`--accept-new-permissions` in `panpak`). A generic
+"yes" option (`--yes`, meant for trusting the key of a new app) MUST NOT
+accept them: with `--yes` and new permissions the client stops with an
+error that names the explicit option.
+
+`install` and `update` MUST also print a warning when the app is not
+isolated from local sockets: on a kernel without Landlock V9 (D-Bus,
+ssh-agent and gpg-agent sockets cannot be blocked), when the manifest lists a
+D-Bus socket, and when it asks for X11 (abstract sockets stay open).
+
 ### 3.4 Update HTTP transport [NORMATIVE]
 
 The transport MUST use HTTPS only (HTTP only toward localhost/test
@@ -535,9 +550,11 @@ They are not inside the store. The runtime sets, for the app:
 | `TMPDIR`, `SQLITE_TMPDIR` | `tmp` |
 | `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS` | the existing value, or the XDG default (`/etc/xdg`; `/usr/local/share:/usr/share`), then the user's real config or data folder |
 | `GTK_THEME` | see below |
+| `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `SSH_AGENT_PID` | removed |
+| `DBUS_SESSION_BUS_ADDRESS` | `disabled:`, an address no D-Bus library can use, unless `sockets_allow` lists a D-Bus socket (then unchanged) |
 | from `[launch]` | `env` values, and `args` before the user's arguments |
 
-`HOME` and `XDG_RUNTIME_DIR` are not changed. The app can write only in the two roots,
+`HOME` and `XDG_RUNTIME_DIR` are not changed. Hiding the agent and bus variables is hygiene, not a barrier: below Landlock V9 an app can still open `$XDG_RUNTIME_DIR/bus` or an agent socket by path. Libdbus, GDBus and sd-bus do not look for the bus when the address is `disabled:` (tested with a private bus). The app can write only in the two roots,
 the `rw` home paths and `/tmp` (to be narrowed later). Landlock grants these
 read-only rights, for the entries that exist, and nothing else of the user's real
 folders:
@@ -555,7 +572,7 @@ font folder and `~/.fonts`. The file carries the marker `X-Panpak-Generated`; a 
 without the marker is the user's and the runtime does not touch it.
 
 *Dark theme.* GTK3 reads the dark preference from dconf, which the app cannot reach
-with a private config folder. If `GTK_THEME` is not set and `gsettings` is in `PATH`,
+with a private config folder. If `GTK_THEME` is not set and `gsettings` is at `/usr/bin/gsettings` or `/bin/gsettings` (never searched in `PATH`),
 the runtime reads `org.gnome.desktop.interface` `color-scheme` and `gtk-theme` before
 the sandbox, waiting at most 200 ms in total. If the scheme is `prefer-dark`, it sets
 `GTK_THEME=<gtk-theme>:dark` (`Adwaita:dark` when `gtk-theme` is empty). Any failure

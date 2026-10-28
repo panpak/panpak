@@ -13,6 +13,14 @@
   and environment (with placeholders for the private folders), and fixed home
   paths as a last resort. `install` shows the permissions; `update` asks before
   it adds any. A package that asks for the D-Bus socket gets a warning.
+- **Local sockets.** The stub removes `SSH_AUTH_SOCK`, `GPG_AGENT_INFO` and
+  `SSH_AGENT_PID` and sets `DBUS_SESSION_BUS_ADDRESS=disabled:` (unless the
+  manifest lists a D-Bus socket). `doctor` shows whether the kernel can isolate
+  an app from local sockets, and `install` and `update` warn when it cannot.
+  `install` over an installed app asks before it adds permissions.
+  `--yes` no longer accepts new permissions: use a terminal answer or the new
+  `--accept-new-permissions`. `gsettings` is looked for only in `/usr/bin` and
+  `/bin`.
 - **GTK3 dark theme** from `gsettings` at start (at most 200 ms).
 - **Security: paths and text from the manifest.** `app.id` has one strict
   grammar (spec §3.1.1) and every manifest field that becomes a path, a file

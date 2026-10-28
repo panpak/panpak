@@ -47,8 +47,11 @@ try write_notes 'echo x > "$HOME/Notes/n.txt"'
 try read_docs 'cat "$HOME/Docs/ro.txt" >/dev/null'
 try write_docs 'echo x > "$HOME/Docs/new.txt"'
 try write_tmp 'echo x > /tmp/panpak-dirs-test-$$ && rm /tmp/panpak-dirs-test-$$'
+echo "libdbus=$(timeout 10 dbus-send --session --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames >/dev/null 2>&1 && echo found || echo none)"
+echo "gdbus=$(timeout 10 gdbus call --session --dest org.freedesktop.DBus --object-path / --method org.freedesktop.DBus.ListNames >/dev/null 2>&1 && echo found || echo none)"
+echo "sdbus=$(timeout 10 busctl --user list >/dev/null 2>&1 && echo found || echo none)"
 echo "args=$*"
-for v in HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME TMPDIR SQLITE_TMPDIR XDG_RUNTIME_DIR XDG_CONFIG_DIRS XDG_DATA_DIRS GTK_THEME FOO IPYTHONDIR; do
+for v in HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME TMPDIR SQLITE_TMPDIR XDG_RUNTIME_DIR XDG_CONFIG_DIRS XDG_DATA_DIRS GTK_THEME SSH_AUTH_SOCK GPG_AGENT_INFO SSH_AGENT_PID DBUS_SESSION_BUS_ADDRESS FOO IPYTHONDIR; do
   eval "echo env_$v=\${$v-UNSET}"
 done
 fc-list 2>/dev/null | grep -c "$HOME/.local/share/fonts/panpak-test-font" | sed 's/^/fonts_found=/'
@@ -64,6 +67,16 @@ class Lab:
         self.home.mkdir(parents=True)
         self.runtime = isolation.owned_mkdtemp('dirs-rt-')
         self.env = {'PATH': os.environ['PATH'], 'HOME': str(self.home), 'XDG_RUNTIME_DIR': self.runtime}
+        # A private session bus for the app to (not) find, and fake agent variables.
+        self.bus_address = f'unix:path={self.runtime}/bus'
+        self.bus = subprocess.Popen(['dbus-daemon', '--session', '--nofork', f'--address={self.bus_address}'],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(50):
+            if (Path(self.runtime) / 'bus').exists():
+                break
+            time.sleep(0.1)
+        self.env.update({'DBUS_SESSION_BUS_ADDRESS': self.bus_address, 'SSH_AUTH_SOCK': f'{self.runtime}/ssh-agent',
+                         'GPG_AGENT_INFO': f'{self.runtime}/S.gpg-agent:1:1', 'SSH_AGENT_PID': '12345'})
         self.key = work / 'secret.key'
         out = self.cli('keygen', '-o', str(self.key)).stdout
         self.pub = next(l.split()[-1] for l in out.splitlines() if l.startswith('key:'))
@@ -93,9 +106,10 @@ class Lab:
         return pkg
 
     def install(self, toml_extra):
-        """Pack and install the probe app with the extra manifest text."""
+        """Pack and install the probe app with the extra manifest text. New permissions
+        over an installed app are accepted here; the tests of that rule call the CLI directly."""
         pkg = self.pack(toml_extra)
-        return self.cli('install', '--yes', '--runtime', self.stub, pkg, check=False)
+        return self.cli('install', '--yes', '--accept-new-permissions', '--runtime', self.stub, pkg, check=False)
 
     def run(self, *args):
         """Run the launcher; return (returncode, report dict, stderr)."""
@@ -145,8 +159,12 @@ def main():
     (old / 'legacy.txt').write_text('old data\n')
 
     # 1. No launch fields, no home paths: the base layout.
+    partial = 'NOTE local sockets' in lab.cli('doctor', check=False).stdout  # kernel below Landlock V9
+    warning = 'WARNING: on this kernel the sandbox cannot block local sockets (D-Bus, ssh-agent, gpg-agent): this app is only partially isolated'
     p = lab.install('')
     assert p.returncode == 0, p.stdout + p.stderr
+    assert (warning in p.stdout) == partial, f'install warning does not follow the kernel (partial={partial}):\n{p.stdout}'
+
     rc, rep, err = lab.run('one', 'two')
     assert rc == 0, err
     userdata = h / f'.local/share/panpak/userdata/{ID}'
@@ -183,36 +201,34 @@ def main():
     assert (userdata / 'config/fontconfig/fonts.conf').read_text() == '<fontconfig/>\n', 'user fonts.conf overwritten'
     print('fonts.conf marker: ok')
 
-    # 2b. Dark theme for GTK3: from gsettings, once, before the sandbox; never an error.
+    # 2b. gsettings is looked for in system paths only: a program planted in PATH is not run.
     fake = work / 'fakebin'
     fake.mkdir()
+    marker = work / 'planted-gsettings-ran'
     gs = fake / 'gsettings'
-
-    def fake_gsettings(scheme, theme, extra=''):
-        gs.write_text(f'#!/bin/sh\n{extra}\ncase "$3" in color-scheme) echo "{scheme}";; gtk-theme) echo "{theme}";; esac\n')
-        gs.chmod(0o755)
-
+    gs.write_text(f'#!/bin/sh\ntouch {marker}\ncase "$3" in color-scheme) echo "\'prefer-dark\'";; gtk-theme) echo "\'Yaru\'";; esac\n')
+    gs.chmod(0o755)
     path = lab.env['PATH']
     lab.env['PATH'] = f'{fake}:{path}'
-    fake_gsettings("'prefer-dark'", "'Yaru'")
-    expect(lab.run()[1], env_GTK_THEME='Yaru:dark')
-    fake_gsettings("'prefer-dark'", "''")
-    expect(lab.run()[1], env_GTK_THEME='Adwaita:dark')
-    fake_gsettings("'default'", "'Yaru'")
-    expect(lab.run()[1], env_GTK_THEME='UNSET')
-    fake_gsettings("'prefer-dark'", "'Yaru'", 'sleep 5')
-    t0 = time.monotonic()
     rc, rep, err = lab.run()
-    assert rc == 0 and rep['env_GTK_THEME'] == 'UNSET' and time.monotonic() - t0 < 3, 'slow gsettings must not block the start'
-    fake_gsettings("'prefer-dark'", "'Yaru'")
+    assert rc == 0 and rep['env_GTK_THEME'] == 'UNSET' and not marker.exists(), 'a gsettings from PATH was used'
     lab.env['GTK_THEME'] = 'Custom'
     expect(lab.run()[1], env_GTK_THEME='Custom')
     del lab.env['GTK_THEME']
-    gs.unlink()
-    rc, rep, err = lab.run()
-    assert rc == 0, err
     lab.env['PATH'] = path
-    print('dark theme: ok')
+    print('gsettings only from system paths: ok')
+
+    # 2c. The app does not find the session bus or the agents (the Rust tests cover the dark theme).
+    # Control: outside the sandbox the same tools reach the private bus.
+    for cmd in (['dbus-send', '--session', '--print-reply', '--dest=org.freedesktop.DBus', '/', 'org.freedesktop.DBus.ListNames'],
+                ['gdbus', 'call', '--session', '--dest', 'org.freedesktop.DBus', '--object-path', '/', '--method', 'org.freedesktop.DBus.ListNames'],
+                ['busctl', '--user', 'list']):
+        c = subprocess.run(cmd, env=lab.env, capture_output=True, timeout=20)
+        assert c.returncode == 0, f'control failed (the test bus does not work): {cmd[0]}: {c.stderr!r}'
+    rc, rep, err = lab.run()
+    expect(rep, libdbus='none', gdbus='none', sdbus='none', env_DBUS_SESSION_BUS_ADDRESS='disabled:',
+           env_SSH_AUTH_SOCK='UNSET', env_GPG_AGENT_INFO='UNSET', env_SSH_AGENT_PID='UNSET')
+    print('session bus and agents hidden: ok')
 
     # 3. Missing optional paths (no qt5ct, no ~/.fonts, no kdeglobals) do not stop the start: case 1 had none.
     # 4. Launch arguments and environment with placeholders; home paths ro and rw.
@@ -328,21 +344,43 @@ def main():
         more = '[permissions]\nnetwork = true\nnetwork_bind_tcp = [2658]\n[[permissions.home_paths]]\npath = "Notes"\naccess = "rw"\n'
         shutil.copy(lab.pack(more, url), serve / 'remote.panpak')
         update = ['update', '--allow-insecure-http', '--timeout', '10']
-        p = lab.cli(*update, ID, check=False)
-        assert p.returncode != 0 and 'PANPAK-E5004' in p.stderr, p.stdout + p.stderr
-        assert 'asks for permissions' in p.stdout and 'listen on TCP port 2658' in p.stdout and 'access to Notes in your home (rw)' in p.stdout, p.stdout
-        assert current.readlink() == before, 'update was published without a yes'
-        p = lab.cli(*update, '--yes', ID)
+        # Neither a missing terminal nor --yes accepts new permissions.
+        for extra in ([], ['--yes']):
+            p = lab.cli(*update, *extra, ID, check=False)
+            assert p.returncode != 0 and 'PANPAK-E5004' in p.stderr, (extra, p.stdout + p.stderr)
+            assert '--accept-new-permissions' in p.stderr and '--yes does not accept' in p.stderr, p.stderr
+            assert 'asks for permissions' in p.stdout and 'listen on TCP port 2658' in p.stdout and 'access to Notes in your home (rw)' in p.stdout, p.stdout
+            assert current.readlink() == before, 'update was published without an explicit yes'
+        p = lab.cli(*update, '--accept-new-permissions', ID)
+        assert (warning in p.stdout) == partial, p.stdout
         assert current.readlink() != before and 'Partial access to your home: Notes (rw)' in p.stdout, p.stdout
         before = current.readlink()
         shutil.copy(lab.pack(more, url), serve / 'remote.panpak')
         p = lab.cli(*update, ID)
         assert current.readlink() != before and 'asks for permissions' not in p.stdout, p.stdout
+        # install over an installed app follows the same rule.
+        richer = more + '[[permissions.home_paths]]\npath = "Docs"\naccess = "ro"\n'
+        pkg2 = lab.pack(richer, url)
+        before = current.readlink()
+        for extra in ([], ['--yes']):
+            p = lab.cli('install', *extra, '--runtime', lab.stub, pkg2, check=False)
+            assert p.returncode != 0 and 'PANPAK-E5004' in p.stderr and 'access to Docs in your home (ro)' in p.stdout, (extra, p.stdout + p.stderr)
+            assert current.readlink() == before, 'install replaced the app without an explicit yes'
+        p = lab.cli('install', '--yes', '--accept-new-permissions', '--runtime', lab.stub, pkg2)
+        assert current.readlink() != before
+        before = current.readlink()
+        p = lab.cli('install', '--yes', '--runtime', lab.stub, pkg2)
+        assert 'asks for permissions' not in p.stdout, p.stdout
+        # The kernel warning follows the Landlock level of this machine.
+        doctor = lab.cli('doctor', check=False).stdout
+        print('doctor:', next(l for l in doctor.splitlines() if 'local sockets' in l))
     finally:
         server.terminate()
         server.wait(timeout=5)
     print('update confirmation: ok')
     print('all ok')
+    lab.bus.terminate()
+    lab.bus.wait(timeout=5)
     isolation.safe_rmtree(lab.runtime, work)
 
 
