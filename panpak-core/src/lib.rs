@@ -4,9 +4,17 @@
 //! All numbers in the format are little-endian. See PANPAK-FORMAT.md.
 
 mod errors;
+mod layout;
 mod validate;
 pub use errors::{code_of, coded, render, ErrorCode, PanpakError};
-pub use validate::{validate_app_id, validate_manifest, MAX_APP_ID_LEN};
+pub use layout::{
+    added_permissions, app_dirs, describe_permissions, fonts_conf, is_bus_socket, readonly_user_paths, xdg_search_dirs, AppDirs,
+    DESKTOP_BUS_WARNING, FONTS_CONF_MARKER,
+};
+pub use validate::{
+    validate_app_id, validate_manifest, BROAD_HOME_PATHS, FORBIDDEN_ENV, FORBIDDEN_ENV_PREFIXES, FORBIDDEN_HOME_PATHS, PLACEHOLDERS,
+    MAX_APP_ID_LEN,
+};
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use std::{
@@ -93,6 +101,8 @@ pub struct Manifest {
     pub app: App,
     pub abi: Option<Abi>,
     pub permissions: Option<Permissions>,
+    /// Extra start arguments and environment (PANPAK-FORMAT.md §3.1.2).
+    pub launch: Option<Launch>,
     pub runtime: Option<Runtime>,
     pub origin: Option<Origin>,
     pub update: Option<Update>,
@@ -128,6 +138,21 @@ pub struct Abi {
     /// fails explicitly. Only with an explicit declaration.
     pub allow_missing: Option<Vec<String>>,
 }
+/// Arguments put before the user's arguments and variables added to the
+/// environment of the app. Values may use the placeholders in `PLACEHOLDERS`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Launch {
+    pub args: Option<Vec<String>>,
+    pub env: Option<std::collections::BTreeMap<String, String>>,
+}
+/// A path under the user's home, outside the private app folders.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HomePath {
+    /// Relative to the home directory, no `..`, no leading or trailing `/`.
+    pub path: String,
+    /// `ro` or `rw`.
+    pub access: String,
+}
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Permissions {
     /// X11 opt-in: disables ONLY the abstract Unix scope (signals stay).
@@ -140,6 +165,8 @@ pub struct Permissions {
     /// Unix sockets (absolute paths) to connect to (requires ABI V9).
     /// Leading `$XDG_RUNTIME_DIR` and `$HOME` are expanded.
     pub sockets_allow: Option<Vec<String>>,
+    /// Fixed paths in the home folder (last resort, see §3.1.2).
+    pub home_paths: Option<Vec<HomePath>>,
     pub portal: Option<Portal>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -281,10 +308,12 @@ pub fn verify_rotation(pinned: &str, new_key: &str, rot_old: Option<&str>, rot_s
 pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
     let v: toml::Value = toml::from_str(input).context("panpak.toml is not TOML")?;
     let t = v.as_table().context("panpak.toml: table required")?;
-    const TOP: &[&str] = &["app", "abi", "permissions", "runtime", "origin", "update"];
+    const TOP: &[&str] = &["app", "abi", "permissions", "launch", "runtime", "origin", "update"];
+    const LAUNCH: &[&str] = &["args", "env"];
     const APP: &[&str] = &["id", "name", "version", "entry"];
     const ABI: &[&str] = &["glibc_min", "needs", "prefer_host", "allow_missing"];
-    const PERM: &[&str] = &["x11", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "portal"];
+    const PERM: &[&str] = &["x11", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "portal"];
+    const HOME_PATH: &[&str] = &["path", "access"];
     const PORTAL: &[&str] = &["files", "camera"];
     const RUNTIME: &[&str] = &["min_runtime", "stub_hash"];
     const ORIGIN: &[&str] = &["converted_from", "version", "sha256", "signed_by_upstream"];
@@ -310,10 +339,20 @@ pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
         for k in keys(v, "[permissions]")? {
             ensure!(PERM.contains(&k), "panpak.toml [permissions]: unknown key `{k}` (future field? update panpak)");
         }
+        for h in v.get("home_paths").and_then(|h| h.as_array()).into_iter().flatten() {
+            for k in keys(h, "[[permissions.home_paths]]")? {
+                ensure!(HOME_PATH.contains(&k), "panpak.toml [[permissions.home_paths]]: unknown key `{k}` (future field? update panpak)");
+            }
+        }
         if let Some(p) = v.get("portal") {
             for k in keys(p, "[permissions.portal]")? {
                 ensure!(PORTAL.contains(&k), "panpak.toml [permissions.portal]: unknown key `{k}` (future field? update panpak)");
             }
+        }
+    }
+    if let Some(v) = get("launch") {
+        for k in keys(v, "[launch]")? {
+            ensure!(LAUNCH.contains(&k), "panpak.toml [launch]: unknown key `{k}` (future field? update panpak)");
         }
     }
     if let Some(v) = get("runtime") {
@@ -1284,6 +1323,7 @@ mod tests {
             app: App { id: "a.b".into(), name: "N".into(), version: "1".into(), entry: "x".into() },
             abi: None,
             permissions: None,
+            launch: None,
             runtime: Some(Runtime { min_runtime: None, stub_hash: Some(good_hash.clone()) }),
             origin: None,
             update: None,

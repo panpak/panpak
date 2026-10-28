@@ -671,6 +671,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "blake3",
+ "dirs",
  "ed25519-dalek",
  "landlock",
  "serde",
