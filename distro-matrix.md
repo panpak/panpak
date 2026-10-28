@@ -24,8 +24,8 @@ execution container (the profile is ephemeral across `docker run`s).
 
 ## aarch64 (qemu-user, OB6)
 
-- Toolchain: rustup target `aarch64-unknown-linux-musl` + musl.cc
-  `aarch64-linux-musl-cross` (linker via
+- Toolchain: rustup target `aarch64-unknown-linux-musl` + an aarch64 musl
+  cross compiler (linker via
   `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER`), `panpak-stub` and
   `panpak` build clean and static for aarch64.
 - `qemu-aarch64-static` 7.2 (multiarch) and 8.2 (extracted from Noble

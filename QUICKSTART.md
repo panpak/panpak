@@ -130,10 +130,12 @@ doctor` shows it. See `distro-matrix.md` for the real cases tried.
 ## Reproducible builds
 
 Pinned toolchain in `rust-toolchain.toml` (Rust 1.99.1) and `Cargo.lock`
-(`cargo build --locked`). C cross-compiler: musl.cc
-`x86_64-linux-musl-cross` (SHA-256 recorded in
-`scripts/repro-build.sh`; alternative with verified signatures:
-`musl-tools` from the Ubuntu archive).
+(`cargo build --locked`). C compiler and linker: Zig, installed from the
+`ziglang` wheel on PyPI with the version and hash pinned in
+`tools/requirements-zig.txt`
+(`pip install --require-hashes -r tools/requirements-zig.txt`). The musl
+targets use it through `scripts/zig-cc` and `scripts/zig-ar`
+(`.cargo/config.toml`); CI builds, tests and lints with the same Zig.
 
 Check: `scripts/repro-build.sh` builds twice in different directories
 and compares hashes — the `panpak` and `panpak-stub` binaries come out
@@ -154,10 +156,10 @@ every start re-verifies package and pin.
 ### C toolchain and cross-machine comparison
 
 Binaries are identical given the full toolchain, *including* the C
-compiler (musl): musl.cc (gcc 11.2, SHA-256 recorded in
-`scripts/repro-build.sh`) and Ubuntu musl-tools (gcc 13.3) produce
-different but both valid and internally reproducible binaries. For
-official releases, also pin the C toolchain (`Dockerfile.repro`).
+compiler: another Zig version, or another C compiler for the musl target,
+produces different but equally valid binaries. `scripts/repro-build.sh`
+refuses to run with a Zig other than the pinned one, and `Dockerfile.repro`
+reproduces the whole environment.
 
 ## Error codes
 
