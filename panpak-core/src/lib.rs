@@ -496,13 +496,15 @@ pub fn read_package_licenses(f: &mut File, raw_index: &[u8]) -> Result<Vec<(Stri
     let (chunks, entries) = parse_index(raw_index)?;
     let mut out = Vec::new();
     let mut total = 0usize;
+    let mut dec = ChunkDecoder::new()?;
+    let mut raw = Vec::new();
     for e in &entries {
         let Kind::File { chunks: ids } = &e.kind else { continue };
         let Ok(rest) = e.path.strip_prefix(LICENSES_DIR) else { continue };
         let mut data = Vec::new();
         for &id in ids {
             let c = &chunks[id as usize];
-            let raw = decode_capped(&read_at(f, c.off, c.comp as u64)?, c.raw as u64)?;
+            dec.decode(&read_at(f, c.off, c.comp as u64)?, c.raw as u64, &mut raw)?;
             verify_chunk(c, &raw)?;
             total += raw.len();
             ensure!(total <= MAX_TOTAL, "embedded licenses too large");
@@ -514,14 +516,117 @@ pub fn read_package_licenses(f: &mut File, raw_index: &[u8]) -> Result<Vec<(Stri
 }
 
 pub fn decode_capped(comp: &[u8], limit: u64) -> Result<Vec<u8>> {
-    let mut dec = zstd::Decoder::new(comp).context("unreadable compressed block: corrupt file, redownload it")?;
     let mut out = Vec::new();
-    // limit+1 would wrap with limit=u64::MAX: explicit cap.
-    let cap = limit.saturating_add(1);
-    (&mut dec).take(cap).read_to_end(&mut out).context("unreadable compressed block: corrupt file, redownload it")?;
-    ensure!(out.len() as u64 <= limit, "decompression past the limit");
+    ChunkDecoder::new()?.decode(comp, limit, &mut out)?;
     Ok(out)
 }
+
+/// zstd decompressor that keeps one context for many blocks. Allocating a new
+/// context per chunk costs an mmap/munmap pair and fresh page faults each time.
+/// Same checks as `decode_capped`: output past `limit` is refused, and input
+/// that is truncated, corrupt or followed by garbage is an error.
+pub struct ChunkDecoder {
+    dec: zstd::stream::raw::Decoder<'static>,
+}
+
+impl ChunkDecoder {
+    pub fn new() -> Result<Self> {
+        Ok(Self { dec: zstd::stream::raw::Decoder::new().context(CORRUPT_BLOCK)? })
+    }
+
+    /// Decompress `comp` into `out` (cleared first, capacity reused).
+    pub fn decode(&mut self, comp: &[u8], limit: u64, out: &mut Vec<u8>) -> Result<()> {
+        use zstd::stream::raw::{InBuffer, Operation, OutBuffer};
+        self.dec.reinit().context(CORRUPT_BLOCK)?;
+        out.clear();
+        ensure!(!comp.is_empty(), "{CORRUPT_BLOCK}"); // not even a frame header
+        // limit+1 would wrap with limit=u64::MAX: explicit cap. One byte past
+        // the limit is enough to know it was exceeded.
+        let cap = limit.saturating_add(1);
+        let mut input = InBuffer::around(comp);
+        let mut filled = 0usize;
+        let mut hint = 0usize; // 0: at a frame boundary
+        loop {
+            if filled as u64 >= cap {
+                break;
+            }
+            if filled == out.len() {
+                let step = out.len().max(128 << 10) as u64;
+                out.resize((out.len() as u64 + step).min(cap) as usize, 0);
+            }
+            let in_before = input.pos;
+            let mut dst = OutBuffer::around_pos(&mut out[..], filled);
+            let left = self.dec.run(&mut input, &mut dst).context(CORRUPT_BLOCK)?;
+            let produced = dst.pos() - filled;
+            filled = dst.pos();
+            // A call that made no progress only reports that a new frame could
+            // start; it says nothing about the frame just decoded.
+            if input.pos != in_before || produced != 0 {
+                hint = left;
+            }
+            if input.pos == comp.len() && filled < out.len() {
+                break; // all input consumed and the output was not the limit
+            }
+            if hint == 0 && input.pos < comp.len() {
+                self.dec.reinit().context(CORRUPT_BLOCK)?; // next concatenated frame
+            }
+            ensure!(input.pos != in_before || produced != 0, "{CORRUPT_BLOCK}");
+        }
+        out.truncate(filled);
+        ensure!(filled as u64 <= limit, "decompression past the limit");
+        ensure!(hint == 0, "{CORRUPT_BLOCK}");
+        Ok(())
+    }
+}
+
+/// zstd compressor that keeps one context for many blocks (see `ChunkDecoder`).
+/// Produces the same frames as `zstd::encode_all(data, level)`: streaming mode,
+/// no content size in the header.
+pub struct ChunkEncoder {
+    enc: zstd::stream::raw::Encoder<'static>,
+    out: Vec<u8>,
+}
+
+impl ChunkEncoder {
+    pub fn new(level: i32) -> Result<Self> {
+        Ok(Self { enc: zstd::stream::raw::Encoder::new(level)?, out: Vec::new() })
+    }
+
+    /// Compress `data` into one frame; valid until the next call.
+    pub fn encode(&mut self, data: &[u8]) -> Result<&[u8]> {
+        use zstd::stream::raw::{InBuffer, Operation, OutBuffer};
+        self.enc.reinit()?;
+        self.out.clear();
+        let mut filled = 0usize;
+        let mut input = InBuffer::around(data);
+        while input.pos < data.len() {
+            self.room(filled);
+            let mut dst = OutBuffer::around_pos(&mut self.out[..], filled);
+            self.enc.run(&mut input, &mut dst)?;
+            filled = dst.pos();
+        }
+        loop {
+            self.room(filled);
+            let mut dst = OutBuffer::around_pos(&mut self.out[..], filled);
+            let left = self.enc.finish(&mut dst, false)?;
+            filled = dst.pos();
+            if left == 0 {
+                break;
+            }
+        }
+        Ok(&self.out[..filled])
+    }
+
+    /// Keep free space after `filled`; grows to the compress bound at first use.
+    fn room(&mut self, filled: usize) {
+        if self.out.len() < filled + 4096 {
+            let grow = self.out.len().max(zstd::zstd_safe::compress_bound(1 << 20));
+            self.out.resize(self.out.len() + grow, 0);
+        }
+    }
+}
+
+const CORRUPT_BLOCK: &str = "unreadable compressed block: corrupt file, redownload it";
 
 pub fn read_footer(f: &mut File) -> Result<Footer> {
     let size = f.metadata()?.len();
@@ -1267,6 +1372,99 @@ mod tests {
         let comp = zstd::encode_all(&data[..], 3).unwrap();
         assert_eq!(decode_capped(&comp, u64::MAX).unwrap(), data);
         assert!(decode_capped(&comp, 3).is_err());
+    }
+
+    /// Deterministic, poorly compressible bytes (xorshift).
+    fn noise(n: usize, mut x: u64) -> Vec<u8> {
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
+    /// The decoder as it was before context reuse: one `zstd::Decoder` per call.
+    fn decode_capped_reference(comp: &[u8], limit: u64) -> Result<Vec<u8>> {
+        let mut dec = zstd::Decoder::new(comp)?;
+        let mut out = Vec::new();
+        (&mut dec).take(limit.saturating_add(1)).read_to_end(&mut out)?;
+        ensure!(out.len() as u64 <= limit, "past the limit");
+        Ok(out)
+    }
+
+    #[test]
+    fn one_decoder_handles_chunks_of_different_sizes() {
+        let sizes = [0usize, 1, 17, 4096, 131_071, 131_072, 131_073, 300_000, 1 << 20, 5, 700_000];
+        let mut dec = ChunkDecoder::new().unwrap();
+        let mut out = Vec::new();
+        for (i, &n) in sizes.iter().enumerate() {
+            let data = if i % 2 == 0 { noise(n, i as u64 + 1) } else { vec![i as u8; n] };
+            let comp = zstd::encode_all(&data[..], ZSTD_LEVEL).unwrap();
+            dec.decode(&comp, n as u64, &mut out).unwrap();
+            assert_eq!(out, data, "chunk of {n} bytes");
+        }
+    }
+
+    #[test]
+    fn decoder_stays_usable_after_an_error() {
+        let data = noise(50_000, 7);
+        let comp = zstd::encode_all(&data[..], ZSTD_LEVEL).unwrap();
+        let mut dec = ChunkDecoder::new().unwrap();
+        let mut out = Vec::new();
+        assert!(dec.decode(&comp, 49_999, &mut out).is_err()); // past the limit
+        assert!(dec.decode(&comp[..comp.len() / 2], 50_000, &mut out).is_err()); // truncated
+        assert!(dec.decode(b"not zstd at all", 50_000, &mut out).is_err());
+        dec.decode(&comp, 50_000, &mut out).unwrap();
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn reused_decoder_agrees_with_a_fresh_one_on_odd_inputs() {
+        let a = noise(3000, 1);
+        let b = vec![b'x'; 200_000];
+        let fa = zstd::encode_all(&a[..], 3).unwrap();
+        let fb = zstd::encode_all(&b[..], 3).unwrap();
+        let mut two = fa.clone();
+        two.extend_from_slice(&fb);
+        let mut trailing = fa.clone();
+        trailing.extend_from_slice(b"garbage");
+        let cases: Vec<(Vec<u8>, u64)> = vec![
+            (Vec::new(), 10),
+            (fa.clone(), 3000),
+            (fa.clone(), 2999),
+            (fa[..fa.len() - 1].to_vec(), 3000),
+            (fa[..4].to_vec(), 3000),
+            (two.clone(), 203_000),
+            (two.clone(), 202_999),
+            (two, u64::MAX),
+            (trailing, 10_000),
+            (b"junk".to_vec(), 10),
+        ];
+        let mut dec = ChunkDecoder::new().unwrap();
+        let mut out = Vec::new();
+        for (i, (comp, limit)) in cases.iter().enumerate() {
+            let want = decode_capped_reference(comp, *limit);
+            let got = dec.decode(comp, *limit, &mut out).map(|_| out.clone());
+            assert_eq!(want.is_ok(), got.is_ok(), "case {i}");
+            if let (Ok(w), Ok(g)) = (want, got) {
+                assert_eq!(w, g, "case {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn chunk_encoder_produces_the_same_frames_as_encode_all() {
+        let mut enc = ChunkEncoder::new(ZSTD_LEVEL).unwrap();
+        let sizes = [0usize, 1, 100, 4096, 8192, 8193, 131_072, 131_073, 262_144, 1 << 20, 3];
+        for (i, &n) in sizes.iter().enumerate() {
+            for data in [noise(n, i as u64 + 3), vec![7u8; n], noise(n, 9).iter().map(|b| b & 3).collect()] {
+                let want = zstd::encode_all(&data[..], ZSTD_LEVEL).unwrap();
+                assert_eq!(enc.encode(&data).unwrap(), &want[..], "{n} bytes");
+            }
+        }
     }
 
     #[test]
