@@ -47,7 +47,9 @@ never transferred).
 
 *Informative note on file names.* The official file extension is `.panpak` and
 `.pan` is an accepted alias. A reader identifies a package by its magic and
-its signature only, never by its extension.
+its signature only, never by its extension. The provisional MIME type is
+`application/x-panpak`; a registration with IANA as `application/vnd.panpak`
+is planned.
 
 ## 2. Footer (80 bytes) [NORMATIVE]
 

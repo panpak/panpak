@@ -51,7 +51,7 @@ after the code always describes the actual problem.
 |---|---|---|
 | PANPAK-E0000 | Untyped format or index error (truncated file, bad index entry, invalid `panpak.toml`, unsafe path) | `pack`, `convert`, `dump-index`, `dump-manifest` |
 | PANPAK-E1000 | Untyped signature, trust or release error (for example tarball SHA-256 mismatch, invalid release key) | `keygen`, `release`, `install-runtime` |
-| PANPAK-E2000 | Untyped store or materialization error (missing app, unwritable store, unresolved libraries); also the default for `panpak-stub` | `install`, `rollback`, `open`, `doctor`, `panpak-stub` |
+| PANPAK-E2000 | Untyped store or materialization error (missing app, unwritable store, unresolved libraries); also the default for `panpak-stub` | `install`, `rollback`, `open`, `doctor`, `desktop-integration`, `panpak-stub` |
 | PANPAK-E3000 | Sandbox or permission refusal without a more specific code (partial Landlock, network not filterable, `sockets_allow` unsupported) | `panpak-stub` |
 | PANPAK-E4000 | Untyped update or network error (HTTP failure, file changed during download) | `update` |
 | PANPAK-E5000 | Unknown or missing subcommand, or an untyped CLI error | any |

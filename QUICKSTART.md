@@ -113,6 +113,21 @@ gedit), without reading/listing neighbors — but neighbors stay
 overwritable and deletable. Double click is read-only (`--write` from
 CLI only).
 
+## Desktop integration (file type)
+
+```sh
+panpak desktop-integration install   # per-user MIME type for .panpak and .pan
+panpak desktop-integration remove    # removes only what `install` added
+```
+
+`install` copies the shared-mime-info definition of `application/x-panpak` to
+`$XDG_DATA_HOME/mime/packages/` (default `~/.local/share/mime/packages/`) and
+runs `update-mime-database` there if it is installed; otherwise it prints a
+warning. It never writes outside your user data directory and needs no root.
+Packages are recognised by file name only, and the type is not an executable
+type, so file managers do not offer to run a package. Installed apps do not
+claim this type in their `.desktop` entries.
+
 See `PANPAK-FORMAT.md` (format), `THREAT-MODEL.md` (guarantees and
 limits), `distro-matrix.md` (multi-distro tests).
 

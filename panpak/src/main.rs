@@ -26,7 +26,7 @@ fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [-o <out.panpak>]\n  panpak install-runtime <stub>
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--runtime <stub>] <package>\n  panpak update [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak rollback <app-id>
-  panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
+  panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
 fn agent_for(url: &str, allow_insecure: bool, timeout_secs: u64) -> Result<ureq::Agent> {
@@ -1276,6 +1276,55 @@ fn desktop_file(name: &str, launcher: &Path) -> String {
     )
 }
 
+/// shared-mime-info definition of `application/x-panpak`.
+const MIME_XML: &str = include_str!("../../data/mime/panpak.xml");
+/// `remove` deletes the installed file only while it still contains this text.
+const MIME_MARKER: &str = "Installed by `panpak desktop-integration install`";
+const MIME_FILE: &str = "panpak.xml";
+
+/// Runs `update-mime-database` on `mime_dir`. Warns, without failing, if the
+/// program is not installed.
+fn update_mime_database(mime_dir: &Path) -> Result<()> {
+    match std::process::Command::new("update-mime-database").arg(mime_dir).status() {
+        Ok(st) if st.success() => Ok(()),
+        Ok(st) => anyhow::bail!("update-mime-database failed ({st}) on {}", mime_dir.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("panpak: update-mime-database not found; run it on {} to refresh the MIME database (package shared-mime-info)", mime_dir.display());
+            Ok(())
+        }
+        Err(e) => Err(e).context("run update-mime-database"),
+    }
+}
+
+/// `panpak desktop-integration install|remove`: per-user MIME type definition
+/// under `$XDG_DATA_HOME/mime/packages`. Never writes outside the user data dir.
+fn cmd_desktop_integration(install: bool) -> Result<()> {
+    let mime_dir = dirs::data_dir().context("no data dir")?.join("mime");
+    let file = mime_dir.join("packages").join(MIME_FILE);
+    if install {
+        fs::create_dir_all(file.parent().unwrap())?;
+        if fs::read_to_string(&file).ok().as_deref() == Some(MIME_XML) {
+            println!("already installed: {}", file.display());
+        } else {
+            fs::write(&file, MIME_XML).with_context(|| format!("write {}", file.display()))?;
+            println!("installed: {}", file.display());
+        }
+        update_mime_database(&mime_dir)?;
+        return Ok(());
+    }
+    match fs::read_to_string(&file) {
+        Ok(s) if s.contains(MIME_MARKER) => {
+            fs::remove_file(&file).with_context(|| format!("remove {}", file.display()))?;
+            println!("removed: {}", file.display());
+            update_mime_database(&mime_dir)?;
+        }
+        Ok(_) => println!("left alone (not installed by panpak): {}", file.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => println!("not installed: {}", file.display()),
+        Err(e) => return Err(e).with_context(|| format!("read {}", file.display())),
+    }
+    Ok(())
+}
+
 /// `panpak install`: verify, TOFU+pin, copy package, launcher on the installed runtime.
 fn tofu_confirmation(input: &str) -> bool {
     matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
@@ -1540,7 +1589,7 @@ fn generic_code(sub: Option<&str>) -> ErrorCode {
     match sub {
         Some("pack" | "convert" | "dump-index" | "dump-manifest") => ErrorCode::E0000,
         Some("keygen" | "release" | "install-runtime") => ErrorCode::E1000,
-        Some("install" | "rollback" | "open" | "doctor") => ErrorCode::E2000,
+        Some("install" | "rollback" | "open" | "doctor" | "desktop-integration") => ErrorCode::E2000,
         Some("update") => ErrorCode::E4000,
         _ => ErrorCode::E5000,
     }
@@ -1719,6 +1768,13 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             })?;
             Ok(())
         }
+        Some("desktop-integration") => match (args.get(2).map(|s| s.as_str()), args.len()) {
+            (Some("install"), 3) => cmd_desktop_integration(true),
+            (Some("remove"), 3) => cmd_desktop_integration(false),
+            (Some("install" | "remove"), _) => bail_code!(ErrorCode::E5001, "unexpected argument\n{usage}", usage = usage()),
+            (Some(x), _) => bail_code!(ErrorCode::E5001, "unknown action {x}\n{usage}", usage = usage()),
+            (None, _) => bail_code!(ErrorCode::E5002, "desktop-integration install|remove"),
+        },
         Some("doctor") => {
             let pkg = args.get(2).map(PathBuf::from);
             let rc = cmd_doctor(pkg.as_deref())?;
@@ -1969,6 +2025,7 @@ mod tests {
         assert_eq!(generic_code(Some("pack")), ErrorCode::E0000);
         assert_eq!(generic_code(Some("release")), ErrorCode::E1000);
         assert_eq!(generic_code(Some("install")), ErrorCode::E2000);
+        assert_eq!(generic_code(Some("desktop-integration")), ErrorCode::E2000);
         assert_eq!(generic_code(Some("update")), ErrorCode::E4000);
         assert_eq!(generic_code(None), ErrorCode::E5000);
         assert_eq!(generic_code(Some("nonsense")), ErrorCode::E5000);

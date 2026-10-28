@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!--
+  Installed by `panpak desktop-integration install`. `panpak desktop-integration
+  remove` deletes this file only while this sentence is present.
+
+  Packages are recognised by file name only. The format magic sits in the
+  footer, at the end of the file, while the file starts with the ELF stub, and
+  shared-mime-info matches magic at offsets from the start only.
+
+  This type is deliberately not a sub-class of application/x-executable: file
+  managers must not offer to run a package on double click. A package is
+  verified and installed with `panpak install`.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-panpak">
+    <comment>Panpak package</comment>
+    <glob pattern="*.panpak" weight="50"/>
+    <glob pattern="*.pan" weight="30"/>
+  </mime-type>
+</mime-info>
