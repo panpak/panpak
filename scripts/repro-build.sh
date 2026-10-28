@@ -11,7 +11,7 @@
 # tools/requirements-zig.txt (wheel from PyPI, installed with
 # `pip install --require-hashes -r tools/requirements-zig.txt`); see
 # scripts/zig-env.sh for how Zig is found. The script refuses to run with any
-# other Zig version.
+# other Zig version. Exit status: 0 identical, 1 different or failed.
 set -eu
 . "$(dirname "$0")/zig-env.sh"
 zig_check || exit 1
@@ -46,8 +46,11 @@ fi
 LINKFLAGS="-C link-self-contained=no"
 mkdir -p "$work/a" "$work/b"
 # Identical sources, different paths (no target/, no .git).
-tar --exclude=target --exclude=.git -cf - -C "$SRC" . | tar -xf - -C "$work/a"
-tar --exclude=target --exclude=.git -cf - -C "$work/a" . | tar -xf - -C "$work/b"
+# Through a tarball, not a pipe: a failing first tar must stop the script.
+tar --exclude=target --exclude=.git -cf "$work/src.tar" -C "$SRC" .
+tar -xf "$work/src.tar" -C "$work/a"
+tar -xf "$work/src.tar" -C "$work/b"
+rm -f "$work/src.tar"
 
 for d in a b; do
   # Zig caches inside each build directory (never shared between a and b).
@@ -69,6 +72,7 @@ sha256sum "$work/a/target/x86_64-unknown-linux-musl/release/panpak-stub" \
            "$work/b/target/x86_64-unknown-linux-musl/release/panpak-stub"
 sha256sum "$work/a/target/x86_64-unknown-linux-musl/release/panpak" \
            "$work/b/target/x86_64-unknown-linux-musl/release/panpak"
+result=0
 if cmp -s "$work/a/target/x86_64-unknown-linux-musl/release/panpak-stub" \
           "$work/b/target/x86_64-unknown-linux-musl/release/panpak-stub" \
  && cmp -s "$work/a/target/x86_64-unknown-linux-musl/release/panpak" \
@@ -76,6 +80,8 @@ if cmp -s "$work/a/target/x86_64-unknown-linux-musl/release/panpak-stub" \
   echo "IDENTICAL"
 else
   echo "DIFFERENT (see the OB6 summary for the cause)"
+  result=1
 fi
 echo "workdir retained at: $work"
 echo "Previous work dirs are never deleted; each uses ~1 GB. Clean up: rm -rf ~/.cache/panpak-repro*"
+exit "$result"
