@@ -4,7 +4,9 @@
 //! All numbers in the format are little-endian. See PANPAK-FORMAT.md.
 
 mod errors;
+mod validate;
 pub use errors::{code_of, coded, render, ErrorCode, PanpakError};
+pub use validate::{validate_app_id, validate_manifest, MAX_APP_ID_LEN};
 
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use std::{
@@ -736,6 +738,7 @@ impl<'a> Reader<'a> {
 pub fn safe_path(s: &str) -> Result<PathBuf> {
     ensure!(!s.is_empty(), "empty path");
     ensure!(s.len() <= MAX_PATH_LEN, "path too long");
+    ensure!(!s.chars().any(char::is_control), "unsafe path (control character): {s:?}");
     for comp in s.split('/') {
         ensure!(!comp.is_empty() && comp != "." && comp != "..", "unsafe path: {s}");
     }
@@ -822,6 +825,7 @@ pub fn parse_index(raw: &[u8]) -> Result<(Vec<Chunk>, Vec<Entry>)> {
                 let l = r.u16()? as usize;
                 ensure!((1..=MAX_SYMLINK_LEN).contains(&l), "symlink target out of range");
                 let t = String::from_utf8(r.take(l)?.to_vec()).context("non-UTF-8 target")?;
+                ensure!(!t.chars().any(char::is_control), "unsafe symlink target (control character)");
                 Kind::Link(t)
             }
             k => anyhow::bail!("unknown kind {k}"),
@@ -957,6 +961,8 @@ pub fn verify(f: &mut File, ft: &Footer) -> Result<(Manifest, Vec<u8>)> {
     vk.verify_strict(&msg, &sig).map_err(|_| {
         coded(ErrorCode::E1001, "invalid manifest signature: tampered or badly downloaded file; redownload it from a trusted source and verify the key")
     })?;
+    // A valid signature does not make the fields safe to use as file names.
+    validate_manifest(&man)?;
 
     let comp = read_at(f, ft.index_off, ft.index_len)?;
     let raw = decode_capped(&comp, MAX_INDEX_RAW)?;
