@@ -241,6 +241,9 @@ def main():
         ("invalid-id-long-label", "org." + "a" * 64),
     ]:
         bad_manifest(fname + ".panpak", manifest(iid=iid), "app.id", code="PANPAK-E0006")
+    bad_manifest("invalid-id-digit-segment.panpak", manifest(iid="org.example.1app"), "app.id", code="PANPAK-E0006")
+    # a valid id with an underscore in a segment (D-Bus and Flatpak names allow it)
+    put("valid-id-underscore.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(iid="org.example.my_app"), blobs=std_index()[2]), True)
     bad_manifest("invalid-name-newline.panpak", manifest(name="Evil\nExec=/bin/sh"), "app.name", code="PANPAK-E0007")
     bad_manifest("invalid-version-path.panpak", manifest(version="../1"), "app.version", code="PANPAK-E0007")
     bad_manifest("invalid-entry-dotdot.panpak", manifest(entry="../../bin/sh"), "app.entry", code="PANPAK-E0007")

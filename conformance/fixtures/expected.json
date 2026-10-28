@@ -64,6 +64,13 @@
   ],
   "ok": false
  },
+ "invalid-id-digit-segment.panpak": {
+  "code": "PANPAK-E0006",
+  "err": [
+   "app.id"
+  ],
+  "ok": false
+ },
  "invalid-id-dotdot.panpak": {
   "code": "PANPAK-E0006",
   "err": [
@@ -213,6 +220,10 @@
   "ok": false
  },
  "valid-empty-tree.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-id-underscore.panpak": {
   "err": [],
   "ok": true
  },

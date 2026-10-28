@@ -126,7 +126,7 @@ intended ones.
 
 ```toml
 [app]
-id = "org.example.editor"      # REQUIRED, reverse-DNS format (§3.1.1)
+id = "org.example.editor"      # REQUIRED, D-Bus style name (§3.1.1)
 name = "Editor"                # REQUIRED
 version = "1.4.2"              # REQUIRED
 entry = "bin/editor"           # REQUIRED, relative path inside the tree
@@ -176,16 +176,17 @@ is valid, and a Writer MUST NOT produce one. These fields become file names,
 paths, shell words, `.desktop` lines and terminal text, so a Reader MUST NOT
 use any of them before this check passes.
 
-`app.id` MUST match this grammar (RFC 5234), in at most 128 bytes:
+`app.id` MUST match this grammar (RFC 5234), in at most 128 bytes. It is
+a D-Bus and Flatpak style name, because the XDG portals identify an app by it:
 
 ```
-app-id = label 1*( "." label )
-label  = alnum / ( alnum *61( alnum / "-" ) alnum )     ; 1 to 63 bytes
-alnum  = %x30-39 / %x41-5A / %x61-7A
+app-id  = segment 1*( "." segment )
+segment = ( ALPHA / "_" / "-" ) *62( ALPHA / DIGIT / "_" / "-" )   ; 1 to 63 bytes
 ```
 
-So an id is ASCII, has at least two non-empty segments, does not start or end
-with a dot, and contains no `/`, no `..`, no control character and no NUL.
+So an id is ASCII, has at least two non-empty segments, no segment starts with
+a digit, it does not start or end with a dot, and it contains no `/`, no `..`,
+no control character and no NUL.
 
 | Field | Rule |
 |---|---|
