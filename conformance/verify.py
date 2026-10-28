@@ -78,7 +78,7 @@ def ed25519_verify(vk_hex: str, msg: bytes, sig: bytes):
         raise Fail(f"malformed key/signature: {e}")
 
 
-APP_ID = re.compile(r"[A-Za-z_-][0-9A-Za-z_-]{0,62}(?:\.[A-Za-z_-][0-9A-Za-z_-]{0,62})+")
+APP_ID = re.compile(r"[A-Za-z_][0-9A-Za-z_-]{0,62}(?:\.[A-Za-z_][0-9A-Za-z_-]{0,62})+")
 VERSION = re.compile(r"[0-9A-Za-z][0-9A-Za-z._+~-]{0,63}")
 UNSAFE_TEXT = set("\u2028\u2029\u200e\u200f") | {chr(c) for c in range(0x202A, 0x202F)} | {chr(c) for c in range(0x2066, 0x206A)}
 

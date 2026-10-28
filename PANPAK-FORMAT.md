@@ -181,11 +181,12 @@ a D-Bus and Flatpak style name, because the XDG portals identify an app by it:
 
 ```
 app-id  = segment 1*( "." segment )
-segment = ( ALPHA / "_" / "-" ) *62( ALPHA / DIGIT / "_" / "-" )   ; 1 to 63 bytes
+segment = ( ALPHA / "_" ) *62( ALPHA / DIGIT / "_" / "-" )   ; 1 to 63 bytes
 ```
 
 So an id is ASCII, has at least two non-empty segments, no segment starts with
-a digit, it does not start or end with a dot, and it contains no `/`, no `..`,
+a digit or a hyphen (a launcher is named after the id, and a name starting
+with `-` would be read as an option), it does not start or end with a dot, and it contains no `/`, no `..`,
 no control character and no NUL.
 
 | Field | Rule |

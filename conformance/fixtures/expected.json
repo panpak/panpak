@@ -78,6 +78,20 @@
   ],
   "ok": false
  },
+ "invalid-id-hyphen-first.panpak": {
+  "code": "PANPAK-E0006",
+  "err": [
+   "app.id"
+  ],
+  "ok": false
+ },
+ "invalid-id-hyphen-segment.panpak": {
+  "code": "PANPAK-E0006",
+  "err": [
+   "app.id"
+  ],
+  "ok": false
+ },
  "invalid-id-leading-dot.panpak": {
   "code": "PANPAK-E0006",
   "err": [
