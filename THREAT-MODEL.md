@@ -162,17 +162,25 @@ default refused, opt-in works; signals to the parent still denied.
 
   What the stub does today, and what it does not: it removes `SSH_AUTH_SOCK`,
   `GPG_AGENT_INFO` and `SSH_AGENT_PID` from the environment of every app, and it
-  sets `DBUS_SESSION_BUS_ADDRESS=disabled:` unless the manifest lists a D-Bus
-  socket. Libdbus, GDBus and sd-bus then report no bus (tested against a
+  sets `DBUS_SESSION_BUS_ADDRESS` and `DBUS_SYSTEM_BUS_ADDRESS` to `disabled:` unless the manifest
+  lists that bus. Libdbus, GDBus and sd-bus then report no bus (tested against a
   private bus; sd-bus would otherwise find `$XDG_RUNTIME_DIR/bus`). This is
   hygiene. An app that opens the socket by path still reaches the bus below
-  Landlock V9. The system bus (`DBUS_SYSTEM_BUS_ADDRESS`) is not touched.
+  Landlock V9. The system bus gets the same treatment: `DBUS_SYSTEM_BUS_ADDRESS`
+  is `disabled:` unless `sockets_allow` lists `.../system_bus_socket`. Each address
+  is kept only for the bus the manifest names.
   One function (`panpak_core::socket_isolation`) decides from the kernel and
   the permissions whether an app is isolated from local sockets. `panpak doctor`
   shows the level, and `install` and `update` print "WARNING: on this kernel the
   sandbox cannot block local sockets (D-Bus, ssh-agent, gpg-agent): this app is
   only partially isolated" when it is not (also when the manifest asks for X11,
   which leaves abstract sockets open).
+- **Socket probe (measurement, off by default).** With `PANPAK_SOCKET_PROBE=<file>` the stub
+  stays as a supervisor and logs the `connect`, `sendto`, `sendmsg`, `sendmmsg` and namespace
+  calls of an app. It answers CONTINUE every time, so it protects nothing: an app can change what
+  it asked for after the supervisor read it. It exists to measure what apps do and to design the
+  isolation levels in docs/SOCKET-PROBE.md. A manifest cannot turn it on, and `PANPAK_*` names are
+  refused in `launch.env`.
 - **`gsettings` is run outside the sandbox.** The stub looks for it only at
   `/usr/bin/gsettings` and `/bin/gsettings`, never in `PATH`, so a program
   placed in a folder of the user's `PATH` is not run by the stub.

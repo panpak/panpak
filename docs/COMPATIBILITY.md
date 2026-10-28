@@ -13,9 +13,12 @@ Status values:
 | App | Version | Status | Notes | Tested |
 |---|---|---|---|---|
 | Joplin | 3.7.21 | works with notes | Needs `launch.args` for the profile, the network ports for 2658 and `--allow-missing libdbus-glib-1.so.2`. See "Joplin" below. | 2026-10-28 |
+| Simplenote | 2.27.1 | works with notes | Needs `APPDIR` and `APPIMAGE` (the `convert` wrapper for `Exec=AppRun --no-sandbox` does not set them), and a short path to the app folders: see "Simplenote" below. | 2026-10-28 |
+| QOwnNotes | 26.10.9 | works with notes | Note folder `~/Notes` needs a `home_paths` entry (`rw`); 25 Qt6 Quick libraries had to be allowed as missing. | 2026-10-28 |
+| Kdenlive | 24.12.3 | works | Starts, creates a project; reaches PipeWire and PulseAudio sockets. Needs a working directory the sandbox can enter. | 2026-10-28 |
 | Mu | 1.2.0 | not working | Crashes with SIGSEGV in `QApplication(...)`, also without panpak. See "Mu" below. | 2026-10-28 |
 
-Not tested yet: Kdenlive, QOwnNotes, Simplenote.
+Simplenote, QOwnNotes and Kdenlive were run for 30 seconds each in Xvfb with the socket probe (docs/SOCKET-PROBE.md); that is a start and light use, not a full test.
 
 Apps get private config, data, state and cache folders (see `panpak data path <id>`), so a profile written by an older panpak in `~/.local/share/<id>` is not used any more.
 
@@ -82,6 +85,17 @@ installed tree directly, with no panpak, shows the same sequence (start, exit,
 start, exit). Removing the `lock` file before the start avoids it. The test scripts stop
 apps with SIGTERM, wait for the exit and use SIGKILL only for what is left;
 a script that restarts Joplin on the same profile must remove the file first.
+
+## Simplenote
+
+Simplenote (an Electron app) died with SIGTRAP at start when `TMPDIR` was a long path. Chromium makes
+`$TMPDIR/scoped_dirXXXXXX/SingletonSocket`, a Unix socket path, and the limit is 107 bytes. With
+`TMPDIR=<home>/.local/share/panpak/userdata/<id>/tmp` the path is 103 bytes for a user name of 8 characters
+and `org.example.simplenote`, so a user name of about 13 characters or more, or a longer app id, fails.
+A short home path was used for the test. The private `tmp` folder should have a shorter path (for example
+under `$XDG_RUNTIME_DIR`) before apps like this are called working. The `AppRun` of this AppImage also
+looks for its folder from its first argument, which `--no-sandbox` from the `Exec` line replaces:
+set `APPDIR` and `APPIMAGE` to the tree.
 
 ## Mu
 

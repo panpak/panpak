@@ -551,7 +551,7 @@ They are not inside the store. The runtime sets, for the app:
 | `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS` | the existing value, or the XDG default (`/etc/xdg`; `/usr/local/share:/usr/share`), then the user's real config or data folder |
 | `GTK_THEME` | see below |
 | `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `SSH_AGENT_PID` | removed |
-| `DBUS_SESSION_BUS_ADDRESS` | `disabled:`, an address no D-Bus library can use, unless `sockets_allow` lists a D-Bus socket (then unchanged) |
+| `DBUS_SESSION_BUS_ADDRESS`, `DBUS_SYSTEM_BUS_ADDRESS` | `disabled:`, an address no D-Bus library can use, unless `sockets_allow` lists that bus (a socket named `system_bus_socket` is the system bus, any other D-Bus socket the session bus); then unchanged |
 | from `[launch]` | `env` values, and `args` before the user's arguments |
 
 `HOME` and `XDG_RUNTIME_DIR` are not changed. Hiding the agent and bus variables is hygiene, not a barrier: below Landlock V9 an app can still open `$XDG_RUNTIME_DIR/bus` or an agent socket by path. Libdbus, GDBus and sd-bus do not look for the bus when the address is `disabled:` (tested with a private bus). The app can write only in the two roots,

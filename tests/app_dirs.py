@@ -50,8 +50,11 @@ try write_tmp 'echo x > /tmp/panpak-dirs-test-$$ && rm /tmp/panpak-dirs-test-$$'
 echo "libdbus=$(timeout 10 dbus-send --session --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames >/dev/null 2>&1 && echo found || echo none)"
 echo "gdbus=$(timeout 10 gdbus call --session --dest org.freedesktop.DBus --object-path / --method org.freedesktop.DBus.ListNames >/dev/null 2>&1 && echo found || echo none)"
 echo "sdbus=$(timeout 10 busctl --user list >/dev/null 2>&1 && echo found || echo none)"
+echo "sysbus_libdbus=$(timeout 10 dbus-send --system --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames >/dev/null 2>&1 && echo found || echo none)"
+echo "sysbus_gdbus=$(timeout 10 gdbus call --system --dest org.freedesktop.DBus --object-path / --method org.freedesktop.DBus.ListNames >/dev/null 2>&1 && echo found || echo none)"
+echo "sysbus_sdbus=$(timeout 10 busctl --system list >/dev/null 2>&1 && echo found || echo none)"
 echo "args=$*"
-for v in HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME TMPDIR SQLITE_TMPDIR XDG_RUNTIME_DIR XDG_CONFIG_DIRS XDG_DATA_DIRS GTK_THEME SSH_AUTH_SOCK GPG_AGENT_INFO SSH_AGENT_PID DBUS_SESSION_BUS_ADDRESS FOO IPYTHONDIR; do
+for v in HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME TMPDIR SQLITE_TMPDIR XDG_RUNTIME_DIR XDG_CONFIG_DIRS XDG_DATA_DIRS GTK_THEME SSH_AUTH_SOCK GPG_AGENT_INFO SSH_AGENT_PID DBUS_SESSION_BUS_ADDRESS DBUS_SYSTEM_BUS_ADDRESS FOO IPYTHONDIR; do
   eval "echo env_$v=\${$v-UNSET}"
 done
 fc-list 2>/dev/null | grep -c "$HOME/.local/share/fonts/panpak-test-font" | sed 's/^/fonts_found=/'
@@ -75,6 +78,15 @@ class Lab:
             if (Path(self.runtime) / 'bus').exists():
                 break
             time.sleep(0.1)
+        # A second private bus plays the system bus.
+        self.sysbus_address = f'unix:path={self.runtime}/system_bus_socket'
+        self.sysbus = subprocess.Popen(['dbus-daemon', '--session', '--nofork', f'--address={self.sysbus_address}'],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(50):
+            if (Path(self.runtime) / 'system_bus_socket').exists():
+                break
+            time.sleep(0.1)
+        self.env.update({'DBUS_SYSTEM_BUS_ADDRESS': self.sysbus_address})
         self.env.update({'DBUS_SESSION_BUS_ADDRESS': self.bus_address, 'SSH_AUTH_SOCK': f'{self.runtime}/ssh-agent',
                          'GPG_AGENT_INFO': f'{self.runtime}/S.gpg-agent:1:1', 'SSH_AGENT_PID': '12345'})
         self.key = work / 'secret.key'
@@ -222,11 +234,15 @@ def main():
     # Control: outside the sandbox the same tools reach the private bus.
     for cmd in (['dbus-send', '--session', '--print-reply', '--dest=org.freedesktop.DBus', '/', 'org.freedesktop.DBus.ListNames'],
                 ['gdbus', 'call', '--session', '--dest', 'org.freedesktop.DBus', '--object-path', '/', '--method', 'org.freedesktop.DBus.ListNames'],
-                ['busctl', '--user', 'list']):
+                ['busctl', '--user', 'list'],
+                ['dbus-send', '--system', '--print-reply', '--dest=org.freedesktop.DBus', '/', 'org.freedesktop.DBus.ListNames'],
+                ['gdbus', 'call', '--system', '--dest', 'org.freedesktop.DBus', '--object-path', '/', '--method', 'org.freedesktop.DBus.ListNames'],
+                ['busctl', '--system', 'list']):
         c = subprocess.run(cmd, env=lab.env, capture_output=True, timeout=20)
         assert c.returncode == 0, f'control failed (the test bus does not work): {cmd[0]}: {c.stderr!r}'
     rc, rep, err = lab.run()
-    expect(rep, libdbus='none', gdbus='none', sdbus='none', env_DBUS_SESSION_BUS_ADDRESS='disabled:',
+    expect(rep, libdbus='none', gdbus='none', sdbus='none', sysbus_libdbus='none', sysbus_gdbus='none', sysbus_sdbus='none',
+           env_DBUS_SESSION_BUS_ADDRESS='disabled:', env_DBUS_SYSTEM_BUS_ADDRESS='disabled:',
            env_SSH_AUTH_SOCK='UNSET', env_GPG_AGENT_INFO='UNSET', env_SSH_AGENT_PID='UNSET')
     print('session bus and agents hidden: ok')
 
@@ -379,8 +395,9 @@ def main():
         server.wait(timeout=5)
     print('update confirmation: ok')
     print('all ok')
-    lab.bus.terminate()
-    lab.bus.wait(timeout=5)
+    for bus in (lab.bus, lab.sysbus):
+        bus.terminate()
+        bus.wait(timeout=5)
     isolation.safe_rmtree(lab.runtime, work)
 
 
