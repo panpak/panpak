@@ -197,6 +197,59 @@ pub fn fonts_conf(real_config: &Path, real_data: &Path, home: &Path) -> String {
 pub const DESKTOP_BUS_WARNING: &str =
     "Full access to desktop services (D-Bus): this app is not isolated";
 
+/// Printed by `install` and `update` when the kernel cannot block local sockets.
+pub const PARTIAL_ISOLATION_WARNING: &str = "WARNING: on this kernel the sandbox cannot block local sockets (D-Bus, ssh-agent, gpg-agent): this app is only partially isolated";
+
+/// Printed when X11 access leaves the abstract Unix sockets open.
+pub const ABSTRACT_SOCKETS_WARNING: &str = "WARNING: X11 access leaves abstract Unix sockets open (some D-Bus and agent sockets): this app is only partially isolated";
+
+/// How well an app is kept away from the local Unix sockets (D-Bus, ssh-agent, gpg-agent,
+/// Wayland and the like). One place decides it, from the kernel and the permissions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketIsolation {
+    /// Landlock V9: path sockets are denied unless `sockets_allow` lists them, and the
+    /// abstract-socket scope is on.
+    Isolated,
+    /// The kernel does not filter `connect()` to path sockets (Landlock below V9, or none).
+    KernelCannotFilter,
+    /// The manifest lists a D-Bus socket.
+    ManifestAllowsBus,
+    /// The manifest asks for X11, which turns off the abstract-socket scope.
+    AbstractSocketsOpen,
+}
+
+impl SocketIsolation {
+    /// The warning to print, if the app is not fully isolated. `ManifestAllowsBus` has its
+    /// own line in `describe_permissions`.
+    pub fn warning(self) -> Option<&'static str> {
+        match self {
+            SocketIsolation::Isolated | SocketIsolation::ManifestAllowsBus => None,
+            SocketIsolation::KernelCannotFilter => Some(PARTIAL_ISOLATION_WARNING),
+            SocketIsolation::AbstractSocketsOpen => Some(ABSTRACT_SOCKETS_WARNING),
+        }
+    }
+}
+
+/// True if the manifest lists a D-Bus socket in `sockets_allow`. The stub then keeps
+/// `DBUS_SESSION_BUS_ADDRESS` as it is.
+pub fn allows_desktop_bus(perms: Option<&crate::Permissions>) -> bool {
+    perms.is_some_and(|p| p.sockets_allow.iter().flatten().any(|s| is_bus_socket(s)))
+}
+
+/// The isolation level of an app from local sockets: `abi` is the Landlock ABI of the kernel
+/// (None if Landlock is missing), `perms` the manifest permissions (None for the kernel alone).
+pub fn socket_isolation(abi: Option<landlock::ABI>, perms: Option<&crate::Permissions>) -> SocketIsolation {
+    if abi.is_none_or(|a| a < landlock::ABI::V9) {
+        SocketIsolation::KernelCannotFilter
+    } else if allows_desktop_bus(perms) {
+        SocketIsolation::ManifestAllowsBus
+    } else if perms.is_some_and(|p| p.x11 == Some(true)) {
+        SocketIsolation::AbstractSocketsOpen
+    } else {
+        SocketIsolation::Isolated
+    }
+}
+
 /// True if a `sockets_allow` entry names a D-Bus socket (`$XDG_RUNTIME_DIR/bus`,
 /// `/run/dbus/system_bus_socket`, and the like). The list is a heuristic: a message bus is
 /// recognised by a path part `bus`, `dbus` or `system_bus_socket`.
@@ -360,6 +413,31 @@ mod tests {
         // An update that adds the bus is flagged; one that already had it is not flagged twice.
         assert!(added_permissions(&plain, &m).iter().any(|l| l == DESKTOP_BUS_WARNING));
         assert!(!added_permissions(&m, &m).iter().any(|l| l == DESKTOP_BUS_WARNING));
+    }
+
+    #[test]
+    fn socket_isolation_depends_on_kernel_and_permissions() {
+        use landlock::ABI;
+        let plain = man("");
+        let bus = man("[permissions]\nsockets_allow=[\"$XDG_RUNTIME_DIR/bus\"]\n");
+        let x11 = man("[permissions]\nx11=true\n");
+        let wl = man("[permissions]\nsockets_allow=[\"$XDG_RUNTIME_DIR/wayland-0\"]\n");
+        for abi in [None, Some(ABI::V1), Some(ABI::V6), Some(ABI::V8)] {
+            for m in [&plain, &bus, &x11, &wl] {
+                let iso = socket_isolation(abi, m.permissions.as_ref());
+                assert_eq!(iso, SocketIsolation::KernelCannotFilter, "{abi:?}");
+                assert_eq!(iso.warning(), Some(PARTIAL_ISOLATION_WARNING));
+            }
+        }
+        let v9 = Some(ABI::V9);
+        assert_eq!(socket_isolation(v9, None), SocketIsolation::Isolated);
+        assert_eq!(socket_isolation(v9, plain.permissions.as_ref()), SocketIsolation::Isolated);
+        assert_eq!(socket_isolation(v9, wl.permissions.as_ref()), SocketIsolation::Isolated);
+        assert_eq!(socket_isolation(v9, bus.permissions.as_ref()), SocketIsolation::ManifestAllowsBus);
+        assert_eq!(socket_isolation(v9, x11.permissions.as_ref()), SocketIsolation::AbstractSocketsOpen);
+        assert_eq!(SocketIsolation::Isolated.warning(), None);
+        assert_eq!(SocketIsolation::ManifestAllowsBus.warning(), None);
+        assert!(allows_desktop_bus(bus.permissions.as_ref()) && !allows_desktop_bus(plain.permissions.as_ref()));
     }
 
     #[test]
