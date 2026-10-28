@@ -660,9 +660,29 @@ fn sandbox(tree: &Path, man: &panpak_core::Manifest, access: &Access, allow_unfi
 /// How long the start waits for `gsettings` in total.
 const GSETTINGS_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
 
-/// First `gsettings` found in `PATH`.
+/// Where `gsettings` is looked for: system paths only, never `PATH`. The stub runs it outside
+/// the sandbox, so a program placed in a folder the user's `PATH` lists must not be picked.
+const GSETTINGS_PATHS: &[&str] = &["/usr/bin/gsettings", "/bin/gsettings"];
+
 fn find_gsettings() -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join("gsettings")).find(|p| p.is_file())
+    GSETTINGS_PATHS.iter().map(PathBuf::from).find(|p| p.is_file())
+}
+
+/// Variables that point an app at the user's agents; removed from every app's environment.
+const AGENT_VARS: &[&str] = &["SSH_AUTH_SOCK", "GPG_AGENT_INFO", "SSH_AGENT_PID"];
+
+/// Value that D-Bus libraries (libdbus, GDBus, sd-bus) read as "no bus": an unknown transport.
+const NO_BUS_ADDRESS: &str = "disabled:";
+
+/// Hide the local sockets the environment points to. This is hygiene, not a barrier: below
+/// Landlock V9 the app can still open `$XDG_RUNTIME_DIR/bus` or an agent socket by path.
+fn hide_local_sockets(cmd: &mut Command, allows_bus: bool) {
+    for v in AGENT_VARS {
+        cmd.env_remove(v);
+    }
+    if !allows_bus {
+        cmd.env("DBUS_SESSION_BUS_ADDRESS", NO_BUS_ADDRESS);
+    }
 }
 
 /// Ask `gsettings` for a key of `org.gnome.desktop.interface`; both queries run at once and share
@@ -911,6 +931,7 @@ fn real_main() -> Result<()> {
         .env("XDG_CONFIG_DIRS", config_dirs)
         .env("XDG_DATA_DIRS", data_dirs)
         .envs(launch_env);
+    hide_local_sockets(&mut cmd, panpak_core::allows_desktop_bus(man.permissions.as_ref()));
     if let Some(theme) = dark_theme {
         cmd.env("GTK_THEME", theme);
     }
@@ -1963,6 +1984,31 @@ mod tests {
         assert_eq!(gtk_dark_theme(Some(&g), GSETTINGS_TIMEOUT), None);
         let took = t0.elapsed();
         assert!(took < std::time::Duration::from_millis(900), "waited {took:?}");
+    }
+
+    #[test]
+    fn local_sockets_are_hidden_from_the_environment() {
+        use std::ffi::OsStr;
+        let state = |cmd: &Command, name: &str| cmd.get_envs().find(|(k, _)| *k == OsStr::new(name)).map(|(_, v)| v.map(|v| v.to_owned()));
+        let mut cmd = Command::new("true");
+        hide_local_sockets(&mut cmd, false);
+        for v in ["SSH_AUTH_SOCK", "GPG_AGENT_INFO", "SSH_AGENT_PID"] {
+            assert_eq!(state(&cmd, v), Some(None), "{v} must be removed");
+        }
+        assert_eq!(state(&cmd, "DBUS_SESSION_BUS_ADDRESS"), Some(Some("disabled:".into())));
+        // With the bus declared in the manifest the address is left alone; the agents still go.
+        let mut cmd = Command::new("true");
+        hide_local_sockets(&mut cmd, true);
+        assert_eq!(state(&cmd, "DBUS_SESSION_BUS_ADDRESS"), None);
+        assert_eq!(state(&cmd, "SSH_AUTH_SOCK"), Some(None));
+    }
+
+    #[test]
+    fn gsettings_is_only_looked_for_in_system_paths() {
+        // The lookup reads no environment variable: the candidates are the whole input.
+        assert!(GSETTINGS_PATHS.iter().all(|p| Path::new(p).is_absolute() && (p.starts_with("/usr/") || p.starts_with("/bin/"))));
+        assert!(find_gsettings().is_none_or(|p| GSETTINGS_PATHS.iter().any(|g| Path::new(g) == p)));
+        // The end-to-end check, with a program planted in PATH, is in tests/app_dirs.py.
     }
 
     #[test]
