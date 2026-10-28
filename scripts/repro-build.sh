@@ -7,13 +7,14 @@
 # of the sources ends up in the release binary), but remap stays recommended.
 #
 # Pinned toolchain: rust-toolchain.toml (channel 1.99.1) + Cargo.lock
-# (build --locked). C cross-compiler: musl.cc x86_64-linux-musl-cross
-# (build 2021-11-23), registered SHA-256:
-#   c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea
-# musl.cc publishes no checksums: the value above is self-detected to
-# catch silent changes in future downloads. Alternative with
-# verified signatures: musl-tools from the Ubuntu archive (apt, Release.gpg).
+# (build --locked). C compiler and linker: Zig, exactly the version pinned in
+# tools/requirements-zig.txt (wheel from PyPI, installed with
+# `pip install --require-hashes -r tools/requirements-zig.txt`); see
+# scripts/zig-env.sh for how Zig is found. The script refuses to run with any
+# other Zig version.
 set -eu
+. "$(dirname "$0")/zig-env.sh"
+zig_check || exit 1
 REMAP=1
 if [ "${1:-}" = "--no-remap" ]; then REMAP=0; fi
 
@@ -41,18 +42,22 @@ else
     work="$work-$(date +%Y%m%d-%H%M%S)-$$"
   fi
 fi
+# RUSTFLAGS replaces the `rustflags` of .cargo/config.toml: repeat its flag.
+LINKFLAGS="-C link-self-contained=no"
 mkdir -p "$work/a" "$work/b"
 # Identical sources, different paths (no target/, no .git).
 tar --exclude=target --exclude=.git -cf - -C "$SRC" . | tar -xf - -C "$work/a"
 tar --exclude=target --exclude=.git -cf - -C "$work/a" . | tar -xf - -C "$work/b"
 
 for d in a b; do
+  # Zig caches inside each build directory (never shared between a and b).
+  export ZIG_GLOBAL_CACHE_DIR="$work/$d/target/zig-cache/global" ZIG_LOCAL_CACHE_DIR="$work/$d/target/zig-cache/local"
   # Source AND registry remap: absolute paths end up in the strings
   # of dependency panics; without it, builds in different $HOMEs diverge.
   if [ "$REMAP" = 1 ]; then
-    export RUSTFLAGS="--remap-path-prefix=$work/$d=/panpak-src --remap-path-prefix=$HOME/.cargo=/cargo-home"
+    export RUSTFLAGS="$LINKFLAGS --remap-path-prefix=$work/$d=/panpak-src --remap-path-prefix=$HOME/.cargo=/cargo-home"
   else
-    unset RUSTFLAGS
+    export RUSTFLAGS="$LINKFLAGS"
   fi
   (cd "$work/$d" && cargo build --locked --release \
     --target x86_64-unknown-linux-musl) > "$work/$d.log" 2>&1 \

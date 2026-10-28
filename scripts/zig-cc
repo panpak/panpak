@@ -1,0 +1,32 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# C compiler and linker driver for the musl targets: `zig cc`.
+# Used through CC_<target> and the target linker (see .cargo/config.toml).
+# The cc crate passes --target=<rust triple>; Zig wants -target <zig triple>
+# (no vendor field), so that option is translated. Without it (linking),
+# PANPAK_ZIG_TARGET applies (default x86_64-linux-musl). `-Wl,-O1` is dropped:
+# lld ignores it and would print a warning that fails clippy -D warnings.
+# When compiling, -fomit-frame-pointer matches gcc's default at -O2 and above.
+set -eu
+. "$(dirname "$0")/zig-env.sh"
+target="${PANPAK_ZIG_TARGET:-x86_64-linux-musl}"
+n=$#
+while [ "$n" -gt 0 ]; do
+  a="$1"; shift; n=$((n - 1))
+  case "$a" in
+    --target=*)
+      t="${a#--target=}"
+      case "$t" in
+        *-unknown-*) target="${t%%-unknown-*}-${t#*-unknown-}" ;;
+        *) target="$t" ;;
+      esac ;;
+    -static-pie) set -- "$@" -static -pie ;; # Zig ignores -static-pie and would emit a non-PIE binary
+    -Wl,-O1) ;; # rustc's linker optimisation level; lld warns that it is ignored
+    *) set -- "$@" "$a" ;;
+  esac
+done
+# Zig keeps frame pointers by default; gcc omits them at -O2 and above.
+for a in "$@"; do
+  case "$a" in -c|-E|-S) set -- "$@" -fomit-frame-pointer; break ;; esac
+done
+zig_run cc -target "$target" "$@"

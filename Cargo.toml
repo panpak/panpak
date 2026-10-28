@@ -2,3 +2,8 @@
 members = ["panpak-core", "panpak-stub", "panpak"]
 exclude = ["fuzz"]
 resolver = "2"
+
+# Same stripping for every toolchain (Zig would otherwise strip by default and
+# gcc/binutils would not).
+[profile.release]
+strip = "symbols"

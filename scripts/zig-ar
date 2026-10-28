@@ -1,0 +1,6 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Archiver for the cc crate (AR_<target>): `zig ar`.
+set -eu
+. "$(dirname "$0")/zig-env.sh"
+zig_run ar "$@"

@@ -1,9 +1,20 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# Explicit linkers for musl targets: without them, rustc uses the system `cc` and
-# the result depends on the host binutils (build-id present/absent).
-# Requires x86_64-linux-musl-gcc (musl.cc or musl-tools) on PATH.
-[target.x86_64-unknown-linux-musl]
-linker = "x86_64-linux-musl-gcc"
+# musl targets are built with Zig (version pinned in tools/requirements-zig.txt):
+# `zig cc` compiles the C and assembly of dependencies (zstd, blake3, ring, ...)
+# and links the final binaries, so the host gcc and binutils play no part.
+# `link-self-contained=no`: the linker driver (Zig) supplies the musl crt files
+# and libc; rustc's own copies would clash with them.
+# scripts/repro-build.sh sets RUSTFLAGS, which replaces `rustflags` below, and
+# repeats the flag.
+[env]
+CC_x86_64_unknown_linux_musl = { value = "scripts/zig-cc", relative = true }
+AR_x86_64_unknown_linux_musl = { value = "scripts/zig-ar", relative = true }
 
+[target.x86_64-unknown-linux-musl]
+linker = "scripts/zig-cc"
+rustflags = ["-C", "link-self-contained=no"]
+
+# aarch64 is not covered by the pinned Zig toolchain: it needs an aarch64 musl
+# cross compiler of your own.
 [target.aarch64-unknown-linux-musl]
 linker = "aarch64-linux-musl-gcc"
