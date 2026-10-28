@@ -25,7 +25,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [-o <out.panpak>]\n  panpak install-runtime <stub>
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--runtime <stub>] <package>\n  panpak update [--yes] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak rollback <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak rollback <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -132,7 +132,7 @@ fn coalesce_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 /// local package (byte-identical), index/manifest/footer from remote.
 /// Only missing chunks travel the network. Full verification of the assembled
 /// file before publishing it; current stays intact on error.
-fn cmd_update(app_id: &str, yes: bool, allow_downgrade: bool, allow_insecure: bool, timeout_secs: u64) -> Result<PathBuf> {
+fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, allow_insecure: bool, timeout_secs: u64) -> Result<PathBuf> {
     use std::collections::HashMap;
     panpak_core::validate_app_id(app_id)?;
     let store = store_dir()?;
@@ -292,15 +292,9 @@ fn cmd_update(app_id: &str, yes: bool, allow_downgrade: bool, allow_insecure: bo
     // New permissions need a yes before the update is published (current stays on a no).
     print_permissions(&vman);
     let added = panpak_core::added_permissions(&old_man, &vman);
-    if !added.is_empty() {
-        println!("WARNING: this update asks for permissions the installed version did not have:");
-        for a in &added {
-            println!("  {a}");
-        }
-        if let Err(e) = confirm("Accept them and update?", yes, ErrorCode::E1003, "new permissions") {
-            let _ = fs::remove_file(&tmp);
-            return Err(e);
-        }
+    if let Err(e) = accept_new_permissions(&added, yes, accept_new, "update") {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
     }
     fs::rename(&tmp, &dest)?;
 
@@ -1489,6 +1483,10 @@ fn print_permissions(man: &panpak_core::Manifest) {
             }
         }
     }
+    let iso = panpak_core::socket_isolation(panpak_core::detect_abi().ok(), man.permissions.as_ref());
+    if let Some(w) = iso.warning() {
+        println!("{w}");
+    }
     if let Some(l) = &man.launch {
         let args = l.args.as_deref().unwrap_or_default();
         if !args.is_empty() {
@@ -1498,6 +1496,36 @@ fn print_permissions(man: &panpak_core::Manifest) {
             println!("extra environment: {k}={v}");
         }
     }
+}
+
+/// New permissions are never accepted by `--yes` (that flag is for the key of a new app).
+/// They need an answer at a terminal, or `--accept-new-permissions`.
+fn accept_new_permissions(added: &[String], yes: bool, accept: bool, what: &str) -> Result<()> {
+    if added.is_empty() {
+        return Ok(());
+    }
+    println!("WARNING: this {what} asks for permissions the installed version did not have:");
+    for a in added {
+        println!("  {a}");
+    }
+    if accept {
+        return Ok(());
+    }
+    let terminal = std::io::IsTerminal::is_terminal(&std::io::stdin());
+    ensure_code!(
+        terminal && !yes,
+        ErrorCode::E5004,
+        "new permissions need your confirmation: --yes does not accept them. Run the command at a terminal and answer the question, or pass --accept-new-permissions after reading the list above"
+    );
+    confirm("Accept them?", false, ErrorCode::E1003, "new permissions")
+}
+
+/// The manifest of the version installed now, if there is one.
+fn installed_manifest(appdir: &Path) -> Option<panpak_core::Manifest> {
+    let pkg = fs::read_link(appdir.join("current")).ok()?;
+    let mut f = File::open(pkg).ok()?;
+    let ft = panpak_core::read_footer(&mut f).ok()?;
+    panpak_core::verify(&mut f, &ft).ok().map(|(m, _)| m)
 }
 
 /// `panpak data path|clear <app-id>`: the private folders of an app.
@@ -1522,7 +1550,7 @@ fn cmd_data(action: &str, app_id: &str, yes: bool) -> Result<()> {
     }
 }
 
-fn cmd_install(pkg: &Path, yes: bool, runtime_opt: Option<&Path>) -> Result<PathBuf> {
+fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Path>) -> Result<PathBuf> {
     let store = store_dir()?;
     if let Some(rt) = runtime_opt {
         // --runtime points at a local build: like --allow-unsigned (warning included).
@@ -1561,6 +1589,10 @@ fn cmd_install(pkg: &Path, yes: bool, runtime_opt: Option<&Path>) -> Result<Path
         let old = fs::read_to_string(&pin)?;
         ensure_code!(old.trim() == key.trim(), ErrorCode::E1004, "key DIFFERS from TOFU pin: possible attack or changed author; manual reinstall required");
         print_permissions(&man);
+        // Installing over an installed app is an update: new permissions need a yes.
+        if let Some(old) = installed_manifest(&appdir) {
+            accept_new_permissions(&panpak_core::added_permissions(&old, &man), yes, accept_new, "package")?;
+        }
     } else {
         println!("app: {} {} ({})", man.app.id, man.app.name, man.app.version);
         print_permissions(&man);
@@ -1638,10 +1670,12 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         Ok(abi) => line(true, &format!("kernel {release}, Landlock {abi:?} ({})", abi_features(abi))),
         Err(e) => line(false, &format!("kernel {release}, Landlock unavailable ({}); kernel >= 5.13 with CONFIG_SECURITY_LANDLOCK=y required", panpak_core::err_text(&e))),
     }
-    if let Ok(abi) = panpak_core::detect_abi() {
-        if abi < landlock::ABI::V9 {
-            println!("NOTE kernel Landlock {abi:?} cannot filter Unix socket paths (V9): every app can reach the desktop session bus; see THREAT-MODEL.md");
+    // Local sockets: D-Bus, ssh-agent, gpg-agent (see THREAT-MODEL.md).
+    match panpak_core::socket_isolation(panpak_core::detect_abi().ok(), None) {
+        panpak_core::SocketIsolation::Isolated => {
+            println!("OK   local sockets: isolated (Landlock V9 denies path sockets that the manifest does not list)");
         }
+        iso => println!("NOTE local sockets: not isolated. {}", iso.warning().unwrap_or("")),
     }
     // User namespaces (needed by containers/tooling, not the stub).
     match fs::read_to_string("/proc/sys/user/max_user_namespaces") {
@@ -2000,6 +2034,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
         }
         Some("update") => {
             let mut yes = false;
+            let mut accept_new = false;
             let mut allow = false;
             let mut insecure = false;
             let mut timeout = 30u64;
@@ -2009,6 +2044,10 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                 match args[i].as_str() {
                     "--yes" => {
                         yes = true;
+                        i += 1;
+                    }
+                    "--accept-new-permissions" => {
+                        accept_new = true;
                         i += 1;
                     }
                     "--allow-downgrade" => {
@@ -2031,7 +2070,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                     }
                 }
             }
-            cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, yes, allow, insecure, timeout)?;
+            cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, yes, accept_new, allow, insecure, timeout)?;
             Ok(())
         }
         Some("dump-index") | Some("dump-manifest") => {
@@ -2051,6 +2090,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
         }
         Some("install") => {
             let mut yes = false;
+            let mut accept_new = false;
             let mut runtime = None;
             let mut pkg = None;
             let mut i = 2;
@@ -2058,6 +2098,10 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                 match args[i].as_str() {
                     "--yes" => {
                         yes = true;
+                        i += 1;
+                    }
+                    "--accept-new-permissions" => {
+                        accept_new = true;
                         i += 1;
                     }
                     "--runtime" => {
@@ -2074,6 +2118,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             cmd_install(
                 Path::new(pkg.ok_or_else(|| coded(ErrorCode::E5002, "install <package>"))?),
                 yes,
+                accept_new,
                 runtime.map(Path::new),
             )?;
             Ok(())
