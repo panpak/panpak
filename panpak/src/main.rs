@@ -278,9 +278,10 @@ fn cmd_update(app_id: &str, allow_downgrade: bool, allow_insecure: bool, timeout
     let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
     panpak_core::verify_stub_range(&mut vf, stub_len, &vman)?;
     // Reused chunks too: the local store could be damaged.
+    let (mut dec, mut raw) = (panpak_core::ChunkDecoder::new()?, Vec::new());
     for c in &chunks {
         let comp = panpak_core::read_at(&mut vf, c.off, c.comp as u64)?;
-        let raw = panpak_core::decode_capped(&comp, c.raw as u64)?;
+        dec.decode(&comp, c.raw as u64, &mut raw)?;
         panpak_core::verify_chunk(c, &raw)?;
     }
     fs::rename(&tmp, &dest)?;
@@ -679,6 +680,8 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
     let mut chunks: Vec<Chunk> = Vec::new();
     let mut by_hash: HashMap<[u8; 32], u32> = HashMap::new();
     let mut refs: u64 = 0;
+    // One zstd context for every chunk and for the index.
+    let mut enc = panpak_core::ChunkEncoder::new(ZSTD_LEVEL)?;
     for p in payload.iter_mut() {
         let reader: Box<dyn std::io::Read> = match (&p.source, p.embedded) {
             (Some(src), _) => Box::new(File::open(src)?),
@@ -696,9 +699,9 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
                 ids.push(id);
                 continue;
             }
-            let comp = zstd::encode_all(&raw[..], ZSTD_LEVEL)?;
+            let comp = enc.encode(&raw)?;
             let id = chunks.len() as u32;
-            fout.write_all(&comp)?;
+            fout.write_all(comp)?;
             chunks.push(Chunk {
                 hash,
                 off: file_off,
@@ -717,7 +720,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
 
     let entries: Vec<Entry> = payload.into_iter().map(|p| p.entry).collect();
     let raw_index = encode_index(&chunks, &entries);
-    let comp_index = zstd::encode_all(&raw_index[..], ZSTD_LEVEL)?;
+    let comp_index = enc.encode(&raw_index)?.to_vec();
     let root = *blake3::hash(&raw_index).as_bytes();
 
     let index_off = file_off;
@@ -1431,9 +1434,10 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                 panpak_core::parse_index(&raw).and_then(|(chunks, _)| {
                     let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
                     panpak_core::verify_stub_range(&mut f, stub_len, &man)?;
+                    let (mut dec, mut raw) = (panpak_core::ChunkDecoder::new()?, Vec::new());
                     for c in &chunks {
                         let comp = panpak_core::read_at(&mut f, c.off, c.comp as u64)?;
-                        let raw = panpak_core::decode_capped(&comp, c.raw as u64)?;
+                        dec.decode(&comp, c.raw as u64, &mut raw)?;
                         panpak_core::verify_chunk(c, &raw)?;
                     }
                     Ok((ft, man))

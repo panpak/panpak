@@ -3,7 +3,7 @@
 // Build: cargo build --release --target x86_64-unknown-linux-musl
 use anyhow::{bail, ensure, Context, Result};
 use panpak_core::{bail_code, coded, ensure_code, ErrorCode};
-use panpak_core::{decode_capped, hex, parse_index, read_at, read_footer, verify, Chunk, Entry, Kind};
+use panpak_core::{hex, ChunkDecoder, parse_index, read_at, read_footer, verify, Chunk, Entry, Kind};
 use std::{
     fs::{self, File},
     io::Write,
@@ -35,11 +35,11 @@ fn mkdir_secure(base: &Path, rel: &Path) -> Result<()> {
     Ok(())
 }
 
-fn chunk_bytes(f: &mut File, c: &Chunk) -> Result<Vec<u8>> {
+fn chunk_bytes<'a>(f: &mut File, c: &Chunk, dec: &mut ChunkDecoder, scratch: &'a mut Vec<u8>) -> Result<&'a [u8]> {
     // Cap = declared raw (validated by the parser: <= 1 MiB).
-    let data = decode_capped(&read_at(f, c.off, c.comp as u64)?[..], c.raw as u64)?;
-    panpak_core::verify_chunk(c, &data)?;
-    Ok(data)
+    dec.decode(&read_at(f, c.off, c.comp as u64)?[..], c.raw as u64, scratch)?;
+    panpak_core::verify_chunk(c, scratch)?;
+    Ok(scratch)
 }
 
 /// Write the shared blob (atomic) and link it with a hardlink;
@@ -102,6 +102,9 @@ fn materialize(
     entries: &[Entry],
 ) -> Result<PathBuf> {
     use std::collections::HashMap;
+    // One zstd context and one buffer for every chunk of the package.
+    let mut dec = ChunkDecoder::new()?;
+    let mut scratch = Vec::new();
     let tree = store.join("trees").join(hex(root));
     if tree.join(".complete").exists() {
         ensure_tree_readonly(&tree)?;
@@ -133,7 +136,7 @@ fn materialize(
                 if total <= MAX_ASSEMBLE {
                     let mut buf = Vec::with_capacity(total as usize);
                     for &id in ids {
-                        buf.extend_from_slice(&chunk_bytes(f, &chunks[id as usize])?);
+                        buf.extend_from_slice(chunk_bytes(f, &chunks[id as usize], &mut dec, &mut scratch)?);
                     }
                     let fid = hex(blake3::hash(&buf).as_bytes());
                     let blob = blobs.join(format!("{fid}-{:o}", e.mode));
@@ -150,7 +153,7 @@ fn materialize(
                 } else {
                     let mut out = File::create(&dst)?;
                     for &id in ids {
-                        out.write_all(&chunk_bytes(f, &chunks[id as usize])?)?;
+                        out.write_all(chunk_bytes(f, &chunks[id as usize], &mut dec, &mut scratch)?)?;
                     }
                     fs::set_permissions(&dst, fs::Permissions::from_mode(e.mode))?;
                 }
