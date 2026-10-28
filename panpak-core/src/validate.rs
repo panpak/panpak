@@ -31,9 +31,10 @@ fn bad_field(field: &str, why: &str) -> anyhow::Error {
 ///
 /// ```text
 /// app-id  = segment 1*( "." segment )     ; 2 segments or more, 128 bytes at most
-/// segment = ( ALPHA / "_" / "-" ) *62( ALPHA / DIGIT / "_" / "-" )   ; 1 to 63 bytes
+/// segment = ( ALPHA / "_" ) *62( ALPHA / DIGIT / "_" / "-" )   ; 1 to 63 bytes
 /// ```
-/// So an id has no segment starting with a digit, no `/`, no empty or leading or
+/// So an id has no segment starting with a digit or a hyphen (the launcher is named
+/// after the id, and a name starting with `-` would be read as an option), no `/`, no empty or leading or
 /// trailing dot segment, no `..`, no control character and no NUL.
 pub fn validate_app_id(id: &str) -> Result<()> {
     let bad = |why: &str| coded(ErrorCode::E0006, format!("invalid app.id {}: {why}", shown(id)));
@@ -60,8 +61,8 @@ pub fn validate_app_id(id: &str) -> Result<()> {
         if !seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
             return Err(bad("segments may contain only A-Z, a-z, 0-9, '_' and '-'"));
         }
-        if seg.as_bytes()[0].is_ascii_digit() {
-            return Err(bad("a segment must not start with a digit"));
+        if seg.as_bytes()[0].is_ascii_digit() || seg.as_bytes()[0] == b'-' {
+            return Err(bad("a segment must not start with a digit or '-'"));
         }
     }
     Ok(())
@@ -177,7 +178,7 @@ mod tests {
     fn app_id_accepts_dbus_style_names() {
         for id in [
             "org.example.app", "a.b", "io.github.AppImageLauncher", "com.x-y.app9", "org.example.my_app", "_a._b", "a.b1",
-            "org.example.app-name", &format!("a.{}", "b".repeat(63)),
+            "org.example.app-name", "org.example.a-", "org.ex-ample.app", &format!("a.{}", "b".repeat(63)),
         ] {
             assert!(validate_app_id(id).is_ok(), "{id}");
         }
@@ -190,7 +191,7 @@ mod tests {
         for id in [
             "", "app", ".org.example", "org.example.", "org..example", "../x.y", "a/b.c", "org.example/../x", "org.exa mple.app",
             "org.example.app\n", "org.example.app\nExec=/bin/sh", "org.exa\0mple.app", "org.example.\u{1b}app", "org.exämple.app",
-            "org.example.app\u{7f}", "/etc.x", "org.example.1app", "1org.example.app", "org.7.app", "org.example.a+b", "org.example.a:b",
+            "org.example.app\u{7f}", "/etc.x", "org.example.1app", "1org.example.app", "org.7.app", "-app.example", "org.-app.example", "org.example.-app", "a.-", "org.example.a+b", "org.example.a:b",
             &long_label, &too_long,
         ] {
             let e = validate_app_id(id).expect_err(id);
