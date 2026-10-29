@@ -46,6 +46,11 @@
   that no chosen library defines and, if it finds some, takes the library (with its family) from its other copy, until
   nothing is missing or nothing can change (at most 8 steps). If some remain, the app still starts, with a warning, and
   `panpak doctor` lists them. This fixes QOwnNotes, whose bundled GLib was older than the system libraries it also loads.
+- **Resolution cache and speed.** The cache of the library resolution is now keyed by the package root and its `[abi]`
+  fields, the stub, the kernel, `/etc/ld.so.cache` and the identity of every system library the decision looked at (also
+  the ones not chosen) and of the loader, so an update of `libglib` or `libcrypto` makes the next start resolve again.
+  A hit no longer hashes the package or runs `ldconfig`. The ELF files are read once each with `pread`, only the sections
+  that matter, on several threads: the resolution of Kdenlive (449 libraries) takes about 40-140 ms instead of 1.2-1.4 s.
 - **GTK3 dark theme** from `gsettings` at start (at most 200 ms).
 - **Security: paths and text from the manifest.** `app.id` has one strict
   grammar (spec §3.1.1) and every manifest field that becomes a path, a file

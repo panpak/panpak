@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Symbols and symbol versions of an ELF file, from the section headers (`.dynsym`,
-//! `.gnu.version`, `.gnu.version_r`, `.gnu.version_d`). Used to choose between two copies of
-//! `libstdc++.so.6` and `libgcc_s.so.1` (see `abi::cxx_runtime_prefs`) and by `panpak doctor` to
-//! check that the libraries chosen for an app provide what the app needs.
-//! Minimal bounds-checked parser on bytes, no external crates: it never panics and reads only
-//! what the section headers point to, with caps on every count. Little-endian ELF64 only; any
-//! other file (a script, a 32-bit or big-endian ELF, a file without section headers) gives an
-//! empty result.
+//! Needed libraries, symbols and symbol versions of an ELF file, from the section headers
+//! (`.dynamic`, `.dynsym`, `.dynstr`, `.gnu.version`, `.gnu.version_r`, `.gnu.version_d`). Used to
+//! choose between two copies of `libstdc++.so.6` and `libgcc_s.so.1` (see `abi::cxx_runtime_prefs`),
+//! to check that the libraries chosen for an app provide what the app needs (`abi::diagnose`) and by
+//! `panpak doctor`.
+//! Minimal bounds-checked parser, no external crates: it never panics and reads only what the section
+//! headers point to, with caps on every count. A file is read through a `Source`: bytes in memory
+//! (`parse_syms`, fuzzed) or a file read with `pread`, only the sections that are needed
+//! (`read_elf_info`). Little-endian ELF64 only; any other file (a script, a 32-bit or big-endian ELF)
+//! gives an empty result.
 use anyhow::{ensure, Context, Result};
-use std::collections::HashMap;
+use std::{borrow::Cow, collections::HashMap, fs::File, os::unix::fs::FileExt, path::Path};
 
 /// Most symbols read from one file (the largest libraries have a few hundred thousand).
 const MAX_SYMS: usize = 1 << 21;
@@ -16,6 +18,8 @@ const MAX_SYMS: usize = 1 << 21;
 const MAX_SECTIONS: usize = 4096;
 /// Longest name kept.
 const MAX_NAME: usize = 512;
+/// Largest piece read from a file at once.
+const MAX_READ: usize = 256 << 20;
 
 /// An undefined symbol that a file needs from another.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,12 +34,75 @@ pub struct Needed {
 pub struct ElfSyms {
     /// Undefined, non-weak symbols.
     pub undefined: Vec<Needed>,
-    /// Defined symbols, with the version name when the symbol is versioned.
-    pub defined: Vec<(String, Option<String>)>,
+    /// Defined symbols as hashes (`sym_hash`): one for the name alone and, for a versioned symbol,
+    /// one more for `name@version`. Hashes, not names: a large file has hundreds of thousands.
+    pub defined: Vec<u64>,
     /// Every `(file, version)` pair in `.gnu.version_r`, also those no symbol uses.
     pub verneed: Vec<(String, String)>,
     /// The version names in `.gnu.version_d`, without the base entry.
     pub verdef: Vec<String>,
+}
+
+/// What `read_elf_info` finds in a file.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ElfInfo {
+    /// The `DT_NEEDED` names (sorted, without duplicates; a name with `$ORIGIN` reduced to its last part).
+    pub needs: Vec<String>,
+    pub syms: ElfSyms,
+}
+
+/// A fast 64-bit hash (FNV-1a) of a symbol name, and of `name@version` when there is a version.
+pub fn sym_hash(name: &[u8], version: Option<&[u8]>) -> u64 {
+    const BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = BASIS;
+    for &b in name {
+        h = (h ^ b as u64).wrapping_mul(PRIME);
+    }
+    if let Some(v) = version {
+        h = (h ^ b'@' as u64).wrapping_mul(PRIME);
+        for &b in v {
+            h = (h ^ b as u64).wrapping_mul(PRIME);
+        }
+    }
+    h
+}
+
+/// Where the bytes of an ELF file come from.
+pub trait Source {
+    /// `len` bytes at `off`, or None if they are beyond the end or too many.
+    fn read(&self, off: usize, len: usize) -> Option<Cow<'_, [u8]>>;
+}
+
+impl Source for [u8] {
+    fn read(&self, off: usize, len: usize) -> Option<Cow<'_, [u8]>> {
+        self.get(off..off.checked_add(len)?).map(Cow::Borrowed)
+    }
+}
+
+/// A file read with `pread`.
+pub struct FileSource {
+    file: File,
+    size: usize,
+}
+
+impl FileSource {
+    pub fn open(path: &Path) -> Result<Self> {
+        let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+        let size = usize::try_from(file.metadata()?.len()).unwrap_or(usize::MAX);
+        Ok(Self { file, size })
+    }
+}
+
+impl Source for FileSource {
+    fn read(&self, off: usize, len: usize) -> Option<Cow<'_, [u8]>> {
+        if len > MAX_READ || off.checked_add(len)? > self.size {
+            return None;
+        }
+        let mut buf = vec![0u8; len];
+        self.file.read_exact_at(&mut buf, off as u64).ok()?;
+        Some(Cow::Owned(buf))
+    }
 }
 
 fn u16_at(b: &[u8], o: usize) -> Option<u16> {
@@ -49,13 +116,14 @@ fn u64_at(b: &[u8], o: usize) -> Option<u64> {
 }
 
 /// A NUL-terminated string at `off` in the string table `tab`.
-fn cstr(tab: &[u8], off: usize) -> Option<String> {
+fn cstr_bytes(tab: &[u8], off: usize) -> Option<&[u8]> {
     let s = tab.get(off..)?;
     let end = s.iter().position(|&c| c == 0)?;
-    if end > MAX_NAME {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&s[..end]).into_owned())
+    (end <= MAX_NAME).then(|| &s[..end])
+}
+
+fn cstr(tab: &[u8], off: usize) -> Option<String> {
+    cstr_bytes(tab, off).map(|b| String::from_utf8_lossy(b).into_owned())
 }
 
 #[derive(Clone, Copy)]
@@ -68,33 +136,39 @@ struct Section {
     entsize: usize,
 }
 
+const SHT_DYNAMIC: u32 = 6;
 const SHT_DYNSYM: u32 = 11;
 const SHT_VERDEF: u32 = 0x6fff_fffd;
 const SHT_VERNEED: u32 = 0x6fff_fffe;
 const SHT_VERSYM: u32 = 0x6fff_ffff;
 
-fn sections(b: &[u8]) -> Result<Vec<Section>> {
-    if b.len() < 64 || &b[0..4] != b"\x7fELF" || b[4] != 2 || b[5] != 1 {
+/// Whether the file is a little-endian ELF64.
+fn is_elf64(src: &(impl Source + ?Sized)) -> bool {
+    src.read(0, 6).is_some_and(|h| &h[..4] == b"\x7fELF" && h[4] == 2 && h[5] == 1)
+}
+
+fn sections(src: &(impl Source + ?Sized)) -> Result<Vec<Section>> {
+    if !is_elf64(src) {
         return Ok(Vec::new());
     }
-    let shoff = u64_at(b, 0x28).and_then(|v| usize::try_from(v).ok()).unwrap_or(0);
-    let shentsize = u16_at(b, 0x3A).unwrap_or(0) as usize;
-    let shnum = u16_at(b, 0x3C).unwrap_or(0) as usize;
+    let Some(head) = src.read(0, 64) else { return Ok(Vec::new()) };
+    let shoff = u64_at(&head, 0x28).and_then(|v| usize::try_from(v).ok()).unwrap_or(0);
+    let shentsize = u16_at(&head, 0x3A).unwrap_or(0) as usize;
+    let shnum = u16_at(&head, 0x3C).unwrap_or(0) as usize;
     if shoff == 0 || shnum == 0 {
         return Ok(Vec::new());
     }
     ensure!(shentsize >= 64 && shnum <= MAX_SECTIONS, "unusable section headers");
+    let table = src.read(shoff, shnum * shentsize).context("section header beyond the file")?;
     let mut out = Vec::with_capacity(shnum);
     for i in 0..shnum {
-        let o = shoff
-            .checked_add(i * shentsize)
-            .filter(|&o| o.checked_add(64).is_some_and(|e| e <= b.len()))
-            .context("section header beyond the file")?;
+        let o = i * shentsize;
         let field = |v: Option<u64>| v.context("truncated section header");
-        let (kind, off, size) = (u32_at(b, o + 4).context("truncated section header")?, field(u64_at(b, o + 0x18))?, field(u64_at(b, o + 0x20))?);
-        let link = u32_at(b, o + 0x28).context("truncated section header")?;
-        let info = u32_at(b, o + 0x2C).context("truncated section header")?;
-        let entsize = field(u64_at(b, o + 0x38))?;
+        let kind = u32_at(&table, o + 4).context("truncated section header")?;
+        let (off, size) = (field(u64_at(&table, o + 0x18))?, field(u64_at(&table, o + 0x20))?);
+        let link = u32_at(&table, o + 0x28).context("truncated section header")?;
+        let info = u32_at(&table, o + 0x2C).context("truncated section header")?;
+        let entsize = field(u64_at(&table, o + 0x38))?;
         out.push(Section {
             kind,
             off: usize::try_from(off).unwrap_or(usize::MAX),
@@ -107,32 +181,32 @@ fn sections(b: &[u8]) -> Result<Vec<Section>> {
     Ok(out)
 }
 
-fn body<'a>(b: &'a [u8], s: &Section) -> Option<&'a [u8]> {
-    b.get(s.off..s.off.checked_add(s.size)?)
+fn body<'a>(src: &'a (impl Source + ?Sized), s: &Section) -> Option<Cow<'a, [u8]>> {
+    src.read(s.off, s.size)
 }
 
 /// Version index -> (file, name) for the versions a file needs.
 type NeedTable = HashMap<u16, (String, String)>;
 
-fn read_verneed(b: &[u8], s: &Section, secs: &[Section]) -> Result<(NeedTable, Vec<(String, String)>)> {
+fn read_verneed(src: &(impl Source + ?Sized), s: &Section, secs: &[Section]) -> (NeedTable, Vec<(String, String)>) {
     let (mut table, mut all) = (HashMap::new(), Vec::new());
-    let (Some(data), Some(strs)) = (body(b, s), secs.get(s.link).and_then(|t| body(b, t))) else {
-        return Ok((table, all));
+    let (Some(data), Some(strs)) = (body(src, s), secs.get(s.link).and_then(|t| body(src, t))) else {
+        return (table, all);
     };
     let mut pos = 0usize;
     for _ in 0..(s.info as usize).min(MAX_SECTIONS) {
         let (Some(cnt), Some(file), Some(aux), Some(next)) =
-            (u16_at(data, pos + 2), u32_at(data, pos + 4), u32_at(data, pos + 8), u32_at(data, pos + 12))
+            (u16_at(&data, pos + 2), u32_at(&data, pos + 4), u32_at(&data, pos + 8), u32_at(&data, pos + 12))
         else {
             break;
         };
-        let file = cstr(strs, file as usize).unwrap_or_default();
+        let file = cstr(&strs, file as usize).unwrap_or_default();
         let mut a = pos.saturating_add(aux as usize);
         for _ in 0..cnt {
-            let (Some(other), Some(name), Some(anext)) = (u16_at(data, a + 6), u32_at(data, a + 8), u32_at(data, a + 12)) else {
+            let (Some(other), Some(name), Some(anext)) = (u16_at(&data, a + 6), u32_at(&data, a + 8), u32_at(&data, a + 12)) else {
                 break;
             };
-            if let Some(name) = cstr(strs, name as usize) {
+            if let Some(name) = cstr(&strs, name as usize) {
                 table.insert(other & 0x7fff, (file.clone(), name.clone()));
                 all.push((file.clone(), name));
             }
@@ -146,24 +220,24 @@ fn read_verneed(b: &[u8], s: &Section, secs: &[Section]) -> Result<(NeedTable, V
         }
         pos = pos.saturating_add(next as usize);
     }
-    Ok((table, all))
+    (table, all)
 }
 
-fn read_verdef(b: &[u8], s: &Section, secs: &[Section]) -> Result<HashMap<u16, String>> {
+fn read_verdef(src: &(impl Source + ?Sized), s: &Section, secs: &[Section]) -> HashMap<u16, String> {
     let mut table = HashMap::new();
-    let (Some(data), Some(strs)) = (body(b, s), secs.get(s.link).and_then(|t| body(b, t))) else {
-        return Ok(table);
+    let (Some(data), Some(strs)) = (body(src, s), secs.get(s.link).and_then(|t| body(src, t))) else {
+        return table;
     };
     let mut pos = 0usize;
     for _ in 0..(s.info as usize).min(MAX_SECTIONS) {
         let (Some(flags), Some(ndx), Some(aux), Some(next)) =
-            (u16_at(data, pos + 2), u16_at(data, pos + 4), u32_at(data, pos + 12), u32_at(data, pos + 16))
+            (u16_at(&data, pos + 2), u16_at(&data, pos + 4), u32_at(&data, pos + 12), u32_at(&data, pos + 16))
         else {
             break;
         };
         // The base entry (flag 1) names the file itself, not a version.
         if flags & 1 == 0 {
-            if let Some(name) = u32_at(data, pos.saturating_add(aux as usize)).and_then(|n| cstr(strs, n as usize)) {
+            if let Some(name) = u32_at(&data, pos.saturating_add(aux as usize)).and_then(|n| cstr(&strs, n as usize)) {
                 table.insert(ndx & 0x7fff, name);
             }
         }
@@ -172,48 +246,98 @@ fn read_verdef(b: &[u8], s: &Section, secs: &[Section]) -> Result<HashMap<u16, S
         }
         pos = pos.saturating_add(next as usize);
     }
-    Ok(table)
+    table
 }
 
-/// Parse the symbols of an ELF file given as bytes.
-pub fn parse_syms(b: &[u8]) -> Result<ElfSyms> {
-    let secs = sections(b)?;
+fn syms_of(src: &(impl Source + ?Sized), secs: &[Section]) -> Result<ElfSyms> {
     let mut out = ElfSyms::default();
     let (mut needs, mut defs) = (NeedTable::new(), HashMap::new());
     for s in secs.iter().filter(|s| s.kind == SHT_VERNEED) {
-        let (t, all) = read_verneed(b, s, &secs)?;
+        let (t, all) = read_verneed(src, s, secs);
         needs.extend(t);
         out.verneed.extend(all);
     }
     for s in secs.iter().filter(|s| s.kind == SHT_VERDEF) {
-        defs.extend(read_verdef(b, s, &secs)?);
+        defs.extend(read_verdef(src, s, secs));
     }
     out.verdef = defs.values().cloned().collect();
     out.verdef.sort();
-    let versym = secs.iter().find(|s| s.kind == SHT_VERSYM).and_then(|s| body(b, s));
     let Some(dynsym) = secs.iter().find(|s| s.kind == SHT_DYNSYM) else { return Ok(out) };
-    let (Some(syms), Some(strs)) = (body(b, dynsym), secs.get(dynsym.link).and_then(|t| body(b, t))) else {
+    let versym = secs.iter().find(|s| s.kind == SHT_VERSYM).and_then(|s| body(src, s));
+    let (Some(syms), Some(strs)) = (body(src, dynsym), secs.get(dynsym.link).and_then(|t| body(src, t))) else {
         return Ok(out);
     };
     ensure!(dynsym.entsize == 24 || dynsym.entsize == 0, "unexpected symbol size");
     let count = (syms.len() / 24).min(MAX_SYMS);
     for i in 1..count {
         let o = i * 24;
-        let (Some(name), Some(info), Some(shndx)) = (u32_at(syms, o), syms.get(o + 4), u16_at(syms, o + 6)) else { break };
-        let Some(name) = cstr(strs, name as usize).filter(|n| !n.is_empty()) else { continue };
-        let ver = versym.and_then(|v| u16_at(v, i * 2)).map(|v| v & 0x7fff).filter(|&v| v > 1);
+        let (Some(name), Some(info), Some(shndx)) = (u32_at(&syms, o), syms.get(o + 4), u16_at(&syms, o + 6)) else { break };
+        let Some(raw) = cstr_bytes(&strs, name as usize).filter(|n| !n.is_empty()) else { continue };
+        let ver = versym.as_ref().and_then(|v| u16_at(v, i * 2)).map(|v| v & 0x7fff).filter(|&v| v > 1);
         if shndx == 0 {
             // Undefined; a weak one may stay unresolved.
             if info >> 4 == 2 {
                 continue;
             }
             let version = ver.and_then(|v| needs.get(&v).cloned()).map(|(file, name)| (name, file));
-            out.undefined.push(Needed { name, version });
+            out.undefined.push(Needed { name: String::from_utf8_lossy(raw).into_owned(), version });
         } else {
-            out.defined.push((name, ver.and_then(|v| defs.get(&v).cloned())));
+            out.defined.push(sym_hash(raw, None));
+            if let Some(v) = ver.and_then(|v| defs.get(&v)) {
+                out.defined.push(sym_hash(raw, Some(v.as_bytes())));
+            }
         }
     }
     Ok(out)
+}
+
+fn needs_of(src: &(impl Source + ?Sized), secs: &[Section]) -> Vec<String> {
+    let Some(dynamic) = secs.iter().find(|s| s.kind == SHT_DYNAMIC) else { return Vec::new() };
+    let (Some(entries), Some(strs)) = (body(src, dynamic), secs.get(dynamic.link).and_then(|t| body(src, t))) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in entries.as_chunks::<16>().0.iter().take(4096) {
+        let (Some(tag), Some(val)) = (u64_at(e, 0), u64_at(e, 8)) else { break };
+        match tag {
+            0 => break,
+            1 => {
+                if let Some(mut name) = usize::try_from(val).ok().and_then(|o| cstr(&strs, o)) {
+                    // A name with $ORIGIN is matched by its last part, as the loader's result would be.
+                    if name.contains("$ORIGIN") {
+                        name = name.rsplit('/').next().unwrap_or(&name).to_string();
+                    }
+                    out.push(name);
+                }
+            }
+            _ => {}
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Parse the symbols of an ELF file given as bytes.
+pub fn parse_syms(b: &[u8]) -> Result<ElfSyms> {
+    let secs = sections(b)?;
+    syms_of(b, &secs)
+}
+
+/// The needs and symbols of an ELF file, reading only the sections that matter. A file that is not
+/// a little-endian ELF64 gives an empty result; one without section headers falls back to reading it
+/// whole for its `DT_NEEDED` names (it has no symbols to report).
+pub fn read_elf_info(path: &Path) -> Result<ElfInfo> {
+    let src = FileSource::open(path)?;
+    if !is_elf64(&src) {
+        return Ok(ElfInfo::default());
+    }
+    let secs = sections(&src)?;
+    if secs.is_empty() {
+        let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        return Ok(ElfInfo { needs: crate::elf_needs_bytes(&bytes).unwrap_or_default(), syms: ElfSyms::default() });
+    }
+    Ok(ElfInfo { needs: needs_of(&src, &secs), syms: syms_of(&src, &secs)? })
 }
 
 /// The numeric part of a `GLIBCXX_3.4.30`, `CXXABI_1.3.13` or `GCC_4.8.0` version, to compare them.
@@ -267,10 +391,21 @@ mod tests {
     }
 
     #[test]
-    fn this_program_has_symbols_when_it_is_dynamic() {
-        // The test binary is static (musl) or dynamic (glibc): both must parse.
-        let me = std::fs::read("/proc/self/exe").unwrap();
-        let s = parse_syms(&me).unwrap();
-        assert!(s.undefined.len() < 1_000_000);
+    fn reading_the_file_and_parsing_its_bytes_agree() {
+        // The test binary is static (musl) or dynamic (glibc): both must parse, in both ways.
+        let me = std::path::Path::new("/proc/self/exe");
+        let from_bytes = parse_syms(&std::fs::read(me).unwrap()).unwrap();
+        let info = read_elf_info(me).unwrap();
+        assert_eq!(info.syms, from_bytes);
+        let needs_from_bytes = crate::elf_needs_bytes(&std::fs::read(me).unwrap()).unwrap();
+        assert_eq!(info.needs, needs_from_bytes);
+    }
+
+    #[test]
+    fn hashes_tell_names_and_versions_apart() {
+        assert_ne!(sym_hash(b"foo", None), sym_hash(b"bar", None));
+        assert_ne!(sym_hash(b"foo", None), sym_hash(b"foo", Some(b"V1")));
+        assert_ne!(sym_hash(b"foo", Some(b"V1")), sym_hash(b"foo", Some(b"V2")));
+        assert_eq!(sym_hash(b"foo", Some(b"V1")), sym_hash(b"foo", Some(b"V1")));
     }
 }

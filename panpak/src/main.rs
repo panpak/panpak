@@ -1759,7 +1759,7 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                 // tree (the app is not installed yet) only the rules can be applied.
                 let installed = tree.join(&man.app.entry).exists();
                 let resolved = if installed {
-                    panpak_core::abi::resolve_consistent(&tree, &man.app.entry, &need, &prefer, &allowed, &host, &bundled).map(Some)
+                    panpak_core::abi::resolve_consistent(&mut panpak_core::abi::InfoCache::default(), &tree, &man.app.entry, &need, &prefer, &allowed, &host, &bundled).map(Some)
                 } else {
                     Ok(None)
                 };

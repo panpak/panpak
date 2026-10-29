@@ -148,7 +148,7 @@ fn the_cxx_runtime_copy_is_chosen_by_symbol_versions() {
     // The system copy is `host`, the one in the package is `bundled` (a path relative to the tree).
     let choose = |host: &str, bundled: &str| -> Option<bool> {
         let host = HashMap::from([("libstdc++.so.6".to_string(), dir.join(host).join("libstdc++.so.6"))]);
-        let prefs = cxx_runtime_prefs(std::slice::from_ref(&app), &host, &map(&format!("{bundled}/libstdc++.so.6")), &dir);
+        let prefs = cxx_runtime_prefs(&mut panpak_core::abi::InfoCache::default(), std::slice::from_ref(&app), &host, &map(&format!("{bundled}/libstdc++.so.6")), &dir);
         prefs.get("libstdc++.so.6").copied()
     };
     // Only one copy has GLIBCXX_3.4.30: that one, wherever it is.
@@ -160,7 +160,7 @@ fn the_cxx_runtime_copy_is_chosen_by_symbol_versions() {
     // Neither has it: the one with more versions, and the bundled one on a tie.
     assert_eq!(choose("old", "old"), Some(false));
     // No preference without both copies.
-    let none = cxx_runtime_prefs(&[app], &HashMap::new(), &map("new/libstdc++.so.6"), &dir);
+    let none = cxx_runtime_prefs(&mut panpak_core::abi::InfoCache::default(), &[app], &HashMap::new(), &map("new/libstdc++.so.6"), &dir);
     assert!(none.is_empty());
     let _ = fs::remove_dir_all(&dir);
 }
@@ -242,7 +242,7 @@ impl Glib {
     }
 
     fn resolve(&self) -> panpak_core::abi::Resolution {
-        panpak_core::abi::resolve_consistent(&self.dir.join("tree"), "bin/app", &Self::needs(), &[], &[], &self.host(), &self.bundled()).unwrap()
+        panpak_core::abi::resolve_consistent(&mut panpak_core::abi::InfoCache::default(), &self.dir.join("tree"), "bin/app", &Self::needs(), &[], &[], &self.host(), &self.bundled()).unwrap()
     }
 
     fn run(&self, decisions: &[(String, Source)]) -> (bool, String) {

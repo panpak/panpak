@@ -485,6 +485,13 @@ yet) with two worlds:
      the app still installs and starts, the runtime prints a warning with the
      files and symbols at the first start after the resolution is computed, and
      `panpak doctor` shows the same detail.
+  The cached decision is valid while these are unchanged: the verified root and
+  the `[abi]` fields and entry of the package, the stub that runs, the kernel
+  release, `/etc/ld.so.cache` (which `ldconfig` rewrites when a package manager
+  updates a library), and every system file the decision looked at, also the
+  libraries it did not choose and the loader (path, device, inode, size,
+  modification and change time). A hit costs the key and one `stat` per system
+  file, and runs no other process.
   The decision is made when the resolution is computed, at the first start of
   an installed package and again when the package, the kernel or the library
   inventory changes (it is cached in the store); it is not part of the package,

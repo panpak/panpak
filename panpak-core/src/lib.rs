@@ -8,7 +8,7 @@ mod errors;
 mod layout;
 mod validate;
 mod view;
-pub use elfsym::{parse_syms, version_number, ElfSyms, Needed};
+pub use elfsym::{parse_syms, read_elf_info, sym_hash, version_number, ElfInfo, ElfSyms, Needed};
 pub use errors::{code_of, coded, render, ErrorCode, PanpakError};
 pub use layout::{
     added_permissions, app_dirs, describe_permissions, fonts_conf, is_bus_socket, readonly_user_paths, xdg_search_dirs, AppDirs,
@@ -1925,6 +1925,74 @@ pub mod abi {
         }
     }
 
+    /// ELF files read once each, with `pread` and only the sections that matter, many at a time.
+    /// Shared by the whole resolution: the closure of `DT_NEEDED`, the choice of the C++ runtime,
+    /// the symbol check and the search for a library to move.
+    #[derive(Default)]
+    pub struct InfoCache {
+        map: HashMap<PathBuf, Option<std::sync::Arc<crate::ElfInfo>>>,
+    }
+
+    impl InfoCache {
+        pub fn get(&mut self, p: &Path) -> Option<std::sync::Arc<crate::ElfInfo>> {
+            self.map
+                .entry(p.to_path_buf())
+                .or_insert_with(|| crate::read_elf_info(p).ok().map(std::sync::Arc::new))
+                .clone()
+        }
+
+        /// The `DT_NEEDED` names of a file (none if it cannot be read or is not an ELF).
+        pub fn needs(&mut self, p: &Path) -> Vec<String> {
+            self.get(p).map(|i| i.needs.clone()).unwrap_or_default()
+        }
+
+        /// Read the files not yet read, on several threads (no more than the cores, at most 16).
+        pub fn prefetch(&mut self, paths: &[PathBuf]) {
+            let mut todo: Vec<&PathBuf> = paths.iter().filter(|p| !self.map.contains_key(*p)).collect();
+            todo.sort();
+            todo.dedup();
+            if todo.is_empty() {
+                return;
+            }
+            let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 16).min(todo.len());
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let found: Vec<(usize, Option<std::sync::Arc<crate::ElfInfo>>)> = std::thread::scope(|sc| {
+                let handles: Vec<_> = (0..threads)
+                    .map(|_| {
+                        sc.spawn(|| {
+                            let mut mine = Vec::new();
+                            loop {
+                                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                let Some(p) = todo.get(i) else { break };
+                                mine.push((i, crate::read_elf_info(p).ok().map(std::sync::Arc::new)));
+                            }
+                            mine
+                        })
+                    })
+                    .collect();
+                handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+            });
+            let keys: Vec<PathBuf> = todo.iter().map(|p| (*p).clone()).collect();
+            for (i, info) in found {
+                self.map.insert(keys[i].clone(), info);
+            }
+        }
+
+        /// Every file that was read.
+        pub fn read_paths(&self) -> Vec<PathBuf> {
+            let mut v: Vec<PathBuf> = self.map.iter().filter(|(_, i)| i.is_some()).map(|(p, _)| p.clone()).collect();
+            v.sort();
+            v
+        }
+    }
+
+    /// Whether the file starts with the ELF magic (reads four bytes).
+    fn looks_like_elf(p: &Path) -> bool {
+        use std::io::Read as _;
+        let mut magic = [0u8; 4];
+        fs::File::open(p).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && &magic == b"\x7fELF"
+    }
+
     /// The ELF files whose needs count for the choices: the entry of the app and the other
     /// executables next to it, and the libraries already decided.
     pub fn elf_modules(tree: &Path, entry: &str, decisions: &[(String, Source)]) -> Vec<PathBuf> {
@@ -1934,7 +2002,7 @@ pub mod abi {
             if let Ok(rd) = fs::read_dir(dir) {
                 let mut names: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
                 names.sort();
-                out.extend(names.into_iter().filter(|p| *p == exe || fs::read(p).ok().is_some_and(|b| b.starts_with(b"\x7fELF"))));
+                out.extend(names.into_iter().filter(|p| *p == exe || looks_like_elf(p)));
             }
         }
         if !out.contains(&exe) && exe.is_file() {
@@ -1950,6 +2018,7 @@ pub mod abi {
     /// one with the newest versions. If none offers them all, the one offering more. Without
     /// information (unreadable files) the bundled copy is kept.
     pub fn cxx_runtime_prefs(
+        cache: &mut InfoCache,
         modules: &[PathBuf],
         host: &HashMap<String, PathBuf>,
         bundled: &HashMap<String, PathBuf>,
@@ -1957,25 +2026,23 @@ pub mod abi {
     ) -> HashMap<String, bool> {
         let mut prefs = HashMap::new();
         let mut asked: HashMap<&str, HashSet<String>> = HashMap::new();
+        cache.prefetch(modules);
         for m in modules {
-            let Ok(b) = fs::read(m) else { continue };
-            let Ok(syms) = crate::parse_syms(&b) else { continue };
-            for (file, version) in syms.verneed {
+            let Some(info) = cache.get(m) else { continue };
+            for (file, version) in &info.syms.verneed {
                 if let Some(lib) = CXX_RUNTIME.iter().find(|l| **l == file) {
-                    asked.entry(lib).or_default().insert(version);
+                    asked.entry(lib).or_default().insert(version.clone());
                 }
             }
         }
         for lib in CXX_RUNTIME {
             let (Some(hp), Some(bp)) = (host.get(*lib), bundled.get(*lib)) else { continue };
-            let provided = |p: &Path| -> Option<HashSet<String>> {
-                let syms = crate::parse_syms(&fs::read(p).ok()?).ok()?;
-                Some(syms.verdef.into_iter().collect())
-            };
-            let (Some(h), Some(b)) = (provided(hp), provided(&tree.join(bp))) else { continue };
+            let bp = tree.join(bp);
+            let (Some(h), Some(b)) = (cache.get(hp), cache.get(&bp)) else { continue };
+            let (h, b): (HashSet<&String>, HashSet<&String>) = (h.syms.verdef.iter().collect(), b.syms.verdef.iter().collect());
             let want = asked.get(lib).cloned().unwrap_or_default();
-            let missing = |have: &HashSet<String>| want.iter().filter(|v| !have.contains(*v)).count();
-            let newest = |have: &HashSet<String>| have.iter().filter_map(|v| crate::version_number(v)).max();
+            let missing = |have: &HashSet<&String>| want.iter().filter(|v| !have.contains(v)).count();
+            let newest = |have: &HashSet<&String>| have.iter().filter_map(|v| crate::version_number(v)).max();
             let (mh, mb) = (missing(&h), missing(&b));
             // Fewer missing versions first, then the newer copy; a tie keeps the bundled one.
             let use_host = (mb, std::cmp::Reverse(newest(&b))) > (mh, std::cmp::Reverse(newest(&h)));
@@ -1993,28 +2060,23 @@ pub mod abi {
         pub missing: Vec<(String, String)>,
     }
 
-    /// Parsed ELF files, kept between the steps of one resolution.
+    /// A set of hashes that are already hashes: no second hashing.
     #[derive(Default)]
-    pub struct SymCache {
-        map: HashMap<PathBuf, Option<std::rc::Rc<crate::ElfSyms>>>,
-    }
-
-    impl SymCache {
-        fn get(&mut self, p: &Path) -> Option<std::rc::Rc<crate::ElfSyms>> {
-            self.map
-                .entry(p.to_path_buf())
-                .or_insert_with(|| fs::read(p).ok().and_then(|b| crate::parse_syms(&b).ok()).map(std::rc::Rc::new))
-                .clone()
+    struct KeyHasher(u64);
+    impl std::hash::Hasher for KeyHasher {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+        fn write(&mut self, bytes: &[u8]) {
+            for &b in bytes {
+                self.0 = (self.0 ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        fn write_u64(&mut self, v: u64) {
+            self.0 = v;
         }
     }
-
-    /// The key a symbol is looked up by: `name`, or `name@version` for a versioned one.
-    fn symbol_key(name: &str, version: Option<&str>) -> String {
-        match version {
-            Some(v) => format!("{name}@{v}"),
-            None => name.to_string(),
-        }
-    }
+    type KeySet = HashSet<u64, std::hash::BuildHasherDefault<KeyHasher>>;
 
     /// Read-only check: for the entry, the executables next to it and every chosen library, each
     /// non-weak undefined symbol must be defined by one of them (same version name when the
@@ -2028,11 +2090,21 @@ pub mod abi {
         host: &HashMap<String, PathBuf>,
         allow_missing: &[String],
     ) -> Diagnosis {
-        diagnose_cached(&mut SymCache::default(), tree, entry, decisions, loader, host, allow_missing)
+        diagnose_cached(&mut InfoCache::default(), tree, entry, decisions, loader, host, allow_missing)
+    }
+
+    /// `name` in the folder of `module` or in a folder directly below it.
+    fn sibling_lib(module: &Path, name: &str) -> Option<PathBuf> {
+        let dir = module.parent()?;
+        let here = dir.join(name);
+        if here.is_file() {
+            return Some(here);
+        }
+        fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_dir()).map(|p| p.join(name)).find(|p| p.is_file())
     }
 
     fn diagnose_cached(
-        cache: &mut SymCache,
+        cache: &mut InfoCache,
         tree: &Path,
         entry: &str,
         decisions: &[(String, Source)],
@@ -2044,45 +2116,50 @@ pub mod abi {
         let mut modules = elf_modules(tree, entry, decisions);
         modules.extend(loader.map(Path::to_path_buf));
         // The libraries of the system that the chosen ones need in turn (libcairo asks for libXrender):
-        // the loader finds them on its own, so they are not in the decisions.
+        // the loader finds them on its own, so they are not in the decisions. Level by level, each
+        // level read on several threads.
         let mut known: HashSet<String> = decisions.iter().map(|(n, _)| n.clone()).collect();
-        let mut i = 0;
-        while i < modules.len() && modules.len() < 4096 {
-            for need in crate::elf_needs(&modules[i]).unwrap_or_default() {
-                if known.insert(need.clone()) {
-                    if let Some(p) = host.get(&need) {
-                        modules.push(p.clone());
-                    } else if let Some(p) = sibling_lib(&modules[i], &need) {
-                        // A library next to the one that needs it, or in a folder below it (a RUNPATH
-                        // such as /usr/lib/x86_64-linux-gnu/libproxy), which the inventory does not list.
-                        modules.push(p);
+        let mut done = 0;
+        while done < modules.len() && modules.len() < 4096 {
+            let level: Vec<PathBuf> = modules[done..].to_vec();
+            cache.prefetch(&level);
+            done = modules.len();
+            for m in &level {
+                for need in cache.needs(m) {
+                    if known.insert(need.clone()) {
+                        if let Some(p) = host.get(&need) {
+                            modules.push(p.clone());
+                        } else if let Some(p) = sibling_lib(m, &need) {
+                            // A library next to the one that needs it, or in a folder below it (a RUNPATH
+                            // such as /usr/lib/x86_64-linux-gnu/libproxy), which the inventory does not list.
+                            modules.push(p);
+                        }
                     }
                 }
             }
-            i += 1;
         }
         let mut parsed = Vec::new();
-        let mut defined: HashSet<String> = HashSet::new();
+        let mut defined = KeySet::default();
         for m in &modules {
-            let Some(syms) = cache.get(m) else { continue };
-            for (name, version) in &syms.defined {
-                defined.insert(symbol_key(name, version.as_deref()));
-                // A versioned symbol also answers a request without a version.
-                defined.insert(name.clone());
-            }
-            parsed.push((m.clone(), syms));
+            let Some(info) = cache.get(m) else { continue };
+            defined.extend(info.syms.defined.iter().copied());
+            parsed.push((m.clone(), info));
         }
         let mut d = Diagnosis { modules: parsed.len(), missing: Vec::new() };
-        for (path, syms) in &parsed {
+        for (path, info) in &parsed {
             let shown = path.strip_prefix(tree).unwrap_or(path).display().to_string();
-            for u in &syms.undefined {
+            for u in &info.syms.undefined {
                 // A versioned symbol asked of a library that the package declared `allow_missing`
                 // is expected to be undefined.
                 if u.version.as_ref().is_some_and(|(_, file)| allow_missing.iter().any(|g| glob_match(g, file))) {
                     continue;
                 }
-                let key = symbol_key(&u.name, u.version.as_ref().map(|(v, _)| v.as_str()));
-                if !defined.contains(&key) {
+                let version = u.version.as_ref().map(|(v, _)| v.as_bytes());
+                if !defined.contains(&crate::sym_hash(u.name.as_bytes(), version)) {
+                    let key = match &u.version {
+                        Some((v, _)) => format!("{}@{v}", u.name),
+                        None => u.name.clone(),
+                    };
                     d.missing.push((shown.clone(), key));
                 }
             }
@@ -2090,16 +2167,6 @@ pub mod abi {
         d.missing.sort();
         d.missing.dedup();
         d
-    }
-
-    /// `name` in the folder of `module` or in a folder directly below it.
-    fn sibling_lib(module: &Path, name: &str) -> Option<PathBuf> {
-        let dir = module.parent()?;
-        let here = dir.join(name);
-        if here.is_file() {
-            return Some(here);
-        }
-        fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_dir()).map(|p| p.join(name)).find(|p| p.is_file())
     }
 
     /// The most steps `resolve_consistent` takes.
@@ -2115,6 +2182,10 @@ pub mod abi {
         pub changed: Vec<String>,
         /// Steps taken (0: the rules gave a consistent set).
         pub steps: usize,
+        /// Every file the decision depends on: the files read, the system copies of the libraries
+        /// named in `needs` (also the ones not chosen) and the loader. If one of them changes, the
+        /// decision has to be made again.
+        pub inputs: Vec<PathBuf>,
     }
 
     /// The dynamic loader in use: the bundled one (glibc in the bundle) or the system's.
@@ -2131,7 +2202,9 @@ pub mod abi {
     /// lowers the number of missing symbols. It never touches the libraries in `SYSTEM_WINS`, the
     /// C++ runtime, `prefer_host` and `allow_missing` libraries, nor a bundle with its own glibc.
     /// The symbols that remain are reported in `diagnosis`; the app still installs and starts.
+    #[allow(clippy::too_many_arguments)]
     pub fn resolve_consistent(
+        cache: &mut InfoCache,
         tree: &Path,
         entry: &str,
         needs: &[String],
@@ -2140,17 +2213,16 @@ pub mod abi {
         host: &HashMap<String, PathBuf>,
         bundled: &HashMap<String, PathBuf>,
     ) -> Result<Resolution> {
-        let mut cache = SymCache::default();
         let loader = loader_path(tree, host, bundled);
         let first = decide(needs, prefer_host, allow_missing, host, bundled)?;
         let modules = elf_modules(tree, entry, &first);
-        let mut prefs = cxx_runtime_prefs(&modules, host, bundled, tree);
+        let mut prefs = cxx_runtime_prefs(cache, &modules, host, bundled, tree);
         let mut decisions = decide_with(needs, prefer_host, allow_missing, host, bundled, &prefs)?;
-        let mut diag = diagnose_cached(&mut cache, tree, entry, &decisions, loader.as_deref(), host, allow_missing);
+        let mut diag = diagnose_cached(cache, tree, entry, &decisions, loader.as_deref(), host, allow_missing);
         let (mut changed, mut blocked, mut steps) = (Vec::new(), HashSet::<String>::new(), 0usize);
         while !diag.missing.is_empty() && steps < MAX_CONSISTENCY_STEPS {
             steps += 1;
-            let flips = flip_candidates(&mut cache, &diag, &decisions, tree, host, bundled, prefer_host, &blocked);
+            let flips = flip_candidates(cache, &diag, &decisions, tree, host, bundled, prefer_host, &blocked);
             if flips.is_empty() {
                 break;
             }
@@ -2159,7 +2231,7 @@ pub mod abi {
             let names: Vec<String> = flips.keys().cloned().collect();
             let next = decide_with(needs, prefer_host, allow_missing, host, bundled, &trial).ok();
             let checked = next.map(|d| {
-                let g = diagnose_cached(&mut cache, tree, entry, &d, loader.as_deref(), host, allow_missing);
+                let g = diagnose_cached(cache, tree, entry, &d, loader.as_deref(), host, allow_missing);
                 (d, g)
             });
             match checked {
@@ -2172,14 +2244,19 @@ pub mod abi {
                 _ => blocked.extend(names),
             }
         }
-        Ok(Resolution { decisions, diagnosis: diag, changed, steps })
+        let mut inputs = cache.read_paths();
+        inputs.extend(needs.iter().filter_map(|n| host.get(n).cloned()));
+        inputs.extend(loader);
+        inputs.sort();
+        inputs.dedup();
+        Ok(Resolution { decisions, diagnosis: diag, changed, steps, inputs })
     }
 
     /// Libraries to take from their other copy so that a missing symbol gets defined: name -> true for
     /// the system copy. A family moves whole, and only if every member has the copy it moves to.
     #[allow(clippy::too_many_arguments)]
     fn flip_candidates(
-        cache: &mut SymCache,
+        cache: &mut InfoCache,
         diag: &Diagnosis,
         decisions: &[(String, Source)],
         tree: &Path,
@@ -2201,19 +2278,21 @@ pub mod abi {
                 Source::Host(_) => bundled.get(n).map(|r| (tree.join(r), false)),
             }
         };
+        // The other copies of the libraries that can move, read at once.
+        let alts: Vec<(&String, PathBuf, bool)> =
+            decisions.iter().filter(|(l, _)| movable(l)).filter_map(|(l, s)| other(l, s).map(|(p, h)| (l, p, h))).collect();
+        cache.prefetch(&alts.iter().map(|(_, p, _)| p.clone()).collect::<Vec<_>>());
+        let defs: Vec<Option<KeySet>> = alts.iter().map(|(_, p, _)| cache.get(p).map(|i| i.syms.defined.iter().copied().collect())).collect();
         let mut wanted = std::collections::BTreeMap::new();
         for (_, key) in &diag.missing {
             let (name, version) = match key.split_once('@') {
-                Some((n, v)) => (n, Some(v)),
+                Some((n, v)) => (n, Some(v.as_bytes())),
                 None => (key.as_str(), None),
             };
-            for (lib, src) in decisions.iter().filter(|(l, _)| movable(l)) {
-                let Some((alt, to_host)) = other(lib, src) else { continue };
-                let defines = cache
-                    .get(&alt)
-                    .is_some_and(|s| s.defined.iter().any(|(n, v)| n == name && (version.is_none() || v.as_deref() == version)));
-                if defines {
-                    wanted.insert(lib.clone(), to_host);
+            let h = crate::sym_hash(name.as_bytes(), version);
+            for ((lib, _, to_host), d) in alts.iter().zip(&defs) {
+                if d.as_ref().is_some_and(|d| d.contains(&h)) {
+                    wanted.insert((*lib).clone(), *to_host);
                 }
             }
         }
