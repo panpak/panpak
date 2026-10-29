@@ -53,6 +53,34 @@ for name, path in {
 out['sock_journal'] = conn('/run/systemd/journal/socket', socket.SOCK_DGRAM)
 disp = os.environ.get('DISPLAY', '')
 out['sock_x11'] = conn('/tmp/.X11-unix/X' + disp[1:].split('.')[0]) if disp.startswith(':') else 'nodisplay'
+home = os.path.expanduser('~')
+out['sock_ssh_cm'] = conn(home + '/.ssh/cm-test')
+out['sock_gpg_home'] = conn(home + '/.gnupg/S.gpg-agent')
+out['home_ssh_dir'] = 'present' if os.path.exists(home + '/.ssh') else 'absent'
+out['home_gnupg_dir'] = 'present' if os.path.exists(home + '/.gnupg') else 'absent'
+store = home + '/.local/share/panpak'
+for name in ('packages', 'blobs', 'apps', 'abi-cache', 'userdata/org.other.app'):
+    out['store_' + name.replace('/', '_').replace('-', '_').replace('.', '_')] = 'present' if os.path.exists(store + '/' + name) else 'absent'
+out['store_trees'] = 'present' if os.path.isdir(store + '/trees') else 'absent'
+out['store_farms'] = 'present' if os.path.isdir(store + '/farms') else 'absent'
+out['store_runtime'] = 'present' if os.path.exists(store + '/runtimes/1/panpak-stub') else 'absent'
+out['home_secret'] = 'present' if os.path.exists(home + '/.config/gh/hosts.yml') else 'absent'
+out['home_xauthority'] = 'present' if os.path.exists(home + '/.Xauthority') else 'absent'
+for name, path in {'gtk': home + '/.config/gtk-3.0/settings.ini', 'font': home + '/.local/share/fonts/f.txt',
+                   'icon': home + '/.local/share/icons/i.txt', 'mimeapps': home + '/.config/mimeapps.list',
+                   'notes': home + '/Notes/n.txt', 'docs_ro': home + '/Docs/ro.txt', 'xauthority': home + '/.Xauthority'}.items():
+    try:
+        open(path).read()
+        out['read_' + name] = 'ok'
+    except OSError as e:
+        out['read_' + name] = f'err{e.errno}'
+for name, path in {'gtk': home + '/.config/gtk-3.0/settings.ini', 'notes': home + '/Notes/n.txt', 'docs_ro': home + '/Docs/ro.txt',
+                   'stray': home + '/stray.txt'}.items():
+    try:
+        open(path, 'a').write('x')
+        out['write_' + name] = 'ok'
+    except OSError as e:
+        out['write_' + name] = f'err{e.errno}'
 out['x11_dir'] = 'present' if os.path.isdir('/tmp/.X11-unix') else 'absent'
 out['run_entries'] = ','.join(sorted(os.listdir('/run')))
 out['rt_entries'] = ','.join(sorted(os.listdir(rt))) if os.path.isdir(rt) else 'none'
@@ -126,11 +154,13 @@ with open(os.environ['XDG_DATA_HOME'] + '/report.txt', 'w') as f:
 class Fake:
     """Listening sockets that play the sockets of a desktop session."""
 
-    def __init__(self, rt):
+    def __init__(self, rt, home):
         self.socks = []
-        for rel in ['wayland-0', 'pipewire-0', 'pulse/native', 'systemd/private', 'gnupg/S.gpg-agent',
-                    'gnupg/S.gpg-agent.ssh', 'ssh-agent']:
-            p = Path(rt) / rel
+        paths = [Path(rt) / rel for rel in ['wayland-0', 'pipewire-0', 'pulse/native', 'systemd/private', 'gnupg/S.gpg-agent',
+                                            'gnupg/S.gpg-agent.ssh', 'ssh-agent']]
+        # Sockets in the home folder: SSH ControlMaster and a gpg-agent outside /run.
+        paths += [Path(home) / '.ssh/cm-test', Path(home) / '.gnupg/S.gpg-agent']
+        for p in paths:
             p.parent.mkdir(parents=True, exist_ok=True)
             s = socket.socket(socket.AF_UNIX)
             s.bind(str(p))
@@ -213,7 +243,13 @@ def main():
     h = lab.home
     (h / '.config/gh').mkdir(parents=True)
     (h / '.config/gh/hosts.yml').write_text('oauth_token: fake\n')
-    fake = Fake(lab.runtime)
+    # The user's own files: settings, fonts, icons, notes and secrets, and the folder of another app.
+    for rel, text in {'.config/gtk-3.0/settings.ini': '[Settings]\n', '.config/mimeapps.list': '[Default Applications]\n',
+                      '.local/share/fonts/f.txt': 'f', '.local/share/icons/i.txt': 'i', 'Notes/n.txt': 'n', 'Docs/ro.txt': 'r',
+                      '.local/share/panpak/userdata/org.other.app/secret': 's', '.Xauthority': ''}.items():
+        (h / rel).parent.mkdir(parents=True, exist_ok=True)
+        (h / rel).write_text(text)
+    fake = Fake(lab.runtime, h)
     lab.env['WAYLAND_DISPLAY'] = 'wayland-0'
     marker = Path('/tmp') / f'panpak-view-marker-{os.getpid()}'
     marker.write_text('host tmp\n')
@@ -235,7 +271,12 @@ def main():
             assert 'isolated view (bubblewrap)' in layers, layers
         p, rep = run_report(lab, ['--marker', str(marker)], mask=False)
         assert p.returncode == 0, p.stderr
-        gone = dict(sock_bus='absent', sock_systemd_private='absent', sock_gpg_agent='absent', sock_gpg_agent_ssh='absent',
+        gone = dict(sock_ssh_cm='absent', sock_gpg_home='absent', home_ssh_dir='absent', home_gnupg_dir='absent', home_secret='absent',
+                    home_xauthority='absent', store_packages='absent', store_blobs='absent', store_apps='absent',
+                    store_abi_cache='absent', store_userdata_org_other_app='absent', store_trees='present',
+                    store_farms='present', store_runtime='present', read_gtk='ok', read_font='ok', read_icon='ok',
+                    read_mimeapps='ok', read_notes='err2', read_docs_ro='err2', write_gtk='err30', write_stray='err30',
+                    sock_bus='absent', sock_systemd_private='absent', sock_gpg_agent='absent', sock_gpg_agent_ssh='absent',
                     sock_ssh_agent='absent', sock_system_bus_fake='absent', sock_system_bus='absent',
                     sock_pipewire='absent', sock_pulse='absent', sock_wayland='ok', sock_journal='ok',
                     x11_dir='absent', tmp_marker='hidden', env_TMPDIR='/tmp', env_SQLITE_TMPDIR='/tmp',
@@ -252,7 +293,7 @@ def main():
             assert rep['ns_net'] == host_ns['net'], 'the network namespace must be shared'
             assert int(rep['procs']) < 12, f'the app sees {rep["procs"]} processes'
             assert rep['resolv_conf'] == 'ok'
-            check(rep, read_secret='err13', no_new_privs='1')
+            check(rep, read_secret='err2', no_new_privs='1')
             print('view, plain app: ok (', rep['run_entries'], '| runtime:', rep['rt_entries'], ')')
             if rep['dns'] != 'ok':
                 print('note: name resolution failed in the view; checking that it fails outside too')
@@ -273,6 +314,8 @@ def main():
         check(rep, tmp_marker='visible', sid=str(os.getsid(0)))
         assert rep['env_TMPDIR'] != '/tmp', rep['env_TMPDIR']
         assert rep['sock_bus'] in ('ok', 'deny'), 'the session bus should exist outside the view'
+        assert rep['home_ssh_dir'] == 'present' and rep['home_gnupg_dir'] == 'present'
+        assert rep['sock_ssh_cm'] in ('ok', 'deny') and rep['sock_gpg_home'] in ('ok', 'deny'), 'without the view the home sockets exist'
         print('no bubblewrap: starts as before (bus socket:', rep['sock_bus'], ')')
         warn = 'this app is only partially isolated'
         landlock_v9 = 'Landlock path sockets (V9)' in installed
@@ -285,6 +328,18 @@ def main():
             _, rep = run_report(lab, [], mask=False)
             check(rep, sock_pipewire='ok', sock_pulse='ok', sock_bus='absent', sock_wayland='ok')
             print('audio with the permission: ok')
+
+        # 3b. Home paths come back into the empty home, as declared.
+        p = lab.install('[permissions]\n[[permissions.home_paths]]\npath = "Notes"\naccess = "rw"\n'
+                        '[[permissions.home_paths]]\npath = "Docs"\naccess = "ro"\n')
+        assert 'Partial access to your home: Notes (rw), Docs (ro)' in p.stdout, p.stdout
+        if view_here:
+            _, rep = run_report(lab, [], mask=False)
+            check(rep, read_notes='ok', write_notes='ok', read_docs_ro='ok', write_docs_ro='err30', sock_ssh_cm='absent',
+                  home_ssh_dir='absent', write_stray='err30')
+            assert (h / 'Notes/n.txt').read_text() == 'nx', 'the write in Notes did not reach the real folder'
+            assert (h / 'Docs/ro.txt').read_text() == 'r'
+            print('home paths (rw and ro) in the view: ok')
 
         # 4. A listed bus socket is the one thing from the session that appears.
         p = lab.install('[permissions]\nsockets_allow = ["$XDG_RUNTIME_DIR/bus"]\n')
@@ -300,11 +355,11 @@ def main():
             lab.env['DISPLAY'] = ':97'
             p = lab.install('')
             _, rep = run_report(lab, [], mask=False)
-            check(rep, x11_dir='absent', sock_x11='absent')
+            check(rep, x11_dir='absent', sock_x11='absent', home_xauthority='absent')
             p = lab.install('[permissions]\nx11 = true\n')
             assert 'X11 access' in p.stdout and 'abstract Unix sockets stay open' in p.stdout, p.stdout
             _, rep = run_report(lab, [], mask=False)
-            check(rep, x11_dir='present', sock_x11='ok')
+            check(rep, x11_dir='present', sock_x11='ok', home_xauthority='present', read_xauthority='ok')
             assert rep['ns_ipc'] == host_ns['ipc'], 'IPC namespace must be shared with X11'
             assert rep['ns_pid'] != host_ns['pid']
             print('X11 only with the permission: ok')
