@@ -182,7 +182,7 @@ default refused, opt-in works; signals to the parent still denied.
 
   | Layer | Needs | Blocks | Does not block |
   |---|---|---|---|
-  | Isolated view (bubblewrap) | `/usr/bin/bwrap` that works (user namespaces allowed) | path sockets under `/run` and `/tmp`: the app sees only the sockets the policy names | abstract sockets (the network namespace is shared); sockets in the user's home folder |
+  | Isolated view (bubblewrap) | `/usr/bin/bwrap` that works (user namespaces allowed) | path sockets under `/run`, `/tmp` and the home folder (it is empty): the app sees only the sockets the policy names | abstract sockets (the network namespace is shared); sockets in other places the policy does not hide (for example a folder outside the home that is not under `/run` or `/tmp`) |
   | Landlock V9 (Linux 7.1) | kernel | `connect()` to any path socket that the policy does not name, wherever it is | |
   | Landlock V6 scope | kernel 6.12 | abstract Unix sockets and signals outside the sandbox (off with `x11 = true`) | |
   | none | | | everything, as before: the warning above |
@@ -195,9 +195,16 @@ default refused, opt-in works; signals to the parent still denied.
 
   **The isolated view.** The stub runs `/usr/bin/bwrap` (a fixed path, never `PATH`, and it
   must not be writable by others) with: `/` read-only; `/dev` as it is; a new `/proc`; new
-  tmpfs for `/tmp` and `/run`; a new tmpfs for the runtime folder holding only the allowed
-  sockets; the app folders and the `rw` home paths writable; the resolver folder in `/run`
-  read-only. Inside, the session bus, the system bus, systemd of the user, gpg-agent and
+  tmpfs for `/tmp` and `/run`; an empty tmpfs on `$HOME`, made read-only after the binds,
+  with only these paths put back: the app folders (writable), the `home_paths` (as declared), the
+  settings Landlock lets the app read (read-only, those that exist), with X11 the Xauthority file
+  (read-only), a file opened with `panpak open` (as granted), and from the store only the tree of the
+  app, its library folder (`farms/<root>`), the loader and the stub (read-only); a new tmpfs for
+  the runtime folder holding only the allowed sockets; the resolver folder in `/run` read-only.
+  The rest of the store (other trees, packages, blobs, the cache of other apps, pins) and the rest of
+  the home folder do not exist in the view (tested with fake sockets in `~/.ssh` and `~/.gnupg`, a secret
+  in `~/.config/gh` and the data folder of another app). With the home folder as a mount of its own the
+  paths are resolved with `canonicalize` first. Inside, the session bus, the system bus, systemd of the user, gpg-agent and
   ssh-agent do not exist (tested with fake sockets in a private runtime folder).
   `--unshare-pid` hides the other processes of the user; `--unshare-ipc` is on unless the app
   has X11 access (MIT-SHM needs shared IPC); `--new-session` keeps the app out of the session
@@ -205,8 +212,7 @@ default refused, opt-in works; signals to the parent still denied.
   not reach an app started from it, but it ends the stub, which ends the app);
   `--die-with-parent`. `TMPDIR` is `/tmp` there, a tmpfs of its own.
   Landlock is applied on top, inside the view, so the two layers add up: the view makes the
-  folder read-only, Landlock decides what may be read at all (the user's secrets are visible in
-  the view and Landlock still refuses to read them: tested, `EACCES`).
+  folder read-only, Landlock decides what may be read at all (the user's secrets are not in the view at all; what is in it and Landlock does not allow, such as the tree of another path, gets `EACCES`).
 
   **Starting inside the view without checking the package twice.** The outer stub verifies the
   package as it always did (signature, pin, stub hash, index, tree), then starts bubblewrap
@@ -214,7 +220,14 @@ default refused, opt-in works; signals to the parent still denied.
   write, no resize, no further sealing) that the inner stub reads and closes before it starts
   the app. This is safe because the inner mode only adds restrictions to a process that already
   runs as the user: it applies Landlock and starts the program it is told to start, and the
-  same user could start that program directly. The app cannot use it to escape: it would need to
+  same user could start that program directly. Read from the code: the inner mode (`run_inner`) reads
+  the sealed memfd and closes it, applies the same Landlock rules as the start without the view
+  (`sandbox`, same function), sets the environment and executes the app. It creates no folder and
+  writes no file. Its Landlock self-test opens an unnamed temporary file (`O_TMPFILE`) in the tree, which
+  must fail and leaves nothing behind. Two differences from the start without the view, both in the job
+  the outer stub makes: the runtime folder, a tmpfs of the view's own, is writable, and with X11 the
+  Xauthority file is readable. Landlock keeps the existing fallback to the whole `/dev` (with a warning)
+  when the kernel refuses the per-node rules; that is the same in both modes. The app cannot use it to escape: it would need to
   run the stub (outside its Landlock rules), and Landlock rules only accumulate. A tampered
   tree between the check and the start is possible with or without the view: the stub does not
   rehash the tree at every start. Checking again inside would cost about as much as the start

@@ -25,8 +25,9 @@
   the stub supervises the app and logs its socket and namespace calls. It blocks nothing.
   `DBUS_SYSTEM_BUS_ADDRESS` is hidden like the session bus. See docs/SOCKET-PROBE.md.
 - **Isolated view (bubblewrap).** If `/usr/bin/bwrap` works, the app runs in a view with `/` read-only,
-  a private `/tmp` (`TMPDIR=/tmp`, which also fixes the long-path crash of Simplenote), a `/run` and a
-  runtime folder that hold only the allowed sockets (Wayland, journal, resolver, the `sockets_allow` list),
+  an empty home folder (only the app folders, `home_paths`, the readable settings, the tree and the stub
+  come back), a private `/tmp` (`TMPDIR=/tmp`, which also fixes the long-path crash of Simplenote), a `/run`
+  and a runtime folder that hold only the allowed sockets (Wayland, journal, resolver, the `sockets_allow` list),
   its own process list and, without X11, its own IPC namespace. Inside it the session and system buses,
   systemd of the user, gpg-agent and ssh-agent do not exist. Landlock is applied on top. Without bubblewrap
   the start is as before. New manifest key `permissions.audio` (PipeWire and PulseAudio sockets).

@@ -591,9 +591,12 @@ ssh-agent, audio servers) with independent layers, and uses every layer the mach
 1. *Isolated view.* If `/usr/bin/bwrap` exists and works, the app runs in a view built by
    bubblewrap. The runtime MUST take bubblewrap only from that fixed path (never from `PATH`)
    and MUST NOT use it when it is writable by others. The view has: `/` read-only; `/dev` as
-   it is; a new `/proc`; a new tmpfs for `/tmp` and for `/run`; a new tmpfs for `$XDG_RUNTIME_DIR`
-   with only the sockets of the policy below; the private folders of §9.1 and the `rw` home paths
-   writable; the folder in `/run` that holds the target of `/etc/resolv.conf` read-only (name resolution);
+   it is; a new `/proc`; a new tmpfs for `/tmp` and for `/run`; an empty tmpfs on `$HOME` (read-only once the
+   binds are made) where only these are put back: the private folders of §9.1 and the `home_paths` as declared,
+   the read-only settings listed in §9.1 that exist, the Xauthority file with `x11 = true`, a file opened with
+   `panpak open` as granted, and from the store the tree, the library folder `farms/<root>`, the loader and
+   the stub (read-only); a new tmpfs for `$XDG_RUNTIME_DIR`
+   with only the sockets of the policy below; the folder in `/run` that holds the target of `/etc/resolv.conf` read-only (name resolution);
    the X11 socket of `$DISPLAY` only with `x11 = true`. The view uses its own user, PID and mount
    namespaces, and its own IPC namespace unless `x11 = true`. It shares the network namespace. The app
    is in a new session and ends with the runtime. Inside, `TMPDIR` and `SQLITE_TMPDIR` are `/tmp`.

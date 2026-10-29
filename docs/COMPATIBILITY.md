@@ -33,6 +33,20 @@ app's title, at least 100 pixels wide and high, appears and the app is still run
 | QOwnNotes | 1.6 s | "Welcome to QOwnNotes" window; settings written to the private config folder |
 | Kdenlive | 5.2 s (first start) | window; `kdenliverc` written to the private config folder |
 
+The view has an empty home folder (checked again on 2026-10-29, after that change). Each app ran twice in its own
+Xvfb with the same isolated HOME, which had a dark GTK setting and a user font: once in the view and once in a copy of
+the machine where `/usr/bin/bwrap` cannot be used. The screenshots of the root window were compared pixel by pixel:
+
+| App | Differing pixels | What differs |
+|---|---|---|
+| Joplin | 2,477 of 1,024,000 | clock of the note and attachment names |
+| Simplenote | 0 | (the no-view run used a short home path) |
+| QOwnNotes | 697 | the home path in the text field |
+| Kdenlive | 5,952 | the home path in the "Could not enter folder" message, in both runs |
+
+The theme (Joplin dark, Qt style) and the user font look the same in both modes. The "Could not enter folder" message of
+Kdenlive also appears without the view: it comes from the sandbox, which does not let the app read the home folder.
+
 PipeWire and PulseAudio were tested with the real sockets of the user's session: with `audio = true`,
 `pw-cli info 0` prints `PipeWire:Interface:Core/4` and a connection to `pulse/native` succeeds; with the
 permission off, both sockets do not exist in the view and `pw-cli` reports `failed to connect`.
