@@ -108,6 +108,30 @@ pub fn read_job(fd: i32) -> Result<Job> {
     }
 }
 
+/// A path mounted into the view at its own place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Bind {
+    pub path: PathBuf,
+    pub rw: bool,
+}
+
+/// Order and thin out the binds: parents before children, no duplicates, and no read-only
+/// bind below a bind that already covers it (a read-only child under a writable parent would
+/// only get in the way of Landlock, which allows the parent). A writable child under a read-only
+/// parent stays: it is mounted on top.
+pub fn merge_binds(binds: Vec<Bind>) -> Vec<Bind> {
+    let mut sorted = binds;
+    sorted.sort_by_key(|b| b.path.components().count());
+    let mut out: Vec<Bind> = Vec::new();
+    for b in sorted {
+        let covered = out.iter().any(|o| b.path.starts_with(&o.path) && (o.rw || !b.rw));
+        if !covered {
+            out.push(b);
+        }
+    }
+    out
+}
+
 /// What the view contains besides `/`, `/dev` and `/proc`.
 pub struct ViewPlan {
     /// `$XDG_RUNTIME_DIR` of the user: it becomes a new tmpfs with only the allowed sockets in it.
@@ -118,10 +142,11 @@ pub struct ViewPlan {
     pub ro_run_dirs: Vec<PathBuf>,
     /// X11 sockets (`/tmp/.X11-unix/X<n>`): present only when the manifest asks for X11.
     pub x11: Vec<PathBuf>,
-    /// The Xauthority file, when the manifest asks for X11 and the file is outside `/` visible places.
-    pub xauthority: Option<PathBuf>,
-    /// Writable paths: the app folders, the `rw` home paths, an opened file.
-    pub rw: Vec<PathBuf>,
+    /// The home folder (canonical). It becomes an empty tmpfs, made read-only after the binds.
+    /// None: the home folder is left as `/` shows it (no home, or the home is `/`).
+    pub home: Option<PathBuf>,
+    /// What is put back into the empty home, and what is mounted writable elsewhere. See `merge_binds`.
+    pub binds: Vec<Bind>,
     /// The manifest asks for X11: the IPC namespace stays shared (MIT-SHM).
     pub x11_access: bool,
     pub stub: PathBuf,
@@ -143,6 +168,11 @@ pub fn bwrap_args(plan: &ViewPlan) -> Vec<OsString> {
     }
     a.extend(["--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc"].map(os));
     a.extend(["--tmpfs", "/tmp", "--tmpfs", "/run"].map(os));
+    // The home folder is empty; the binds below put back only what the app needs. It comes after
+    // /tmp and /run so that a home below them is not hidden again.
+    if let Some(h) = &plan.home {
+        a.extend([os("--perms"), os("0700"), os("--tmpfs"), h.as_os_str().into()]);
+    }
     for d in &plan.ro_run_dirs {
         a.extend([os("--ro-bind"), d.as_os_str().into(), d.as_os_str().into()]);
     }
@@ -152,11 +182,12 @@ pub fn bwrap_args(plan: &ViewPlan) -> Vec<OsString> {
     for s in plan.sockets.iter().chain(&plan.x11) {
         a.extend([os("--bind"), s.as_os_str().into(), s.as_os_str().into()]);
     }
-    if let Some(x) = &plan.xauthority {
-        a.extend([os("--ro-bind"), x.as_os_str().into(), x.as_os_str().into()]);
+    for b in &plan.binds {
+        a.extend([os(if b.rw { "--bind" } else { "--ro-bind" }), b.path.as_os_str().into(), b.path.as_os_str().into()]);
     }
-    for p in &plan.rw {
-        a.extend([os("--bind"), p.as_os_str().into(), p.as_os_str().into()]);
+    // Nothing can be created in the home folder any more, outside the binds.
+    if let Some(h) = &plan.home {
+        a.extend([os("--remount-ro"), h.as_os_str().into()]);
     }
     a.push(os("--"));
     a.push(plan.stub.as_os_str().into());
@@ -205,8 +236,13 @@ mod tests {
             sockets: vec!["/run/user/1000/wayland-0".into(), "/run/systemd/journal/socket".into()],
             ro_run_dirs: vec!["/run/systemd/resolve".into()],
             x11: vec![],
-            xauthority: None,
-            rw: vec!["/home/u/.local/share/panpak/userdata/org.example.app".into(), "/home/u/.cache/panpak/org.example.app".into()],
+            home: Some("/home/u".into()),
+            binds: merge_binds(vec![
+                Bind { path: "/home/u/.local/share/panpak/userdata/org.example.app".into(), rw: true },
+                Bind { path: "/home/u/.cache/panpak/org.example.app".into(), rw: true },
+                Bind { path: "/home/u/.local/share/panpak/trees/abc".into(), rw: false },
+                Bind { path: "/home/u/.config/gtk-3.0".into(), rw: false },
+            ]),
             x11_access: false,
             stub: "/home/u/.local/share/panpak/runtimes/1/panpak-stub".into(),
             fd: 7,
@@ -234,9 +270,16 @@ mod tests {
         assert!(run < rt);
         assert!(rt < pos(&a, &["--bind", "/run/user/1000/wayland-0", "/run/user/1000/wayland-0"]).unwrap());
         assert!(pos(&a, &["--bind", "/run/systemd/journal/socket", "/run/systemd/journal/socket"]).is_some());
-        // Writable: only the two app folders.
-        let binds: Vec<&String> = a.iter().enumerate().filter(|(i, s)| *s == "--bind" && a[*i + 1].contains("panpak")).map(|(_, s)| s).collect();
-        assert_eq!(binds.len(), 2);
+        // The home folder is an empty tmpfs after /tmp and /run, then only what is listed comes back,
+        // read-only except the two app folders, and the tmpfs is made read-only at the end.
+        let home = pos(&a, &["--perms", "0700", "--tmpfs", "/home/u"]).unwrap();
+        assert!(pos(&a, &["--tmpfs", "/run"]).unwrap() < home);
+        assert!(home < pos(&a, &["--ro-bind", "/home/u/.config/gtk-3.0", "/home/u/.config/gtk-3.0"]).unwrap());
+        assert!(pos(&a, &["--ro-bind", "/home/u/.local/share/panpak/trees/abc", "/home/u/.local/share/panpak/trees/abc"]).is_some());
+        let writable: Vec<&String> = a.iter().enumerate().filter(|(i, s)| *s == "--bind" && a[*i + 1].contains("panpak")).map(|(_, s)| s).collect();
+        assert_eq!(writable.len(), 2);
+        let last_bind = a.iter().rposition(|s| s == "--bind" || s == "--ro-bind").unwrap();
+        assert!(last_bind < pos(&a, &["--remount-ro", "/home/u"]).unwrap());
         assert_eq!(&a[a.len() - 4..], ["--", "/home/u/.local/share/panpak/runtimes/1/panpak-stub", "--panpak-inner", "7"]);
         // Nothing of the session is in the plan.
         assert!(!a.iter().any(|s| s.ends_with("/bus") || s.contains("gnupg") || s.contains("systemd/private") || s.contains("pulse") || s.contains("pipewire")));
@@ -247,12 +290,10 @@ mod tests {
         let mut p = plan();
         p.x11_access = true;
         p.x11 = vec!["/tmp/.X11-unix/X0".into()];
-        p.xauthority = Some("/run/user/1000/gdm/Xauthority".into());
         let a = strings(&p);
         assert!(!a.contains(&"--unshare-ipc".to_string()));
         let tmp = pos(&a, &["--tmpfs", "/tmp"]).unwrap();
         assert!(tmp < pos(&a, &["--bind", "/tmp/.X11-unix/X0", "/tmp/.X11-unix/X0"]).unwrap());
-        assert!(pos(&a, &["--ro-bind", "/run/user/1000/gdm/Xauthority", "/run/user/1000/gdm/Xauthority"]).is_some());
     }
 
     #[test]
@@ -308,6 +349,26 @@ mod tests {
         let raw = std::os::unix::io::IntoRawFd::into_raw_fd(f);
         assert!(read_job(raw).is_err());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn binds_are_ordered_and_thinned() {
+        let b = |p: &str, rw: bool| Bind { path: p.into(), rw };
+        let m = merge_binds(vec![
+            b("/h/.config/gtk-3.0", false),
+            b("/h/app/data", true),
+            b("/h", false),
+            b("/h", false),
+            b("/h/app", true),
+            b("/h/app/x", false),
+            b("/h/ro/sub", true),
+            b("/h/ro", false),
+        ]);
+        let got: Vec<(&str, bool)> = m.iter().map(|b| (b.path.to_str().unwrap(), b.rw)).collect();
+        // /h read-only covers the read-only children; /h/app (rw) covers /h/app/data and /h/app/x;
+        // the rw child of a read-only parent stays and comes after it.
+        assert_eq!(got, vec![("/h", false), ("/h/app", true), ("/h/ro/sub", true)]);
+        assert!(merge_binds(vec![]).is_empty());
     }
 
     #[test]

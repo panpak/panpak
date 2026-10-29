@@ -7,7 +7,7 @@ use panpak_core::{hex, ChunkDecoder, parse_index, read_at, read_footer, verify, 
 use std::{
     fs::{self, File},
     io::Write,
-    os::unix::{fs::PermissionsExt, process::CommandExt},
+    os::unix::{fs::{OpenOptionsExt, PermissionsExt}, process::CommandExt},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -672,8 +672,9 @@ fn sandbox(tree: &Path, man: &panpak_core::Manifest, access: &Access, allow_unfi
         fs::OpenOptions::new().read(true).write(true).open("/dev/null").is_ok(),
         "sandbox self-test: cannot open /dev/null"
     );
+    // An unnamed temporary file in the tree: if the rules let it be made, nothing stays on disk.
     ensure!(
-        File::create(tree.join(".panpak-probe")).is_err(),
+        fs::OpenOptions::new().write(true).custom_flags(libc::O_TMPFILE).open(tree).is_err(),
         "sandbox self-test: tree writes allowed"
     );
     Ok(())
@@ -1006,7 +1007,10 @@ fn real_main() -> Result<()> {
     // Outer stub -> bubblewrap -> inner stub (Landlock) -> app. Without a usable bubblewrap the
     // stub applies Landlock itself and starts the app, as it always did.
     if panpak_core::view_status().usable() {
-        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref() };
+        let mut store_paths = plan.ld_path.clone();
+        store_paths.extend(plan.loader.clone());
+        store_paths.push(PathBuf::from(cmd.get_program()));
+        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref(), store_paths };
         enter_view(&ctx, &mut cmd)?;
     }
     sandbox(&tree, &man, &access, allow_unfiltered, open_arg)?;
@@ -1022,6 +1026,8 @@ struct ViewStart<'a> {
     allow_unfiltered: bool,
     open: Option<&'a (PathBuf, OpenGrant)>,
     runtime_dir: Option<&'a Path>,
+    /// What the inner stub and the app read from the store: library folders and the loader.
+    store_paths: Vec<PathBuf>,
 }
 
 /// Start the app in the isolated view: build the job for the inner stub and replace this
@@ -1048,39 +1054,68 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     }
     let display = std::env::var("DISPLAY").ok();
     let x11_sockets: Vec<PathBuf> = if x11 { view::x11_socket(display.as_deref()).into_iter().collect() } else { Vec::new() };
-    let xauthority = std::env::var_os("XAUTHORITY")
-        .map(PathBuf::from)
-        .filter(|p| x11 && p.is_file() && ctx.runtime_dir.is_some_and(|rt| p.starts_with(rt)));
-    let mut rw = ctx.access.rw.clone();
+    // The home folder is an empty tmpfs in the view. Put back only what the app and the inner stub
+    // need: the tree, the library folders and the loader of the store, the stub, the private
+    // folders and `rw` home paths, the settings Landlock allows to read, the files of `panpak open`
+    // and, with X11, the Xauthority file. Paths outside the home folder are visible through `/`.
+    let home = dirs::home_dir().and_then(|h| fs::canonicalize(h).ok()).filter(|h| h.is_dir() && h != Path::new("/"));
+    let in_home = |p: &Path| home.as_ref().is_some_and(|h| p.starts_with(h));
+    let real = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let stub = std::env::current_exe().context("path of the stub")?;
+    let mut ro_wanted: Vec<PathBuf> = vec![ctx.tree.to_path_buf(), stub.clone()];
+    ro_wanted.extend(ctx.store_paths.iter().cloned());
+    ro_wanted.extend(ctx.access.ro.iter().cloned());
+    let mut xauthority = None;
+    if x11 {
+        xauthority = std::env::var_os("XAUTHORITY")
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|h| h.join(".Xauthority")))
+            .filter(|p| p.is_file());
+        ro_wanted.extend(xauthority.clone());
+    }
+    let mut binds: Vec<view::Bind> = ctx.access.rw.iter().map(|p| view::Bind { path: real(p), rw: true }).collect();
     if let Some((path, grant)) = ctx.open {
         // The file is writable in the view only if the grant lets the app write it.
         if grant.rename {
-            rw.extend(view::existing_parent(path));
+            binds.extend(view::existing_parent(path).map(|p| view::Bind { path: real(&p), rw: true }));
         } else if grant.write {
-            rw.push(path.clone());
+            binds.push(view::Bind { path: real(path), rw: true });
+        } else {
+            ro_wanted.push(path.clone());
         }
     }
+    for p in ro_wanted {
+        let p = real(&p);
+        // Read-only paths outside the home folder and the runtime folder are visible through `/`.
+        if p.exists() && (in_home(&p) || ctx.runtime_dir.is_some_and(|rt| p.starts_with(rt))) {
+            binds.push(view::Bind { path: p, rw: false });
+        }
+    }
+    let binds = view::merge_binds(binds);
     let plan = view::ViewPlan {
         runtime_dir: ctx.runtime_dir.map(Path::to_path_buf),
         sockets: view::unique(sockets),
         ro_run_dirs: view::unique(ro_run_dirs),
         x11: x11_sockets,
-        xauthority,
-        rw: view::unique(rw),
+        home,
+        binds,
         x11_access: x11,
-        stub: std::env::current_exe().context("path of the stub")?,
+        stub,
         fd: -1,
     };
     // Landlock inside the view also lets the app write in its runtime folder (a tmpfs of its own).
     let mut job_rw = ctx.access.rw.clone();
     job_rw.extend(ctx.runtime_dir.map(Path::to_path_buf));
+    // With X11 access the app reads the Xauthority file, which is put back into the view above.
+    let mut job_ro = ctx.access.ro.clone();
+    job_ro.extend(xauthority);
     let parts = view::Job::command_of(cmd)?;
     let job = view::Job {
         version: view::JOB_VERSION,
         tree: ctx.tree.to_path_buf(),
         manifest: ctx.man.clone(),
         rw: job_rw,
-        ro: ctx.access.ro.clone(),
+        ro: job_ro,
         sockets: ctx.access.sockets.clone(),
         allow_unfiltered: ctx.allow_unfiltered,
         open: ctx.open.map(|(p, g)| view::JobOpen { path: p.clone(), write: g.write, rename: g.rename }),
