@@ -467,7 +467,15 @@ Reference-implementation layout (paths under
   apps/<id>/previous -> ...   # for rollback
   apps/<id>/pinned-key      # TOFU pin of the update key
   apps/<id>/update.url      # update URL (if declared)
+  apps/<id>/xdg-dirs        # user folders fixed at install (§3.1.4)
 ```
+
+Several starts can overlap on a store that does not have the tree yet. The runtime therefore takes an
+exclusive `flock` on `trees/<root_hash>.lock` before it builds the tree, checks again whether the tree is
+complete once it has the lock (a start that waited then just uses it), builds in `trees/<root_hash>.partial`
+(a folder left by a start that was killed is removed first) and publishes it with one rename. The lock goes
+with the process, so a builder that dies never blocks the others. Temporary blob files carry the process
+number, since two trees can write the same blob at the same time.
 
 Outside the store: launcher `~/.local/bin/<id>` (`exec <runtime> run
 <package> "$@"`) and `~/.local/share/applications/<id>.desktop`.
@@ -762,7 +770,11 @@ MUST make these go to one channel, and MUST NOT start a browser inside the sandb
   digits; `%00` and other control codes are refused, and line breaks (`%0A`, `%0D`) only in `body`.
 - It then runs the `xdg-open` found in the `PATH` of the outer runtime at start, with the address as the only
   argument, no shell, no input and no output, in its own process group, with the environment of the outer
-  runtime and nothing from the app. At most 4 such processes live at once.
+  runtime and nothing from the app. At most 4 such processes live at once. The process is detached from the
+  runtime and from the app: it leads a session of its own (`setsid`), every descriptor above 2 is closed
+  before it starts, its input and output are `/dev/null`, and nobody waits for it in the request (a thread
+  reaps it). It lives on when the app and the outer runtime end, so a browser it starts stays open.
+  The outer runtime uses little memory while it waits (about 3 MB of resident memory, 3 threads).
 - The destination is one function (a `Target`); a later version MAY replace it with the OpenURI portal
   without changing the channel or the rules.
 

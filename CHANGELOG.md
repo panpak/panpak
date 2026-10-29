@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix: first starts at the same time.** Two starts that overlapped on a store without the tree could end with
+  `PANPAK-E2000: No such file or directory`, because they built in the same `.partial` folder. The tree is now
+  built under an `flock`, in a folder apart, and published with one rename; the others wait and then use it.
+  The problem was in the first version of the stub, so it exists in every earlier release.
+
 - **User folders: `[[permissions.xdg_dirs]]`.** An app can ask for the music, documents,
   pictures, videos or download folder of the user, `ro` or `rw`. `install` and `update` find the
   folder in `~/.config/user-dirs.dirs` with a strict parser, refuse unsafe places, show it

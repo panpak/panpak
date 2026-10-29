@@ -93,7 +93,17 @@ mod tests {
         assert!(c.tmp.join("qipc_live").exists());
         drop((b, c));
         // Nobody is alive any more: the next start empties the folders.
-        let d = prepare(&base).unwrap();
+        // A lock lives while any copy of its descriptor exists, and a process forked by another test at this very
+        // moment holds one until it execs: try again for a short while before calling it a failure.
+        let mut d = prepare(&base).unwrap();
+        for _ in 0..40 {
+            if !d.tmp.join("qipc_live").exists() {
+                break;
+            }
+            drop(d);
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            d = prepare(&base).unwrap();
+        }
         assert!(!d.tmp.join("qipc_live").exists());
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(fs::metadata(&d.tmp).unwrap().permissions().mode() & 0o777, 0o700);

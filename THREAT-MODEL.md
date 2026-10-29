@@ -148,6 +148,9 @@ installed app follows the same rule.
   - *Remaining exposure.* The app can make the user's browser or mail client open any web or mail address,
     including a page that tries to deceive the user, and can do it five times a second at first;
     the user sees the window. The address is not hidden from the user by the runtime.
+  - *Detached.* The system `xdg-open` runs in a session of its own with no inherited descriptor (the job
+    descriptor of the view is not close-on-exec, and is closed for it), so it holds no handle of the app and
+    no signal of the app or the stub reaches it.
   - *Browsers started by a full path.* An app that starts `/usr/bin/firefox` itself, without `xdg-open`, is not
     intercepted: the browser runs inside the sandbox with the same limits as the app (no home, no sockets
     of the session), which usually makes it useless rather than dangerous. An `xdg-open` at a path that
