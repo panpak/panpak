@@ -14,6 +14,7 @@ use std::{
 
 #[cfg(target_arch = "x86_64")]
 mod probe;
+mod view;
 
 /// Files past this threshold are assembled streaming, not in RAM.
 const MAX_ASSEMBLE: u64 = 8 << 20;
@@ -328,6 +329,11 @@ struct Access {
     rw: Vec<PathBuf>,
     /// Read only: the user's theme, font and icon files and the `ro` home paths.
     ro: Vec<PathBuf>,
+    /// Path sockets every app may reach without listing them (Wayland, journal, resolver, audio with
+    /// `audio = true`), only the ones that exist. Landlock V9 gets a `ResolveUnix` rule for each.
+    sockets: Vec<PathBuf>,
+    /// The sandbox runs inside the isolated view, which hides the sockets the manifest does not list.
+    in_view: bool,
 }
 
 /// Refuse a link in `rel` below `home`: every part that exists must be a real
@@ -481,7 +487,12 @@ fn build_ruleset(
     };
     let socks = man.permissions.as_ref().and_then(|p| p.sockets_allow.clone()).unwrap_or_default();
     if !socks.is_empty() {
-        ensure_code!(new_unix, ErrorCode::E3000, "sockets_allow requires Landlock ABI >= V9, this kernel has {abi:?}");
+        // Without V9 the isolated view is what lets the listed sockets (and only them) through.
+        ensure_code!(
+            new_unix || access.in_view,
+            ErrorCode::E3000,
+            "sockets_allow requires Landlock ABI >= V9 or the isolated view (bubblewrap), this kernel has {abi:?}"
+        );
     }
     let mut b = Ruleset::default().handle_access(AccessFs::from_all(abi))?;
     if handle_net {
@@ -615,9 +626,17 @@ fn build_ruleset(
             rs = rs.add_rule(NetPort::new(*port, AccessNet::BindTcp))?;
         }
     }
-    // Path Unix sockets (V9+): allowlist from the manifest; under appdata/tmp
-    // they already pass via ResolveUnix.
-    for s in &socks {
+    // Path Unix sockets (V9+): the sockets every app may reach, then the allowlist from the
+    // manifest; under appdata/tmp they already pass via ResolveUnix.
+    if new_unix {
+        for path in &access.sockets {
+            if let Ok(fd) = PathFd::new(path) {
+                let rights = AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::ResolveUnix;
+                rs = rs.add_rule(PathBeneath::new(fd, rights))?;
+            }
+        }
+    }
+    for s in socks.iter().filter(|_| new_unix) {
         let path = panpak_core::expand_socket_path(s)?;
         match PathFd::new(&path) {
             Ok(fd) => {
@@ -829,6 +848,14 @@ fn real_main() -> Result<()> {
         println!("{}", panpak_core::RUNTIME_ABI);
         return Ok(());
     }
+    // Inside the isolated view: the outer stub already verified the package (see view.rs).
+    if args.get(1).map(|s| s.as_str()) == Some("--panpak-inner") {
+        let fd: i32 = args
+            .get(2)
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| coded(ErrorCode::E5002, "usage: panpak-stub --panpak-inner <fd>"))?;
+        return run_inner(fd);
+    }
     // Two modes: self-contained package (current_exe) or installed runtime
     // (`stub run <package> [args...]`, used by `panpak install` launchers).
     let installed_mode = args.get(1).map(|s| s.as_str()) == Some("run");
@@ -895,7 +922,16 @@ fn real_main() -> Result<()> {
     let app_dirs = panpak_core::app_dirs(&man.app.id)?;
     app_dirs.create()?;
     write_fonts_conf(&app_dirs)?;
-    let access = access_for(&man, &app_dirs)?;
+    let mut access = access_for(&man, &app_dirs)?;
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute());
+    access.sockets = panpak_core::implied_sockets(
+        man.permissions.as_ref(),
+        runtime_dir.as_deref(),
+        std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
+    )
+    .into_iter()
+    .filter(|p| p.exists())
+    .collect();
     let (config_dirs, data_dirs) =
         panpak_core::xdg_search_dirs(std::env::var("XDG_CONFIG_DIRS").ok(), std::env::var("XDG_DATA_DIRS").ok())?;
     // Socket probe (measurement only, off unless asked): the log is opened before Landlock closes the disk.
@@ -921,8 +957,6 @@ fn real_main() -> Result<()> {
         .flatten()
         .map(|(k, v)| Ok((k.clone(), app_dirs.expand(v)?)))
         .collect::<Result<Vec<_>>>()?;
-
-    sandbox(&tree, &man, &access, allow_unfiltered, open_file.as_ref().map(|(p, w)| (p.as_path(), *w)))?;
 
     let mut cmd = match &plan.loader {
         // Included glibc: all of user-space uses it, loader included.
@@ -959,14 +993,114 @@ fn real_main() -> Result<()> {
         .env("PANPAK_APP_ID", &man.app.id)
         .env("LD_LIBRARY_PATH", &ld_path)
         .env_remove("PANPAK_SOCKET_PROBE");
+    let open_arg = open_file.as_ref().map(|(p, w)| (p.as_path(), *w));
     #[cfg(target_arch = "x86_64")]
     if let Some(log) = probe_log {
-        // The app runs as a child and this process stays as the supervisor.
+        // The probe measures the sandbox as it is without the view. The app runs as a child and
+        // this process stays as the supervisor.
+        sandbox(&tree, &man, &access, allow_unfiltered, open_arg)?;
         std::process::exit(probe::run(cmd, log)?);
     }
     #[cfg(not(target_arch = "x86_64"))]
     let _ = probe_log;
+    // Outer stub -> bubblewrap -> inner stub (Landlock) -> app. Without a usable bubblewrap the
+    // stub applies Landlock itself and starts the app, as it always did.
+    if panpak_core::view_status().usable() {
+        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref() };
+        enter_view(&ctx, &mut cmd)?;
+    }
+    sandbox(&tree, &man, &access, allow_unfiltered, open_arg)?;
     let err = cmd.exec(); // Replaces the process.
+    bail!("exec failed: {err}")
+}
+
+/// What `enter_view` needs from `real_main`.
+struct ViewStart<'a> {
+    tree: &'a Path,
+    man: &'a panpak_core::Manifest,
+    access: &'a Access,
+    allow_unfiltered: bool,
+    open: Option<&'a (PathBuf, OpenGrant)>,
+    runtime_dir: Option<&'a Path>,
+}
+
+/// Start the app in the isolated view: build the job for the inner stub and replace this
+/// process with `bwrap`. Returns only on error.
+fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
+    let perms = ctx.man.permissions.as_ref();
+    let x11 = perms.is_some_and(|p| p.x11 == Some(true));
+    // The private /tmp is in the view: the app's TMPDIR is /tmp there (short, and not shared).
+    cmd.env("TMPDIR", "/tmp").env("SQLITE_TMPDIR", "/tmp");
+    // Sockets: the ones the manifest lists and the ones every app gets. Only existing ones.
+    let mut sockets = Vec::new();
+    for s in perms.and_then(|p| p.sockets_allow.as_ref()).into_iter().flatten() {
+        let path = panpak_core::expand_socket_path(s)?;
+        if path.exists() {
+            sockets.push(path);
+        }
+    }
+    sockets.extend(ctx.access.sockets.iter().cloned());
+    let mut ro_run_dirs = Vec::new();
+    for d in [Some(PathBuf::from("/run/systemd/resolve")), panpak_core::resolv_conf_run_dir()].into_iter().flatten() {
+        if d.is_dir() {
+            ro_run_dirs.push(d);
+        }
+    }
+    let display = std::env::var("DISPLAY").ok();
+    let x11_sockets: Vec<PathBuf> = if x11 { view::x11_socket(display.as_deref()).into_iter().collect() } else { Vec::new() };
+    let xauthority = std::env::var_os("XAUTHORITY")
+        .map(PathBuf::from)
+        .filter(|p| x11 && p.is_file() && ctx.runtime_dir.is_some_and(|rt| p.starts_with(rt)));
+    let mut rw = ctx.access.rw.clone();
+    if let Some((path, grant)) = ctx.open {
+        // The file is writable in the view only if the grant lets the app write it.
+        if grant.rename {
+            rw.extend(view::existing_parent(path));
+        } else if grant.write {
+            rw.push(path.clone());
+        }
+    }
+    let plan = view::ViewPlan {
+        runtime_dir: ctx.runtime_dir.map(Path::to_path_buf),
+        sockets: view::unique(sockets),
+        ro_run_dirs: view::unique(ro_run_dirs),
+        x11: x11_sockets,
+        xauthority,
+        rw: view::unique(rw),
+        x11_access: x11,
+        stub: std::env::current_exe().context("path of the stub")?,
+        fd: -1,
+    };
+    // Landlock inside the view also lets the app write in its runtime folder (a tmpfs of its own).
+    let mut job_rw = ctx.access.rw.clone();
+    job_rw.extend(ctx.runtime_dir.map(Path::to_path_buf));
+    let parts = view::Job::command_of(cmd)?;
+    let job = view::Job {
+        version: view::JOB_VERSION,
+        tree: ctx.tree.to_path_buf(),
+        manifest: ctx.man.clone(),
+        rw: job_rw,
+        ro: ctx.access.ro.clone(),
+        sockets: ctx.access.sockets.clone(),
+        allow_unfiltered: ctx.allow_unfiltered,
+        open: ctx.open.map(|(p, g)| view::JobOpen { path: p.clone(), write: g.write, rename: g.rename }),
+        program: parts.program,
+        args: parts.args,
+        env_set: parts.env_set,
+        env_remove: parts.env_remove,
+    };
+    let fd = view::job_memfd(&job)?;
+    let plan = view::ViewPlan { fd, ..plan };
+    match view::exec_bwrap(&plan)? {}
+}
+
+/// The inner stub: Landlock, then the app. The job comes from the outer stub, which verified the package.
+fn run_inner(fd: i32) -> Result<()> {
+    let job = view::read_job(fd)?;
+    let access = Access { rw: job.rw.clone(), ro: job.ro.clone(), sockets: job.sockets.clone(), in_view: true };
+    let open = job.open.as_ref().map(|o| (o.path.as_path(), OpenGrant { write: o.write, rename: o.rename }));
+    sandbox(&job.tree, &job.manifest, &access, job.allow_unfiltered, open)?;
+    let err = job.to_command().exec();
     bail!("exec failed: {err}")
 }
 
@@ -1165,7 +1299,7 @@ mod tests {
         let mut f = File::open(panpak).map_err(|_| "open panpak")?;
         let ft = read_footer(&mut f).map_err(|_| "footer")?;
         let (man, _) = verify(&mut f, &ft).map_err(|_| "verify")?;
-        let access = Access { rw: vec![appdata.to_path_buf()], ro: vec![] };
+        let access = Access { rw: vec![appdata.to_path_buf()], ..Access::default() };
         let st = apply_landlock(tree, &access, &man, false, open).map_err(|_| "apply")?;
         if st.ruleset == landlock::RulesetStatus::NotEnforced {
             return Err("notenforced");
@@ -2074,7 +2208,7 @@ mod tests {
             home_paths: None,
             portal: None,
         });
-        let access = Access { rw: vec![appdata.clone()], ro: vec![] };
+        let access = Access { rw: vec![appdata.clone()], ..Access::default() };
         let err = build_ruleset(&tree, &access, &man, abi, true, false, None).unwrap_err();
         assert!(format!("{err:?}").contains("V9"), "missing V9 guard: {err:?}");
         let _ = (_dir, panpak, tree, appdata);
