@@ -9,6 +9,7 @@ file they create or delete MUST stay inside their own work directory:
   not from $HOME) and `work` is neither the real home nor a directory that
   contains it. Only this check can be skipped, on purpose, with the environment
   variable PANPAK_ALLOW_REAL_HOME=1 (a warning is printed).
+- `remove_owned`: `safe_rmtree` of a runtime folder, repeated until it is gone.
 - `safe_rmtree` and `safe_unlink`: delete only inside the work directory, or a
   runtime directory made by `owned_mkdtemp`. There is no way to turn this off.
 - `require_inside(path, work, what)`: stop unless `path` is inside `work`.
@@ -89,6 +90,27 @@ def safe_rmtree(path, work, ignore_errors=True):
     if not _may_delete(path, work):
         raise SystemExit(f'refusing to delete {path}: outside the work directory {work}')
     shutil.rmtree(path, ignore_errors=ignore_errors)
+
+
+def remove_owned(path, work, wait=5.0):
+    """Delete a runtime folder made by `owned_mkdtemp`, and keep trying while it comes back: a helper
+    of the session (dconf, for one) may create files in it just after the first attempt. Returns True
+    when the folder is gone; otherwise prints what is left and returns False."""
+    if not Path(path).exists():
+        return True
+    # Checked once, while the marker file is still there: a first attempt may remove it and leave the rest.
+    if not _may_delete(path, work):
+        raise SystemExit(f'refusing to delete {path}: outside the work directory {work}')
+    deadline = time.monotonic() + wait
+    while True:
+        shutil.rmtree(path, ignore_errors=True)
+        if not Path(path).exists():
+            return True
+        if time.monotonic() > deadline:
+            left = sorted(p.name for p in Path(path).iterdir()) if Path(path).is_dir() else ['(not a folder)']
+            print(f'warning: {path} was not removed; left: {left}', file=sys.stderr)
+            return False
+        time.sleep(0.2)
 
 
 def safe_unlink(path, work):

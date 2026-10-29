@@ -74,7 +74,7 @@ def main():
         for bus in (lab.bus, lab.sysbus):
             bus.terminate()
             bus.wait(timeout=5)
-        isolation.safe_rmtree(lab.runtime, work)
+        isolation.remove_owned(lab.runtime, work)
 
 
 def run(lab, work):

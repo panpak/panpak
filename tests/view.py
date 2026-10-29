@@ -9,6 +9,7 @@ ssh-agent, Wayland, PipeWire, PulseAudio, the system bus), /tmp, name resolution
 and the Landlock rules. Every check is made twice: in the view and, in a copy of the machine where
 /usr/bin/bwrap is not usable, as before the view existed.
 """
+import atexit
 import os
 from pathlib import Path
 import shutil
@@ -283,6 +284,40 @@ def run_report(lab, launcher_args, mask):
     return p, rep
 
 
+def stub_memory(launcher_pid):
+    """Memory of the outer stub (the resident process of a start in the view) below the launcher."""
+    pids, stack = [], [launcher_pid]
+    while stack:
+        pid = stack.pop()
+        pids.append(pid)
+        try:
+            stack += [int(c) for c in Path(f'/proc/{pid}/task/{pid}/children').read_text().split()]
+        except OSError:
+            pass
+    for pid in pids:
+        try:
+            cmd = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+            if Path(f'/proc/{pid}/exe').resolve().name == 'panpak-stub' and b'--panpak-inner' not in cmd:
+                status = dict(l.split(':', 1) for l in Path(f'/proc/{pid}/status').read_text().splitlines())
+                return {k: int(status[k].split()[0]) for k in ('VmRSS', 'VmHWM', 'Threads')}
+        except OSError:
+            continue
+    raise AssertionError('the outer stub is not running')
+
+
+def teardown(lab):
+    """Stop the two buses and remove the runtime folder. Safe to call twice."""
+    for bus in (lab.bus, lab.sysbus):
+        if bus.poll() is None:
+            bus.terminate()
+            try:
+                bus.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                bus.kill()
+                bus.wait()
+    isolation.remove_owned(lab.runtime, Path(lab.runtime).parent)
+
+
 def check(rep, **want):
     app_dirs.expect(rep, **want)
 
@@ -296,6 +331,8 @@ def main():
     work.mkdir(parents=True)
     app_dirs.PROBE = PROBE
     lab = app_dirs.Lab(work)
+    # The runtime folder goes away on every way out: normal end, a failed check, an error before the try below.
+    atexit.register(teardown, lab)
     h = lab.home
     (h / '.config/gh').mkdir(parents=True)
     (h / '.config/gh/hosts.yml').write_text('oauth_token: fake\n')
@@ -519,6 +556,9 @@ def main():
             else:
                 raise AssertionError('the first copy did not start')
             assert oct((shared / 'tmp').stat().st_mode & 0o777) == '0o700'
+            rss = stub_memory(first.pid)
+            print('outer stub while the app runs: VmRSS', rss['VmRSS'], 'kB, VmHWM', rss['VmHWM'], 'kB, threads', rss['Threads'])
+            assert rss['VmRSS'] < 32 * 1024, rss
             _, rep = run_report(lab, [], mask=False)
             check(rep, tmp_copy='copy-held', shm_copy='copy-shm')
             (shared / 'tmp/copy-release').write_text('x')
@@ -553,6 +593,56 @@ def main():
         assert 'MimeType' not in (h / f'.local/share/applications/{app_dirs.ID}.desktop').read_text()
         print('URL schemes: declared in the entry, known to the desktop, the address reaches the launcher: ok')
 
+        # 6f. A browser started through the opener belongs to nobody: it is in a session of its own, has no
+        # inherited descriptors, and lives on when the app and the stub are gone.
+        if view_here:
+            lab.install('')
+            slow = work / 'slowbin'
+            slow.mkdir()
+            pids = work / 'browser-pids'
+            # The script starts a new shell with -c so that its own script descriptor is not in the list.
+            (slow / 'xdg-open').write_text(
+                '#!/bin/sh\nexec /bin/sh -c \'echo "$$ $(awk "{print \\$6}" /proc/$$/stat) $(ls /proc/$$/fd | tr "\\n" ,) $1" >> '
+                + str(pids) + '; exec sleep 300\' sh "$1"\n')
+            (slow / 'xdg-open').chmod(0o755)
+            saved = lab.env['PATH']
+            lab.env['PATH'] = f'{slow}:{saved}'
+            t0 = time.monotonic()
+            p, rep = run_report(lab, [], mask=False)
+            took = time.monotonic() - t0
+            lab.env['PATH'] = saved
+            started = [l.split() for l in pids.read_text().splitlines()] if pids.exists() else []
+            try:
+                assert p.returncode == 0, p.stderr
+                assert len(started) >= 2, started
+                launcher_sid = os.getsid(0)
+                for pid, sid, fds, url in started:
+                    assert Path(f'/proc/{pid}').exists(), f'the browser {pid} ended with the app'
+                    assert sid == pid and int(sid) != launcher_sid, (pid, sid)
+                    assert set(fds.strip(',').split(',')) <= {'0', '1', '2', '3'}, fds
+                assert took < 30, took
+            finally:
+                for pid, *_ in started:
+                    try:
+                        os.kill(int(pid), 9)
+                    except OSError:
+                        pass
+            print('browser started by the opener: own session, no inherited descriptors, alive after the app ended:', len(started), 'process(es)')
+
+        # 6g. Several first starts at once, on a store without the tree: all of them start (defect 19).
+        lab.install('')
+        trees = h / '.local/share/panpak/trees'
+        subprocess.run(['chmod', '-R', 'u+w', str(trees)], check=True)
+        isolation.safe_rmtree(trees, work)
+        launcher = str(h / '.local/bin' / app_dirs.ID)
+        procs = [subprocess.Popen([launcher], env=lab.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True)
+                 for _ in range(6)]
+        results = [(q.wait(timeout=120), q.stderr.read()) for q in procs]
+        bad = [r for r in results if r[0] != 0]
+        assert not bad, bad
+        assert len([d for d in os.listdir(trees) if d.endswith('.partial')]) == 0
+        print('6 first starts at once on an empty store: all started')
+
         # 7. doctor tells the layers, with and without bubblewrap.
         d = lab.cli('doctor', check=False).stdout
         dm = masked(lab, BIN_PANPAK(), 'doctor').stdout
@@ -568,9 +658,7 @@ def main():
         marker.unlink(missing_ok=True)
         for s in fake.socks:
             s.close()
-        lab.bus.terminate()
-        lab.sysbus.terminate()
-        isolation.safe_rmtree(Path(lab.runtime), Path(lab.runtime).parent)
+        teardown(lab)
 
 
 def BIN_PANPAK():
