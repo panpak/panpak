@@ -53,3 +53,7 @@ path = "fuzz_targets/fuzz_http.rs"
 [[bin]]
 name = "fuzz_rotation"
 path = "fuzz_targets/fuzz_rotation.rs"
+
+[[bin]]
+name = "fuzz_userdirs"
+path = "fuzz_targets/fuzz_userdirs.rs"

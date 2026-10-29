@@ -28,6 +28,8 @@ const KEYS: &[(&str, &str)] = &[
 
 const MAX_LINE: usize = 600;
 const MAX_FILE: usize = 16 << 10;
+/// The longest folder path: a line `XDG_PUBLICSHARE_DIR="$HOME/<path>"` must fit in `MAX_LINE`.
+const MAX_REL: usize = 400;
 
 /// The key of a folder name (`music` -> `MUSIC`).
 pub fn user_dirs_key(name: &str) -> Option<&'static str> {
@@ -46,9 +48,10 @@ pub fn default_user_dir(name: &str) -> Option<&'static str> {
     })
 }
 
-/// No quote, backslash or `$` in a path that is written between quotes in a file others parse.
+/// A path that can be written between quotes in a file others parse: no quote, backslash or `$`, and
+/// short enough for a line of the file to stay under `MAX_LINE`.
 fn quote_safe(rel: &str) -> bool {
-    !rel.bytes().any(|b| matches!(b, b'"' | b'\\' | b'$' | b'`'))
+    rel.len() <= MAX_REL && !rel.bytes().any(|b| matches!(b, b'"' | b'\\' | b'$' | b'`'))
 }
 
 /// Parse the file. Result: folder name (`music`) -> path relative to `home`, empty for "no folder"
@@ -284,5 +287,10 @@ XDG_MUSIC_DIR=\"$HOME/Musica\"\nXDG_PICTURES_DIR=\"$HOME/Immagini\"\nXDG_VIDEOS_
         assert_eq!(m["music"], "Musica");
         assert_eq!(m["documents"], "");
         assert!(generated_user_dirs(&[("music".to_string(), "a\"b".to_string())]).is_err());
+        // A long path is refused everywhere, so that the generated file always parses.
+        let long = "a".repeat(MAX_REL + 1);
+        assert!(generated_user_dirs(&[("music".to_string(), long.clone())]).is_err());
+        assert!(parse_pin(&format!("music={long}\n")).is_err());
+        assert!(resolve_xdg_dir("music", Path::new(HOME), Some(&format!("XDG_MUSIC_DIR=\"$HOME/{long}\"\n"))).is_err());
     }
 }
