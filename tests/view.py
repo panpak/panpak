@@ -81,6 +81,50 @@ for name, path in {'gtk': home + '/.config/gtk-3.0/settings.ini', 'notes': home 
         out['write_' + name] = 'ok'
     except OSError as e:
         out['write_' + name] = f'err{e.errno}'
+# The home folder as the app sees it, and the user folders of the manifest.
+try:
+    out['home_entries'] = ','.join(sorted(os.listdir(home)))
+except OSError as e:
+    out['home_entries'] = f'err{e.errno}'
+for name, rel in (('music', 'Musica'), ('docs', 'Documenti'), ('pics', 'Immagini')):
+    try:
+        out['list_' + name] = str(len(os.listdir(home + '/' + rel)))
+    except OSError as e:
+        out['list_' + name] = f'err{e.errno}'
+    try:
+        open(home + '/' + rel + '/w.txt', 'w').write('x')
+        out['write_' + name] = 'ok'
+    except OSError as e:
+        out['write_' + name] = f'err{e.errno}'
+try:
+    out['user_dirs_file'] = open(os.environ['XDG_CONFIG_HOME'] + '/user-dirs.dirs').read().replace('\n', '|')
+except OSError as e:
+    out['user_dirs_file'] = f'err{e.errno}'
+
+# Opening addresses: xdg-open in the view, by name and by full path.
+import shutil, subprocess, time
+def op(*a, exe='xdg-open'):
+    time.sleep(0.5)
+    try:
+        r = subprocess.run([exe, *a], capture_output=True, timeout=10, text=True)
+        return str(r.returncode)
+    except Exception as e:
+        return 'exc'
+out['open_which'] = shutil.which('xdg-open') or 'none'
+out['open_https'] = op('https://example.org/a')
+out['open_file'] = op('file:///etc/passwd')
+out['open_mailto'] = op('mailto:a@b.org?subject=hi')
+out['open_attach'] = op('mailto:a@b.org?attach=/etc/passwd')
+out['open_fullpath'] = op('https://example.org/full', exe='/usr/bin/xdg-open') if os.path.exists('/usr/bin/xdg-open') else 'nofile'
+out['open_option'] = op('--version')
+out['open_two'] = op('https://example.org/x', 'https://example.org/y')
+try:
+    from gi.repository import Gio
+    out['gio_https'] = Gio.AppInfo.get_default_for_uri_scheme('https').get_id()
+    out['gio_mailto'] = Gio.AppInfo.get_default_for_uri_scheme('mailto').get_id()
+    out['gio_launch'] = str(Gio.AppInfo.launch_default_for_uri('https://example.org/gio', None))
+except Exception as e:
+    out['gio_https'] = 'nogi'
 out['x11_dir'] = 'present' if os.path.isdir('/tmp/.X11-unix') else 'absent'
 out['run_entries'] = ','.join(sorted(os.listdir('/run')))
 out['rt_entries'] = ','.join(sorted(os.listdir(rt))) if os.path.isdir(rt) else 'none'
@@ -284,7 +328,7 @@ def main():
                     uid=str(os.getuid()), uid_map=f'{os.getuid()} {os.getuid()} 1')
         if view_here:
             check(rep, **gone)
-            assert rep['rt_entries'] == 'wayland-0', rep['rt_entries']
+            assert rep['rt_entries'] == 'panpak,wayland-0', rep['rt_entries']
             assert rep['sid'] != str(os.getsid(0)), 'the app is in the session of the caller (no --new-session)'
             assert 'dbus' not in rep['run_entries'].split(','), rep['run_entries']
             assert rep['tmp_entries'] == '1' or int(rep['tmp_entries']) <= 2, rep['tmp_entries']
@@ -381,6 +425,74 @@ def main():
             assert (rep['open_write'] == 'ok') == (want == 'ok'), (flag, rep['open_write'])
         assert doc.read_text() == 'hello\nmore\n', doc.read_text()
         print('panpak open: read-only, then writable with --write: ok')
+
+        # 6b. User folders (xdg_dirs): the folder of user-dirs.dirs comes back into the empty home, nothing else.
+        for rel in ('Musica', 'Documenti', 'Immagini'):
+            (h / rel).mkdir(exist_ok=True)
+        (h / 'Musica/song.txt').write_text('s')
+        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Musica"\nXDG_DOCUMENTS_DIR="$HOME/Documenti"\n'
+                                                   'XDG_PICTURES_DIR="$HOME/Immagini"\nXDG_DOWNLOAD_DIR="$HOME/Scaricati"\n')
+        p = lab.install('[permissions]\n[[permissions.xdg_dirs]]\nname = "music"\naccess = "rw"\n'
+                        '[[permissions.xdg_dirs]]\nname = "documents"\naccess = "ro"\n')
+        assert p.returncode == 0, p.stdout + p.stderr
+        assert 'music: ~/Musica (rw)' in p.stdout and 'documents: ~/Documenti (ro)' in p.stdout, p.stdout
+        pin = (h / f'.local/share/panpak/apps/{app_dirs.ID}/xdg-dirs').read_text()
+        assert 'music=Musica' in pin and 'documents=Documenti' in pin, pin
+        if view_here:
+            _, rep = run_report(lab, [], mask=False)
+            check(rep, home_entries='.cache,.config,.local,Documenti,Musica', list_music='1', write_music='ok', list_docs='0', write_docs='err30',
+                  list_pics='err2', write_pics='err2')
+            assert 'XDG_MUSIC_DIR="$HOME/Musica"|' in rep['user_dirs_file'] and 'XDG_PICTURES_DIR="$HOME/"|' in rep['user_dirs_file'], rep['user_dirs_file']
+            assert (h / 'Musica/w.txt').read_text() == 'x', 'the write in the music folder did not reach the real folder'
+            print('xdg_dirs (rw and ro) in the view: ok')
+        # A folder that changed since install is refused at the start, with a warning.
+        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Immagini"\nXDG_DOCUMENTS_DIR="$HOME/Documenti"\n')
+        _, rep, err = lab.run()
+        assert 'the music folder changed since install' in err, err
+        if view_here:
+            check(rep, list_music='err2', write_music='err2', list_pics='err2')
+            check(rep, list_docs='0')
+        # A folder that is now a link is refused too.
+        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Musica"\nXDG_DOCUMENTS_DIR="$HOME/Documenti"\n')
+        shutil.move(h / 'Musica', h / 'Musica.real')
+        os.symlink(h / 'Musica.real', h / 'Musica')
+        _, rep, err = lab.run()
+        assert 'music folder is not granted' in err and 'symbolic link' in err, err
+        os.unlink(h / 'Musica')
+        shutil.move(h / 'Musica.real', h / 'Musica')
+        # An hostile user-dirs.dirs is refused at install: no folder, with a warning.
+        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="/etc"\n')
+        p = lab.install('[permissions]\n[[permissions.xdg_dirs]]\nname = "music"\naccess = "rw"\n')
+        assert 'WARNING: music: not granted' in p.stdout, p.stdout
+        assert not (h / f'.local/share/panpak/apps/{app_dirs.ID}/xdg-dirs').exists()
+        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Musica"\nXDG_DOCUMENTS_DIR="$HOME/Documenti"\n')
+        print('xdg_dirs: changed, linked and hostile folders refused: ok')
+
+        # 6c. Addresses: xdg-open in the view reaches the real opener only for http, https and mailto.
+        binlog = work / 'open.log'
+        fakebin = work / 'fakebin'
+        fakebin.mkdir()
+        (fakebin / 'xdg-open').write_text(f'#!/bin/sh\necho "$@" >> {binlog}\n')
+        (fakebin / 'xdg-open').chmod(0o755)
+        lab.env['PATH'] = f'{fakebin}:{lab.env["PATH"]}'
+        lab.install('')
+        if view_here:
+            _, rep = run_report(lab, [], mask=False)
+            want = dict(open_https='0', open_file='1', open_mailto='0', open_attach='1', open_option='1', open_two='1')
+            check(rep, **want)
+            assert rep['open_which'].endswith('/panpak/bin/xdg-open'), rep['open_which']
+            assert rep['open_fullpath'] in ('0', 'nofile'), rep['open_fullpath']
+            time.sleep(0.5)
+            got = binlog.read_text().split('\n')
+            assert 'https://example.org/a' in got and 'mailto:a@b.org?subject=hi' in got, got
+            assert not any('file:' in g or 'attach' in g or 'passwd' in g for g in got), got
+            assert rep['gio_https'] in ('panpak-opener.desktop', 'nogi'), rep['gio_https']
+            if rep['gio_https'] != 'nogi':
+                assert rep['gio_mailto'] == 'panpak-opener.desktop', rep['gio_mailto']
+                time.sleep(0.5)
+                assert 'https://example.org/gio' in binlog.read_text(), binlog.read_text()
+            print('addresses: https and mailto pass, file: and attach are refused, GIO goes through the opener:', rep['gio_https'])
+        lab.env['PATH'] = lab.env['PATH'].split(':', 1)[1]
 
         # 7. doctor tells the layers, with and without bubblewrap.
         d = lab.cli('doctor', check=False).stdout
