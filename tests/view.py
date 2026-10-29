@@ -125,6 +125,7 @@ try:
     out['gio_launch'] = str(Gio.AppInfo.launch_default_for_uri('https://example.org/gio', None))
 except Exception as e:
     out['gio_https'] = 'nogi'
+out['args'] = ' '.join(sys.argv[1:])
 out['x11_dir'] = 'present' if os.path.isdir('/tmp/.X11-unix') else 'absent'
 out['run_entries'] = ','.join(sorted(os.listdir('/run')))
 out['rt_entries'] = ','.join(sorted(os.listdir(rt))) if os.path.isdir(rt) else 'none'
@@ -529,6 +530,28 @@ def main():
             real_shm = [n for n in os.listdir('/dev/shm') if n.startswith('copy-')]
             assert not real_shm, f'the app wrote in the real /dev/shm: {real_shm}'
             print('copies of one app share /tmp and /dev/shm, a start with none alive begins empty: ok')
+
+        # 6e. URL schemes: the desktop entry declares them, the desktop learns of them, the launcher gets the address.
+        p = lab.install('[desktop]\nschemes = ["panpaktest", "panpak-two"]\n')
+        assert p.returncode == 0, p.stdout + p.stderr
+        assert 'URL scheme panpaktest' in p.stdout and 'URL scheme panpak-two' in p.stdout, p.stdout
+        entry = (h / f'.local/share/applications/{app_dirs.ID}.desktop').read_text()
+        assert 'MimeType=x-scheme-handler/panpaktest;x-scheme-handler/panpak-two;\n' in entry, entry
+        exec_line = next(l for l in entry.splitlines() if l.startswith('Exec='))
+        assert exec_line.endswith(' %U') and str(h / '.local/bin' / app_dirs.ID) in exec_line, exec_line
+        if shutil.which('update-desktop-database') and shutil.which('xdg-mime'):
+            q = subprocess.run(['xdg-mime', 'query', 'default', 'x-scheme-handler/panpaktest'], env=lab.env, capture_output=True, text=True)
+            assert q.stdout.strip() == f'{app_dirs.ID}.desktop', (q.stdout, q.stderr)
+        _, rep = run_report(lab, ['panpaktest://open/1?x=y'], mask=False)
+        check(rep, args='panpaktest://open/1?x=y')
+        try:
+            lab.pack('[desktop]\nschemes = ["https"]\n')
+            raise SystemExit('a reserved scheme was packed')
+        except AssertionError as e:
+            assert 'PANPAK-E0007' in str(e) and 'reserved scheme' in str(e), e
+        lab.install('')
+        assert 'MimeType' not in (h / f'.local/share/applications/{app_dirs.ID}.desktop').read_text()
+        print('URL schemes: declared in the entry, known to the desktop, the address reaches the launcher: ok')
 
         # 7. doctor tells the layers, with and without bubblewrap.
         d = lab.cli('doctor', check=False).stdout
