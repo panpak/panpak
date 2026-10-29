@@ -13,6 +13,7 @@ import atexit
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -315,6 +316,26 @@ def teardown(lab):
             except subprocess.TimeoutExpired:
                 bus.kill()
                 bus.wait()
+    # Helpers that the private bus started (dconf-service, for one) write into the runtime folder when the
+    # bus goes away: stop what still has this folder in its environment, then remove the folder.
+    wanted = f'XDG_RUNTIME_DIR={lab.runtime}'.encode()
+    for _ in range(30):
+        mine = []
+        for d in os.listdir('/proc'):
+            if d.isdigit() and int(d) != os.getpid():
+                try:
+                    if wanted in Path(f'/proc/{d}/environ').read_bytes().split(b'\0'):
+                        mine.append(int(d))
+                except OSError:
+                    pass
+        if not mine:
+            break
+        for pid in mine:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        time.sleep(0.1)
     isolation.remove_owned(lab.runtime, Path(lab.runtime).parent)
 
 
