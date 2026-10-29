@@ -24,6 +24,9 @@ pub struct Job {
     pub ro: Vec<PathBuf>,
     pub sockets: Vec<PathBuf>,
     pub allow_unfiltered: bool,
+    /// The home folder may be listed inside the view (see `Access::home_list`).
+    #[serde(default)]
+    pub home_list: Option<PathBuf>,
     pub open: Option<JobOpen>,
     pub program: PathBuf,
     pub args: Vec<String>,
@@ -321,6 +324,7 @@ mod tests {
             ro: vec!["/b".into()],
             sockets: vec!["/s".into()],
             allow_unfiltered: true,
+            home_list: None,
             open: Some(JobOpen { path: "/f".into(), write: true, rename: false }),
             program: parts.program,
             args: parts.args,

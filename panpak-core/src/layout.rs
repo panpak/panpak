@@ -319,6 +319,9 @@ pub fn is_bus_socket(path: &str) -> bool {
 /// The permissions of a manifest, one line each, for `install` and `update`.
 pub fn describe_permissions(man: &Manifest) -> Vec<String> {
     let mut out = Vec::new();
+    for sc in man.desktop.as_ref().and_then(|d| d.schemes.as_ref()).into_iter().flatten() {
+        out.push(format!("URL scheme {sc}: addresses that start with {sc}: are opened by this app"));
+    }
     let Some(p) = &man.permissions else { return out };
     if p.x11 == Some(true) {
         out.push("X11 access: the app can observe other apps' input and screen".to_string());
@@ -339,6 +342,9 @@ pub fn describe_permissions(man: &Manifest) -> Vec<String> {
     }
     if p.sockets_allow.iter().flatten().any(|s| is_bus_socket(s)) {
         out.push(format!("WARNING: {DESKTOP_BUS_WARNING}"));
+    }
+    for d in p.xdg_dirs.iter().flatten() {
+        out.push(format!("User folder: {} ({}), the one in your user-dirs.dirs", d.name, d.access));
     }
     let homes: Vec<String> =
         p.home_paths.iter().flatten().map(|h| format!("{} ({})", h.path, h.access)).collect();
@@ -385,6 +391,13 @@ pub fn added_permissions(old: &Manifest, new: &Manifest) -> Vec<String> {
             if is_bus_socket(s) && !had_socks.iter().any(|h| is_bus_socket(h)) {
                 out.push(DESKTOP_BUS_WARNING.to_string());
             }
+        }
+    }
+    let had_xdg = o.map(|p| p.xdg_dirs.clone().unwrap_or_default()).unwrap_or_default();
+    for d in n.xdg_dirs.iter().flatten() {
+        let covered = had_xdg.iter().any(|x| x.name == d.name && (x.access == "rw" || d.access == "ro"));
+        if !covered {
+            out.push(format!("access to the {} folder ({})", d.name, d.access));
         }
     }
     let had_homes = o.map(|p| p.home_paths.clone().unwrap_or_default()).unwrap_or_default();

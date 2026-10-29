@@ -219,6 +219,27 @@ fn overlaps(a: &str, b: &str) -> bool {
     a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
 }
 
+/// Why a relative path in the home folder is not allowed, or None. The same rules for `home_paths`
+/// and for the folders found in `user-dirs.dirs`.
+pub fn home_rel_problem(p: &str) -> Option<String> {
+    if p.is_empty() || p == "." {
+        return Some("the home folder itself is not allowed".to_string());
+    }
+    if p.len() > MAX_PATH_LEN || !p.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
+        return Some("path must be printable ASCII and not too long".to_string());
+    }
+    if p.starts_with('/') || p.ends_with('/') {
+        return Some("path must be relative, with no leading or trailing '/'".to_string());
+    }
+    if p.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+        return Some("path must not contain empty, '.' or '..' segments".to_string());
+    }
+    if BROAD_HOME_PATHS.contains(&p) {
+        return Some(format!("path {} is too broad", shown(p)));
+    }
+    FORBIDDEN_HOME_PATHS.iter().find(|f| overlaps(p, f)).map(|f| format!("path {} overlaps the protected path {f}", shown(p)))
+}
+
 fn home_paths(list: &[HomePath]) -> Result<()> {
     const F: &str = "permissions.home_paths";
     if list.len() > MAX_HOME_PATHS {
@@ -226,29 +247,50 @@ fn home_paths(list: &[HomePath]) -> Result<()> {
     }
     for (i, h) in list.iter().enumerate() {
         let p = h.path.as_str();
-        if p.is_empty() || p == "." {
-            return Err(bad_field(F, "the home folder itself is not allowed"));
-        }
-        if p.len() > MAX_PATH_LEN || !p.bytes().all(|b| (0x20..=0x7e).contains(&b)) {
-            return Err(bad_field(F, "path must be printable ASCII and not too long"));
-        }
-        if p.starts_with('/') || p.ends_with('/') {
-            return Err(bad_field(F, "path must be relative, with no leading or trailing '/'"));
-        }
-        if p.split('/').any(|s| s.is_empty() || s == "." || s == "..") {
-            return Err(bad_field(F, "path must not contain empty, '.' or '..' segments"));
-        }
-        if BROAD_HOME_PATHS.contains(&p) {
-            return Err(bad_field(F, &format!("path {} is too broad", shown(p))));
-        }
-        if let Some(f) = FORBIDDEN_HOME_PATHS.iter().find(|f| overlaps(p, f)) {
-            return Err(bad_field(F, &format!("path {} overlaps the protected path {f}", shown(p))));
+        if let Some(why) = home_rel_problem(p) {
+            return Err(bad_field(F, &why));
         }
         if h.access != "ro" && h.access != "rw" {
             return Err(bad_field(F, "access must be \"ro\" or \"rw\""));
         }
         if list[..i].iter().any(|o| o.path == h.path) {
             return Err(bad_field(F, &format!("path {} listed twice", shown(p))));
+        }
+    }
+    Ok(())
+}
+
+fn xdg_dirs(list: &[crate::XdgDir]) -> Result<()> {
+    const F: &str = "permissions.xdg_dirs";
+    if list.len() > crate::XDG_DIR_NAMES.len() {
+        return Err(bad_field(F, "more entries than there are user folders"));
+    }
+    for (i, d) in list.iter().enumerate() {
+        if !crate::XDG_DIR_NAMES.contains(&d.name.as_str()) {
+            return Err(bad_field(F, &format!("name {} is not one of {}", shown(&d.name), crate::XDG_DIR_NAMES.join(", "))));
+        }
+        if d.access != "ro" && d.access != "rw" {
+            return Err(bad_field(F, "access must be \"ro\" or \"rw\""));
+        }
+        if list[..i].iter().any(|o| o.name == d.name) {
+            return Err(bad_field(F, &format!("{} listed twice", d.name)));
+        }
+    }
+    Ok(())
+}
+
+fn desktop(d: &crate::Desktop) -> Result<()> {
+    const F: &str = "desktop.schemes";
+    let list = d.schemes.as_deref().unwrap_or_default();
+    if list.len() > 8 {
+        return Err(bad_field(F, "more than 8 schemes"));
+    }
+    for (i, sc) in list.iter().enumerate() {
+        if let Err(why) = crate::check_scheme_name(sc) {
+            return Err(bad_field(F, &format!("{}: {why}", shown(sc))));
+        }
+        if list[..i].contains(sc) {
+            return Err(bad_field(F, &format!("{sc} listed twice")));
         }
     }
     Ok(())
@@ -277,6 +319,10 @@ pub fn validate_manifest(man: &Manifest) -> Result<()> {
             }
         }
         home_paths(p.home_paths.as_deref().unwrap_or_default())?;
+        xdg_dirs(p.xdg_dirs.as_deref().unwrap_or_default())?;
+    }
+    if let Some(d) = &man.desktop {
+        desktop(d)?;
     }
     if let Some(l) = &man.launch {
         launch(l)?;

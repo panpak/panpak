@@ -310,6 +310,19 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     symlink_atomic(&dest, &current_link)?;
     let (best_abi, runtime) = best_runtime(&store)?;
     write_replacing(&launcher, &launcher_sh(app_id, &runtime, &current_link)?, 0o755, "launcher", &|s| launcher_is_ours(s, app_id))?;
+    // The user folders and the URL schemes of the new version.
+    let (xdg_found, xdg_problems) = resolve_xdg_dirs(&man);
+    print_xdg_dirs(&xdg_found, &xdg_problems);
+    write_xdg_pin(&appdir, &xdg_found)?;
+    let desktop = dirs::data_dir().context("no data dir")?.join("applications").join(format!("{app_id}.desktop"));
+    let schemes = manifest_schemes(&man);
+    if desktop.exists() || !schemes.is_empty() {
+        fs::create_dir_all(desktop.parent().unwrap())?;
+        write_replacing(&desktop, &desktop_file(app_id, &man.app.name, &launcher, &schemes)?, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
+        if !schemes.is_empty() {
+            refresh_desktop_database(desktop.parent().unwrap());
+        }
+    }
     println!("updated {app_id}: {} -> {} (reused chunks {n_reused}, fetched chunks {n_fetched}, runtime {best_abi})",
         old_man.app.version, man.app.version);
     println!("downloaded bytes: {downloaded}");
@@ -1328,13 +1341,95 @@ fn desktop_exec_arg(p: &str) -> Result<String> {
 /// The entry declares no MimeType: the manifest has no field for MIME types, and
 /// `application/x-panpak` is the type of the packages themselves, not of the
 /// files an app opens.
-fn desktop_file(app_id: &str, name: &str, launcher: &Path) -> Result<String> {
+fn desktop_file(app_id: &str, name: &str, launcher: &Path, schemes: &[String]) -> Result<String> {
+    // The URL schemes the manifest declares; every name is checked again here, whatever the caller did.
+    let mut mime = String::new();
+    for sc in schemes {
+        panpak_core::check_scheme_name(sc).map_err(|why| anyhow::anyhow!("scheme {sc}: {why}"))?;
+        mime += &format!("x-scheme-handler/{sc};");
+    }
+    let mime = if mime.is_empty() { String::new() } else { format!("MimeType={mime}\n") };
     Ok(format!(
-        "[Desktop Entry]\nType=Application\nName={}\nExec={} %U\nTerminal=false\nCategories=Utility;\n{DESKTOP_MARKER}{}\n",
+        "[Desktop Entry]\nType=Application\nName={}\nExec={} %U\nTerminal=false\nCategories=Utility;\n{mime}{DESKTOP_MARKER}{}\n",
         desktop_string(name)?,
         desktop_exec_arg(path_text(launcher)?)?,
         desktop_string(app_id)?
     ))
+}
+
+/// The URL schemes the manifest declares.
+fn manifest_schemes(man: &panpak_core::Manifest) -> Vec<String> {
+    man.desktop.as_ref().and_then(|d| d.schemes.clone()).unwrap_or_default()
+}
+
+/// A user folder asked for by the manifest and found in the user's `user-dirs.dirs`.
+struct ResolvedDir {
+    name: String,
+    rel: String,
+    access: String,
+}
+
+/// Find the user folders the manifest asks for, from the real `user-dirs.dirs` (outside the sandbox).
+/// A folder that cannot be found, or fails the rules, is left out with the reason.
+fn resolve_xdg_dirs(man: &panpak_core::Manifest) -> (Vec<ResolvedDir>, Vec<String>) {
+    let (mut ok, mut why) = (Vec::new(), Vec::new());
+    let wanted = man.permissions.as_ref().and_then(|p| p.xdg_dirs.as_deref()).unwrap_or_default();
+    if wanted.is_empty() {
+        return (ok, why);
+    }
+    let Some(home) = dirs::home_dir() else { return (ok, vec!["no home folder".to_string()]) };
+    let text = match dirs::config_dir().map(|c| c.join("user-dirs.dirs")).map(fs::read_to_string) {
+        Some(Ok(t)) => Some(t),
+        Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Some(Err(e)) => return (ok, vec![format!("cannot read user-dirs.dirs: {e}")]),
+        None => None,
+    };
+    for d in wanted {
+        match panpak_core::resolve_xdg_dir(&d.name, &home, text.as_deref()).and_then(|rel| panpak_core::no_links(&home, &rel).map(|()| rel)) {
+            Ok(rel) => ok.push(ResolvedDir { name: d.name.clone(), rel, access: d.access.clone() }),
+            Err(e) => why.push(format!("{}: not granted: {}", d.name, panpak_core::err_text(&e))),
+        }
+    }
+    (ok, why)
+}
+
+/// Print what was found: `music: ~/Musica (rw)`.
+fn print_xdg_dirs(found: &[ResolvedDir], problems: &[String]) {
+    for d in found {
+        println!("  {}: ~/{} ({})", d.name, d.rel, d.access);
+    }
+    for p in problems {
+        println!("WARNING: {p}");
+    }
+}
+
+/// Fix the folders found in the store, next to the pinned key: the stub grants only what is there and
+/// still matches `user-dirs.dirs` when the app starts.
+fn write_xdg_pin(appdir: &Path, found: &[ResolvedDir]) -> Result<()> {
+    let path = appdir.join("xdg-dirs");
+    if found.is_empty() {
+        let _ = fs::remove_file(&path);
+        return Ok(());
+    }
+    let pairs: Vec<(String, String)> = found.iter().map(|d| (d.name.clone(), d.rel.clone())).collect();
+    let tmp = appdir.join(format!(".xdg-dirs.{}", std::process::id()));
+    fs::write(&tmp, panpak_core::format_pin(&pairs))?;
+    fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+/// Tell the desktop about the URL schemes of the entry (`update-desktop-database`, fixed path). A
+/// failure only means that the desktop learns about the schemes later.
+fn refresh_desktop_database(dir: &Path) {
+    for tool in ["/usr/bin/update-desktop-database", "/bin/update-desktop-database"] {
+        if Path::new(tool).is_file() {
+            let ok = std::process::Command::new(tool).arg(dir).output().is_ok_and(|o| o.status.success());
+            if !ok {
+                println!("NOTE: update-desktop-database failed; the URL schemes may be known to the desktop only after a new login");
+            }
+            return;
+        }
+    }
 }
 
 /// A `.desktop` file written by panpak for `app_id`: it has the marker key, or
@@ -1589,11 +1684,14 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
 
     let appdir = store.join("apps").join(&man.app.id);
     fs::create_dir_all(&appdir)?;
+    // The user folders the manifest asks for, found now in the real user-dirs.dirs.
+    let (xdg_found, xdg_problems) = resolve_xdg_dirs(&man);
     let pin = appdir.join("pinned-key");
     if pin.exists() {
         let old = fs::read_to_string(&pin)?;
         ensure_code!(old.trim() == key.trim(), ErrorCode::E1004, "key DIFFERS from TOFU pin: possible attack or changed author; manual reinstall required");
         print_permissions(&man);
+        print_xdg_dirs(&xdg_found, &xdg_problems);
         // Installing over an installed app is an update: new permissions need a yes.
         if let Some(old) = installed_manifest(&appdir) {
             accept_new_permissions(&panpak_core::added_permissions(&old, &man), yes, accept_new, "package")?;
@@ -1601,6 +1699,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     } else {
         println!("app: {} {} ({})", man.app.id, man.app.name, man.app.version);
         print_permissions(&man);
+        print_xdg_dirs(&xdg_found, &xdg_problems);
         println!("key fingerprint (TOFU, first 16 hex): {fp}");
         if let Some(o) = man.origin.as_ref() {
             println!("WARNING: THIRD-PARTY CONVERTED package, not verified by the upstream author:");
@@ -1632,6 +1731,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         }
         fs::write(&pin, format!("{key}\n"))?;
     }
+    write_xdg_pin(&appdir, &xdg_found)?;
     if let Some(url) = man.update.as_ref().and_then(|u| u.url.clone()) {
         fs::write(appdir.join("update.url"), format!("{url}\n"))?;
     }
@@ -1652,7 +1752,11 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     fs::create_dir_all(launcher.parent().unwrap())?;
     write_replacing(&launcher, &launcher_sh(&man.app.id, &runtime, &current)?, 0o755, "launcher", &|s| launcher_is_ours(s, &man.app.id))?;
     fs::create_dir_all(desktop.parent().unwrap())?;
-    write_replacing(&desktop, &desktop_file(&man.app.id, &man.app.name, &launcher)?, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
+    let schemes = manifest_schemes(&man);
+    write_replacing(&desktop, &desktop_file(&man.app.id, &man.app.name, &launcher, &schemes)?, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
+    if !schemes.is_empty() {
+        refresh_desktop_database(desktop.parent().unwrap());
+    }
 
     println!("installed: {} (runtime {best_abi})", man.app.id);
     println!("launcher: {}", launcher.display());
@@ -2434,7 +2538,7 @@ mod tests {
         assert!(sh.contains("apps/org.x/current"));
         assert!(sh.contains("\n# X-Panpak-App-Id: org.x\n"));
         assert!(sh.ends_with("\"$@\"\n"));
-        let d = desktop_file("org.x", "X App", Path::new("/home/u/.local/bin/org.x")).unwrap();
+        let d = desktop_file("org.x", "X App", Path::new("/home/u/.local/bin/org.x"), &[]).unwrap();
         assert!(d.contains("Name=X App\n"));
         assert!(d.contains("Exec=\"/home/u/.local/bin/org.x\" %U\n"));
         assert!(d.contains("\nX-Panpak-App-Id=org.x\n"));
@@ -2450,16 +2554,16 @@ mod tests {
     #[test]
     fn desktop_entry_values_cannot_start_a_line() {
         let l = Path::new("/home/u/.local/bin/org.x");
-        let d = desktop_file("org.x", "Evil\nExec=/bin/sh\r\nTerminal=true", l).unwrap();
+        let d = desktop_file("org.x", "Evil\nExec=/bin/sh\r\nTerminal=true", l, &[]).unwrap();
         assert_eq!(d.lines().count(), 7, "{d}");
         assert_eq!(d.lines().filter(|l| l.starts_with("Exec=")).count(), 1, "{d}");
         assert!(d.contains("Name=Evil\\nExec=/bin/sh\\r\\nTerminal=true\n"), "{d}");
         // Backslash is escaped, other controls are refused.
-        assert!(desktop_file("org.x", "A\\B", l).unwrap().contains("Name=A\\\\B\n"));
+        assert!(desktop_file("org.x", "A\\B", l, &[]).unwrap().contains("Name=A\\\\B\n"));
         for bad in ["a\u{1}b", "a\u{7f}b", "a\u{9b}b"] {
-            assert!(desktop_file("org.x", bad, l).is_err(), "{bad:?}");
+            assert!(desktop_file("org.x", bad, l, &[]).is_err(), "{bad:?}");
         }
-        assert!(desktop_file("org.x", "N", Path::new("/home/u\n/x")).is_err());
+        assert!(desktop_file("org.x", "N", Path::new("/home/u\n/x"), &[]).is_err());
     }
 
     #[test]
@@ -2491,7 +2595,7 @@ mod tests {
         assert!(!launcher_is_ours("#!/bin/sh\necho mine\n", "org.x"));
         // Written before the marker existed.
         assert!(launcher_is_ours("#!/bin/sh\n# Generated by `panpak install`: do not edit.\n# Points to apps/<id>/current; x\n", "org.x"));
-        let d = desktop_file("org.x", "X", l).unwrap();
+        let d = desktop_file("org.x", "X", l, &[]).unwrap();
         assert!(desktop_is_ours(&d, "org.x", l));
         assert!(!desktop_is_ours(&d, "org.y", l));
         assert!(!desktop_is_ours("[Desktop Entry]\nType=Application\nName=Mine\nExec=/bin/mine\n", "org.x", l));

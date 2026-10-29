@@ -6,9 +6,16 @@
 mod elfsym;
 mod errors;
 mod layout;
+mod openurl;
+mod userdirs;
 mod validate;
 mod view;
 pub use elfsym::{parse_syms, read_elf_info, sym_hash, version_number, ElfInfo, ElfSyms, Needed};
+pub use openurl::{check_scheme_name, check_url, UrlKind, MAX_URL};
+pub use userdirs::{
+    default_user_dir, format_pin, generated_user_dirs, no_links, parse_pin, parse_user_dirs, resolve_xdg_dir, user_dirs_key, USER_DIRS_MARKER,
+    XDG_DIR_NAMES,
+};
 pub use errors::{code_of, coded, render, ErrorCode, PanpakError};
 pub use layout::{
     added_permissions, app_dirs, describe_permissions, fonts_conf, is_bus_socket, readonly_user_paths, xdg_search_dirs, AppDirs,
@@ -108,6 +115,8 @@ pub struct Manifest {
     pub permissions: Option<Permissions>,
     /// Extra start arguments and environment (PANPAK-FORMAT.md §3.1.2).
     pub launch: Option<Launch>,
+    /// Desktop integration: the URL schemes the app handles (PANPAK-FORMAT.md §3.1.3).
+    pub desktop: Option<Desktop>,
     pub runtime: Option<Runtime>,
     pub origin: Option<Origin>,
     pub update: Option<Update>,
@@ -174,7 +183,24 @@ pub struct Permissions {
     pub sockets_allow: Option<Vec<String>>,
     /// Fixed paths in the home folder (last resort, see §3.1.2).
     pub home_paths: Option<Vec<HomePath>>,
+    /// The user's folders (music, documents, ...), found in `user-dirs.dirs` when the app is installed.
+    pub xdg_dirs: Option<Vec<XdgDir>>,
     pub portal: Option<Portal>,
+}
+/// A user folder the app asks for (PANPAK-FORMAT.md §3.1.4).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct XdgDir {
+    /// `music`, `documents`, `pictures`, `videos` or `download`.
+    pub name: String,
+    /// `ro` or `rw`.
+    pub access: String,
+}
+
+/// `[desktop]`: what the generated `.desktop` file declares.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Desktop {
+    /// URL schemes the app opens (`x-scheme-handler/<scheme>`), for example the return from a login.
+    pub schemes: Option<Vec<String>>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Portal {
@@ -315,11 +341,13 @@ pub fn verify_rotation(pinned: &str, new_key: &str, rot_old: Option<&str>, rot_s
 pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
     let v: toml::Value = toml::from_str(input).context("panpak.toml is not TOML")?;
     let t = v.as_table().context("panpak.toml: table required")?;
-    const TOP: &[&str] = &["app", "abi", "permissions", "launch", "runtime", "origin", "update"];
+    const TOP: &[&str] = &["app", "abi", "permissions", "launch", "desktop", "runtime", "origin", "update"];
+    const DESKTOP: &[&str] = &["schemes"];
+    const XDG_DIR: &[&str] = &["name", "access"];
     const LAUNCH: &[&str] = &["args", "env"];
     const APP: &[&str] = &["id", "name", "version", "entry"];
     const ABI: &[&str] = &["glibc_min", "needs", "prefer_host", "allow_missing"];
-    const PERM: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "portal"];
+    const PERM: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal"];
     const HOME_PATH: &[&str] = &["path", "access"];
     const PORTAL: &[&str] = &["files", "camera"];
     const RUNTIME: &[&str] = &["min_runtime", "stub_hash"];
@@ -342,9 +370,19 @@ pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
             ensure!(ABI.contains(&k), "panpak.toml [abi]: unknown key `{k}` (future field? update panpak)");
         }
     }
+    if let Some(v) = get("desktop") {
+        for k in keys(v, "[desktop]")? {
+            ensure!(DESKTOP.contains(&k), "panpak.toml [desktop]: unknown key `{k}` (future field? update panpak)");
+        }
+    }
     if let Some(v) = get("permissions") {
         for k in keys(v, "[permissions]")? {
             ensure!(PERM.contains(&k), "panpak.toml [permissions]: unknown key `{k}` (future field? update panpak)");
+        }
+        for h in v.get("xdg_dirs").and_then(|h| h.as_array()).into_iter().flatten() {
+            for k in keys(h, "[[permissions.xdg_dirs]]")? {
+                ensure!(XDG_DIR.contains(&k), "panpak.toml [[permissions.xdg_dirs]]: unknown key `{k}` (future field? update panpak)");
+            }
         }
         for h in v.get("home_paths").and_then(|h| h.as_array()).into_iter().flatten() {
             for k in keys(h, "[[permissions.home_paths]]")? {
@@ -1331,6 +1369,7 @@ mod tests {
             abi: None,
             permissions: None,
             launch: None,
+            desktop: None,
             runtime: Some(Runtime { min_runtime: None, stub_hash: Some(good_hash.clone()) }),
             origin: None,
             update: None,

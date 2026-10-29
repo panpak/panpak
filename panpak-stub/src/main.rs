@@ -334,6 +334,9 @@ struct Access {
     sockets: Vec<PathBuf>,
     /// The sandbox runs inside the isolated view, which hides the sockets the manifest does not list.
     in_view: bool,
+    /// The home folder, listable (`ReadDir`). Only set when the isolated view is active: there the
+    /// home folder is an empty tmpfs that holds the granted folders only. Never set without the view.
+    home_list: Option<PathBuf>,
 }
 
 /// Refuse a link in `rel` below `home`: every part that exists must be a real
@@ -385,6 +388,89 @@ fn access_for(man: &panpak_core::Manifest, dirs: &panpak_core::AppDirs) -> Resul
         }
     }
     Ok(access)
+}
+
+/// The user folders the app may use: the ones pinned at install that `user-dirs.dirs` still names the
+/// same way. A folder that changed, or that fails the rules now, is not granted (with a warning).
+/// Granted folders go into `access`: `rw` ones are writable, `ro` ones readable. Returns (name, path
+/// relative to home) of each.
+fn xdg_grants(man: &panpak_core::Manifest, store: &Path, installed_mode: bool, access: &mut Access) -> Result<Vec<(String, String)>> {
+    let wanted = man.permissions.as_ref().and_then(|p| p.xdg_dirs.as_deref()).unwrap_or_default();
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !installed_mode {
+        eprintln!("panpak: user folders are only granted to an installed app; none given");
+        return Ok(Vec::new());
+    }
+    let pin = match fs::read_to_string(store.join("apps").join(&man.app.id).join("xdg-dirs")) {
+        Ok(t) => match panpak_core::parse_pin(&t) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("panpak: WARNING: user folder pin unusable ({}); none given, reinstall to grant them", panpak_core::err_text(&e));
+                return Ok(Vec::new());
+            }
+        },
+        Err(_) => {
+            eprintln!("panpak: WARNING: no user folders were fixed at install; none given, reinstall to grant them");
+            return Ok(Vec::new());
+        }
+    };
+    let home = dirs::home_dir().context("no home dir")?;
+    let text = match dirs::config_dir().map(|c| c.join("user-dirs.dirs")).map(fs::read_to_string) {
+        Some(Ok(t)) => Some(t),
+        _ => None,
+    };
+    let mut out = Vec::new();
+    for d in wanted {
+        let Some(pinned) = pin.get(&d.name) else { continue };
+        let now = panpak_core::resolve_xdg_dir(&d.name, &home, text.as_deref());
+        if now.as_deref().ok() != Some(pinned.as_str()) {
+            eprintln!("panpak: WARNING: the {} folder changed since install (was ~/{pinned}); not granted, reinstall to accept the new one", d.name);
+            continue;
+        }
+        if let Err(e) = panpak_core::no_links(&home, pinned) {
+            eprintln!("panpak: WARNING: the {} folder is not granted: {}", d.name, panpak_core::err_text(&e));
+            continue;
+        }
+        let full = home.join(pinned);
+        match fs::symlink_metadata(&full) {
+            Ok(m) if m.is_dir() => {}
+            _ => {
+                eprintln!("panpak: WARNING: ~/{pinned} ({}) is not a folder; not granted", d.name);
+                continue;
+            }
+        }
+        if d.access == "rw" {
+            access.rw.push(full);
+        } else {
+            access.ro.push(full);
+        }
+        out.push((d.name.clone(), pinned.clone()));
+    }
+    Ok(out)
+}
+
+/// Write `$XDG_CONFIG_HOME/user-dirs.dirs` in the private folder: granted folders with their path,
+/// every other one at `$HOME/`. A file without the marker is the user's and stays.
+fn write_user_dirs(dirs: &panpak_core::AppDirs, granted: &[(String, String)]) -> Result<()> {
+    let want = panpak_core::generated_user_dirs(granted)?;
+    let path = dirs.config.join("user-dirs.dirs");
+    match fs::symlink_metadata(&path) {
+        Ok(m) if m.is_file() => {
+            let cur = fs::read_to_string(&path).unwrap_or_default();
+            if !cur.contains(panpak_core::USER_DIRS_MARKER) || cur == want {
+                return Ok(());
+            }
+        }
+        Ok(_) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("check {}", path.display())),
+    }
+    let tmp = dirs.config.join(format!(".user-dirs.dirs.{}", std::process::id()));
+    fs::write(&tmp, want)?;
+    fs::rename(&tmp, &path)?;
+    Ok(())
 }
 
 /// Write `$XDG_CONFIG_HOME/fontconfig/fonts.conf` in the private folder, so fontconfig finds the
@@ -565,6 +651,10 @@ fn build_ruleset(
     let rw = AccessFs::from_all(abi) & !AccessFs::Refer;
     for dir in &access.rw {
         rs = rs.add_rule(PathBeneath::new(PathFd::new(dir)?, rw))?;
+    }
+    // The home folder can be listed inside the view, so that the granted user folders show up in it.
+    if let (true, Some(home)) = (access.in_view, &access.home_list) {
+        rs = rs.add_rule(PathBeneath::new(PathFd::new(home)?, AccessFs::ReadDir))?;
     }
     // Read only: theme, fonts and icons of the user, ro home paths. A missing or
     // unreadable entry is skipped. Files get file rights only (the kernel refuses
@@ -924,6 +1014,10 @@ fn real_main() -> Result<()> {
     app_dirs.create()?;
     write_fonts_conf(&app_dirs)?;
     let mut access = access_for(&man, &app_dirs)?;
+    let granted = xdg_grants(&man, &store, installed_mode, &mut access)?;
+    if !granted.is_empty() || man.permissions.as_ref().and_then(|p| p.xdg_dirs.as_ref()).is_some_and(|d| !d.is_empty()) {
+        write_user_dirs(&app_dirs, &granted)?;
+    }
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute());
     access.sockets = panpak_core::implied_sockets(
         man.permissions.as_ref(),
@@ -1007,6 +1101,8 @@ fn real_main() -> Result<()> {
     // Outer stub -> bubblewrap -> inner stub (Landlock) -> app. Without a usable bubblewrap the
     // stub applies Landlock itself and starts the app, as it always did.
     if panpak_core::view_status().usable() {
+        // Only with the view: its home folder is an empty tmpfs, so listing it shows nothing else.
+        access.home_list = dirs::home_dir().and_then(|h| fs::canonicalize(h).ok()).filter(|h| h.is_dir() && h != Path::new("/"));
         let mut store_paths = plan.ld_path.clone();
         store_paths.extend(plan.loader.clone());
         store_paths.push(PathBuf::from(cmd.get_program()));
@@ -1118,6 +1214,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         ro: job_ro,
         sockets: ctx.access.sockets.clone(),
         allow_unfiltered: ctx.allow_unfiltered,
+        home_list: ctx.access.home_list.clone(),
         open: ctx.open.map(|(p, g)| view::JobOpen { path: p.clone(), write: g.write, rename: g.rename }),
         program: parts.program,
         args: parts.args,
@@ -1132,7 +1229,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
 /// The inner stub: Landlock, then the app. The job comes from the outer stub, which verified the package.
 fn run_inner(fd: i32) -> Result<()> {
     let job = view::read_job(fd)?;
-    let access = Access { rw: job.rw.clone(), ro: job.ro.clone(), sockets: job.sockets.clone(), in_view: true };
+    let access = Access { rw: job.rw.clone(), ro: job.ro.clone(), sockets: job.sockets.clone(), in_view: true, home_list: job.home_list.clone() };
     let open = job.open.as_ref().map(|o| (o.path.as_path(), OpenGrant { write: o.write, rename: o.rename }));
     sandbox(&job.tree, &job.manifest, &access, job.allow_unfiltered, open)?;
     let err = job.to_command().exec();
@@ -2399,6 +2496,7 @@ mod tests {
         man.permissions = Some(panpak_core::Permissions {
             x11: None,
             audio: None,
+            xdg_dirs: None,
             network: None,
             network_allow_tcp: None,
             network_bind_tcp: None,
