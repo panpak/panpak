@@ -12,13 +12,30 @@ Status values:
 
 | App | Version | Status | Notes | Tested |
 |---|---|---|---|---|
-| Joplin | 3.7.21 | works with notes | Needs `launch.args` for the profile, the network ports for 2658 and `--allow-missing libdbus-glib-1.so.2`. See "Joplin" below. | 2026-10-28 |
-| Simplenote | 2.27.1 | works with notes | Needs `APPDIR` and `APPIMAGE` (the `convert` wrapper for `Exec=AppRun --no-sandbox` does not set them), and a short path to the app folders: see "Simplenote" below. | 2026-10-28 |
-| QOwnNotes | 26.10.9 | works with notes | Note folder `~/Notes` needs a `home_paths` entry (`rw`); 25 Qt6 Quick libraries had to be allowed as missing. | 2026-10-28 |
-| Kdenlive | 24.12.3 | works | Starts, creates a project; reaches PipeWire and PulseAudio sockets. Needs a working directory the sandbox can enter. | 2026-10-28 |
+| Joplin | 3.7.21 | works with notes | Needs `launch.args` for the profile, the network ports for 2658 and `--allow-missing libdbus-glib-1.so.2`. See "Joplin" below. | 2026-10-29 |
+| Simplenote | 2.27.1 | works with notes | Needs `APPDIR` and `APPIMAGE` (the `convert` wrapper for `Exec=AppRun --no-sandbox` does not set them). Without the isolated view it also needs a short path to the app folders: see "Simplenote" below. | 2026-10-29 |
+| QOwnNotes | 26.10.9 | works with notes | Note folder `~/Notes` needs a `home_paths` entry (`rw`); 25 Qt6 Quick libraries had to be allowed as missing. | 2026-10-29 |
+| Kdenlive | 24.12.3 | works | Starts, creates a project; reaches PipeWire and PulseAudio sockets with `audio = true`. Needs `--allow-missing libpulsecommon-17.0.so` here and a working directory the sandbox can enter. | 2026-10-29 |
 | Mu | 1.2.0 | not working | Crashes with SIGSEGV in `QApplication(...)`, also without panpak. See "Mu" below. | 2026-10-28 |
 
 Simplenote, QOwnNotes and Kdenlive were run for 30 seconds each in Xvfb with the socket probe (docs/SOCKET-PROBE.md); that is a start and light use, not a full test.
+
+## Isolated view (bubblewrap)
+
+On 2026-10-29 the four apps were started again with the isolated view (`/usr/bin/bwrap` 0.11.1, Ubuntu 26.04, Landlock V8)
+in Xvfb, with an isolated HOME and a runtime folder of its own. A start counts when a window with the
+app's title, at least 100 pixels wide and high, appears and the app is still running after 30 seconds.
+
+| App | First window | Evidence of use |
+|---|---|---|
+| Joplin | 3.4 s (first start, the tree is built) | window 1024x640; profile created in the private config folder |
+| Simplenote | 2.1 s | window 1024x768; update check over HTTPS reached the server (DNS and the network work in the view) |
+| QOwnNotes | 1.6 s | "Welcome to QOwnNotes" window; settings written to the private config folder |
+| Kdenlive | 5.2 s (first start) | window; `kdenliverc` written to the private config folder |
+
+PipeWire and PulseAudio were tested with the real sockets of the user's session: with `audio = true`,
+`pw-cli info 0` prints `PipeWire:Interface:Core/4` and a connection to `pulse/native` succeeds; with the
+permission off, both sockets do not exist in the view and `pw-cli` reports `failed to connect`.
 
 Apps get private config, data, state and cache folders (see `panpak data path <id>`), so a profile written by an older panpak in `~/.local/share/<id>` is not used any more.
 
@@ -92,8 +109,10 @@ Simplenote (an Electron app) died with SIGTRAP at start when `TMPDIR` was a long
 `$TMPDIR/scoped_dirXXXXXX/SingletonSocket`, a Unix socket path, and the limit is 107 bytes. With
 `TMPDIR=<home>/.local/share/panpak/userdata/<id>/tmp` the path is 103 bytes for a user name of 8 characters
 and `org.example.simplenote`, so a user name of about 13 characters or more, or a longer app id, fails.
-A short home path was used for the test. The private `tmp` folder should have a shorter path (for example
-under `$XDG_RUNTIME_DIR`) before apps like this are called working. The `AppRun` of this AppImage also
+A short home path was used for the test. Inside the isolated view `TMPDIR` is `/tmp`, so Simplenote starts
+with a long home path too (checked with a home of 37 characters, where the private `tmp` folder is 93
+characters long: it starts in the view; without the view, with a similar home, it ends with SIGTRAP, exit status 133). Without the view the private `tmp`
+folder should have a shorter path (for example under `$XDG_RUNTIME_DIR`). The `AppRun` of this AppImage also
 looks for its folder from its first argument, which `--no-sandbox` from the `Exec` line replaces:
 set `APPDIR` and `APPIMAGE` to the tree.
 

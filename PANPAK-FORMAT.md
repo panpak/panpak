@@ -138,6 +138,7 @@ prefer_host = ["libGL*", "libvulkan*", "libEGL*"]
 
 [permissions]                  # static, applied by Landlock
 x11 = false                    # opt-in: X11 access, default false
+audio = false                  # opt-in: the PipeWire and PulseAudio sockets of the session, default false
 network = false                # master switch; false+ABI>=4 => TCP denied
 network_allow_tcp = [80, 443]  # outbound ports (connect); only with network=true
 network_bind_tcp = []          # listen ports (bind); only with network=true
@@ -547,7 +548,7 @@ They are not inside the store. The runtime sets, for the app:
 |---|---|
 | `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` | `config`, `data`, `state` |
 | `XDG_CACHE_HOME` | the cache folder |
-| `TMPDIR`, `SQLITE_TMPDIR` | `tmp` |
+| `TMPDIR`, `SQLITE_TMPDIR` | `tmp`; `/tmp` inside the isolated view (§9.2); the placeholder `${TMPDIR}` in `[launch]` always means the `tmp` folder |
 | `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS` | the existing value, or the XDG default (`/etc/xdg`; `/usr/local/share:/usr/share`), then the user's real config or data folder |
 | `GTK_THEME` | see below |
 | `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `SSH_AGENT_PID` | removed |
@@ -581,6 +582,35 @@ the app is open. The settings portal is planned to replace this.
 
 Landlock binds each rule to the folder opened when the rules are built, so a later
 replacement of a path by a link does not extend the access.
+
+### 9.2 Isolation layers and the isolated view [NORMATIVE for the policy; the mechanism is INFORMATIVE]
+
+The runtime keeps an app away from local Unix sockets (D-Bus, systemd of the user, gpg-agent,
+ssh-agent, audio servers) with independent layers, and uses every layer the machine offers:
+
+1. *Isolated view.* If `/usr/bin/bwrap` exists and works, the app runs in a view built by
+   bubblewrap. The runtime MUST take bubblewrap only from that fixed path (never from `PATH`)
+   and MUST NOT use it when it is writable by others. The view has: `/` read-only; `/dev` as
+   it is; a new `/proc`; a new tmpfs for `/tmp` and for `/run`; a new tmpfs for `$XDG_RUNTIME_DIR`
+   with only the sockets of the policy below; the private folders of §9.1 and the `rw` home paths
+   writable; the folder in `/run` that holds the target of `/etc/resolv.conf` read-only (name resolution);
+   the X11 socket of `$DISPLAY` only with `x11 = true`. The view uses its own user, PID and mount
+   namespaces, and its own IPC namespace unless `x11 = true`. It shares the network namespace. The app
+   is in a new session and ends with the runtime. Inside, `TMPDIR` and `SQLITE_TMPDIR` are `/tmp`.
+2. *Landlock*, as in §9, applied inside the view when there is one. With Landlock V9 (path
+   sockets) the sockets of the policy get a `ResolveUnix` rule and every other path socket is denied.
+3. *None*: the runtime starts the app with Landlock alone, as before the view existed, and `install`,
+   `update` and `doctor` MUST say that path sockets are not blocked.
+
+The sockets of the policy are the `sockets_allow` entries and these, when they exist: the Wayland
+socket named by `WAYLAND_DISPLAY`, the journal sockets `/run/systemd/journal/socket` and
+`/run/systemd/journal/dev-log`, the resolver socket `/run/systemd/resolve/io.systemd.Resolve`, and, with
+`audio = true`, `$XDG_RUNTIME_DIR/pipewire-0` and `$XDG_RUNTIME_DIR/pulse/native`.
+`sockets_allow` is accepted when at least one of Landlock V9 and the view is available.
+The runtime reports the active layers (`panpak doctor`, `install`, `update`). Abstract Unix sockets are
+not hidden by the view; they are blocked only by the Landlock scope, which `x11 = true` turns off.
+The outer runtime verifies the package; the inner one, which Landlock then restricts, receives the
+decisions of the outer one and does not verify the package again (THREAT-MODEL.md §3).
 
 ## Appendix A — test vectors [NORMATIVE]
 

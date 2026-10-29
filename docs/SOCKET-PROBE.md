@@ -41,6 +41,9 @@ control data are only counted in the summary; `sendto` with no address is filter
 the kernel and not counted. The summary is written again every two seconds while the counts
 change, so a log of a killed app still ends with one (the last counts).
 
+The probe measures the sandbox as it is without the isolated view: with `PANPAK_SOCKET_PROBE` set, the
+stub applies Landlock itself and does not start bubblewrap.
+
 ## What four apps do (30 seconds of use, Xvfb, isolated HOME)
 
 Joplin 3.7.21 (open notes, new note), Simplenote 2.27.1 (login form), QOwnNotes 26.10.9 (first-run
@@ -109,10 +112,13 @@ Wayland always, X11, PulseAudio and PipeWire when asked). Four levels apply it, 
 works on the machine is used:
 
 1. **Landlock ABI 9** (kernel with `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`): rules on the listed
-   sockets. No process, no cost. Implemented.
+   sockets. No process, no cost. Implemented, but only tested on kernels up to V8 (the rules are
+   built only when the kernel supports V9).
 2. **A view made with bubblewrap**: `bwrap --unshare-user` builds a mount namespace with a new
    `/run` and `/tmp` where only the listed sockets are bound; inside the view the stub applies
-   Landlock and runs the app. Not implemented; measured below.
+   Landlock and runs the app. Implemented (PANPAK-FORMAT.md §9.2, THREAT-MODEL.md §3); the
+   measurements below are the ones that led to it. In the implementation the inner stub does not
+   check the package again.
 3. **A seccomp supervisor** (the design of the previous report): connects are made by the
    supervisor on a copy of the app's socket. Not implemented.
 4. **None**: the current behaviour, with the warning from `install`, `update` and `doctor`.

@@ -169,12 +169,64 @@ default refused, opt-in works; signals to the parent still denied.
   Landlock V9. The system bus gets the same treatment: `DBUS_SYSTEM_BUS_ADDRESS`
   is `disabled:` unless `sockets_allow` lists `.../system_bus_socket`. Each address
   is kept only for the bus the manifest names.
-  One function (`panpak_core::socket_isolation`) decides from the kernel and
-  the permissions whether an app is isolated from local sockets. `panpak doctor`
-  shows the level, and `install` and `update` print "WARNING: on this kernel the
-  sandbox cannot block local sockets (D-Bus, ssh-agent, gpg-agent): this app is
-  only partially isolated" when it is not (also when the manifest asks for X11,
-  which leaves abstract sockets open).
+  One function (`panpak_core::socket_isolation`) decides from the kernel, the isolated
+  view and the permissions whether an app is isolated from local sockets, and reports
+  which layers are active. `panpak doctor` and `install` show them ("isolation layers:
+  ..."); `install` and `update` print "WARNING: on this kernel the sandbox cannot block
+  local sockets (D-Bus, ssh-agent, gpg-agent): this app is only partially isolated" when
+  no layer blocks path sockets, and a warning about abstract sockets when X11 access (or
+  a kernel below Landlock V6) leaves them open.
+
+- **Layers against local sockets.** Each layer works without the others, and the stub uses
+  every layer the machine offers:
+
+  | Layer | Needs | Blocks | Does not block |
+  |---|---|---|---|
+  | Isolated view (bubblewrap) | `/usr/bin/bwrap` that works (user namespaces allowed) | path sockets under `/run` and `/tmp`: the app sees only the sockets the policy names | abstract sockets (the network namespace is shared); sockets in the user's home folder |
+  | Landlock V9 (Linux 7.1) | kernel | `connect()` to any path socket that the policy does not name, wherever it is | |
+  | Landlock V6 scope | kernel 6.12 | abstract Unix sockets and signals outside the sandbox (off with `x11 = true`) | |
+  | none | | | everything, as before: the warning above |
+
+  The policy is the same for the two path layers: the sockets in `sockets_allow`, plus the
+  sockets every app gets (the Wayland compositor, the journal, the resolver of systemd-resolved,
+  and with `audio = true` PipeWire and PulseAudio). This machine has Landlock V8, so the view is
+  the only layer for path sockets here; the Landlock V9 rules are written but could not be
+  tested on a kernel that supports them.
+
+  **The isolated view.** The stub runs `/usr/bin/bwrap` (a fixed path, never `PATH`, and it
+  must not be writable by others) with: `/` read-only; `/dev` as it is; a new `/proc`; new
+  tmpfs for `/tmp` and `/run`; a new tmpfs for the runtime folder holding only the allowed
+  sockets; the app folders and the `rw` home paths writable; the resolver folder in `/run`
+  read-only. Inside, the session bus, the system bus, systemd of the user, gpg-agent and
+  ssh-agent do not exist (tested with fake sockets in a private runtime folder).
+  `--unshare-pid` hides the other processes of the user; `--unshare-ipc` is on unless the app
+  has X11 access (MIT-SHM needs shared IPC); `--new-session` keeps the app out of the session
+  of the terminal (no key injection with `TIOCSTI`; the cost is that Ctrl-C in the terminal does
+  not reach an app started from it, but it ends the stub, which ends the app);
+  `--die-with-parent`. `TMPDIR` is `/tmp` there, a tmpfs of its own.
+  Landlock is applied on top, inside the view, so the two layers add up: the view makes the
+  folder read-only, Landlock decides what may be read at all (the user's secrets are visible in
+  the view and Landlock still refuses to read them: tested, `EACCES`).
+
+  **Starting inside the view without checking the package twice.** The outer stub verifies the
+  package as it always did (signature, pin, stub hash, index, tree), then starts bubblewrap
+  with the inner stub (`--panpak-inner <fd>`). The decisions travel in a sealed memfd (no
+  write, no resize, no further sealing) that the inner stub reads and closes before it starts
+  the app. This is safe because the inner mode only adds restrictions to a process that already
+  runs as the user: it applies Landlock and starts the program it is told to start, and the
+  same user could start that program directly. The app cannot use it to escape: it would need to
+  run the stub (outside its Landlock rules), and Landlock rules only accumulate. A tampered
+  tree between the check and the start is possible with or without the view: the stub does not
+  rehash the tree at every start. Checking again inside would cost about as much as the start
+  without the view (15 ms, measured) and would prove nothing more.
+
+  **Not available.** `doctor` says why and how to fix it: bubblewrap missing (install the
+  `bubblewrap` package), user namespaces off (`user.max_user_namespaces`), AppArmor
+  (`kernel.apparmor_restrict_unprivileged_userns=1` needs a profile for `/usr/bin/bwrap`, as
+  Ubuntu ships). The stub then starts the app as before, with Landlock alone. The result of the
+  quick test is kept in `$XDG_RUNTIME_DIR/panpak/view-probe`, bound to the inode and time of
+  `bwrap` and to the kernel; only a success is kept. A wrong entry cannot weaken the sandbox
+  (bubblewrap would fail to start the app).
 - **Socket probe (measurement, off by default).** With `PANPAK_SOCKET_PROBE=<file>` the stub
   stays as a supervisor and logs the `connect`, `sendto`, `sendmsg`, `sendmmsg` and namespace
   calls of an app. It answers CONTINUE every time, so it protects nothing: an app can change what
@@ -224,10 +276,10 @@ default refused, opt-in works; signals to the parent still denied.
 - **Scope (ABI ≥ V6)**: signals and abstract sockets confined (tested:
   out-of-scope `kill` denied, abstract `connect()` denied). On ABI < V6
   not applicable (kernel too old).
-- **Path Unix sockets (ABI ≥ V9)**: `sockets_allow` allowlist; on lower
-  ABIs the entry is refused if present. Up to and including V8,
-  `connect()` to filesystem sockets is NOT mediated (like X11/Wayland:
-  works with no rules).
+- **Path Unix sockets (ABI ≥ V9, or the isolated view)**: `sockets_allow`
+  allowlist. Without V9 and without a usable view, the entry is refused if
+  present. Up to and including V8, Landlock does not mediate `connect()` to
+  filesystem sockets: only the isolated view hides them.
 - **Per-ABI table** (best-effort detected with HardRequirement, never
   silent clamp; on kernel 7.0: **V8** — V9 declared by the crate but
   `ResolveUnix` unsupported):
@@ -250,7 +302,9 @@ default refused, opt-in works; signals to the parent still denied.
   blocks non-children; `process_vm_readv` toward same-uid processes,
   keyrings, etc. remain).
 - **`/proc`, `/sys`, `/run` readable**: process/host enumeration,
-  readable system D-Bus. Per-node `/dev` + dri/shm: GPU render nodes
+  readable system D-Bus. In the isolated view `/run` is a tmpfs with only the
+  resolver folder, the journal sockets and the allowed sockets, and `/proc` shows
+  only the processes of the app. Per-node `/dev` + dri/shm: GPU render nodes
   are shared with the whole desktop (standard for GUI apps).
 - **`$HOME` denied writing but readable?** NO: `$HOME` is in no rule
   → default-deny, neither read nor write. But

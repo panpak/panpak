@@ -24,6 +24,16 @@
 - **Socket probe** (`PANPAK_SOCKET_PROBE=<log>`), a measurement mode, never on by default:
   the stub supervises the app and logs its socket and namespace calls. It blocks nothing.
   `DBUS_SYSTEM_BUS_ADDRESS` is hidden like the session bus. See docs/SOCKET-PROBE.md.
+- **Isolated view (bubblewrap).** If `/usr/bin/bwrap` works, the app runs in a view with `/` read-only,
+  a private `/tmp` (`TMPDIR=/tmp`, which also fixes the long-path crash of Simplenote), a `/run` and a
+  runtime folder that hold only the allowed sockets (Wayland, journal, resolver, the `sockets_allow` list),
+  its own process list and, without X11, its own IPC namespace. Inside it the session and system buses,
+  systemd of the user, gpg-agent and ssh-agent do not exist. Landlock is applied on top. Without bubblewrap
+  the start is as before. New manifest key `permissions.audio` (PipeWire and PulseAudio sockets).
+  `socket_isolation` now reports the active layers; `doctor`, `install` and `update` show them, and `doctor`
+  says why the view is unavailable and how to fix it. `sockets_allow` also works on kernels below Landlock V9
+  when the view is available. Landlock V9 gets `ResolveUnix` rules for the same sockets (not tested: this
+  machine has V8).
 - **GTK3 dark theme** from `gsettings` at start (at most 200 ms).
 - **Security: paths and text from the manifest.** `app.id` has one strict
   grammar (spec §3.1.1) and every manifest field that becomes a path, a file
