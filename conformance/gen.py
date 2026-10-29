@@ -265,6 +265,26 @@ def main():
     ]:
         bad_manifest(f"invalid-home-path-{fname}.panpak",
                      manifest(extra=f'[[permissions.home_paths]]\npath = "{path}"\naccess = "rw"\n'), "home_paths", code="PANPAK-E0007")
+    # user folders and URL schemes (PANPAK-FORMAT.md section 3.1.4)
+    put("valid-xdg-dirs-desktop.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=(
+        '[permissions]\n[[permissions.xdg_dirs]]\nname = "music"\naccess = "rw"\n'
+        '[[permissions.xdg_dirs]]\nname = "documents"\naccess = "ro"\n'
+        '[desktop]\nschemes = ["example-app", "x-example.v2+test"]\n')),
+        blobs=std_index()[2]), True)
+    for fname, extra, field in [
+        ("xdg-name", '[[permissions.xdg_dirs]]\nname = "desktop"\naccess = "ro"\n', "xdg_dirs"),
+        ("xdg-access", '[[permissions.xdg_dirs]]\nname = "music"\naccess = "wo"\n', "xdg_dirs"),
+        ("xdg-twice", '[[permissions.xdg_dirs]]\nname = "music"\naccess = "ro"\n[[permissions.xdg_dirs]]\nname = "music"\naccess = "rw"\n', "xdg_dirs"),
+        ("scheme-reserved", '[desktop]\nschemes = ["https"]\n', "desktop.schemes"),
+        ("scheme-file", '[desktop]\nschemes = ["file"]\n', "desktop.schemes"),
+        ("scheme-upper", '[desktop]\nschemes = ["MyApp"]\n', "desktop.schemes"),
+        ("scheme-digit-first", '[desktop]\nschemes = ["1app"]\n', "desktop.schemes"),
+        ("scheme-slash", '[desktop]\nschemes = ["a/b"]\n', "desktop.schemes"),
+        ("scheme-twice", '[desktop]\nschemes = ["app", "app"]\n', "desktop.schemes"),
+        ("scheme-long", '[desktop]\nschemes = ["' + "a" * 33 + '"]\n', "desktop.schemes"),
+        ("scheme-many", '[desktop]\nschemes = [' + ", ".join(f'"a{i}"' for i in range(9)) + ']\n', "desktop.schemes"),
+    ]:
+        bad_manifest(f"invalid-{fname}.panpak", manifest(extra=extra), field, code="PANPAK-E0007")
     # index path with a control character
     _d = b"xy"
     _c = zstd_enc(_d)

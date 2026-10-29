@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **User folders: `[[permissions.xdg_dirs]]`.** An app can ask for the music, documents,
+  pictures, videos or download folder of the user, `ro` or `rw`. `install` and `update` find the
+  folder in `~/.config/user-dirs.dirs` with a strict parser, refuse unsafe places, show it
+  (`music: ~/Music (rw)`) and pin it; at start the folder is granted only if it still matches. The app gets a
+  private `user-dirs.dirs`. In the isolated view the home folder can be listed.
+- **Opening links from the isolated view.** `xdg-open` (and GIO, Qt and Electron through it) in the view
+  asks the outer stub over a private socket, which passes on `http`, `https` and `mailto` addresses only
+  (with only the plain `mailto` fields), at most 5 per second. The stub now stays running while the app runs.
+- **URL schemes: `[desktop] schemes`.** The `.desktop` file declares `x-scheme-handler/<scheme>` and runs the
+  launcher with `%U`.
+- **Copies of one app** share a `/tmp` and a `/dev/shm` of their own in the isolated view; a start with no
+  copy alive empties them. Two copies still do not see each other's System V IPC without `x11`.
+
 - **Private folders for each app.** The stub gives every app its own
   config, data, state, tmp and cache folders (mode 0700, outside the store) and
   points `XDG_*`, `TMPDIR` and `SQLITE_TMPDIR` at them. Writes go only there,

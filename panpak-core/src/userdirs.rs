@@ -183,18 +183,18 @@ mod tests {
     const HOME: &str = "/home/u";
 
     fn sample() -> &'static str {
-        "# This file is written by xdg-user-dirs-update\nXDG_DESKTOP_DIR=\"$HOME/Scrivania\"\nXDG_DOWNLOAD_DIR=\"$HOME/Scaricati\"\n\
-XDG_TEMPLATES_DIR=\"$HOME/Modelli\"\nXDG_PUBLICSHARE_DIR=\"$HOME/Pubblici\"\nXDG_DOCUMENTS_DIR=\"$HOME/Documenti\"\n\
-XDG_MUSIC_DIR=\"$HOME/Musica\"\nXDG_PICTURES_DIR=\"$HOME/Immagini\"\nXDG_VIDEOS_DIR=\"$HOME/Video\"\n"
+        "# This file is written by xdg-user-dirs-update\nXDG_DESKTOP_DIR=\"$HOME/Desktop\"\nXDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\n\
+XDG_TEMPLATES_DIR=\"$HOME/Templates\"\nXDG_PUBLICSHARE_DIR=\"$HOME/Public\"\nXDG_DOCUMENTS_DIR=\"$HOME/Documents\"\n\
+XDG_MUSIC_DIR=\"$HOME/Music\"\nXDG_PICTURES_DIR=\"$HOME/Pictures\"\nXDG_VIDEOS_DIR=\"$HOME/Videos\"\n"
     }
 
     #[test]
     fn a_normal_file_gives_the_folders() {
         let m = parse_user_dirs(sample(), Path::new(HOME)).unwrap();
-        assert_eq!(m["music"], "Musica");
-        assert_eq!(m["download"], "Scaricati");
-        assert_eq!(resolve_xdg_dir("music", Path::new(HOME), Some(sample())).unwrap(), "Musica");
-        assert_eq!(resolve_xdg_dir("videos", Path::new(HOME), Some(sample())).unwrap(), "Video");
+        assert_eq!(m["music"], "Music");
+        assert_eq!(m["download"], "Downloads");
+        assert_eq!(resolve_xdg_dir("music", Path::new(HOME), Some(sample())).unwrap(), "Music");
+        assert_eq!(resolve_xdg_dir("videos", Path::new(HOME), Some(sample())).unwrap(), "Videos");
         // An absolute path inside the home folder is accepted; a nested folder too.
         let t = "XDG_MUSIC_DIR=\"/home/u/Media/Music\"\n";
         assert_eq!(resolve_xdg_dir("music", Path::new(HOME), Some(t)).unwrap(), "Media/Music");
@@ -264,10 +264,10 @@ XDG_MUSIC_DIR=\"$HOME/Musica\"\nXDG_PICTURES_DIR=\"$HOME/Immagini\"\nXDG_VIDEOS_
 
     #[test]
     fn the_pin_round_trips_and_is_strict() {
-        let dirs = vec![("music".to_string(), "Musica".to_string()), ("documents".to_string(), "Media/Docs".to_string())];
+        let dirs = vec![("music".to_string(), "Music".to_string()), ("documents".to_string(), "Media/Docs".to_string())];
         let text = format_pin(&dirs);
         let back = parse_pin(&text).unwrap();
-        assert_eq!(back["music"], "Musica");
+        assert_eq!(back["music"], "Music");
         assert_eq!(back["documents"], "Media/Docs");
         for bad in ["music", "desktop=Desk", "music=../x", "music=/abs", "music=a\"b", "music=a$b", "music=A\nmusic=B", "music=.ssh"] {
             assert!(parse_pin(bad).is_err(), "{bad:?}");
@@ -276,15 +276,15 @@ XDG_MUSIC_DIR=\"$HOME/Musica\"\nXDG_PICTURES_DIR=\"$HOME/Immagini\"\nXDG_VIDEOS_
 
     #[test]
     fn the_generated_file_has_the_marker_and_only_the_granted_folders() {
-        let t = generated_user_dirs(&[("music".to_string(), "Musica".to_string())]).unwrap();
+        let t = generated_user_dirs(&[("music".to_string(), "Music".to_string())]).unwrap();
         assert!(t.starts_with("# X-Panpak-Generated"));
-        assert!(t.contains("XDG_MUSIC_DIR=\"$HOME/Musica\"\n"));
+        assert!(t.contains("XDG_MUSIC_DIR=\"$HOME/Music\"\n"));
         for k in ["DESKTOP", "DOWNLOAD", "TEMPLATES", "PUBLICSHARE", "DOCUMENTS", "PICTURES", "VIDEOS"] {
             assert!(t.contains(&format!("XDG_{k}_DIR=\"$HOME/\"\n")), "{k}");
         }
         // What the stub writes, the parser reads back, and the ungranted ones are "disabled".
         let m = parse_user_dirs(&t, Path::new(HOME)).unwrap();
-        assert_eq!(m["music"], "Musica");
+        assert_eq!(m["music"], "Music");
         assert_eq!(m["documents"], "");
         assert!(generated_user_dirs(&[("music".to_string(), "a\"b".to_string())]).is_err());
         // A long path is refused everywhere, so that the generated file always parses.

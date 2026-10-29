@@ -126,6 +126,39 @@ terminal, or `--accept-new-permissions`. `--yes` never accepts them
 (`PANPAK-E5004`; `PANPAK-E1003` when the answer is no). Installing a package over an
 installed app follows the same rule.
 
+### 2.3 User folders, links and copies of an app (tested in tests/view.py)
+
+- **`xdg_dirs`.** The folder is found by `install` outside the sandbox, with a rigid parser, shown to the user
+  and pinned. At start it is granted only if it is still the same, with no symbolic link in the way; a
+  `user-dirs.dirs` changed later by anything the app can reach (it cannot write it) or by the user gives
+  a warning and no access. The folder passes the same rules as `home_paths`. Listing the home folder
+  is allowed only in the isolated view, where the home folder holds just the granted folders.
+- **Opening addresses (new outward channel).** The app can ask the outer runtime to run the system `xdg-open`.
+  The outer runtime is the only one that runs it, with its own environment, one argument and no shell. The
+  rules are in PANPAK-FORMAT.md §9.3: `http`, `https`, `mailto` only, bounded length, 5 per second
+  with a burst of 3, at most 4 processes alive.
+  - *`file:` and paths* are refused: they would make an application outside the sandbox open a file the
+    app cannot read.
+  - *`mailto` and attachments.* Some mail clients take `attach=`, `attachment=` or similar fields in a
+    `mailto:` address and attach that local file to the message. The attacker then reads a file of the user
+    that Landlock denied (for example `~/.ssh/id_ed25519`), by sending a mail the user may only have to confirm.
+    Only `to`, `cc`, `bcc`, `subject` and `body` are passed on, field names are compared as written, and
+    a line break may only be in `body`, so a header cannot be added to a mail by a subject. Tested with
+    `attach`, `Attach`, `%61ttach`, `x-attach`, `;attach` and `?x?attach`.
+  - *Remaining exposure.* The app can make the user's browser or mail client open any web or mail address,
+    including a page that tries to deceive the user, and can do it five times a second at first;
+    the user sees the window. The address is not hidden from the user by the runtime.
+  - *Browsers started by a full path.* An app that starts `/usr/bin/firefox` itself, without `xdg-open`, is not
+    intercepted: the browser runs inside the sandbox with the same limits as the app (no home, no sockets
+    of the session), which usually makes it useless rather than dangerous. An `xdg-open` at a path that
+    is not in the `PATH` of the outer runtime is not replaced either.
+  - *Without the isolated view* nothing is intercepted; the app runs the system `xdg-open` inside Landlock.
+- **Copies of the same app** share `/tmp` and `/dev/shm` of their own (not of the machine). The
+  shared folder is 0700 in the runtime folder of the user: another user does not reach it, another app does not
+  know its path or see it in the view. A copy can read and replace the files of another copy of the same
+  app: they are the same app with the same rights. Without `x11 = true` two copies each have their own IPC
+  namespace and a single-instance guard based on System V IPC does not see the other copy (known limit).
+
 ## 3. What the sandbox does NOT guarantee
 
 **X11 opt-in (`[permissions] x11 = true`)**: default false. The opt-in

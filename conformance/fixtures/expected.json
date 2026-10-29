@@ -229,6 +229,62 @@
   ],
   "ok": false
  },
+ "invalid-scheme-digit-first.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "desktop.schemes"
+  ],
+  "ok": false
+ },
+ "invalid-scheme-file.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "desktop.schemes"
+  ],
+  "ok": false
+ },
+ "invalid-scheme-long.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "desktop.schemes"
+  ],
+  "ok": false
+ },
+ "invalid-scheme-many.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "desktop.schemes"
+  ],
+  "ok": false
+ },
+ "invalid-scheme-reserved.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "desktop.schemes"
+  ],
+  "ok": false
+ },
+ "invalid-scheme-slash.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "desktop.schemes"
+  ],
+  "ok": false
+ },
+ "invalid-scheme-twice.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "desktop.schemes"
+  ],
+  "ok": false
+ },
+ "invalid-scheme-upper.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "desktop.schemes"
+  ],
+  "ok": false
+ },
  "invalid-sig.panpak": {
   "err": [
    "signature"
@@ -269,6 +325,27 @@
   ],
   "ok": false
  },
+ "invalid-xdg-access.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "xdg_dirs"
+  ],
+  "ok": false
+ },
+ "invalid-xdg-name.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "xdg_dirs"
+  ],
+  "ok": false
+ },
+ "invalid-xdg-twice.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "xdg_dirs"
+  ],
+  "ok": false
+ },
  "unknown-magic.bin": {
   "err": [
    "magic"
@@ -292,6 +369,10 @@
   "ok": true
  },
  "valid-multi.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-xdg-dirs-desktop.panpak": {
   "err": [],
   "ok": true
  }

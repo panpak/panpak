@@ -243,6 +243,40 @@ def check_home_paths(man):
         seen.append(p)
 
 
+XDG_DIR_NAMES = ("music", "documents", "pictures", "videos", "download")
+RESERVED_SCHEMES = (
+    "http", "https", "file", "ftp", "ftps", "sftp", "ssh", "mailto", "javascript", "data", "about", "blob", "ws", "wss",
+    "chrome", "view-source", "vbscript", "ms-msdt", "search-ms", "x-scheme-handler",
+)
+
+
+def check_xdg_dirs(man):
+    items = man.get("permissions", {}).get("xdg_dirs", [])
+    if len(items) > len(XDG_DIR_NAMES):
+        raise Fail("invalid manifest field permissions.xdg_dirs")
+    seen = []
+    for d in items:
+        n, a = d.get("name"), d.get("access")
+        if not (n in XDG_DIR_NAMES and a in ("ro", "rw") and n not in seen):
+            raise Fail(f"invalid manifest field permissions.xdg_dirs: {str(n)[:60]!r}")
+        seen.append(n)
+
+
+def check_desktop(man):
+    schemes = man.get("desktop", {}).get("schemes", [])
+    if len(schemes) > 8:
+        raise Fail("invalid manifest field desktop.schemes")
+    for i, sc in enumerate(schemes):
+        ok = (
+            isinstance(sc, str)
+            and re.fullmatch(r"[a-z][a-z0-9+.-]{0,31}", sc) is not None
+            and sc not in RESERVED_SCHEMES
+            and sc not in schemes[:i]
+        )
+        if not ok:
+            raise Fail(f"invalid manifest field desktop.schemes: {str(sc)[:60]!r}")
+
+
 def check_fields(man):
     """Field rules of PANPAK-FORMAT.md section 3.1.1 (applied even to signed manifests)."""
     app = man["app"]
@@ -269,6 +303,8 @@ def check_fields(man):
         if not (isinstance(s, str) and 1 <= len(s.encode()) <= 4096 and not any(unicodedata.category(c) == "Cc" for c in s)):
             raise Fail("invalid manifest field permissions.sockets_allow")
     check_home_paths(man)
+    check_xdg_dirs(man)
+    check_desktop(man)
     check_launch(man)
     if "origin" in man:
         o = man["origin"]

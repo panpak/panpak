@@ -1393,7 +1393,7 @@ fn resolve_xdg_dirs(man: &panpak_core::Manifest) -> (Vec<ResolvedDir>, Vec<Strin
     (ok, why)
 }
 
-/// Print what was found: `music: ~/Musica (rw)`.
+/// Print what was found: `music: ~/Music (rw)`.
 fn print_xdg_dirs(found: &[ResolvedDir], problems: &[String]) {
     for d in found {
         println!("  {}: ~/{} ({})", d.name, d.rel, d.access);

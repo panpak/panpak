@@ -86,7 +86,7 @@ try:
     out['home_entries'] = ','.join(sorted(os.listdir(home)))
 except OSError as e:
     out['home_entries'] = f'err{e.errno}'
-for name, rel in (('music', 'Musica'), ('docs', 'Documenti'), ('pics', 'Immagini')):
+for name, rel in (('music', 'Music'), ('docs', 'Documents'), ('pics', 'Pictures')):
     try:
         out['list_' + name] = str(len(os.listdir(home + '/' + rel)))
     except OSError as e:
@@ -438,45 +438,45 @@ def main():
         print('panpak open: read-only, then writable with --write: ok')
 
         # 6b. User folders (xdg_dirs): the folder of user-dirs.dirs comes back into the empty home, nothing else.
-        for rel in ('Musica', 'Documenti', 'Immagini'):
+        for rel in ('Music', 'Documents', 'Pictures'):
             (h / rel).mkdir(exist_ok=True)
-        (h / 'Musica/song.txt').write_text('s')
-        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Musica"\nXDG_DOCUMENTS_DIR="$HOME/Documenti"\n'
-                                                   'XDG_PICTURES_DIR="$HOME/Immagini"\nXDG_DOWNLOAD_DIR="$HOME/Scaricati"\n')
+        (h / 'Music/song.txt').write_text('s')
+        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Music"\nXDG_DOCUMENTS_DIR="$HOME/Documents"\n'
+                                                   'XDG_PICTURES_DIR="$HOME/Pictures"\nXDG_DOWNLOAD_DIR="$HOME/Downloads"\n')
         p = lab.install('[permissions]\n[[permissions.xdg_dirs]]\nname = "music"\naccess = "rw"\n'
                         '[[permissions.xdg_dirs]]\nname = "documents"\naccess = "ro"\n')
         assert p.returncode == 0, p.stdout + p.stderr
-        assert 'music: ~/Musica (rw)' in p.stdout and 'documents: ~/Documenti (ro)' in p.stdout, p.stdout
+        assert 'music: ~/Music (rw)' in p.stdout and 'documents: ~/Documents (ro)' in p.stdout, p.stdout
         pin = (h / f'.local/share/panpak/apps/{app_dirs.ID}/xdg-dirs').read_text()
-        assert 'music=Musica' in pin and 'documents=Documenti' in pin, pin
+        assert 'music=Music' in pin and 'documents=Documents' in pin, pin
         if view_here:
             _, rep = run_report(lab, [], mask=False)
-            check(rep, home_entries='.cache,.config,.local,Documenti,Musica', list_music='1', write_music='ok', list_docs='0', write_docs='err30',
+            check(rep, home_entries='.cache,.config,.local,Documents,Music', list_music='1', write_music='ok', list_docs='0', write_docs='err30',
                   list_pics='err2', write_pics='err2')
-            assert 'XDG_MUSIC_DIR="$HOME/Musica"|' in rep['user_dirs_file'] and 'XDG_PICTURES_DIR="$HOME/"|' in rep['user_dirs_file'], rep['user_dirs_file']
-            assert (h / 'Musica/w.txt').read_text() == 'x', 'the write in the music folder did not reach the real folder'
+            assert 'XDG_MUSIC_DIR="$HOME/Music"|' in rep['user_dirs_file'] and 'XDG_PICTURES_DIR="$HOME/"|' in rep['user_dirs_file'], rep['user_dirs_file']
+            assert (h / 'Music/w.txt').read_text() == 'x', 'the write in the music folder did not reach the real folder'
             print('xdg_dirs (rw and ro) in the view: ok')
         # A folder that changed since install is refused at the start, with a warning.
-        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Immagini"\nXDG_DOCUMENTS_DIR="$HOME/Documenti"\n')
+        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Pictures"\nXDG_DOCUMENTS_DIR="$HOME/Documents"\n')
         _, rep, err = lab.run()
         assert 'the music folder changed since install' in err, err
         if view_here:
             check(rep, list_music='err2', write_music='err2', list_pics='err2')
             check(rep, list_docs='0')
         # A folder that is now a link is refused too.
-        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Musica"\nXDG_DOCUMENTS_DIR="$HOME/Documenti"\n')
-        shutil.move(h / 'Musica', h / 'Musica.real')
-        os.symlink(h / 'Musica.real', h / 'Musica')
+        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Music"\nXDG_DOCUMENTS_DIR="$HOME/Documents"\n')
+        shutil.move(h / 'Music', h / 'Music.real')
+        os.symlink(h / 'Music.real', h / 'Music')
         _, rep, err = lab.run()
         assert 'music folder is not granted' in err and 'symbolic link' in err, err
-        os.unlink(h / 'Musica')
-        shutil.move(h / 'Musica.real', h / 'Musica')
+        os.unlink(h / 'Music')
+        shutil.move(h / 'Music.real', h / 'Music')
         # An hostile user-dirs.dirs is refused at install: no folder, with a warning.
         (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="/etc"\n')
         p = lab.install('[permissions]\n[[permissions.xdg_dirs]]\nname = "music"\naccess = "rw"\n')
         assert 'WARNING: music: not granted' in p.stdout, p.stdout
         assert not (h / f'.local/share/panpak/apps/{app_dirs.ID}/xdg-dirs').exists()
-        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Musica"\nXDG_DOCUMENTS_DIR="$HOME/Documenti"\n')
+        (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Music"\nXDG_DOCUMENTS_DIR="$HOME/Documents"\n')
         print('xdg_dirs: changed, linked and hostile folders refused: ok')
 
         # 6c. Addresses: xdg-open in the view reaches the real opener only for http, https and mailto.

@@ -149,6 +149,13 @@ sockets_allow = ["$XDG_RUNTIME_DIR/bus"]  # path Unix sockets (requires ABI V9);
 path = ".config/editor"        # relative to the home, no ".."
 access = "rw"                  # "ro" or "rw"
 
+[[permissions.xdg_dirs]]       # §3.1.4: a folder of user-dirs.dirs, found at install
+name = "music"                 # music, documents, pictures, videos or download
+access = "ro"                  # "ro" or "rw"
+
+[desktop]                      # §3.1.4
+schemes = ["myapp"]            # URL schemes the app opens (x-scheme-handler/<scheme>)
+
 [launch]                       # §3.1.2
 args = ["--profile", "${XDG_CONFIG_HOME}/editor"]   # put before the user's arguments
 [launch.env]
@@ -211,6 +218,8 @@ no control character and no NUL.
 | `update.url` | At most 2048 bytes, no byte %x00-20 or %x7F |
 | `permissions.sockets_allow` | Each item: 1 to 4096 bytes, no control character |
 | `permissions.home_paths` | At most 32 items, see §3.1.2 |
+| `permissions.xdg_dirs` | At most 5 items, each `name` once, see §3.1.4 |
+| `desktop.schemes` | At most 8 items, see §3.1.4 |
 | `launch.args`, `launch.env` | At most 64 items each, see §3.1.2 |
 
 Paths and symlink targets in the index MUST NOT contain a control character
@@ -277,6 +286,53 @@ At start, the runtime MUST refuse to run if the path, or any folder above it
 inside the home, exists and is a symbolic link. For `rw`, a missing folder is created
 and an existing file is an error; for `ro`, a missing path is skipped. The access
 is granted by Landlock to the folder opened at start (§9.1).
+
+### 3.1.4 User folders and URL schemes [NORMATIVE]
+
+**`permissions.xdg_dirs`.** A list of tables with `name` (`music`, `documents`, `pictures`,
+`videos` or `download`) and `access` (`ro` or `rw`), each `name` at most once. It grants the
+folder the user has chosen for that purpose, which the app cannot know (it is not in `HOME`
+under a fixed name). It does not change `home_paths`.
+
+*Finding the folder.* `panpak install` and `panpak update` MUST find the folder outside the
+sandbox, in `$XDG_CONFIG_HOME/user-dirs.dirs` (`~/.config/user-dirs.dirs`). The parser is rigid.
+The file is at most 16 KiB; a blank line, a line that starts with `#`, or a line
+`XDG_<KEY>_DIR="<value>"` with `<KEY>` one of `DESKTOP`, `DOWNLOAD`, `TEMPLATES`, `PUBLICSHARE`,
+`DOCUMENTS`, `MUSIC`, `PICTURES`, `VIDEOS` (each at most once) is accepted, at most 600 bytes
+per line, with no control character; any other line makes the whole file unusable. `<value>` is
+`$HOME`, `$HOME/<path>`, or the absolute path of the home folder followed by `/<path>`; it
+contains no quote, backslash, backquote or other `$`. A trailing `/` is dropped. If the file
+does not exist, the folder is `Music`, `Documents`, `Pictures`, `Videos` or `Downloads` in
+the home folder. If the file exists and does not name the folder, or names the home folder
+itself, the folder is not granted. The path found is relative to the home folder and MUST
+pass the rules of `home_paths` (§3.1.2: not broad, not protected, no `..`, printable ASCII) and be at
+most 400 bytes; no part of it may be a symbolic link and every existing part must be a folder.
+A folder that is refused is not granted and `install` and `update` MUST print a warning that
+says why.
+
+*Pin.* `install` and `update` MUST print each folder found (`music: ~/Music (rw)`) before
+asking for confirmation, and store `name=path` lines next to the pinned key (`apps/<id>/xdg-dirs`).
+At every start the runtime MUST find the folder again in the same way and grant it only if the
+result equals the pin and no part is a symbolic link; otherwise it MUST NOT grant it and MUST print a
+warning that says to reinstall. An app that is run without being installed gets no user folder.
+An `rw` folder is granted for reading and writing, an `ro` folder for reading; the folder is
+not created.
+
+*Folders seen by the app.* When the runtime writes `$XDG_CONFIG_HOME/user-dirs.dirs` for the app
+(whenever the manifest has `xdg_dirs`) the file has a first line with `X-Panpak-Generated`, the granted folders at
+their real path, and every other key at `$HOME/`, which GLib, Qt and `xdg-user-dir` read as "not
+available". A file without that line is the user's and is left alone. In the isolated view
+(§9.2) the home folder can be listed (Landlock `ReadDir` on it) and holds only the granted
+folders and the parents of the private folders; without the view the listing right is never given.
+
+**`desktop.schemes`.** URL schemes the app registers. Each is 1 to 32 bytes, starts with a
+lowercase letter and has only lowercase letters, digits, `+`, `.` and `-`. These are refused:
+`http`, `https`, `file`, `ftp`, `ftps`, `sftp`, `ssh`, `mailto`, `javascript`, `data`,
+`about`, `blob`, `ws`, `wss`, `chrome`, `view-source`, `vbscript`, `ms-msdt`,
+`search-ms`, `x-scheme-handler`. `install` MUST show the schemes, and writes them into the
+desktop entry as `MimeType=x-scheme-handler/<scheme>;` with `Exec=` the launcher and `%U` (the
+address arrives as an argument of the launcher). It then runs `update-desktop-database` on the
+folder of the entry, when the tool exists at `/usr/bin` or `/bin`; a failure is only a note.
 
 ### 3.2 Public key and TOFU [NORMATIVE]
 
@@ -653,7 +709,7 @@ ssh-agent, audio servers) with independent layers, and uses every layer the mach
 1. *Isolated view.* If `/usr/bin/bwrap` exists and works, the app runs in a view built by
    bubblewrap. The runtime MUST take bubblewrap only from that fixed path (never from `PATH`)
    and MUST NOT use it when it is writable by others. The view has: `/` read-only; `/dev` as
-   it is; a new `/proc`; a new tmpfs for `/tmp` and for `/run`; an empty tmpfs on `$HOME` (read-only once the
+   it is; a new `/proc`; a new tmpfs for `/run`; `/tmp` and `/dev/shm` as in §9.4, or a new tmpfs for `/tmp` when the runtime folder is not usable; an empty tmpfs on `$HOME` (read-only once the
    binds are made) where only these are put back: the private folders of §9.1 and the `home_paths` as declared,
    the read-only settings listed in §9.1 that exist, the Xauthority file with `x11 = true`, a file opened with
    `panpak open` as granted, and from the store the tree, the library folder `farms/<root>`, the loader and
@@ -676,6 +732,51 @@ The runtime reports the active layers (`panpak doctor`, `install`, `update`). Ab
 not hidden by the view; they are blocked only by the Landlock scope, which `x11 = true` turns off.
 The outer runtime verifies the package; the inner one, which Landlock then restricts, receives the
 decisions of the outer one and does not verify the package again (THREAT-MODEL.md §3).
+
+### 9.3 Opening addresses [NORMATIVE for the policy; the mechanism is INFORMATIVE]
+
+An app (or a library in it: Qt `QDesktopServices`, GIO `g_app_info_launch_default_for_uri`, Electron
+`shell.openExternal`) opens a link by running `xdg-open`, or by starting the default handler found in
+`mimeapps.list`, or by calling the OpenURI portal over D-Bus. In the isolated view (§9.2) the runtime
+MUST make these go to one channel, and MUST NOT start a browser inside the sandbox for them:
+
+- The stub is `xdg-open` (also `gnome-open`, `kde-open`, `kde-open5`, `kde-open6`): a link of that name
+  in a folder first in `PATH` and in `BROWSER`, and mounted over every `xdg-open` found in the `PATH` of
+  the outer runtime outside the home folder, so that a full path is covered too.
+- GIO: the private `mimeapps.list` (marker `X-Panpak-Generated`) names a private desktop entry whose
+  `Exec` is that `xdg-open`, for `x-scheme-handler/http`, `https`, `mailto` and `text/html`.
+- The OpenURI portal is not reachable: the session bus is not in the view.
+- The outer runtime keeps running while the app runs. For each start it creates a Unix socket
+  `$XDG_RUNTIME_DIR/panpak/<id>/open.<pid>.sock` (folder 0700, file 0600; one socket per start, so
+  that copies of an app do not depend on each other), mounted in the view as
+  `$XDG_RUNTIME_DIR/panpak/open.sock`, and removes it at the end. Sockets of runtimes that are gone are removed.
+- The outer runtime serves one connection at a time with 2 s of read and write time; the request is
+  the line `OPEN <address>` of at most 2056 bytes and the reply is `OK` or `ERR <reason>`.
+  The request rate is at most 5 per second with a burst of 3 (a refused request counts); the rest is refused.
+- The outer runtime MUST accept only an address that passes all of these, whatever the client checked:
+  at most 2048 bytes of printable ASCII %x21-7E without `"`, `\`, `<`, `>`, `` ` ``; the scheme
+  (compared in lowercase) is `http`, `https` or `mailto`, never `file`; an `http` or `https`
+  address has `//` and a host; a `mailto` address has an address part or fields, and the fields (after `?`,
+  separated by `&`) are only `to`, `cc`, `bcc`, `subject` and `body`, each once, compared as written
+  (a field name is not percent-decoded), with no second `?`, no `#`, no `;`; every `%` is followed by two hex
+  digits; `%00` and other control codes are refused, and line breaks (`%0A`, `%0D`) only in `body`.
+- It then runs the `xdg-open` found in the `PATH` of the outer runtime at start, with the address as the only
+  argument, no shell, no input and no output, in its own process group, with the environment of the outer
+  runtime and nothing from the app. At most 4 such processes live at once.
+- The destination is one function (a `Target`); a later version MAY replace it with the OpenURI portal
+  without changing the channel or the rules.
+
+Without the isolated view the app runs with Landlock alone and nothing intercepts `xdg-open`.
+
+### 9.4 Copies of the same app [NORMATIVE for the policy; the mechanism is INFORMATIVE]
+
+In the isolated view, `/tmp` is the folder `$XDG_RUNTIME_DIR/panpak/<id>/tmp` (0700) and `/dev/shm` is
+`$XDG_RUNTIME_DIR/panpak/<id>/shm`, instead of a new tmpfs and the `/dev/shm` of the machine. Copies of one app
+that run at the same time share them and no other app sees them. Each runtime holds a shared `flock` on
+`panpak/<id>/lock` while it runs. A runtime that gets the exclusive lock (no copy is alive) first empties
+both folders without following links. This does not make two copies see each other's System V
+IPC objects: that depends on the IPC namespace (§9.2). With `x11 = true` the namespace is shared and,
+for example, a Qt single-instance guard works; without it each copy has its own and both start (known limit).
 
 ## Appendix A — test vectors [NORMATIVE]
 
@@ -720,7 +821,7 @@ outcome in `conformance/fixtures/expected.json`.
   Reads only this specification.
 - `conformance/mkpanpak.py`: package builder for tests.
 - `conformance/gen.py`: generates `conformance/fixtures/*.panpak` +
-  `expected.json` (3 valid, 18 invalid with expected error, including the legacy one with old magic).
+  `expected.json` (valid and invalid manifests and files, each with its expected error, including the legacy one with old magic and the fixtures for `xdg_dirs` and `desktop.schemes`).
 - `conformance/run.py`: runs the verifier over every fixture and
   compares against the expected; with `--rust` re-checks the valid
   ones with `panpak doctor` (agreement between implementations required).
