@@ -6,11 +6,13 @@
 mod elfsym;
 mod errors;
 mod layout;
+mod openchan;
 mod openurl;
 mod userdirs;
 mod validate;
 mod view;
 pub use elfsym::{parse_syms, read_elf_info, sym_hash, version_number, ElfInfo, ElfSyms, Needed};
+pub use openchan::{handle as handle_open_request, RateLimit, Target as OpenTarget, BURST, MAX_REQUEST, RATE_PER_SEC};
 pub use openurl::{check_scheme_name, check_url, UrlKind, MAX_URL};
 pub use userdirs::{
     default_user_dir, format_pin, generated_user_dirs, no_links, parse_pin, parse_user_dirs, resolve_xdg_dir, user_dirs_key, USER_DIRS_MARKER,

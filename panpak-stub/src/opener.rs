@@ -5,11 +5,12 @@
 //! it can be replaced by the OpenURI portal without touching the channel or the rules.
 //! Rules: PANPAK-FORMAT.md §9.3, THREAT-MODEL.md §3.
 use anyhow::{bail, ensure, Context, Result};
+use panpak_core::{handle_open_request, OpenTarget as Target, RateLimit, MAX_REQUEST};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     os::unix::{fs::DirBuilderExt, net::{UnixListener, UnixStream}, process::CommandExt},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     time::{Duration, Instant},
 };
 
@@ -20,9 +21,6 @@ pub const NAMES: &[&str] = &["xdg-open", "gnome-open", "kde-open", "kde-open5", 
 pub const BIN_DIR: &str = "panpak/bin";
 pub const SOCKET: &str = "panpak/open.sock";
 
-/// Requests per second and the burst; the rest is refused.
-const RATE_PER_SEC: f64 = 5.0;
-const BURST: f64 = 3.0;
 /// Opener processes alive at the same time. A browser started by `xdg-open` may be that process.
 const MAX_LIVE: usize = 4;
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -41,77 +39,62 @@ pub fn find_in_path(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
         .find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
 }
 
-/// Where addresses go after the checks.
-pub trait Target: Send + 'static {
-    fn open(&mut self, url: &str) -> Result<()>;
-}
-
 /// The `xdg-open` of the system, found in the `PATH` of the outer stub at start and run with the
 /// environment of the outer stub: nothing that comes from the app.
+///
+/// The process is detached from this one by construction: it has a session of its own (`setsid`, so
+/// no signal or hangup of ours or of the app reaches it, and no terminal), every descriptor above 2 is
+/// closed before it starts (the job descriptor of the view is not close-on-exec, for one), its input
+/// and output are `/dev/null`, and nobody waits for it in the request: a thread reaps it, and
+/// the stub exits without it. A browser started this way outlives the app and the stub.
 pub struct SystemXdgOpen {
     program: PathBuf,
-    live: Vec<Child>,
+    live: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl SystemXdgOpen {
     pub fn new(program: PathBuf) -> Self {
-        Self { program, live: Vec::new() }
+        Self { program, live: Default::default() }
     }
 }
 
-impl Target for SystemXdgOpen {
-    fn open(&mut self, url: &str) -> Result<()> {
-        self.live.retain_mut(|c| c.try_wait().map(|s| s.is_none()).unwrap_or(false));
-        ensure!(self.live.len() < MAX_LIVE, "too many openers running");
-        // The address starts with http:, https: or mailto:, so it cannot be taken for an option.
-        let child = Command::new(&self.program)
-            .arg(url)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .with_context(|| format!("run {}", self.program.display()))?;
-        self.live.push(child);
-        Ok(())
-    }
-}
-
-/// At most `RATE_PER_SEC` per second, with a burst of `BURST`.
-pub struct RateLimit {
-    tokens: f64,
-    last: Instant,
-}
-
-impl RateLimit {
-    pub fn new(now: Instant) -> Self {
-        Self { tokens: BURST, last: now }
-    }
-    pub fn allow(&mut self, now: Instant) -> bool {
-        let dt = now.saturating_duration_since(self.last).as_secs_f64();
-        self.last = now;
-        self.tokens = (self.tokens + dt * RATE_PER_SEC).min(BURST);
-        if self.tokens >= 1.0 {
-            self.tokens -= 1.0;
-            true
-        } else {
-            false
+/// Close every descriptor from 3 up. Runs between `fork` and `exec`: only async-signal-safe calls.
+fn close_from_3() {
+    // SAFETY: close_range and close are async-signal-safe; the descriptors are this process's own.
+    unsafe {
+        if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) != 0 {
+            for fd in 3..1024 {
+                libc::close(fd);
+            }
         }
     }
 }
 
-/// Answer one request line (`OPEN <address>`). The reply is `OK` or `ERR <reason>`.
-pub fn handle(line: &str, limit: &mut RateLimit, now: Instant, target: &mut dyn Target) -> String {
-    let Some(url) = line.strip_prefix("OPEN ") else { return "ERR bad request".into() };
-    if !limit.allow(now) {
-        return "ERR too many requests".into();
-    }
-    if let Err(e) = panpak_core::check_url(url) {
-        return format!("ERR {}", e.to_string().replace(['\n', '\r'], " "));
-    }
-    match target.open(url) {
-        Ok(()) => "OK".into(),
-        Err(_) => "ERR cannot open".into(),
+impl Target for SystemXdgOpen {
+    fn open(&mut self, url: &str) -> Result<(), String> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.live.load(SeqCst) >= MAX_LIVE {
+            return Err("too many openers running".into());
+        }
+        let mut cmd = Command::new(&self.program);
+        // The address starts with http:, https: or mailto:, so it cannot be taken for an option.
+        cmd.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        // SAFETY: the closure calls only setsid and close_range/close (async-signal-safe).
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                close_from_3();
+                Ok(())
+            });
+        }
+        let mut child = cmd.spawn().map_err(|e| format!("run {}: {e}", self.program.display()))?;
+        self.live.fetch_add(1, SeqCst);
+        let live = self.live.clone();
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            live.fetch_sub(1, SeqCst);
+        });
+        Ok(())
     }
 }
 
@@ -157,18 +140,11 @@ impl Drop for Server {
 fn serve(conn: UnixStream, limit: &mut RateLimit, target: &mut dyn Target) {
     let _ = conn.set_read_timeout(Some(IO_TIMEOUT));
     let _ = conn.set_write_timeout(Some(IO_TIMEOUT));
-    // A line is read up to the limit of an address plus the verb; more is not an address.
-    let max = panpak_core::MAX_URL + 8;
+    // One line, read up to the longest request plus one byte: a longer one is not a request.
     let mut line = Vec::new();
-    let mut r = BufReader::new((&conn).take(max as u64 + 1));
+    let mut r = BufReader::new((&conn).take(MAX_REQUEST as u64 + 1));
     let reply = match r.read_until(b'\n', &mut line) {
-        Ok(n) if n > 0 && line.ends_with(b"\n") && line.len() <= max + 1 => {
-            line.pop();
-            match std::str::from_utf8(&line) {
-                Ok(l) => handle(l, limit, Instant::now(), target),
-                Err(_) => "ERR bad request".into(),
-            }
-        }
+        Ok(n) if n > 0 => handle_open_request(&line, limit, Instant::now(), target),
         _ => "ERR bad request".into(),
     };
     let _ = (&conn).write_all(format!("{reply}\n").as_bytes());
@@ -216,14 +192,6 @@ pub fn client(args: &[String], runtime_dir: Option<&Path>) -> i32 {
 mod tests {
     use super::*;
 
-    struct Fake(Vec<String>);
-    impl Target for Fake {
-        fn open(&mut self, url: &str) -> Result<()> {
-            self.0.push(url.to_string());
-            Ok(())
-        }
-    }
-
     #[test]
     fn names_and_search() {
         assert!(is_opener_name("xdg-open"));
@@ -244,47 +212,13 @@ mod tests {
     }
 
     #[test]
-    fn only_good_addresses_reach_the_target() {
-        let t0 = Instant::now();
-        let mut f = Fake(Vec::new());
-        let mut l = RateLimit::new(t0);
-        assert_eq!(handle("OPEN https://example.org/", &mut l, t0, &mut f), "OK");
-        assert!(handle("OPEN file:///etc/passwd", &mut l, t0, &mut f).starts_with("ERR"));
-        assert!(handle("OPEN mailto:a@b.org?attach=/etc/passwd", &mut l, t0, &mut f).starts_with("ERR"));
-        assert!(handle("OPEN -x", &mut l, t0, &mut f).starts_with("ERR"));
-        assert!(handle("hello", &mut l, t0, &mut f).starts_with("ERR"));
-        assert!(handle("OPEN  https://example.org/", &mut l, t0, &mut f).starts_with("ERR"));
-        assert_eq!(f.0, ["https://example.org/"]);
-    }
-
-    #[test]
-    fn rate_is_five_per_second_with_a_burst_of_three() {
-        let t0 = Instant::now();
-        let mut l = RateLimit::new(t0);
-        let ok: Vec<bool> = (0..5).map(|_| l.allow(t0)).collect();
-        assert_eq!(ok, [true, true, true, false, false]);
-        // 200 ms later one more request fits, not two.
-        let t1 = t0 + Duration::from_millis(200);
-        assert!(l.allow(t1));
-        assert!(!l.allow(t1));
-        // A long pause gives back the burst only, not more.
-        let t2 = t1 + Duration::from_secs(60);
-        let n = (0..10).filter(|_| l.allow(t2)).count();
-        assert_eq!(n, 3);
-        // Over one second of flooding, no more than burst + rate requests pass.
-        let mut l = RateLimit::new(t0);
-        let passed = (0..1000).filter(|i| l.allow(t0 + Duration::from_millis(*i))).count();
-        assert!(passed <= 8, "{passed}");
-    }
-
-    #[test]
     fn the_channel_end_to_end_and_a_flood() {
         let dir = std::env::temp_dir().join(format!("panpak-opener-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         struct Rec(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
         impl Target for Rec {
-            fn open(&mut self, url: &str) -> Result<()> {
+            fn open(&mut self, url: &str) -> Result<(), String> {
                 self.0.lock().unwrap().push(url.to_string());
                 Ok(())
             }
@@ -311,6 +245,85 @@ mod tests {
         let path = server.socket().to_path_buf();
         drop(server);
         assert!(!path.exists(), "the socket goes away with the server");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The program the opener starts is a fake browser that stays alive. It records where it runs.
+    fn fake_browser(dir: &Path) -> PathBuf {
+        let prog = dir.join("xdg-open");
+        std::fs::write(
+            &prog,
+            format!(
+                "#!/bin/sh\nexec /bin/sh -c 'echo $$ > {d}/pid; echo \"$0\" > {d}/arg; ls /proc/self/fd > {d}/fds; awk \"{{print \\$6, \\$5}}\" /proc/self/stat > {d}/sid; exec sleep 120' \"$1\"\n",
+                d = dir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&prog, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        prog
+    }
+
+    #[test]
+    fn the_process_is_detached_from_the_stub_and_stays_alive() {
+        use std::os::unix::io::AsRawFd;
+        let dir = std::env::temp_dir().join(format!("panpak-opener-detach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A descriptor that is not close-on-exec, like the job descriptor of the view.
+        let leaked = std::fs::File::open("/dev/null").unwrap();
+        // SAFETY: fcntl on a descriptor owned by this test.
+        unsafe { libc::fcntl(leaked.as_raw_fd(), libc::F_SETFD, 0) };
+        let mut t = SystemXdgOpen::new(fake_browser(&dir));
+        let started = Instant::now();
+        t.open("https://example.org/stay").unwrap();
+        assert!(started.elapsed() < Duration::from_millis(400), "open() waited for the process");
+        let pid_file = dir.join("pid");
+        for _ in 0..100 {
+            if dir.join("sid").exists() && std::fs::metadata(dir.join("sid")).map(|m| m.len() > 0).unwrap_or(false) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("arg")).unwrap().trim(), "https://example.org/stay");
+        // Own session and process group, neither ours.
+        let sid_pgrp = std::fs::read_to_string(dir.join("sid")).unwrap();
+        let mut it = sid_pgrp.split_whitespace();
+        let (sid, pgrp): (i32, i32) = (it.next().unwrap().parse().unwrap(), it.next().unwrap().parse().unwrap());
+        // SAFETY: plain queries about this process.
+        let (my_sid, my_pgrp) = unsafe { (libc::getsid(0), libc::getpgrp()) };
+        assert_ne!(sid, my_sid, "the process is in the session of the stub");
+        assert_ne!(pgrp, my_pgrp);
+        assert_eq!(sid, pid, "the process leads a session of its own");
+        // Only the standard descriptors (plus the one `ls` opens to list them).
+        let fds: Vec<i32> = std::fs::read_to_string(dir.join("fds")).unwrap().split_whitespace().filter_map(|n| n.parse().ok()).collect();
+        assert!(fds.iter().all(|&fd| fd <= 3), "inherited descriptors: {fds:?}");
+        assert!(!fds.contains(&leaked.as_raw_fd()) || leaked.as_raw_fd() <= 3);
+        // The stub's side is gone and the process is still there: it does not depend on us.
+        drop(t);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(Path::new(&format!("/proc/{pid}")).exists(), "the fake browser died with the opener");
+        // SAFETY: end the process this test started.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn at_most_four_processes_stay_alive_and_none_is_waited_for() {
+        let dir = std::env::temp_dir().join(format!("panpak-opener-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prog = dir.join("xdg-open");
+        std::fs::write(&prog, "#!/bin/sh\necho $$ >> PIDS\nexec sleep 120\n".replace("PIDS", &dir.join("pids").display().to_string())).unwrap();
+        std::fs::set_permissions(&prog, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let mut t = SystemXdgOpen::new(prog);
+        let results: Vec<bool> = (0..6).map(|_| t.open("https://example.org/").is_ok()).collect();
+        assert_eq!(results, [true, true, true, true, false, false]);
+        std::thread::sleep(Duration::from_millis(300));
+        for pid in std::fs::read_to_string(dir.join("pids")).unwrap().split_whitespace() {
+            // SAFETY: end the processes this test started.
+            unsafe { libc::kill(pid.parse().unwrap(), libc::SIGKILL) };
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
