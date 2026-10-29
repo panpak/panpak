@@ -22,6 +22,8 @@ sys.path.insert(0, str(ROOT / 'tests'))
 import isolation  # noqa: E402
 
 ID = 'org.example.dirs'
+# With a usable /usr/bin/bwrap the app runs in the isolated view (tests/view.py), where TMPDIR is /tmp.
+VIEW = subprocess.run(['/usr/bin/bwrap', '--unshare-user', '--ro-bind', '/', '/', '/usr/bin/true'], capture_output=True).returncode == 0
 PROBE = r'''#!/bin/sh
 # Reports "name=ok" or "name=deny" for each attempt, then the environment.
 R="$XDG_DATA_HOME/report.txt"
@@ -187,7 +189,7 @@ def main():
            read_other_userdata='deny', read_notes='deny', write_notes='deny', read_docs='deny', write_docs='deny',
            write_tmp='ok', args='one two', fonts_found='1')
     assert (userdata / 'config/c.txt').exists() and (userdata / 'data/d.txt').exists()
-    assert (userdata / 'state/s.txt').exists() and (cache / 'k.txt').exists() and (userdata / 'tmp/t.txt').exists()
+    assert (userdata / 'state/s.txt').exists() and (cache / 'k.txt').exists() and (userdata / 'tmp/t.txt').exists() != VIEW
     assert not (h / '.config/something').exists() and not (h / 'stray.txt').exists()
     assert (old / 'legacy.txt').read_text() == 'old data\n', 'old app folder was touched'
     for d in [userdata, userdata / 'config', userdata / 'data', userdata / 'state', userdata / 'tmp', cache]:
@@ -197,7 +199,8 @@ def main():
     assert rep['env_XDG_DATA_HOME'] == str(userdata / 'data')
     assert rep['env_XDG_STATE_HOME'] == str(userdata / 'state')
     assert rep['env_XDG_CACHE_HOME'] == str(cache)
-    assert rep['env_TMPDIR'] == str(userdata / 'tmp') and rep['env_SQLITE_TMPDIR'] == str(userdata / 'tmp')
+    tmp = '/tmp' if VIEW else str(userdata / 'tmp')
+    assert rep['env_TMPDIR'] == tmp and rep['env_SQLITE_TMPDIR'] == tmp
     assert rep['env_XDG_CONFIG_DIRS'] == f'/etc/xdg:{h}/.config', rep['env_XDG_CONFIG_DIRS']
     assert rep['env_XDG_DATA_DIRS'] == f'/usr/local/share:/usr/share:{h}/.local/share', rep['env_XDG_DATA_DIRS']
     fonts_conf = (userdata / 'config/fontconfig/fonts.conf').read_text()
