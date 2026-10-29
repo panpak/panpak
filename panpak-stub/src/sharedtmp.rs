@@ -69,8 +69,23 @@ pub fn prepare(base: &Path) -> Result<Shared> {
 mod tests {
     use super::*;
 
+    /// A lock belongs to the open file description, and a process forked by another test keeps a copy of
+    /// it until it execs (the descriptor is close-on-exec, but only at the exec). The check "no copy is
+    /// alive" must not see that, so the scenario runs in a process of its own, where no other test forks.
     #[test]
     fn the_first_copy_empties_the_folders_and_later_ones_leave_them() {
+        if std::env::var_os("PANPAK_SHAREDTMP_ALONE").is_some() {
+            return scenario();
+        }
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "sharedtmp::tests::the_first_copy_empties_the_folders_and_later_ones_leave_them", "--test-threads=1"])
+            .env("PANPAK_SHAREDTMP_ALONE", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    }
+
+    fn scenario() {
         let base = std::env::temp_dir().join(format!("panpak-shared-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         private_dir(&base.join("tmp/sub")).unwrap();
@@ -93,17 +108,7 @@ mod tests {
         assert!(c.tmp.join("qipc_live").exists());
         drop((b, c));
         // Nobody is alive any more: the next start empties the folders.
-        // A lock lives while any copy of its descriptor exists, and a process forked by another test at this very
-        // moment holds one until it execs: try again for a short while before calling it a failure.
-        let mut d = prepare(&base).unwrap();
-        for _ in 0..40 {
-            if !d.tmp.join("qipc_live").exists() {
-                break;
-            }
-            drop(d);
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            d = prepare(&base).unwrap();
-        }
+        let d = prepare(&base).unwrap();
         assert!(!d.tmp.join("qipc_live").exists());
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(fs::metadata(&d.tmp).unwrap().permissions().mode() & 0o777, 0o700);
