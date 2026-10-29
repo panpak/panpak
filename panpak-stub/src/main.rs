@@ -5,7 +5,7 @@ use anyhow::{bail, ensure, Context, Result};
 use panpak_core::{bail_code, coded, ensure_code, ErrorCode};
 use panpak_core::{hex, ChunkDecoder, parse_index, read_at, read_footer, verify, Chunk, Entry, Kind};
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::Write,
     os::unix::{fs::{OpenOptionsExt, PermissionsExt}, process::CommandExt},
     path::{Path, PathBuf},
@@ -116,6 +116,18 @@ fn materialize(
         ensure_tree_readonly(&tree)?;
         return Ok(tree);
     } // Fast startup.
+    // One builder per tree: starts that overlap on a store without the tree wait here, then find it done.
+    // The lock goes with the file descriptor, so a builder that dies never leaves the others stuck.
+    fs::create_dir_all(store.join("trees"))?;
+    let lock = OpenOptions::new().create(true).truncate(false).write(true).open(tree.with_extension("lock")).context("open the tree lock")?;
+    // SAFETY: flock(2) on a descriptor this function owns.
+    ensure!(unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) } == 0, "cannot lock the tree");
+    if tree.join(".complete").exists() {
+        ensure_tree_readonly(&tree)?;
+        return Ok(tree);
+    }
+    // Under the lock nobody else writes here: a folder from a start that was killed is removed, and the
+    // new one is built apart and published with one rename.
     let tmp = tree.with_extension("partial");
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp)?;
@@ -147,7 +159,8 @@ fn materialize(
                     let fid = hex(blake3::hash(&buf).as_bytes());
                     let blob = blobs.join(format!("{fid}-{:o}", e.mode));
                     if !blob.exists() {
-                        let btmp = blob.with_extension("part");
+                        // Another tree (another lock) may be writing the same blob: a name of its own.
+                        let btmp = blob.with_extension(format!("part{}", std::process::id()));
                         fs::write(&btmp, &buf)?;
                         // Shared blob: never writable (defense in depth).
                         fs::set_permissions(&btmp, fs::Permissions::from_mode(e.mode & !0o222))?;
@@ -264,6 +277,7 @@ fn materialize(
     strip_write_bits(&tmp)?;
     fs::rename(&tmp, &tree)?;
     File::create(tree.with_extension("readonly"))?;
+    drop(lock);
     Ok(tree)
 }
 
@@ -1814,6 +1828,74 @@ mod tests {
         // But the stub identity check fails: no execution.
         let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
         assert!(panpak_core::verify_stub_range(&mut f, stub_len, &man).is_err());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Give back the write bit on folders so that a materialized tree can be removed.
+    fn make_writable(p: &Path) {
+        if let Ok(m) = fs::symlink_metadata(p) {
+            if m.is_dir() {
+                let _ = fs::set_permissions(p, fs::Permissions::from_mode(0o700));
+                for e in fs::read_dir(p).into_iter().flatten().flatten() {
+                    make_writable(&e.path());
+                }
+            }
+        }
+    }
+
+    /// A package of `n` small files, each with a chunk of its own.
+    fn many_files_panpak(dir: &Path, n: usize) -> (PathBuf, [u8; 32], Vec<Chunk>, Vec<Entry>) {
+        let (sk, key) = test_keypair();
+        let (mut chunks, mut blobs, mut entries) = (Vec::new(), Vec::new(), Vec::new());
+        let mut off = b"FAKE-STUB".len() as u64;
+        for i in 0..n {
+            let data = format!("file number {i} of the regression package").into_bytes();
+            let comp = zstd::encode_all(&data[..], 3).unwrap();
+            chunks.push(Chunk { hash: *blake3::hash(&data).as_bytes(), off, comp: comp.len() as u32, raw: data.len() as u32 });
+            off += comp.len() as u64;
+            blobs.push(comp);
+            entries.push(Entry { path: PathBuf::from(format!("d{}/f{i}", i % 7)), mode: 0o644, kind: Kind::File { chunks: vec![i as u32] } });
+        }
+        let raw_index = encode_index(&chunks, &entries);
+        let root = *blake3::hash(&raw_index).as_bytes();
+        let path = sign_and_assemble(AssembleIn { dir, name: "many.panpak", sk: &sk, key: &key, chunks: &chunks, chunk_blobs: &blobs, entries: &entries, manifest_extra: "" });
+        (path, root, chunks, entries)
+    }
+
+    /// Defect 19: several starts at once on a store that is not materialized yet. They shared one
+    /// `.partial` folder, and one removed it while another was writing (PANPAK-E2000, ENOENT).
+    #[test]
+    fn parallel_first_starts_all_succeed_and_build_the_tree_once() {
+        let dir = tmpdir("mat-par");
+        let (path, root, chunks, entries) = many_files_panpak(&dir, 400);
+        let store = dir.join("store");
+        for round in 0..3 {
+            let store = store.join(format!("r{round}"));
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+            let results: Vec<Result<PathBuf>> = std::thread::scope(|sc| {
+                let hs: Vec<_> = (0..8)
+                    .map(|_| {
+                        let (b, path, chunks, entries, store) = (barrier.clone(), &path, &chunks, &entries, &store);
+                        sc.spawn(move || {
+                            let mut f = File::open(path).unwrap();
+                            b.wait();
+                            materialize(&mut f, store, &root, chunks, entries)
+                        })
+                    })
+                    .collect();
+                hs.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            for r in &results {
+                assert!(r.is_ok(), "round {round}: {:?}", r.as_ref().err().map(|e| format!("{e:#}")));
+            }
+            let tree = results[0].as_ref().unwrap().clone();
+            assert!(results.iter().all(|r| r.as_ref().unwrap() == &tree));
+            assert!(tree.join(".complete").exists());
+            assert_eq!(fs::read(tree.join("d3/f10")).unwrap(), b"file number 10 of the regression package");
+            let left: Vec<_> = fs::read_dir(store.join("trees")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains("partial")).collect();
+            assert!(left.is_empty(), "temporary folders left behind: {left:?}");
+        }
+        make_writable(&dir);
         let _ = fs::remove_dir_all(&dir);
     }
 
