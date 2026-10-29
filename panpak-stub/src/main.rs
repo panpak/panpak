@@ -13,6 +13,7 @@ use std::{
 };
 
 #[cfg(target_arch = "x86_64")]
+mod opener;
 mod probe;
 mod view;
 
@@ -934,6 +935,11 @@ fn main() {
 
 fn real_main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    // In the isolated view this stub is also `xdg-open` (see opener.rs): hand the address to the outer stub.
+    if args.first().is_some_and(|a| opener::is_opener_name(a)) {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute());
+        std::process::exit(opener::client(&args[1..], runtime.as_deref()));
+    }
     // --abi-version: for `panpak install-runtime` (works on a bare stub too).
     if args.get(1).map(|s| s.as_str()) == Some("--abi-version") {
         println!("{}", panpak_core::RUNTIME_ABI);
@@ -1148,6 +1154,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
             ro_run_dirs.push(d);
         }
     }
+    let runtime_text = ctx.runtime_dir.and_then(Path::to_str).filter(|t| t.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))).map(str::to_string);
     let display = std::env::var("DISPLAY").ok();
     let x11_sockets: Vec<PathBuf> = if x11 { view::x11_socket(display.as_deref()).into_iter().collect() } else { Vec::new() };
     // The home folder is an empty tmpfs in the view. Put back only what the app and the inner stub
@@ -1188,7 +1195,9 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         }
     }
     let binds = view::merge_binds(binds);
+    let (mounts, opener_server) = open_channel(ctx, cmd, &stub, runtime_text.as_deref());
     let plan = view::ViewPlan {
+        mounts,
         runtime_dir: ctx.runtime_dir.map(Path::to_path_buf),
         sockets: view::unique(sockets),
         ro_run_dirs: view::unique(ro_run_dirs),
@@ -1223,7 +1232,87 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     };
     let fd = view::job_memfd(&job)?;
     let plan = view::ViewPlan { fd, ..plan };
-    match view::exec_bwrap(&plan)? {}
+    match opener_server {
+        Some(server) => match view::run_bwrap(&plan, server)? {},
+        None => match view::exec_bwrap(&plan)? {},
+    }
+}
+
+/// Set up the way to open addresses from the view: the socket and the server (outer side), the stub
+/// as `xdg-open` and its relatives (links first in `PATH`, and over the system's own `xdg-open`, so
+/// that a full path is covered too), `BROWSER`, and a private `mimeapps.list` for GIO. Needs the
+/// real `xdg-open` in the `PATH` of this process and a plain runtime folder; otherwise nothing is set
+/// up and the view has no `xdg-open` that works. Failures only turn the channel off.
+fn open_channel(ctx: &ViewStart, cmd: &mut Command, stub: &Path, runtime: Option<&str>) -> (Vec<view::Mount>, Option<opener::Server>) {
+    let none = (Vec::new(), None);
+    let (Some(rt), Some(path)) = (runtime, std::env::var_os("PATH")) else { return none };
+    let Some(real) = opener::find_in_path("xdg-open", &path) else {
+        eprintln!("panpak: no xdg-open found in PATH; the app cannot open addresses");
+        return none;
+    };
+    let dir = Path::new(rt).join("panpak").join(&ctx.man.app.id);
+    let server = match opener::Server::start(&dir, opener::SystemXdgOpen::new(real)) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("panpak: opener channel off: {}", panpak_core::err_text(&e));
+            return none;
+        }
+    };
+    let rtp = Path::new(rt);
+    let mut mounts = vec![view::Mount { src: server.socket().to_path_buf(), dest: rtp.join(opener::SOCKET) }];
+    for n in opener::NAMES {
+        mounts.push(view::Mount { src: stub.to_path_buf(), dest: rtp.join(opener::BIN_DIR).join(n) });
+    }
+    // Over every `xdg-open` the system has in its PATH, outside the home folder.
+    let home = dirs::home_dir();
+    for d in std::env::split_paths(&path).filter(|d| d.is_absolute() && home.as_ref().is_none_or(|h| !d.starts_with(h))) {
+        let p = d.join("xdg-open");
+        if fs::symlink_metadata(&p).is_ok() {
+            mounts.push(view::Mount { src: stub.to_path_buf(), dest: p });
+        }
+    }
+    let bin = format!("{rt}/{}", opener::BIN_DIR);
+    let old = cmd.get_envs().find(|(k, _)| *k == "PATH").and_then(|(_, v)| v.map(|v| v.to_os_string())).unwrap_or(path);
+    let mut new = std::ffi::OsString::from(format!("{bin}:"));
+    new.push(old);
+    cmd.env("PATH", new).env("BROWSER", format!("{bin}/xdg-open"));
+    if let Err(e) = write_opener_config(&ctx.man.app.id, &format!("{bin}/xdg-open")) {
+        eprintln!("panpak: GIO opener setup failed: {}", panpak_core::err_text(&e));
+    }
+    (mounts, Some(server))
+}
+
+const OPENER_MARKER: &str = "X-Panpak-Generated";
+
+/// The private `mimeapps.list` and `.desktop` file that make GIO (`g_app_info_launch_default_for_uri`,
+/// GTK, `gio open`) run the opener of the view for web and mail addresses instead of a browser of the
+/// system. A file without the marker is left alone.
+fn write_opener_config(app_id: &str, exec: &str) -> Result<()> {
+    let dirs = panpak_core::app_dirs(app_id)?;
+    let ids = ["x-scheme-handler/http", "x-scheme-handler/https", "x-scheme-handler/mailto", "text/html"];
+    let mime: String = ids.iter().map(|m| format!("{m};")).collect();
+    let list: String = ids.iter().map(|m| format!("{m}=panpak-opener.desktop\n")).collect();
+    let files = [
+        (dirs.config.join("mimeapps.list"), format!("# {OPENER_MARKER}: written at every start.\n[Default Applications]\n{list}")),
+        (
+            dirs.data.join("applications").join("panpak-opener.desktop"),
+            format!("# {OPENER_MARKER}\n[Desktop Entry]\nType=Application\nName=Link opener\nExec={exec} %u\nMimeType={mime}\nNoDisplay=true\nTerminal=false\n"),
+        ),
+    ];
+    for (path, want) in files {
+        match fs::read_to_string(&path) {
+            // Already as wanted, or the user's own file: leave it.
+            Ok(cur) if cur == want || !cur.contains(OPENER_MARKER) => continue,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+        }
+        fs::create_dir_all(path.parent().unwrap())?;
+        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+        fs::write(&tmp, want)?;
+        fs::rename(&tmp, &path)?;
+    }
+    Ok(())
 }
 
 /// The inner stub: Landlock, then the app. The job comes from the outer stub, which verified the package.

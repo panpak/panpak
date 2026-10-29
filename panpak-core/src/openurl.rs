@@ -33,7 +33,7 @@ pub fn check_url(url: &str) -> Result<UrlKind> {
         other => bail!("scheme {other} is not allowed (only http, https and mailto)"),
     };
     match kind {
-        UrlKind::Mailto => ensure!(!rest.is_empty() && !rest.starts_with('/'), "empty mail address"),
+        UrlKind::Mailto => check_mailto(rest)?,
         UrlKind::Http | UrlKind::Https => {
             let after = rest.strip_prefix("//").ok_or_else(|| anyhow::anyhow!("no // after the scheme"))?;
             let host = after.split(['/', '?', '#']).next().unwrap_or("");
@@ -42,6 +42,56 @@ pub fn check_url(url: &str) -> Result<UrlKind> {
         }
     }
     Ok(kind)
+}
+
+/// The only fields of a `mailto:` address that are passed on. Mail clients take other fields (`attach`,
+/// `attachment`, `x-...`) as a request to attach a local file, so every other field is refused.
+const MAILTO_FIELDS: &[&str] = &["to", "cc", "bcc", "subject", "body"];
+
+/// What follows `mailto:`: addresses, then optionally `?field=value&field=value` with only the fields
+/// above. A field name is compared as written (no percent-decoding), so `%61ttach` is not `attach`.
+/// A `%` must start a valid escape, `%00` is refused, and a line break may only be in the body.
+fn check_mailto(rest: &str) -> Result<()> {
+    ensure!(!rest.starts_with('/'), "mail address starts with /");
+    let (addr, query) = match rest.split_once('?') {
+        Some((a, q)) => (a, Some(q)),
+        None => (rest, None),
+    };
+    ensure!(!addr.is_empty() || query.is_some(), "empty mail address");
+    ensure!(!addr.contains(['#', ';']), "mail address has a separator that is not allowed");
+    escapes_ok(addr, false)?;
+    if let Some(q) = query {
+        ensure!(!q.is_empty() && !q.contains(['?', '#', ';']), "mail fields have a separator that is not allowed");
+        let mut seen: Vec<String> = Vec::new();
+        for pair in q.split('&') {
+            let (name, value) = pair.split_once('=').ok_or_else(|| anyhow::anyhow!("mail field without ="))?;
+            let name = name.to_ascii_lowercase();
+            ensure!(MAILTO_FIELDS.contains(&name.as_str()), "mail field {name} is not allowed (only to, cc, bcc, subject, body)");
+            ensure!(!seen.contains(&name), "mail field {name} twice");
+            escapes_ok(value, name == "body")?;
+            seen.push(name);
+        }
+    }
+    Ok(())
+}
+
+/// Every `%` is followed by two hex digits; `%00` never; `%0A` and `%0D` only if `newlines`.
+fn escapes_ok(text: &str, newlines: bool) -> Result<()> {
+    let b = text.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = b.get(i + 1..i + 3).filter(|h| h.iter().all(u8::is_ascii_hexdigit));
+            let Some(h) = hex else { bail!("bad percent escape") };
+            let v = u8::from_str_radix(std::str::from_utf8(h)?, 16)?;
+            ensure!(v != 0 && (newlines || (v != b'\n' && v != b'\r')), "control character in a mail field");
+            ensure!(v >= 0x20 || v == b'\n' || v == b'\r' || v == b'\t', "control character in a mail field");
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
 }
 
 /// Schemes an app must not register: they have a meaning of their own, or lead to files, scripts or
@@ -84,6 +134,9 @@ mod tests {
             ("https://[::1]:3000/x", UrlKind::Https),
             ("mailto:someone@example.org", UrlKind::Mailto),
             ("mailto:someone@example.org?subject=Hi%20there", UrlKind::Mailto),
+            ("mailto:a@b.org,c@d.org?cc=e@f.org&bcc=g@h.org&subject=S&body=Line1%0ALine2", UrlKind::Mailto),
+            ("mailto:?to=a@b.org&subject=x", UrlKind::Mailto),
+            ("MAILTO:a@b.org?Subject=x", UrlKind::Mailto),
         ] {
             assert_eq!(check_url(u).unwrap(), k, "{u}");
         }
@@ -126,6 +179,35 @@ mod tests {
         }
         assert!(check_url(&format!("https://example.org/{}", "a".repeat(MAX_URL))).is_err());
         assert!(check_url(&format!("https://e.org/{}", "a".repeat(MAX_URL - 14))).is_ok());
+    }
+
+    #[test]
+    fn mailto_takes_only_the_plain_fields() {
+        for bad in [
+            "mailto:a@b.org?attach=/etc/passwd",
+            "mailto:a@b.org?attachment=/home/u/.ssh/id_ed25519",
+            "mailto:a@b.org?subject=x&attach=file:///etc/passwd",
+            "mailto:a@b.org?Attach=/etc/passwd",
+            "mailto:a@b.org?%61ttach=/etc/passwd",
+            "mailto:a@b.org?x-attach=/etc/passwd",
+            "mailto:a@b.org?in-reply-to=x",
+            "mailto:a@b.org?subject",
+            "mailto:a@b.org?",
+            "mailto:a@b.org?subject=x?attach=/etc/passwd",
+            "mailto:a@b.org?subject=x;attach=/etc/passwd",
+            "mailto:a@b.org;attach=/etc/passwd",
+            "mailto:a@b.org?subject=x&subject=y",
+            "mailto:a@b.org?subject=x#attach=/etc/passwd",
+            "mailto:a@b.org?subject=a%0ABcc:evil@x.org",
+            "mailto:a%0D%0ABcc:evil@x.org",
+            "mailto:a@b.org?subject=%00",
+            "mailto:a@b.org?body=%01",
+            "mailto:a@b.org?body=%zz",
+            "mailto:a@b.org?body=%4",
+            "mailto:a@b.org?to=x&&cc=y",
+        ] {
+            assert!(check_url(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]

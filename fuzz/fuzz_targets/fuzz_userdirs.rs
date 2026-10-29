@@ -30,6 +30,15 @@ fuzz_target!(|data: &[u8]| {
         let l = s.to_ascii_lowercase();
         assert!(l.starts_with("http://") || l.starts_with("https://") || l.starts_with("mailto:"), "scheme {s:?}");
         assert!(s.len() <= panpak_core::MAX_URL && s.bytes().all(|b| (0x21..=0x7e).contains(&b)), "bytes {s:?}");
+        // A mail address takes only the plain fields, so no client is asked to attach a file.
+        if l.starts_with("mailto:") {
+            if let Some((_, q)) = s.split_once('?') {
+                for pair in q.split('&') {
+                    let name = pair.split('=').next().unwrap_or("").to_ascii_lowercase();
+                    assert!(matches!(name.as_str(), "to" | "cc" | "bcc" | "subject" | "body"), "mail field {name:?} in {s:?}");
+                }
+            }
+        }
     }
     if panpak_core::check_scheme_name(s).is_ok() {
         assert!(s.len() <= 32 && s.as_bytes()[0].is_ascii_lowercase());

@@ -118,6 +118,13 @@ pub struct Bind {
     pub rw: bool,
 }
 
+/// A file mounted read-only into the view at another path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mount {
+    pub src: PathBuf,
+    pub dest: PathBuf,
+}
+
 /// Order and thin out the binds: parents before children, no duplicates, and no read-only
 /// bind below a bind that already covers it (a read-only child under a writable parent would
 /// only get in the way of Landlock, which allows the parent). A writable child under a read-only
@@ -150,6 +157,8 @@ pub struct ViewPlan {
     pub home: Option<PathBuf>,
     /// What is put back into the empty home, and what is mounted writable elsewhere. See `merge_binds`.
     pub binds: Vec<Bind>,
+    /// Files mounted read-only at a place of their own: the opener channel and the stub as `xdg-open`.
+    pub mounts: Vec<Mount>,
     /// The manifest asks for X11: the IPC namespace stays shared (MIT-SHM).
     pub x11_access: bool,
     pub stub: PathBuf,
@@ -188,6 +197,9 @@ pub fn bwrap_args(plan: &ViewPlan) -> Vec<OsString> {
     for b in &plan.binds {
         a.extend([os(if b.rw { "--bind" } else { "--ro-bind" }), b.path.as_os_str().into(), b.path.as_os_str().into()]);
     }
+    for m in &plan.mounts {
+        a.extend([os("--ro-bind"), m.src.as_os_str().into(), m.dest.as_os_str().into()]);
+    }
     // Nothing can be created in the home folder any more, outside the binds.
     if let Some(h) = &plan.home {
         a.extend([os("--remount-ro"), h.as_os_str().into()]);
@@ -218,6 +230,33 @@ pub fn exec_bwrap(plan: &ViewPlan) -> Result<std::convert::Infallible> {
     bail!("cannot run {}: {err}", panpak_core::BWRAP)
 }
 
+static CHILD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+extern "C" fn forward_signal(sig: libc::c_int) {
+    let pid = CHILD.load(std::sync::atomic::Ordering::Relaxed);
+    if pid > 0 {
+        // SAFETY: kill is async-signal-safe.
+        unsafe { libc::kill(pid, sig) };
+    }
+}
+
+/// Run `bwrap` as a child and stay until it ends, so that `keep` (the opener server) lives as long
+/// as the app. Termination signals go on to `bwrap`; its exit status becomes ours. Returns only on error.
+pub fn run_bwrap(plan: &ViewPlan, keep: impl Sized) -> Result<std::convert::Infallible> {
+    use std::os::unix::process::ExitStatusExt;
+    let args = bwrap_args(plan);
+    ensure!(args.iter().all(|a| !a.as_bytes().contains(&0)), "NUL in a bubblewrap argument");
+    let mut child = Command::new(panpak_core::BWRAP).args(&args).spawn().with_context(|| format!("cannot run {}", panpak_core::BWRAP))?;
+    CHILD.store(child.id() as i32, std::sync::atomic::Ordering::Relaxed);
+    for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGQUIT] {
+        // SAFETY: the handler only calls kill.
+        unsafe { libc::signal(sig, forward_signal as extern "C" fn(libc::c_int) as libc::sighandler_t) };
+    }
+    let status = child.wait()?;
+    drop(keep);
+    std::process::exit(status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+}
+
 /// Drop duplicates, keep the order.
 pub fn unique(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen = std::collections::HashSet::new();
@@ -246,6 +285,7 @@ mod tests {
                 Bind { path: "/home/u/.local/share/panpak/trees/abc".into(), rw: false },
                 Bind { path: "/home/u/.config/gtk-3.0".into(), rw: false },
             ]),
+            mounts: vec![],
             x11_access: false,
             stub: "/home/u/.local/share/panpak/runtimes/1/panpak-stub".into(),
             fd: 7,
@@ -297,6 +337,22 @@ mod tests {
         assert!(!a.contains(&"--unshare-ipc".to_string()));
         let tmp = pos(&a, &["--tmpfs", "/tmp"]).unwrap();
         assert!(tmp < pos(&a, &["--bind", "/tmp/.X11-unix/X0", "/tmp/.X11-unix/X0"]).unwrap());
+    }
+
+    #[test]
+    fn mounts_come_after_the_runtime_folder_and_before_the_home_is_sealed() {
+        let mut p = plan();
+        p.mounts = vec![
+            Mount { src: "/h/open.5.sock".into(), dest: "/run/user/1000/panpak/open.sock".into() },
+            Mount { src: "/h/panpak-stub".into(), dest: "/usr/bin/xdg-open".into() },
+        ];
+        let a = strings(&p);
+        let rt = pos(&a, &["--tmpfs", "/run/user/1000"]).unwrap();
+        let sock = pos(&a, &["--ro-bind", "/h/open.5.sock", "/run/user/1000/panpak/open.sock"]).unwrap();
+        let exe = pos(&a, &["--ro-bind", "/h/panpak-stub", "/usr/bin/xdg-open"]).unwrap();
+        assert!(rt < sock && sock < exe);
+        assert!(exe < pos(&a, &["--remount-ro", "/home/u"]).unwrap());
+        assert!(pos(&a, &["--ro-bind", "/", "/"]).unwrap() < exe);
     }
 
     #[test]
