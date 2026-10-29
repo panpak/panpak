@@ -6,12 +6,14 @@
 mod errors;
 mod layout;
 mod validate;
+mod view;
 pub use errors::{code_of, coded, render, ErrorCode, PanpakError};
 pub use layout::{
     added_permissions, app_dirs, describe_permissions, fonts_conf, is_bus_socket, readonly_user_paths, xdg_search_dirs, AppDirs,
-    allows_desktop_bus, allows_session_bus, allows_system_bus, is_system_bus_socket, socket_isolation, SocketIsolation, ABSTRACT_SOCKETS_WARNING, DESKTOP_BUS_WARNING, FONTS_CONF_MARKER,
+    allows_desktop_bus, allows_session_bus, allows_system_bus, is_system_bus_socket, socket_isolation, IsolationReport, SocketIsolation, ABSTRACT_SOCKETS_WARNING, DESKTOP_BUS_WARNING, FONTS_CONF_MARKER,
     PARTIAL_ISOLATION_WARNING,
 };
+pub use view::{bwrap_version, implied_sockets, resolv_conf_run_dir, view_status, view_status_at, ViewProblem, ViewStatus, BWRAP};
 pub use validate::{
     validate_app_id, validate_manifest, BROAD_HOME_PATHS, FORBIDDEN_ENV, FORBIDDEN_ENV_PREFIXES, FORBIDDEN_HOME_PATHS, PLACEHOLDERS,
     MAX_APP_ID_LEN,
@@ -163,6 +165,8 @@ pub struct Permissions {
     pub network_allow_tcp: Option<Vec<u16>>,
     /// Allowed listen TCP ports (bind). Only with network=true.
     pub network_bind_tcp: Option<Vec<u16>>,
+    /// Audio: the PipeWire and PulseAudio sockets of the user's session.
+    pub audio: Option<bool>,
     /// Unix sockets (absolute paths) to connect to (requires ABI V9).
     /// Leading `$XDG_RUNTIME_DIR` and `$HOME` are expanded.
     pub sockets_allow: Option<Vec<String>>,
@@ -313,7 +317,7 @@ pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
     const LAUNCH: &[&str] = &["args", "env"];
     const APP: &[&str] = &["id", "name", "version", "entry"];
     const ABI: &[&str] = &["glibc_min", "needs", "prefer_host", "allow_missing"];
-    const PERM: &[&str] = &["x11", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "portal"];
+    const PERM: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "portal"];
     const HOME_PATH: &[&str] = &["path", "access"];
     const PORTAL: &[&str] = &["files", "camera"];
     const RUNTIME: &[&str] = &["min_runtime", "stub_hash"];

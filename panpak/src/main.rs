@@ -1483,8 +1483,13 @@ fn print_permissions(man: &panpak_core::Manifest) {
             }
         }
     }
-    let iso = panpak_core::socket_isolation(panpak_core::detect_abi().ok(), man.permissions.as_ref());
-    if let Some(w) = iso.warning() {
+    let view = panpak_core::view_status();
+    let iso = panpak_core::socket_isolation(panpak_core::detect_abi().ok(), man.permissions.as_ref(), view.usable());
+    println!("isolation layers: {}", iso.layers());
+    if let panpak_core::ViewStatus::Unusable(why) = &view {
+        println!("NOTE: no isolated view: {}; to get it, {}", why.reason(), why.remedy());
+    }
+    if let Some(w) = iso.level.warning() {
         println!("{w}");
     }
     if let Some(l) = &man.launch {
@@ -1670,12 +1675,26 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         Ok(abi) => line(true, &format!("kernel {release}, Landlock {abi:?} ({})", abi_features(abi))),
         Err(e) => line(false, &format!("kernel {release}, Landlock unavailable ({}); kernel >= 5.13 with CONFIG_SECURITY_LANDLOCK=y required", panpak_core::err_text(&e))),
     }
-    // Local sockets: D-Bus, ssh-agent, gpg-agent (see THREAT-MODEL.md).
-    match panpak_core::socket_isolation(panpak_core::detect_abi().ok(), None) {
-        panpak_core::SocketIsolation::Isolated => {
-            println!("OK   local sockets: isolated (Landlock V9 denies path sockets that the manifest does not list)");
+    // Local sockets: D-Bus, ssh-agent, gpg-agent (see THREAT-MODEL.md). Two layers that work apart:
+    // the isolated view (bubblewrap) and Landlock V9.
+    let view = panpak_core::view_status();
+    match &view {
+        panpak_core::ViewStatus::Usable => {
+            let v = panpak_core::bwrap_version().unwrap_or_else(|| "version unknown".to_string());
+            println!("OK   isolated view: {v} at {} works (private /tmp and /run, only allowed sockets)", panpak_core::BWRAP);
         }
-        iso => println!("NOTE local sockets: not isolated. {}", iso.warning().unwrap_or("")),
+        panpak_core::ViewStatus::Unusable(why) => {
+            println!("NOTE isolated view: not available, {}", why.reason());
+            println!("     to get it: {}", why.remedy());
+        }
+    }
+    let iso = panpak_core::socket_isolation(panpak_core::detect_abi().ok(), None, view.usable());
+    println!("{} local sockets: active layers: {}", if iso.level == panpak_core::SocketIsolation::Isolated { "OK  " } else { "NOTE" }, iso.layers());
+    if !iso.landlock_paths {
+        println!("     Landlock V9 (Linux 7.1) would also deny path sockets that the manifest does not list");
+    }
+    if let Some(w) = iso.level.warning() {
+        println!("     {w}");
     }
     // User namespaces (needed by containers/tooling, not the stub).
     match fs::read_to_string("/proc/sys/user/max_user_namespaces") {

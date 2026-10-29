@@ -253,7 +253,7 @@ def main():
     bad_manifest("invalid-abi-name.panpak", manifest(extra='[abi]\nneeds = ["../../x"]\n'), "abi.needs", code="PANPAK-E0007")
     # launch fields and home paths (PANPAK-FORMAT.md section 3.1.2)
     put("valid-launch-home.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=(
-        '[permissions]\nnetwork = true\nnetwork_allow_tcp = [2658]\nnetwork_bind_tcp = [2658]\n'
+        '[permissions]\naudio = true\nnetwork = true\nnetwork_allow_tcp = [2658]\nnetwork_bind_tcp = [2658]\n'
         '[[permissions.home_paths]]\npath = ".config/example-app"\naccess = "rw"\n'
         '[[permissions.home_paths]]\npath = "Documents/Notes"\naccess = "ro"\n'
         '[launch]\nargs = ["--profile", "${XDG_CONFIG_HOME}/example"]\n[launch.env]\nEXAMPLE_DIR = "${XDG_DATA_HOME}/x:${TMPDIR}"\n')),

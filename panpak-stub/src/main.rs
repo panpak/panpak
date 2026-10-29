@@ -2066,6 +2066,7 @@ mod tests {
         let (mut man, _) = verify(&mut f, &ft).unwrap();
         man.permissions = Some(panpak_core::Permissions {
             x11: None,
+            audio: None,
             network: None,
             network_allow_tcp: None,
             network_bind_tcp: None,

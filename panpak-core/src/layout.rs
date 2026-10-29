@@ -200,21 +200,25 @@ pub const DESKTOP_BUS_WARNING: &str =
 /// Printed by `install` and `update` when the kernel cannot block local sockets.
 pub const PARTIAL_ISOLATION_WARNING: &str = "WARNING: on this kernel the sandbox cannot block local sockets (D-Bus, ssh-agent, gpg-agent): this app is only partially isolated";
 
-/// Printed when X11 access leaves the abstract Unix sockets open.
-pub const ABSTRACT_SOCKETS_WARNING: &str = "WARNING: X11 access leaves abstract Unix sockets open (some D-Bus and agent sockets): this app is only partially isolated";
+/// Printed when abstract Unix sockets stay open: X11 access turns the Landlock scope off, and a
+/// kernel below Landlock V6 has no scope. The isolated view cannot hide them (they live in the
+/// network namespace, which the app shares).
+pub const ABSTRACT_SOCKETS_WARNING: &str = "WARNING: abstract Unix sockets stay open (X11 access, or a kernel without the Landlock scope; some D-Bus and agent sockets): this app is only partially isolated";
 
 /// How well an app is kept away from the local Unix sockets (D-Bus, ssh-agent, gpg-agent,
-/// Wayland and the like). One place decides it, from the kernel and the permissions.
+/// Wayland and the like). One place decides it, from the kernel, the isolated view and the
+/// permissions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketIsolation {
-    /// Landlock V9: path sockets are denied unless `sockets_allow` lists them, and the
-    /// abstract-socket scope is on.
+    /// Path sockets are denied unless the policy lists them (by the isolated view, by Landlock V9,
+    /// or both), and abstract sockets are blocked by the Landlock scope.
     Isolated,
-    /// The kernel does not filter `connect()` to path sockets (Landlock below V9, or none).
+    /// Nothing blocks path sockets: no isolated view, and Landlock below V9 or none.
     KernelCannotFilter,
     /// The manifest lists a D-Bus socket.
     ManifestAllowsBus,
-    /// The manifest asks for X11, which turns off the abstract-socket scope.
+    /// Abstract sockets stay reachable: X11 access turns the Landlock scope off, and below
+    /// Landlock V6 there is no scope.
     AbstractSocketsOpen,
 }
 
@@ -226,6 +230,40 @@ impl SocketIsolation {
             SocketIsolation::Isolated | SocketIsolation::ManifestAllowsBus => None,
             SocketIsolation::KernelCannotFilter => Some(PARTIAL_ISOLATION_WARNING),
             SocketIsolation::AbstractSocketsOpen => Some(ABSTRACT_SOCKETS_WARNING),
+        }
+    }
+}
+
+/// The answer of [`socket_isolation`]: the level and the layers that are active. The layers are
+/// independent: each one works without the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IsolationReport {
+    pub level: SocketIsolation,
+    /// The isolated view (bubblewrap) hides the sockets that the policy does not list.
+    pub view: bool,
+    /// Landlock V9 denies connecting to path sockets that the policy does not list.
+    pub landlock_paths: bool,
+    /// The Landlock scope (V6) blocks abstract Unix sockets (off with X11 access).
+    pub landlock_abstract: bool,
+}
+
+impl IsolationReport {
+    /// The active layers in words, for `doctor` and `install`.
+    pub fn layers(&self) -> String {
+        let mut v = Vec::new();
+        if self.view {
+            v.push("isolated view (bubblewrap)");
+        }
+        if self.landlock_paths {
+            v.push("Landlock path sockets (V9)");
+        }
+        if self.landlock_abstract {
+            v.push("Landlock abstract-socket scope (V6)");
+        }
+        if v.is_empty() {
+            "none".to_string()
+        } else {
+            v.join(" + ")
         }
     }
 }
@@ -252,18 +290,23 @@ pub fn allows_desktop_bus(perms: Option<&crate::Permissions>) -> bool {
     allows_session_bus(perms) || allows_system_bus(perms)
 }
 
-/// The isolation level of an app from local sockets: `abi` is the Landlock ABI of the kernel
-/// (None if Landlock is missing), `perms` the manifest permissions (None for the kernel alone).
-pub fn socket_isolation(abi: Option<landlock::ABI>, perms: Option<&crate::Permissions>) -> SocketIsolation {
-    if abi.is_none_or(|a| a < landlock::ABI::V9) {
+/// The isolation of an app from local sockets: `abi` is the Landlock ABI of the kernel (None if
+/// Landlock is missing), `perms` the manifest permissions (None for the kernel alone) and `view`
+/// whether the isolated view can be built here (`view_status().usable()`).
+pub fn socket_isolation(abi: Option<landlock::ABI>, perms: Option<&crate::Permissions>, view: bool) -> IsolationReport {
+    let landlock_paths = abi.is_some_and(|a| a >= landlock::ABI::V9);
+    let x11 = perms.is_some_and(|p| p.x11 == Some(true));
+    let landlock_abstract = abi.is_some_and(|a| a >= landlock::ABI::V6) && !x11;
+    let level = if !view && !landlock_paths {
         SocketIsolation::KernelCannotFilter
     } else if allows_desktop_bus(perms) {
         SocketIsolation::ManifestAllowsBus
-    } else if perms.is_some_and(|p| p.x11 == Some(true)) {
+    } else if !landlock_abstract {
         SocketIsolation::AbstractSocketsOpen
     } else {
         SocketIsolation::Isolated
-    }
+    };
+    IsolationReport { level, view, landlock_paths, landlock_abstract }
 }
 
 /// True if a `sockets_allow` entry names a D-Bus socket (`$XDG_RUNTIME_DIR/bus`,
@@ -279,6 +322,9 @@ pub fn describe_permissions(man: &Manifest) -> Vec<String> {
     let Some(p) = &man.permissions else { return out };
     if p.x11 == Some(true) {
         out.push("X11 access: the app can observe other apps' input and screen".to_string());
+    }
+    if p.audio == Some(true) {
+        out.push("audio: the PipeWire and PulseAudio sockets of your session".to_string());
     }
     let list = |v: &Option<Vec<u16>>| v.iter().flatten().map(u16::to_string).collect::<Vec<_>>().join(", ");
     if p.network == Some(true) || p.network_allow_tcp.is_some() || p.network_bind_tcp.is_some() {
@@ -310,6 +356,9 @@ pub fn added_permissions(old: &Manifest, new: &Manifest) -> Vec<String> {
     let Some(n) = &new.permissions else { return out };
     if n.x11 == Some(true) && o.and_then(|p| p.x11) != Some(true) {
         out.push("X11 access".to_string());
+    }
+    if n.audio == Some(true) && o.and_then(|p| p.audio) != Some(true) {
+        out.push("audio access".to_string());
     }
     let had_net = o.is_some_and(|p| p.network == Some(true));
     if n.network == Some(true) && !had_net {
@@ -405,9 +454,10 @@ mod tests {
         let old = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n");
         let same = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n");
         assert!(added_permissions(&old, &same).is_empty());
-        let more = man("[permissions]\nx11=true\nnetwork=true\nnetwork_allow_tcp=[443, 8080]\nnetwork_bind_tcp=[2658]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n[[permissions.home_paths]]\npath=\"b\"\naccess=\"ro\"\n");
+        let more = man("[permissions]\nx11=true\naudio=true\nnetwork=true\nnetwork_allow_tcp=[443, 8080]\nnetwork_bind_tcp=[2658]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n[[permissions.home_paths]]\npath=\"b\"\naccess=\"ro\"\n");
         let added = added_permissions(&old, &more);
-        assert_eq!(added.len(), 4, "{added:?}");
+        assert_eq!(added.len(), 5, "{added:?}");
+        assert!(added.contains(&"audio access".to_string()));
         let raised = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n");
         let from_ro = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n");
         assert_eq!(added_permissions(&from_ro, &raised).len(), 1);
@@ -432,25 +482,43 @@ mod tests {
     }
 
     #[test]
-    fn socket_isolation_depends_on_kernel_and_permissions() {
+    fn socket_isolation_depends_on_kernel_view_and_permissions() {
         use landlock::ABI;
         let plain = man("");
         let bus = man("[permissions]\nsockets_allow=[\"$XDG_RUNTIME_DIR/bus\"]\n");
         let x11 = man("[permissions]\nx11=true\n");
         let wl = man("[permissions]\nsockets_allow=[\"$XDG_RUNTIME_DIR/wayland-0\"]\n");
+        // No view and Landlock below V9: nothing blocks path sockets.
         for abi in [None, Some(ABI::V1), Some(ABI::V6), Some(ABI::V8)] {
             for m in [&plain, &bus, &x11, &wl] {
-                let iso = socket_isolation(abi, m.permissions.as_ref());
-                assert_eq!(iso, SocketIsolation::KernelCannotFilter, "{abi:?}");
-                assert_eq!(iso.warning(), Some(PARTIAL_ISOLATION_WARNING));
+                let r = socket_isolation(abi, m.permissions.as_ref(), false);
+                assert_eq!(r.level, SocketIsolation::KernelCannotFilter, "{abi:?}");
+                assert_eq!(r.level.warning(), Some(PARTIAL_ISOLATION_WARNING));
+                assert!(!r.view && !r.landlock_paths);
+                assert!(!r.layers().contains("Landlock path"));
             }
         }
+        // Landlock V9 alone.
         let v9 = Some(ABI::V9);
-        assert_eq!(socket_isolation(v9, None), SocketIsolation::Isolated);
-        assert_eq!(socket_isolation(v9, plain.permissions.as_ref()), SocketIsolation::Isolated);
-        assert_eq!(socket_isolation(v9, wl.permissions.as_ref()), SocketIsolation::Isolated);
-        assert_eq!(socket_isolation(v9, bus.permissions.as_ref()), SocketIsolation::ManifestAllowsBus);
-        assert_eq!(socket_isolation(v9, x11.permissions.as_ref()), SocketIsolation::AbstractSocketsOpen);
+        let r = socket_isolation(v9, None, false);
+        assert_eq!((r.level, r.view, r.landlock_paths, r.landlock_abstract), (SocketIsolation::Isolated, false, true, true));
+        assert_eq!(socket_isolation(v9, plain.permissions.as_ref(), false).level, SocketIsolation::Isolated);
+        assert_eq!(socket_isolation(v9, wl.permissions.as_ref(), false).level, SocketIsolation::Isolated);
+        assert_eq!(socket_isolation(v9, bus.permissions.as_ref(), false).level, SocketIsolation::ManifestAllowsBus);
+        assert_eq!(socket_isolation(v9, x11.permissions.as_ref(), false).level, SocketIsolation::AbstractSocketsOpen);
+        // The view alone, with the Landlock of this kernel (V8) or a bare kernel.
+        let r = socket_isolation(Some(ABI::V8), plain.permissions.as_ref(), true);
+        assert_eq!((r.level, r.view, r.landlock_paths, r.landlock_abstract), (SocketIsolation::Isolated, true, false, true));
+        assert_eq!(r.layers(), "isolated view (bubblewrap) + Landlock abstract-socket scope (V6)");
+        assert_eq!(socket_isolation(Some(ABI::V8), x11.permissions.as_ref(), true).level, SocketIsolation::AbstractSocketsOpen);
+        assert_eq!(socket_isolation(Some(ABI::V8), bus.permissions.as_ref(), true).level, SocketIsolation::ManifestAllowsBus);
+        // Without the V6 scope the abstract sockets are open even with the view.
+        assert_eq!(socket_isolation(Some(ABI::V5), None, true).level, SocketIsolation::AbstractSocketsOpen);
+        assert_eq!(socket_isolation(None, None, true).level, SocketIsolation::AbstractSocketsOpen);
+        // Both layers.
+        let r = socket_isolation(v9, None, true);
+        assert_eq!(r.layers(), "isolated view (bubblewrap) + Landlock path sockets (V9) + Landlock abstract-socket scope (V6)");
+        assert_eq!(socket_isolation(None, None, false).layers(), "none");
         assert_eq!(SocketIsolation::Isolated.warning(), None);
         assert_eq!(SocketIsolation::ManifestAllowsBus.warning(), None);
         assert!(allows_desktop_bus(bus.permissions.as_ref()) && !allows_desktop_bus(plain.permissions.as_ref()));
@@ -471,8 +539,8 @@ mod tests {
         assert!(is_system_bus_socket("/run/dbus/system_bus_socket") && !is_system_bus_socket("/run/user/1000/bus"));
         // Either bus listed makes the isolation level "manifest allows the bus" on a V9 kernel.
         let v9 = Some(landlock::ABI::V9);
-        assert_eq!(socket_isolation(v9, sys.permissions.as_ref()), SocketIsolation::ManifestAllowsBus);
-        assert_eq!(socket_isolation(v9, sess.permissions.as_ref()), SocketIsolation::ManifestAllowsBus);
+        assert_eq!(socket_isolation(v9, sys.permissions.as_ref(), false).level, SocketIsolation::ManifestAllowsBus);
+        assert_eq!(socket_isolation(v9, sess.permissions.as_ref(), false).level, SocketIsolation::ManifestAllowsBus);
     }
 
     #[test]
