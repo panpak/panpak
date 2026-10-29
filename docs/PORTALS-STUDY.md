@@ -442,3 +442,59 @@ Before the beta: about 7–9 days.
   Names validated like app ids, with no wildcards from the manifest. Each permission is shown at
   install and counted as new at update, like the existing ones.
 - §9.3: the opener's destination MAY be the OpenURI portal; the address rules stay the same.
+
+## 9. Decision
+
+Decided after the study: panpak gives the desktop an identity of its own, not the id of the
+package. The study (§1) offered two ways; this is **solution 1**.
+
+**Choice.** The systemd unit, the `.desktop` file and the id that the portals see all use a
+prefixed id, `panpak.<id>`, where `<id>` is the app id of the manifest:
+
+| Where | Name |
+|---|---|
+| Scope | `app-panpak-panpak.<id>-<n>.scope` (portal id is `panpak.<id>`) |
+| Desktop file | `panpak.<id>.desktop` |
+| Documents folder | `$XDG_RUNTIME_DIR/doc/by-app/panpak.<id>` |
+| D-Bus name owned by the app (single instance) | whatever the app asks, limited by the proxy rules; not the prefixed id |
+
+The prefixed id is a valid D-Bus name (at least two elements, each element made of letters,
+digits, `_` and `-`, none starting with a digit; the app id rules of PANPAK-FORMAT.md §3.1.1
+already give that) and the portal accepts it (`^app-(?:[[:alnum:]]+\-)?(.+?)(?:\-[[:alnum:]]*)(?:\.scope|\.slice)$`,
+`xdp-app-info-host.c:130`). The final form is open until step 5 checks that nothing in the
+portals, GNOME or the proxy rules objects to a first element without a top-level domain.
+
+**Reasons.**
+
+1. *Permissions of a Flatpak.* Portal permissions and documents are stored per app id. With the
+   package id, a converted package whose id is the Flathub id of an app would inherit what the
+   user granted to that Flatpak (location, background, notifications, documents). With a prefix,
+   nothing is shared.
+2. *Not claimable from Flathub.* Flathub ids are reverse-DNS names of a domain the author
+   controls. A first element `panpak` is not a top-level domain, so no Flathub app can have an id
+   in this space. This is an inference from Flathub's naming rules, to be confirmed.
+3. *No duplicates in the menu.* A `<id>.desktop` from panpak next to the Flatpak's `<id>.desktop`
+   would show the app twice, with one of them shadowing the other.
+
+**Windows.** GNOME matches a window to a desktop file by the application id of the window
+(Wayland `app_id`, X11 `WM_CLASS`), compared with the name of the desktop file or with
+`StartupWMClass`. The app sets its own identity, not ours, so the desktop file MUST carry
+`StartupWMClass=<what the app sets>`. Where that value comes from (the manifest, or measured by
+`convert`) is open.
+
+**To verify in step 5 (nothing is implemented now).**
+
+- GNOME on Wayland and on X11: a window of an app started from the prefixed desktop file is
+  grouped under it (one icon in the dash, the right name and icon in the overview, the alt-tab
+  list and the window title bar), with `StartupWMClass` set and, as a control, unset.
+- The same for apps whose `app_id` or `WM_CLASS` differs from their `.desktop` name (many
+  Electron and Qt apps), and for apps that set no class at all.
+- That the portal gives the prefixed id to the app (as in §5) when the stub makes its own scope,
+  and an empty id when it does not.
+- That documents, permissions and the permission store entries are separate between a Flatpak and a
+  package with the same upstream id.
+- That the name `app-panpak-panpak.<id>-<n>.scope` (or the form we settle on) is parsed back to
+  the right id, including ids with `-` and `_` (unit-name escaping).
+- That a desktop that is not GNOME (KDE) also groups the windows; not tested in the study.
+- Effects on `panpak install` / `update` / `remove`: a desktop file of the new name, and the
+  removal of the old one for packages installed before.
