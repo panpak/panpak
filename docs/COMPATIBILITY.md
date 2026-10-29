@@ -1,204 +1,71 @@
-# Application compatibility
+# Compatibility tests with real AppImages
 
-Results of running converted AppImages under panpak. All tests ran with an
-isolated HOME and XDG directories, a private Xvfb display and the Landlock
-sandbox on. Dates are the day of the test.
+Status: partial run (step 4 of the plan). Build under test: branch `app-tests`, X11 on Xvfb only
+(no headless Wayland compositor was available), isolated HOME, one app at a time. Converted
+packages are local and are not redistributed. Times are the first window that appeared (it can be
+a splash or a first-run dialog); "first" is the first start after install, "later" the median of 5.
 
-Status values:
+## Discovery note: GTK 4
 
-- works: starts and is usable with no extra step.
-- works with notes: works after a step listed in the notes.
-- not working: does not start or is not usable.
+No app with an AppImage published by its author was found for GTK 4. Looked at: Czkawka (raw
+binaries only), Gaphor, Foliate, Rnote, Lutris, Anki, Zrythm, Pinta, Ghostty (no AppImage);
+the AM list only has unofficial or very small GTK 4 apps. GTK 4 is left for the "Flathub without
+Flatpak" phase. Inkscape's site was unreachable, so it was not added.
 
-| App | Version | Status | Notes | Tested |
+## Results
+
+| App | Type | Result | Window first / later | Notes |
 |---|---|---|---|---|
-| Joplin | 3.7.21 | works with notes | Needs `launch.args` for the profile, the network ports for 2658 and `--allow-missing libdbus-glib-1.so.2`. See "Joplin" below. | 2026-10-29 |
-| Simplenote | 2.27.1 | works with notes | Needs `APPDIR` and `APPIMAGE` (the `convert` wrapper for `Exec=AppRun --no-sandbox` does not set them). Without the isolated view it also needs a short path to the app folders: see "Simplenote" below. | 2026-10-29 |
-| QOwnNotes | 26.10.9 | works with notes | Note folder `~/Notes` needs a `home_paths` entry (`rw`); 25 Qt6 Quick libraries had to be allowed as missing. | 2026-10-29 |
-| Kdenlive | 24.12.3 | works | Starts, creates a project; reaches PipeWire and PulseAudio sockets with `audio = true`. Needs `--allow-missing libpulsecommon-17.0.so` here and a working directory the sandbox can enter. | 2026-10-29 |
-| Mu | 1.2.0 | not working | Crashes with SIGSEGV in `QApplication(...)`, also without panpak. See "Mu" below. | 2026-10-28 |
+| MuseScore Studio 4.7.6 | Qt 6 | works | 0.46 s / 0.48 s | needs `--entry bin/mscore4portable`; absolute symlink in the image had to be removed by hand; has an internal AppImage updater; no sound server in the lab (ALSA error) |
+| PCSX2 2.8.2 | Qt 6, Vulkan/GL | works (setup wizard) | 1.25 s / 0.32 s | no game or BIOS tried |
+| qBittorrent 5.3.0 | Qt 6, tray | works | 1.36 s / 0.42 s | legal notice pre-accepted in config; stale `lockfile` after a kill (defect 3); a second copy given a `magnet:` address handed it over and exited 0 |
+| Krita 6.0.4 | Qt 6 | works | 6.06 s / 1.1 s | |
+| Jitsi Meet 2026.10.0 | Electron | works | 2.38 s / 0.69 s | needs `allow_missing` for `libdbus-glib-1.so.2`, `libffmpeg.so`, `libindicator3.so.7`; no meeting, camera or microphone tried |
+| Obsidian 1.14.5 | Electron | works | 2.56 s / 0.77 s | same `allow_missing` family |
+| Zulip 5.13.2 | Electron, tray | works | 1.84 s / 0.80 s | same `allow_missing` family; no account |
+| Neovim 0.12.6 | terminal | works | 0.54 s / 0.19 s (`--version`) | writes a file in the `documents` folder |
+| Nextcloud 35.0.1 | Qt, tray | convert fails | | defect 1 |
+| PrusaSlicer 2.8.1 | GTK 3 | convert fails | | defect 1 |
+| Cura 5.13.0 | Qt 6 | convert fails | | defect 1 |
+| FreeCAD 1.1.4 | Qt 6 | convert fails | | defect 1 |
+| GIMP 3.2.6 | GTK 3 | convert fails | | defect 1 (`libLLVM`); entry needs `--entry usr/bin/gimp-3.2` |
+| balenaEtcher 2.1.3 (prerelease) | Electron | convert fails | | defect 1 (`etcher-util`); entry needs `--entry`; root case not reached |
+| VSCodium 1.143 | Electron | not converted | | "anylinux" AppImage is DwarFS, convert reads squashfs only (defect 6) |
+| LMMS 1.2.2 | Qt 5 | fails | | image does not carry Qt 5 or `libFLAC.so.8`; host has none |
+| OpenShot 4.0.1 | Qt/PyQt | fails | | image expects host libs not present (Qt5Designer, ImageMagick 6, OpenEXR 2.3) |
+| Shotcut 26.9.27 | Qt 6 | fails | | many Qt 6 libs and `libCuteLogger.so` reported missing (defect 5) |
+| OrcaSlicer 2.4.2 | GTK 3, GL | fails | | needs `libGLU.so.1`, not installed on the host |
+| Bitwarden 2026.10.2 | Electron | fails | | converted entry is `AppRun`, which needs `APPDIR` (defect 7) |
 
-Simplenote, QOwnNotes and Kdenlive were run for 30 seconds each in Xvfb with the socket probe (docs/SOCKET-PROBE.md); that is a start and light use, not a full test.
+Not done in this run: D-Bus logs for most apps, usage tests beyond start, checks of the
+Docker/LXD socket probe, AppImage updater and Electron sandbox notes, tree/package sizes per app.
+The D-Bus log with `xdg-dbus-proxy --filter --log` on a private bus was taken for MuseScore (asks
+for `org.freedesktop.portal.Desktop` Settings, `org.a11y.Bus`, `org.gtk.vfs.Daemon`), PCSX2
+(`org.a11y.Bus`) and qBittorrent (`org.freedesktop.Notifications`, `org.kde.StatusNotifierWatcher`,
+`org.gnome.SessionManager`, `org.freedesktop.PowerManagement`).
 
-## Isolated view (bubblewrap)
+## Signatures
 
-On 2026-10-29 the four apps were started again with the isolated view (`/usr/bin/bwrap` 0.11.1, Ubuntu 26.04, Landlock V8)
-in Xvfb, with an isolated HOME and a runtime folder of its own. A start counts when a window with the
-app's title, at least 100 pixels wide and high, appears and the app is still running after 30 seconds.
+- Nextcloud: valid, key 2880 6A87 8AE4 23A2 8372 792E D758 99B9 A724 937A (nextcloud.com).
+- qBittorrent: valid, key D8F3 DA77 AAC6 7410 5359 9C13 6E4A 2D02 5B7C C9A2 (project README).
+- Krita: valid, key E9FB 29E7 4ADE ACC5 E303 5B8A B69E B4CF 7468 332F (file linked from the release announcement).
+- Cura: signed by C1A1B91069C4AF59; no official page with the key was found, not verified.
+- MuseScore, Shotcut, OpenShot, FreeCAD, Etcher: sha256 from the author's file matched. Others: only a hash computed here.
 
-| App | First window | Evidence of use |
-|---|---|---|
-| Joplin | 3.4 s (first start, the tree is built) | window 1024x640; profile created in the private config folder |
-| Simplenote | 2.1 s | window 1024x768; update check over HTTPS reached the server (DNS and the network work in the view) |
-| QOwnNotes | 1.6 s | "Welcome to QOwnNotes" window; settings written to the private config folder |
-| Kdenlive | 5.2 s (first start) | window; `kdenliverc` written to the private config folder |
+## New defects (proposed priority, plan task)
 
-The view has an empty home folder (checked again on 2026-10-29, after that change). Each app ran twice in its own
-Xvfb with the same isolated HOME, which had a dark GTK setting and a user font: once in the view and once in a copy of
-the machine where `/usr/bin/bwrap` cannot be used. The screenshots of the root window were compared pixel by pixel:
+1. High, convert/stub: `.dynstr` larger than 1 MiB is refused ("strtab too large"). Blocks Nextcloud, PrusaSlicer, Cura, FreeCAD, GIMP, Etcher (6 of 20).
+2. High, symbol check: symbols that the loader provides (`__tls_get_addr`, `_rtld_global_ro`, `GLIBC_PRIVATE`) are reported undefined when the loader is not in the needed list; `doctor` shows KO and every start prints a warning.
+3. High, view/PID namespace: process ids repeat in every view, so lock files left by a kill (qBittorrent `lockfile`) are never seen as stale and the app does not start again.
+4. Medium, convert: absolute symlinks are accepted at convert but refused at first start (`symlink escapes root`).
+5. Medium, resolution: libraries in directories that only `AppRun` adds to `LD_LIBRARY_PATH`, or `$ORIGIN` neighbours (`libffmpeg.so`), are reported missing.
+6. Medium, convert: DwarFS AppImages unsupported; entry guessed from `Exec=` in `usr/bin` only, symlinks not followed (MuseScore, GIMP, Etcher).
+7. Medium, convert: `AppRun` shell scripts as entry lose `APPDIR` (Bitwarden).
+8. Low, convert: name and version default to the desktop name and `1.0`.
+9. Low, `doctor` reports only the first unresolved library.
 
-| App | Differing pixels | What differs |
-|---|---|---|
-| Joplin | 2,477 of 1,024,000 | clock of the note and attachment names |
-| Simplenote | 0 | (the no-view run used a short home path) |
-| QOwnNotes | 697 | the home path in the text field |
-| Kdenlive | 5,952 | the home path in the "Could not enter folder" message, in both runs |
+## D-Bus summary for step 5
 
-The theme (Joplin dark, Qt style) and the user font look the same in both modes. The "Could not enter folder" message of
-Kdenlive also appears without the view: it comes from the sandbox, which does not let the app read the home folder.
-
-PipeWire and PulseAudio were tested with the real sockets of the user's session: with `audio = true`,
-`pw-cli info 0` prints `PipeWire:Interface:Core/4` and a connection to `pulse/native` succeeds; with the
-permission off, both sockets do not exist in the view and `pw-cli` reports `failed to connect`.
-
-Apps get private config, data, state and cache folders (see `panpak data path <id>`), so a profile written by an older panpak in `~/.local/share/<id>` is not used any more.
-
-## Joplin
-
-Joplin 3.7.21 opens its main window (1024x720) in 30 of 30 starts with an
-existing profile, in 30 of 30 starts with a new profile at every start, and in
-10 of 10 starts without the `--no-sandbox` and `--disable-gpu` options. The
-sandbox was on in all runs. Three things need a step.
-
-### Configuration directory
-
-With the private app folders, Joplin needs no link and no home path. The package
-sets the profile with `--profile`, which Joplin accepts:
-
-```toml
-[launch]
-args = ["--profile", "${XDG_CONFIG_HOME}/joplin-desktop"]
-```
-
-Ten starts in an isolated HOME with no adapter link gave a window every time,
-the profile was created in the private config folder and nothing was created
-under `~/.config`. The text below explains why the older versions needed a link.
-
-Joplin stores its profile in `~/.config/joplin-desktop`. It builds this path
-from the home directory and ignores `XDG_CONFIG_HOME`. The sandbox allows
-writes only in the app data directory, so the start fails with
-`EACCES: permission denied, mkdir '.../.config/joplin-desktop'`. The test
-scripts create a symbolic link from that path to a directory inside the app
-data directory. Starting Joplin with `--profile <directory in app data>` is
-the other way.
-
-### Library libdbus-glib-1.so.2
-
-The only user of `libdbus-glib-1.so.2` is the bundled `libgconf-2.so.4`, which
-the main executable does not link. Hosts without the library fail at start with
-`PANPAK-E2000` unless the package is converted with
-`--allow-missing libdbus-glib-1.so.2`. With the option, Joplin starts.
-
-### Port 2658 (with the private folders)
-
-Joplin opens a local server on `127.0.0.1:2658` for its IPC. Without network permissions the sandbox denies both the connect and
-the bind, and the log shows `listen EACCES: permission denied 127.0.0.1:2658`.
-The start is not blocked. With this manifest the error is gone and the server
-starts:
-
-```toml
-[permissions]
-network = true
-network_allow_tcp = [2658, 443]
-network_bind_tcp = [2658]
-```
-
-Landlock filters the TCP port, not the address.
-
-### Start with no window after the app was ended
-
-A start that ends at once with exit code 0 and no window, in about one start
-of two, comes from Joplin and not from panpak. Joplin keeps a `lock` file in
-its profile directory while it runs. If the instance is ended with SIGKILL or
-SIGTERM, the file stays. The next start finds it, logs `[appClose] quit()
-called`, removes the file and exits. The start after that works. Starting the
-installed tree directly, with no panpak, shows the same sequence (start, exit,
-start, exit). Removing the `lock` file before the start avoids it. The test scripts stop
-apps with SIGTERM, wait for the exit and use SIGKILL only for what is left;
-a script that restarts Joplin on the same profile must remove the file first.
-
-## Simplenote
-
-Simplenote (an Electron app) died with SIGTRAP at start when `TMPDIR` was a long path. Chromium makes
-`$TMPDIR/scoped_dirXXXXXX/SingletonSocket`, a Unix socket path, and the limit is 107 bytes. With
-`TMPDIR=<home>/.local/share/panpak/userdata/<id>/tmp` the path is 103 bytes for a user name of 8 characters
-and `org.example.simplenote`, so a user name of about 13 characters or more, or a longer app id, fails.
-A short home path was used for the test. Inside the isolated view `TMPDIR` is `/tmp`, so Simplenote starts
-with a long home path too (checked with a home of 37 characters, where the private `tmp` folder is 93
-characters long: it starts in the view; without the view, with a similar home, it ends with SIGTRAP, exit status 133). Without the view the private `tmp`
-folder should have a shorter path (for example under `$XDG_RUNTIME_DIR`). The `AppRun` of this AppImage also
-looks for its folder from its first argument, which `--no-sandbox` from the `Exec` line replaces:
-set `APPDIR` and `APPIMAGE` to the tree.
-
-## Mu
-
-Mu 1.2.0 does not start: the process dies with SIGSEGV at the call
-`QApplication(sys.argv)` in `mu/app.py` (Python's faulthandler shows line 322),
-right after Mu logs that it found no `venv.json`. The same crash happens, with
-a new profile in an isolated HOME and the same Xvfb display, in all three ways
-tested: through panpak (3 of 3 starts), from the extracted tree with no sandbox
-(4 of 4) and from the original AppImage with no panpak at all (4 of 4). So it
-is not caused by panpak or by its sandbox. The package set `IPYTHONDIR` to the private config folder and a `mu_code` home path (read
-and write). The home path was created and Mu looked for its settings in the private data
-folder, but `IPYTHONDIR` could not be exercised because Mu crashes before it opens the
-editor, so the application never shows a window. Missing libraries
-are still handled with `--allow-missing` (48 libraries).
-
-## GTK3 dark theme
-
-GTK3 apps read the dark preference from dconf, which they cannot reach with a
-private config folder. The stub reads it once at start with `gsettings` (at most
-200 ms) and sets `GTK_THEME=<theme>:dark`. It costs about 4 ms with the real
-`gsettings` (two queries at the same time, 40 runs, median; p95 5 ms). The theme does not change while the app is
-open. The settings portal is planned to replace this.
-
-## Update size
-
-`panpak update` fetches the new index and only the chunks that the installed
-package does not have. This section compares that with downloading the new
-package or the new AppImage.
-
-| App | Update | Delta | New package | New AppImage | Delta / package | Delta / AppImage | Chunks fetched |
-|---|---|---|---|---|---|---|---|
-| QOwnNotes | 26.10.8 to 26.10.9 | 5,280,898 | 67,413,526 | 62,347,768 | 7.8% | 8.5% | 151 of 3,200 |
-| Simplenote | 2.27.0 to 2.27.1 | 1,731,921 | 155,482,783 | 147,197,267 | 1.1% | 1.2% | 78 of 5,419 |
-| Joplin | 3.7.18 to 3.7.21 | 11,274,083 | 222,972,773 | 201,462,481 | 5.1% | 5.6% | 403 of 7,398 |
-
-All sizes are in bytes. Joplin 3.7.18 is the stable release before 3.7.21; the
-releases 3.7.19 and 3.7.20 do not appear in its release list.
-
-How it was measured:
-
-1. Each AppImage was converted with `panpak convert` (same app id and a test
-   key for both versions of an app).
-2. The old package was installed in an isolated HOME. Its manifest and the
-   manifest of the new package were re-signed to point `[update].url` at a
-   local HTTP server on `127.0.0.1`.
-3. The server is `tests/range_server.py` in normal mode. It serves the new
-   package with HTTP Range support.
-4. `panpak update --allow-insecure-http <app-id>` ran with `PANPAK_RANGE_LOG`
-   set. The runtime writes one line per request with the number of body bytes
-   received. The delta is the sum over all requests (6 for QOwnNotes, 12 for
-   Simplenote, 61 for Joplin). It includes the footer, the index, the manifest
-   and the signature, and it does not include HTTP headers.
-5. After the update, the installed package was compared byte for byte with the
-   new package, and the chunks fetched were counted by comparing the chunk
-   lists of the two packages.
-
-The figure of a full AppImage download is the file size. Neither number
-includes any compression done by the transport.
-
-### Files measured
-
-| File | SHA-256 |
-|---|---|
-| Joplin-3.7.18.AppImage | c7ed7eeb6985621b75f0d09088cd01efc9af7aa2cfa17649ed4a83a75b29aca5 |
-| Joplin-3.7.21.AppImage | 5d202dcaca31e14206826aa3f04125e7c218dbc3dc3d98479d811efbd6b856c1 |
-| QON-v26.10.8-QOwnNotes-x86_64.AppImage | c52b09c43101fec06664e3b701c99c6415c2b74aae5957453b0078bb06857d6c |
-| QON-v26.10.9-QOwnNotes-x86_64.AppImage | 56c407e3a8c614afc4a0d6af1a511a2a7bec09326533dafbd2ec42d16c940be5 |
-| SN-Simplenote-linux-2.27.0-x86_64.AppImage | 1d7dee1959c253335e2d6833d2006d7e1ede7e708208c8cd2f144f11dce7b0eb |
-| SN-Simplenote-linux-2.27.1-x86_64.AppImage | 91544f51e3c2553edaf8ea37ab0d4083451e636b2d6a74dc3e654a8e333d3123 |
-
-Joplin 3.7.18 comes from the Joplin GitHub release page, and its SHA-256 and the
-published SHA-512 both match. The other files were already in the test
-directory; their origin was not checked again.
+Too few apps were logged to count rules. Seen so far: Settings portal (1 of 3), accessibility bus
+(3 of 3), `org.freedesktop.Notifications` and StatusNotifier (qBittorrent), session manager and
+power management (qBittorrent).
