@@ -41,6 +41,11 @@
   from the system, as before. This fixes `symbol lookup error` with a system library of the same name and a
   different API (Audacity and `libSoundTouch.so.1`). `panpak doctor` checks, for an installed app, that the
   symbols it needs are defined by the chosen libraries. The format does not change. See PANPAK-FORMAT.md §7.
+- **Libraries: families and a symbol check.** GLib, GTK (with GDK, Pango, Cairo and the like), GStreamer and FFmpeg move
+  whole, as Qt already did: all from the package or all from the system. After the rules, the runtime looks for symbols
+  that no chosen library defines and, if it finds some, takes the library (with its family) from its other copy, until
+  nothing is missing or nothing can change (at most 8 steps). If some remain, the app still starts, with a warning, and
+  `panpak doctor` lists them. This fixes QOwnNotes, whose bundled GLib was older than the system libraries it also loads.
 - **GTK3 dark theme** from `gsettings` at start (at most 200 ms).
 - **Security: paths and text from the manifest.** `app.id` has one strict
   grammar (spec §3.1.1) and every manifest field that becomes a path, a file

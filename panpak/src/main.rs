@@ -1755,19 +1755,21 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                 let tree = store.join("trees").join(panpak_core::hex(&ft.root));
                 let bundled = panpak_core::abi::bundled_libs(&tree);
                 let host = panpak_core::abi::host_libs();
-                let first = panpak_core::abi::decide(&need, &prefer, &allowed, &host, &bundled);
-                // libstdc++ and libgcc_s are chosen by symbol versions, as the stub does at start.
-                let chosen = first.and_then(|ds| {
-                    let modules = panpak_core::abi::elf_modules(&tree, &man.app.entry, &ds);
-                    let prefs = panpak_core::abi::cxx_runtime_prefs(&modules, &host, &bundled, &tree);
-                    if prefs.is_empty() {
-                        Ok(ds)
-                    } else {
-                        panpak_core::abi::decide_with(&need, &prefer, &allowed, &host, &bundled, &prefs)
-                    }
-                });
+                // The same resolution as the stub does: the rules, then the symbol check. Without the
+                // tree (the app is not installed yet) only the rules can be applied.
+                let installed = tree.join(&man.app.entry).exists();
+                let resolved = if installed {
+                    panpak_core::abi::resolve_consistent(&tree, &man.app.entry, &need, &prefer, &allowed, &host, &bundled).map(Some)
+                } else {
+                    Ok(None)
+                };
+                let chosen = match resolved {
+                    Ok(Some(r)) => Ok((r.decisions.clone(), Some(r))),
+                    Ok(None) => panpak_core::abi::decide(&need, &prefer, &allowed, &host, &bundled).map(|d| (d, None)),
+                    Err(e) => Err(e),
+                };
                 match chosen {
-                    Ok(ds) => {
+                    Ok((ds, resolution)) => {
                         for (n, s) in &ds {
                             line(true, &format!("lib {n}: {s:?}"));
                         }
@@ -1782,12 +1784,12 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                         if need.is_empty() {
                             line(true, "no dynamic dependencies (static or script)");
                         }
-                        // Read-only check of the choices against what the app asks of them.
-                        if tree.join(&man.app.entry).exists() {
-                            let loader = ["ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1"]
-                                .iter()
-                                .find_map(|n| bundled.get(*n).map(|r| tree.join(r)).or_else(|| host.get(*n).cloned()));
-                            let d = panpak_core::abi::diagnose(&tree, &man.app.entry, &ds, loader.as_deref(), &host, &allowed);
+                        // The symbol check of the resolution: what the app and the chosen libraries need.
+                        if let Some(r) = &resolution {
+                            if !r.changed.is_empty() {
+                                println!("NOTE libraries taken from their other copy so that every symbol is defined: {}", r.changed.join(", "));
+                            }
+                            let d = &r.diagnosis;
                             if d.missing.is_empty() {
                                 line(true, &format!("symbols: every symbol that the app and the chosen libraries need is defined ({} files read)", d.modules));
                             } else {

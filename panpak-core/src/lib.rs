@@ -1671,7 +1671,7 @@ pub mod abi {
         map
     }
 
-    #[derive(Debug, PartialEq, Eq)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Source {
         Host(PathBuf),
         Bundled(PathBuf), // relative to tree
@@ -1744,6 +1744,54 @@ pub mod abi {
             "libQt5Core.so.5"
         }
     }
+    /// The atomic families: all of a family comes from the bundle or all from the system.
+    pub const FAMILIES: &[&str] = &["Qt6", "Qt5", "GLib", "GTK", "GStreamer", "FFmpeg"];
+
+    /// GLib: the libraries that share one source tree and one version number.
+    const GLIB_FAMILY: &[&str] = &[
+        "libglib-2.0.so.0", "libgobject-2.0.so.0", "libgio-2.0.so.0", "libgmodule-2.0.so.0", "libgthread-2.0.so.0",
+    ];
+    /// GTK 2, 3 and 4 with GDK, and the libraries that are built with them and whose types they
+    /// share: GdkPixbuf, ATK and AT-SPI, Pango, Cairo (and its GObject glue), Epoxy, Graphene.
+    /// Globs as in `glob_match`.
+    const GTK_FAMILY: &[&str] = &[
+        "libgtk-*", "libgdk-*", "libgdk_pixbuf-2.0.so.0", "libatk-1.0.so.0", "libatk-bridge-2.0.so.0", "libatspi.so.0",
+        "libpango-1.0.so.0", "libpangocairo-1.0.so.0", "libpangoft2-1.0.so.0", "libpangoxft-1.0.so.0",
+        "libcairo.so.2", "libcairo-gobject.so.2", "libepoxy.so.0", "libgraphene-1.0.so.0",
+    ];
+    /// FFmpeg: the libraries of one release.
+    const FFMPEG_FAMILY: &[&str] = &[
+        "libavcodec.*", "libavformat.*", "libavutil.*", "libswresample.*", "libswscale.*", "libavfilter.*",
+        "libavdevice.*", "libpostproc.*",
+    ];
+
+    /// The atomic family of a SONAME, if it belongs to one.
+    pub fn family_of(n: &str) -> Option<&'static str> {
+        if let Some(q) = qt_family(n) {
+            return Some(q);
+        }
+        let in_list = |list: &[&str]| list.iter().any(|g| glob_match(g, n));
+        if GLIB_FAMILY.contains(&n) {
+            Some("GLib")
+        } else if in_list(GTK_FAMILY) {
+            Some("GTK")
+        } else if n.starts_with("libgst") && n.contains(".so") {
+            Some("GStreamer")
+        } else if in_list(FFMPEG_FAMILY) {
+            Some("FFmpeg")
+        } else {
+            None
+        }
+    }
+
+    /// The library whose presence in the bundle shows that the bundle carries the family (Qt only).
+    fn family_core(fam: &str) -> Option<&'static str> {
+        match fam {
+            "Qt6" | "Qt5" => Some(qt_core(fam)),
+            _ => None,
+        }
+    }
+
     pub fn decide(
         needs: &[String],
         prefer_host: &[String],
@@ -1754,39 +1802,35 @@ pub mod abi {
         decide_with(needs, prefer_host, allow_missing, host, bundled, &HashMap::new())
     }
 
-    /// `decide` with the choices for `CXX_RUNTIME`: name -> true to take the system copy.
+    /// `decide` with the choices made from the symbols (`cxx_runtime_prefs`, `resolve_consistent`):
+    /// name -> true to take the system copy.
     pub fn decide_with(
         needs: &[String],
         prefer_host: &[String],
         allow_missing: &[String],
         host: &HashMap<String, PathBuf>,
         bundled: &HashMap<String, PathBuf>,
-        runtime_prefs: &HashMap<String, bool>,
+        prefs: &HashMap<String, bool>,
     ) -> Result<Vec<(String, Source)>> {
         let mut out = Vec::new();
         let bundle_libc = bundled.contains_key("libc.so.6")
             && needs.iter().any(|n| GLIBC_FAMILY.iter().any(|g| g == n));
-        // Qt/KF atomicity (like glibc): Qt minors do not guarantee
-        // private-symbol compatibility across different builds; mixing
-        // host+bundle dies with Qt_PRIVATE_API/Qt_6.x not found. If the
-        // bundle covers ALL needs of the family, the whole family comes
-        // from the bundle (vendor configuration). Otherwise, if the
-        // host covers all of them, it comes whole from the host. Otherwise the
-        // normal rules stand (mix only if unavoidable).
-        let mut bundle_qt_ok: std::collections::HashMap<&str, bool> = Default::default();
-        let mut host_qt_ok: std::collections::HashMap<&str, bool> = Default::default();
-        for fam in ["Qt6", "Qt5"] {
-            let fam_needs: Vec<&String> =
-                needs.iter().filter(|n| qt_family(n.as_str()) == Some(fam)).collect();
+        // Atomic families (like glibc): the libraries of a family are built against each other, and
+        // mixing the package's copy of one with the system's copy of another dies with missing
+        // symbols (Qt: `Qt_PRIVATE_API`; GLib: `g_free_sized`). If the bundle covers ALL the needs
+        // of a family (and its core library, for Qt), the whole family comes from the bundle (vendor
+        // configuration). Otherwise, if the host covers all of them, it comes whole from the host.
+        // Otherwise the normal rules stand (mix only if unavoidable).
+        let mut bundle_fam_ok: HashMap<&str, bool> = Default::default();
+        let mut host_fam_ok: HashMap<&str, bool> = Default::default();
+        for fam in FAMILIES {
+            let fam_needs: Vec<&String> = needs.iter().filter(|n| family_of(n.as_str()) == Some(*fam)).collect();
             if fam_needs.is_empty() {
                 continue;
             }
-            bundle_qt_ok.insert(
-                fam,
-                bundled.contains_key(qt_core(fam))
-                    && fam_needs.iter().all(|n| bundled.contains_key(n.as_str())),
-            );
-            host_qt_ok.insert(fam, fam_needs.iter().all(|n| host.contains_key(n.as_str())));
+            let core_ok = family_core(fam).is_none_or(|c| bundled.contains_key(c));
+            bundle_fam_ok.insert(fam, core_ok && fam_needs.iter().all(|n| bundled.contains_key(n.as_str())));
+            host_fam_ok.insert(fam, fam_needs.iter().all(|n| host.contains_key(n.as_str())));
         }
         for n in needs {
             // The loader (libc's own DT_NEEDED) does not enter the farm:
@@ -1823,10 +1867,17 @@ pub mod abi {
                     None => bail!("incomplete glibc family in the bundle: missing {n}"),
                 }
             }
-            // Atomic Qt/KF family: bundle first if complete, then
-            // host if complete, never host+bundle mix.
-            if let Some(fam) = qt_family(n) {
-                if bundle_qt_ok.get(fam).copied().unwrap_or(false) {
+            // A choice made by the symbol check (see `resolve_consistent`) for a library that has two
+            // copies. Not in the B-world, and never for the libraries the system must win.
+            if !bundle_libc && !SYSTEM_WINS.iter().any(|g| glob_match(g, n)) {
+                if let (Some(hp), Some(bp), Some(&use_host)) = (host.get(n), bundled.get(n), prefs.get(n)) {
+                    out.push((n.clone(), if use_host { Source::Host(hp.clone()) } else { Source::Bundled(bp.clone()) }));
+                    continue;
+                }
+            }
+            // Atomic family: bundle first if complete, then host if complete, never host+bundle mix.
+            if let Some(fam) = family_of(n) {
+                if bundle_fam_ok.get(fam).copied().unwrap_or(false) {
                     match bundled.get(n) {
                         Some(bp) => {
                             out.push((n.clone(), Source::Bundled(bp.clone())));
@@ -1835,7 +1886,7 @@ pub mod abi {
                         None => bail!("incomplete {fam} family in the bundle: missing {n}"),
                     }
                 }
-                if host_qt_ok.get(fam).copied().unwrap_or(false) {
+                if host_fam_ok.get(fam).copied().unwrap_or(false) {
                     match host.get(n) {
                         Some(hp) => {
                             out.push((n.clone(), Source::Host(hp.clone())));
@@ -1849,14 +1900,6 @@ pub mod abi {
                 // B-world (glibc in the bundle): bundle-first for build coherence.
                 (_, Some(bp)) if bundle_libc => {
                     out.push((n.clone(), Source::Bundled(bp.clone())))
-                }
-                // The C++ runtime: the copy that has every symbol version the app needs.
-                (Some(hp), Some(bp)) if CXX_RUNTIME.contains(&n.as_str()) => {
-                    if runtime_prefs.get(n).copied().unwrap_or(false) {
-                        out.push((n.clone(), Source::Host(hp.clone())))
-                    } else {
-                        out.push((n.clone(), Source::Bundled(bp.clone())))
-                    }
                 }
                 // glibc and the graphics stack: the system copy, even if the package has one.
                 (Some(hp), Some(_)) if SYSTEM_WINS.iter().any(|g| glob_match(g, n)) => {
@@ -1950,12 +1993,46 @@ pub mod abi {
         pub missing: Vec<(String, String)>,
     }
 
+    /// Parsed ELF files, kept between the steps of one resolution.
+    #[derive(Default)]
+    pub struct SymCache {
+        map: HashMap<PathBuf, Option<std::rc::Rc<crate::ElfSyms>>>,
+    }
+
+    impl SymCache {
+        fn get(&mut self, p: &Path) -> Option<std::rc::Rc<crate::ElfSyms>> {
+            self.map
+                .entry(p.to_path_buf())
+                .or_insert_with(|| fs::read(p).ok().and_then(|b| crate::parse_syms(&b).ok()).map(std::rc::Rc::new))
+                .clone()
+        }
+    }
+
+    /// The key a symbol is looked up by: `name`, or `name@version` for a versioned one.
+    fn symbol_key(name: &str, version: Option<&str>) -> String {
+        match version {
+            Some(v) => format!("{name}@{v}"),
+            None => name.to_string(),
+        }
+    }
+
     /// Read-only check: for the entry, the executables next to it and every chosen library, each
     /// non-weak undefined symbol must be defined by one of them (same version name when the
     /// symbol is versioned; symbols asked of an `allow_missing` library are left out). `loader` is the
-    /// dynamic loader in use. A report, not a decision: the
-    /// loader has the last word.
+    /// dynamic loader in use. A report, not a decision: the loader has the last word.
     pub fn diagnose(
+        tree: &Path,
+        entry: &str,
+        decisions: &[(String, Source)],
+        loader: Option<&Path>,
+        host: &HashMap<String, PathBuf>,
+        allow_missing: &[String],
+    ) -> Diagnosis {
+        diagnose_cached(&mut SymCache::default(), tree, entry, decisions, loader, host, allow_missing)
+    }
+
+    fn diagnose_cached(
+        cache: &mut SymCache,
         tree: &Path,
         entry: &str,
         decisions: &[(String, Source)],
@@ -1975,6 +2052,10 @@ pub mod abi {
                 if known.insert(need.clone()) {
                     if let Some(p) = host.get(&need) {
                         modules.push(p.clone());
+                    } else if let Some(p) = sibling_lib(&modules[i], &need) {
+                        // A library next to the one that needs it, or in a folder below it (a RUNPATH
+                        // such as /usr/lib/x86_64-linux-gnu/libproxy), which the inventory does not list.
+                        modules.push(p);
                     }
                 }
             }
@@ -1983,13 +2064,9 @@ pub mod abi {
         let mut parsed = Vec::new();
         let mut defined: HashSet<String> = HashSet::new();
         for m in &modules {
-            let Ok(b) = fs::read(m) else { continue };
-            let Ok(syms) = crate::parse_syms(&b) else { continue };
+            let Some(syms) = cache.get(m) else { continue };
             for (name, version) in &syms.defined {
-                defined.insert(match version {
-                    Some(v) => format!("{name}@{v}"),
-                    None => name.clone(),
-                });
+                defined.insert(symbol_key(name, version.as_deref()));
                 // A versioned symbol also answers a request without a version.
                 defined.insert(name.clone());
             }
@@ -2004,10 +2081,7 @@ pub mod abi {
                 if u.version.as_ref().is_some_and(|(_, file)| allow_missing.iter().any(|g| glob_match(g, file))) {
                     continue;
                 }
-                let key = match &u.version {
-                    Some((v, _)) => format!("{}@{v}", u.name),
-                    None => u.name.clone(),
-                };
+                let key = symbol_key(&u.name, u.version.as_ref().map(|(v, _)| v.as_str()));
                 if !defined.contains(&key) {
                     d.missing.push((shown.clone(), key));
                 }
@@ -2016,6 +2090,154 @@ pub mod abi {
         d.missing.sort();
         d.missing.dedup();
         d
+    }
+
+    /// `name` in the folder of `module` or in a folder directly below it.
+    fn sibling_lib(module: &Path, name: &str) -> Option<PathBuf> {
+        let dir = module.parent()?;
+        let here = dir.join(name);
+        if here.is_file() {
+            return Some(here);
+        }
+        fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_dir()).map(|p| p.join(name)).find(|p| p.is_file())
+    }
+
+    /// The most steps `resolve_consistent` takes.
+    pub const MAX_CONSISTENCY_STEPS: usize = 8;
+
+    /// The decisions after the symbol check.
+    #[derive(Debug)]
+    pub struct Resolution {
+        pub decisions: Vec<(String, Source)>,
+        /// What no chosen library defines after the last step.
+        pub diagnosis: Diagnosis,
+        /// The libraries whose source the symbol check changed, in order.
+        pub changed: Vec<String>,
+        /// Steps taken (0: the rules gave a consistent set).
+        pub steps: usize,
+    }
+
+    /// The dynamic loader in use: the bundled one (glibc in the bundle) or the system's.
+    fn loader_path(tree: &Path, host: &HashMap<String, PathBuf>, bundled: &HashMap<String, PathBuf>) -> Option<PathBuf> {
+        ["ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1"]
+            .iter()
+            .find_map(|n| bundled.get(*n).map(|r| tree.join(r)).or_else(|| host.get(*n).cloned()))
+    }
+
+    /// `decide` (with the C++ runtime choice) followed by the symbol check: if some symbol that the
+    /// app or the chosen libraries need is defined by none of them, change the source of the library
+    /// (and its whole atomic family) whose other copy defines it, and check again, until nothing is
+    /// missing, nothing can be changed, or `MAX_CONSISTENCY_STEPS` steps. A step is kept only if it
+    /// lowers the number of missing symbols. It never touches the libraries in `SYSTEM_WINS`, the
+    /// C++ runtime, `prefer_host` and `allow_missing` libraries, nor a bundle with its own glibc.
+    /// The symbols that remain are reported in `diagnosis`; the app still installs and starts.
+    pub fn resolve_consistent(
+        tree: &Path,
+        entry: &str,
+        needs: &[String],
+        prefer_host: &[String],
+        allow_missing: &[String],
+        host: &HashMap<String, PathBuf>,
+        bundled: &HashMap<String, PathBuf>,
+    ) -> Result<Resolution> {
+        let mut cache = SymCache::default();
+        let loader = loader_path(tree, host, bundled);
+        let first = decide(needs, prefer_host, allow_missing, host, bundled)?;
+        let modules = elf_modules(tree, entry, &first);
+        let mut prefs = cxx_runtime_prefs(&modules, host, bundled, tree);
+        let mut decisions = decide_with(needs, prefer_host, allow_missing, host, bundled, &prefs)?;
+        let mut diag = diagnose_cached(&mut cache, tree, entry, &decisions, loader.as_deref(), host, allow_missing);
+        let (mut changed, mut blocked, mut steps) = (Vec::new(), HashSet::<String>::new(), 0usize);
+        while !diag.missing.is_empty() && steps < MAX_CONSISTENCY_STEPS {
+            steps += 1;
+            let flips = flip_candidates(&mut cache, &diag, &decisions, tree, host, bundled, prefer_host, &blocked);
+            if flips.is_empty() {
+                break;
+            }
+            let mut trial = prefs.clone();
+            trial.extend(flips.iter().map(|(n, h)| (n.clone(), *h)));
+            let names: Vec<String> = flips.keys().cloned().collect();
+            let next = decide_with(needs, prefer_host, allow_missing, host, bundled, &trial).ok();
+            let checked = next.map(|d| {
+                let g = diagnose_cached(&mut cache, tree, entry, &d, loader.as_deref(), host, allow_missing);
+                (d, g)
+            });
+            match checked {
+                Some((d, g)) if g.missing.len() < diag.missing.len() => {
+                    prefs = trial;
+                    decisions = d;
+                    diag = g;
+                    changed.extend(names);
+                }
+                _ => blocked.extend(names),
+            }
+        }
+        Ok(Resolution { decisions, diagnosis: diag, changed, steps })
+    }
+
+    /// Libraries to take from their other copy so that a missing symbol gets defined: name -> true for
+    /// the system copy. A family moves whole, and only if every member has the copy it moves to.
+    #[allow(clippy::too_many_arguments)]
+    fn flip_candidates(
+        cache: &mut SymCache,
+        diag: &Diagnosis,
+        decisions: &[(String, Source)],
+        tree: &Path,
+        host: &HashMap<String, PathBuf>,
+        bundled: &HashMap<String, PathBuf>,
+        prefer_host: &[String],
+        blocked: &HashSet<String>,
+    ) -> std::collections::BTreeMap<String, bool> {
+        let movable = |n: &str| {
+            !blocked.contains(n)
+                && !SYSTEM_WINS.iter().any(|g| glob_match(g, n))
+                && !CXX_RUNTIME.contains(&n)
+                && !prefer_host.iter().any(|g| glob_match(g, n))
+        };
+        // The other copy of a decided library: (path, true if it is the system one).
+        let other = |n: &str, src: &Source| -> Option<(PathBuf, bool)> {
+            match src {
+                Source::Bundled(_) => host.get(n).map(|p| (p.clone(), true)),
+                Source::Host(_) => bundled.get(n).map(|r| (tree.join(r), false)),
+            }
+        };
+        let mut wanted = std::collections::BTreeMap::new();
+        for (_, key) in &diag.missing {
+            let (name, version) = match key.split_once('@') {
+                Some((n, v)) => (n, Some(v)),
+                None => (key.as_str(), None),
+            };
+            for (lib, src) in decisions.iter().filter(|(l, _)| movable(l)) {
+                let Some((alt, to_host)) = other(lib, src) else { continue };
+                let defines = cache
+                    .get(&alt)
+                    .is_some_and(|s| s.defined.iter().any(|(n, v)| n == name && (version.is_none() || v.as_deref() == version)));
+                if defines {
+                    wanted.insert(lib.clone(), to_host);
+                }
+            }
+        }
+        // Whole families, in the same direction; drop a family that cannot move whole.
+        let mut out = std::collections::BTreeMap::new();
+        for (lib, to_host) in &wanted {
+            let Some(fam) = family_of(lib) else {
+                out.insert(lib.clone(), *to_host);
+                continue;
+            };
+            let members: Vec<&(String, Source)> = decisions.iter().filter(|(m, _)| family_of(m) == Some(fam)).collect();
+            let all_can = members.iter().all(|(m, src)| {
+                let here_is_host = matches!(src, Source::Host(_));
+                here_is_host == *to_host || (movable(m) && other(m, src).is_some_and(|(_, h)| h == *to_host))
+            });
+            if all_can {
+                for (m, src) in members {
+                    if matches!(src, Source::Host(_)) != *to_host {
+                        out.insert(m.clone(), *to_host);
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub struct Plan {

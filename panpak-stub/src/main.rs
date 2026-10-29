@@ -1869,6 +1869,89 @@ mod tests {
         assert!(d.iter().all(|(_, s)| matches!(s, Source::Bundled(_))), "{d:?}");
     }
 
+    /// GLib, GTK, GStreamer and FFmpeg move whole: all included or all from the system.
+    #[test]
+    fn abi_atomic_families_table() {
+        use abi::{decide, family_of, Source};
+        use std::collections::HashMap;
+        let map = |names: &[&str], dir: &str| -> HashMap<String, PathBuf> {
+            names.iter().map(|n| (n.to_string(), PathBuf::from(format!("{dir}/{n}")))).collect()
+        };
+        let needs = |names: &[&str]| -> Vec<String> { names.iter().map(|n| n.to_string()).collect() };
+        let sources = |names: &[&str], host: &[&str], bund: &[&str]| -> String {
+            decide(&needs(names), &[], &[], &map(host, "/usr/lib"), &map(bund, "lib"))
+                .unwrap()
+                .iter()
+                .map(|(_, s)| if matches!(s, Source::Host(_)) { 'H' } else { 'B' })
+                .collect()
+        };
+        let glib = ["libglib-2.0.so.0", "libgobject-2.0.so.0", "libgio-2.0.so.0"];
+        // The bundle has every GLib library the app needs: the bundle.
+        assert_eq!(sources(&glib, &glib, &glib), "BBB");
+        // The bundle has only libglib (older) and the system all three: the whole family from the system.
+        assert_eq!(sources(&glib, &glib, &glib[..1]), "HHH");
+        // Neither side has the whole family: per library, the included one first (mix only if unavoidable).
+        assert_eq!(sources(&glib, &glib[1..], &glib[..1]), "BHH");
+        // Only the system has them: the system.
+        assert_eq!(sources(&glib, &glib, &[]), "HHH");
+        // GTK with GDK, GdkPixbuf, ATK, Pango, Cairo.
+        let gtk = ["libgtk-3.so.0", "libgdk-3.so.0", "libgdk_pixbuf-2.0.so.0", "libatk-1.0.so.0", "libpango-1.0.so.0", "libcairo.so.2"];
+        assert_eq!(sources(&gtk, &gtk, &gtk), "BBBBBB");
+        assert_eq!(sources(&gtk, &gtk, &gtk[..3]), "HHHHHH");
+        let gtk4 = ["libgtk-4.so.1", "libgdk_pixbuf-2.0.so.0"];
+        assert_eq!(sources(&gtk4, &gtk4, &gtk4[1..]), "HH");
+        // GStreamer: libgst*.
+        let gst = ["libgstreamer-1.0.so.0", "libgstbase-1.0.so.0", "libgstvideo-1.0.so.0"];
+        assert_eq!(sources(&gst, &gst, &gst[..2]), "HHH");
+        assert_eq!(sources(&gst, &gst, &gst), "BBB");
+        // FFmpeg: all or nothing.
+        let ff = ["libavcodec.so.60", "libavformat.so.60", "libavutil.so.58", "libswscale.so.7"];
+        assert_eq!(sources(&ff, &ff, &ff[..3]), "HHHH");
+        assert_eq!(sources(&ff, &ff, &ff), "BBBB");
+        // A library of no family is not tied to them.
+        assert_eq!(sources(&["libz.so.1", "libglib-2.0.so.0"], &["libz.so.1", "libglib-2.0.so.0"], &["libz.so.1"]), "BH");
+        // Membership.
+        for (n, fam) in [
+            ("libglib-2.0.so.0", Some("GLib")), ("libgmodule-2.0.so.0", Some("GLib")), ("libgtk-x11-2.0.so.0", Some("GTK")),
+            ("libgdk-3.so.0", Some("GTK")), ("libatspi.so.0", Some("GTK")), ("libpangocairo-1.0.so.0", Some("GTK")),
+            ("libgstapp-1.0.so.0", Some("GStreamer")), ("libavfilter.so.9", Some("FFmpeg")), ("libswresample.so.4", Some("FFmpeg")),
+            ("libQt6Core.so.6", Some("Qt6")), ("libKF5Auth.so.5", Some("Qt5")), ("libz.so.1", None), ("libcairo.so.1", None),
+        ] {
+            assert_eq!(family_of(n), fam, "{n}");
+        }
+    }
+
+    /// A choice from the symbol check: it moves a library that has two copies, but never the ones the
+    /// system must win, and not in a bundle with its own glibc.
+    #[test]
+    fn abi_symbol_check_choices_are_applied_with_limits() {
+        use abi::{decide_with, Source};
+        use std::collections::HashMap;
+        let map = |names: &[&str], dir: &str| -> HashMap<String, PathBuf> {
+            names.iter().map(|n| (n.to_string(), PathBuf::from(format!("{dir}/{n}")))).collect()
+        };
+        let both = ["libfoo.so.1", "libGL.so.1", "libm.so.6"];
+        let needs: Vec<String> = both.iter().map(|n| n.to_string()).collect();
+        let prefs: HashMap<String, bool> = both.iter().map(|n| (n.to_string(), true)).collect();
+        let d = decide_with(&needs, &[], &[], &map(&both, "/usr/lib"), &map(&both, "lib"), &prefs).unwrap();
+        // libfoo follows the choice (system); libGL and libm are the system's anyway.
+        assert!(d.iter().all(|(_, s)| matches!(s, Source::Host(_))));
+        let back: HashMap<String, bool> = both.iter().map(|n| (n.to_string(), false)).collect();
+        let d = decide_with(&needs, &[], &[], &map(&both, "/usr/lib"), &map(&both, "lib"), &back).unwrap();
+        // The choice "bundled" is honoured for libfoo only: libGL and libm stay with the system.
+        assert!(matches!(d[0].1, Source::Bundled(_)) && matches!(d[1].1, Source::Host(_)) && matches!(d[2].1, Source::Host(_)), "{d:?}");
+        // prefer_host and allow_missing are stronger than a choice.
+        let d = decide_with(&needs, &["libfoo*".into()], &[], &map(&both, "/usr/lib"), &map(&both, "lib"), &back).unwrap();
+        assert!(matches!(d[0].1, Source::Host(_)));
+        let d = decide_with(&needs, &[], &["libfoo*".into()], &map(&both, "/usr/lib"), &map(&both, "lib"), &prefs).unwrap();
+        assert!(d.iter().all(|(n, _)| n != "libfoo.so.1"));
+        // A bundle with its own glibc ignores the choices: everything is the bundle's.
+        let w = ["libc.so.6", "libfoo.so.1"];
+        let wn: Vec<String> = w.iter().map(|n| n.to_string()).collect();
+        let d = decide_with(&wn, &[], &[], &map(&w, "/usr/lib"), &map(&w, "lib"), &prefs).unwrap();
+        assert!(d.iter().all(|(_, s)| matches!(s, Source::Bundled(_))), "{d:?}");
+    }
+
     #[test]
     fn abi_glibc_family_is_atomic() {
         use abi::{decide, Source};

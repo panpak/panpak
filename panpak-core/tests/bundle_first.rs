@@ -186,3 +186,137 @@ fn doctor_diagnosis_reports_a_symbol_that_no_chosen_library_defines() {
     let included = vec![("libfoo.so.1".to_string(), Source::Bundled(PathBuf::from("lib/libfoo.so.1")))];
     assert!(diagnose(&tree, "bin/app", &included, None, &host, &[]).missing.is_empty());
 }
+
+/// A small version of the QOwnNotes case. The system has `libglib` (with `g_old` and `g_new`),
+/// `libgobject` (needs `g_new`) and `libpx` (needs `libgobject`); the package has an older `libglib`
+/// with `g_old` only, and no `libgobject`. The program calls `px_fn` and `g_old`.
+struct Glib {
+    dir: PathBuf,
+}
+
+impl Glib {
+    /// `bundled_glib_defines`: what the included `libglib` defines; `system_glib_defines`: the system's.
+    fn new(tag: &str, bundled_glib: &str, system_glib: &str, extra_call: &str) -> Option<Glib> {
+        let dir = std::env::temp_dir().join(format!("panpak-glib-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        for d in ["host", "tree/lib", "tree/bin", "store"] {
+            fs::create_dir_all(dir.join(d)).ok()?;
+        }
+        let w = |f: &str, t: &str| fs::write(dir.join(f), t).ok();
+        w("bglib.c", bundled_glib)?;
+        w("hglib.c", system_glib)?;
+        w("gobj.c", "int g_new(void);\nint gobj_fn(void) { return g_new() + 10; }\n")?;
+        w("px.c", "int gobj_fn(void);\nint px_fn(void) { return gobj_fn() + 100; }\n")?;
+        w(
+            "main.c",
+            &format!(
+                "#include <stdio.h>\nint px_fn(void);\nint g_old(void);\n{extra_call}\nint main(void) {{ printf(\"%d\\n\", px_fn() + g_old()); return 0; }}\n"
+            ),
+        )?;
+        let so = ["-shared", "-fPIC", "-Wl,-z,now"];
+        let ok = zig_cc(&dir, &[so.as_slice(), &["-Wl,-soname,libglib-2.0.so.0", "-o", "tree/lib/libglib-2.0.so.0", "bglib.c"]].concat())
+            && zig_cc(&dir, &[so.as_slice(), &["-Wl,-soname,libglib-2.0.so.0", "-o", "host/libglib-2.0.so.0", "hglib.c"]].concat())
+            && zig_cc(&dir, &[so.as_slice(), &["-Wl,-soname,libgobject-2.0.so.0", "-o", "host/libgobject-2.0.so.0", "gobj.c", "host/libglib-2.0.so.0"]].concat())
+            && zig_cc(&dir, &[so.as_slice(), &["-Wl,-soname,libpx.so.1", "-o", "host/libpx.so.1", "px.c", "host/libgobject-2.0.so.0"]].concat())
+            && zig_cc(&dir, &["-o", "tree/bin/app", "main.c", "host/libpx.so.1", "tree/lib/libglib-2.0.so.0", "-Wl,-z,now"]);
+        ok.then_some(Glib { dir })
+    }
+
+    fn host(&self) -> HashMap<String, PathBuf> {
+        ["libglib-2.0.so.0", "libgobject-2.0.so.0", "libpx.so.1"]
+            .iter()
+            .map(|n| (n.to_string(), self.dir.join("host").join(n)))
+            .chain([
+                ("libc.so.6".to_string(), PathBuf::from("/lib/x86_64-linux-gnu/libc.so.6")),
+                ("ld-linux-x86-64.so.2".to_string(), PathBuf::from("/lib64/ld-linux-x86-64.so.2")),
+            ])
+            .collect()
+    }
+
+    fn bundled(&self) -> HashMap<String, PathBuf> {
+        HashMap::from([("libglib-2.0.so.0".to_string(), PathBuf::from("lib/libglib-2.0.so.0"))])
+    }
+
+    fn needs() -> Vec<String> {
+        vec!["libglib-2.0.so.0".to_string(), "libpx.so.1".to_string()]
+    }
+
+    fn resolve(&self) -> panpak_core::abi::Resolution {
+        panpak_core::abi::resolve_consistent(&self.dir.join("tree"), "bin/app", &Self::needs(), &[], &[], &self.host(), &self.bundled()).unwrap()
+    }
+
+    fn run(&self, decisions: &[(String, Source)]) -> (bool, String) {
+        let plan = apply(&self.dir.join("store"), "root", &self.dir.join("tree"), decisions, &self.bundled()).unwrap();
+        let mut dirs = plan.ld_path.clone();
+        dirs.push(self.dir.join("host")); // the system folder: where the loader finds libgobject and libpx
+        let out = Command::new(self.dir.join("tree/bin/app"))
+            .env_clear()
+            .env("LD_LIBRARY_PATH", std::env::join_paths(dirs.iter()).unwrap())
+            .output()
+            .unwrap();
+        (out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)).trim().to_string())
+    }
+}
+
+impl Drop for Glib {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+const NEW_GLIB: &str = "int g_old(void) { return 1; }\nint g_new(void) { return 2; }\n";
+const OLD_GLIB: &str = "int g_old(void) { return 1; }\n";
+
+#[test]
+fn a_system_library_that_needs_newer_symbols_moves_the_included_one_to_the_system() {
+    let Some(g) = Glib::new("fix", OLD_GLIB, NEW_GLIB, "") else {
+        eprintln!("skipped: Zig cannot be run (set PANPAK_ZIG)");
+        return;
+    };
+    if !Path::new("/lib/x86_64-linux-gnu/libc.so.6").exists() || !Path::new("/lib64/ld-linux-x86-64.so.2").exists() {
+        eprintln!("skipped: no glibc at the usual place");
+        return;
+    }
+    // The rules alone take the included libglib; libgobject, which nothing in `needs` names, is the system's.
+    let rules = decide(&Glib::needs(), &[], &[], &g.host(), &g.bundled()).unwrap();
+    assert!(rules.contains(&("libglib-2.0.so.0".to_string(), Source::Bundled(PathBuf::from("lib/libglib-2.0.so.0")))));
+    let (ok, text) = g.run(&rules);
+    assert!(!ok && text.contains("g_new"), "expected a failure on g_new before the symbol check: {text}");
+    let r = g.resolve();
+    assert_eq!(r.changed, vec!["libglib-2.0.so.0".to_string()]);
+    assert!(r.diagnosis.missing.is_empty(), "{:?}", r.diagnosis);
+    assert_eq!(r.steps, 1);
+    assert!(r.decisions.contains(&("libglib-2.0.so.0".to_string(), Source::Host(g.dir.join("host/libglib-2.0.so.0")))));
+    let (ok, text) = g.run(&r.decisions);
+    assert!(ok, "the program does not start after the symbol check: {text}");
+    assert_eq!(text, "113");
+}
+
+#[test]
+fn a_symbol_that_nothing_defines_stays_reported_and_nothing_changes() {
+    let Some(g) = Glib::new("none", OLD_GLIB, OLD_GLIB, "int nowhere_fn(void);") else {
+        eprintln!("skipped: Zig cannot be run (set PANPAK_ZIG)");
+        return;
+    };
+    // Neither copy of libglib has `g_new`: libgobject (system) asks for a symbol no copy defines.
+    let r = g.resolve();
+    assert!(r.changed.is_empty(), "{:?}", r.changed);
+    assert!(r.steps <= panpak_core::abi::MAX_CONSISTENCY_STEPS);
+    assert!(r.diagnosis.missing.iter().any(|(_, s)| s == "g_new"), "{:?}", r.diagnosis);
+    // The decisions are those of the rules: the included libglib.
+    assert!(r.decisions.contains(&("libglib-2.0.so.0".to_string(), Source::Bundled(PathBuf::from("lib/libglib-2.0.so.0")))));
+}
+
+#[test]
+fn a_step_that_does_not_help_is_undone_and_the_loop_ends() {
+    // The system libglib has `g_new` but not `g_old`: moving to it fixes one symbol and breaks another.
+    let Some(g) = Glib::new("loop", OLD_GLIB, "int g_new(void) { return 2; }\n", "") else {
+        eprintln!("skipped: Zig cannot be run (set PANPAK_ZIG)");
+        return;
+    };
+    let r = g.resolve();
+    assert!(r.changed.is_empty(), "a step that does not lower the count must be undone: {:?}", r.changed);
+    assert!(r.steps >= 1 && r.steps <= panpak_core::abi::MAX_CONSISTENCY_STEPS, "steps {}", r.steps);
+    assert!(r.decisions.contains(&("libglib-2.0.so.0".to_string(), Source::Bundled(PathBuf::from("lib/libglib-2.0.so.0")))));
+    assert!(!r.diagnosis.missing.is_empty());
+}

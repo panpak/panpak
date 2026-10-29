@@ -93,7 +93,8 @@ pub fn resolve(store: &Path, package: &Path, root: &str, tree: &Path, man: &Mani
     let host = ldconfig.as_ref().map(|o| abi::parse_ldconfig(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_else(abi::host_libs);
     let mut seen: HashSet<String> = needs.iter().cloned().collect();
-    let decisions = loop {
+    // The needs grow to the closure of DT_NEEDED of what is decided.
+    loop {
         let decisions = abi::decide(&needs, &prefer, &allowed, &host, &bundled)?;
         let mut extra = Vec::new();
         for (_, source) in &decisions {
@@ -102,17 +103,37 @@ pub fn resolve(store: &Path, package: &Path, root: &str, tree: &Path, man: &Mani
                 if seen.insert(name.clone()) { extra.push(name); }
             }
         }
-        if extra.is_empty() { break decisions; }
+        if extra.is_empty() { break; }
         needs.extend(extra);
-    };
-    // libstdc++ and libgcc_s: the copy with every symbol version the app and its libraries need.
-    let modules = abi::elf_modules(tree, &man.app.entry, &decisions);
-    let prefs = abi::cxx_runtime_prefs(&modules, &host, &bundled, tree);
-    let decisions = if prefs.is_empty() {
-        decisions
-    } else {
-        abi::decide_with(&needs, &prefer, &allowed, &host, &bundled, &prefs)?
-    };
+    }
+    // The rules again with the C++ runtime choice, then the symbol check: a library whose other copy
+    // defines a symbol that nothing defines changes source, with its family, until a fixed point.
+    // The result is cached below, so this runs once per package, kernel and library inventory.
+    let rules = std::time::Instant::now();
+    let _ = abi::decide(&needs, &prefer, &allowed, &host, &bundled)?;
+    let rules_ms = rules.elapsed().as_millis();
+    let started = std::time::Instant::now();
+    let resolution = abi::resolve_consistent(tree, &man.app.entry, &needs, &prefer, &allowed, &host, &bundled)?;
+    trace(&format!(
+        "resolved in {} ms (the rules alone: {rules_ms} ms), {} steps, {} libraries changed",
+        started.elapsed().as_millis(),
+        resolution.steps,
+        resolution.changed.len()
+    ));
+    let decisions = resolution.decisions;
+    if !resolution.changed.is_empty() {
+        eprintln!("panpak: libraries taken from their other copy so that every symbol is defined: {}", resolution.changed.join(", "));
+    }
+    if !resolution.diagnosis.missing.is_empty() {
+        let d = &resolution.diagnosis;
+        eprintln!(
+            "panpak: WARNING: {} symbols that the app or its libraries need are defined by none of the chosen libraries; the app will fail if it uses them. `panpak doctor <package>` lists them",
+            d.missing.len()
+        );
+        for (file, sym) in d.missing.iter().take(5) {
+            eprintln!("panpak:   {file}: {sym}");
+        }
+    }
     let plan = abi::apply(store, root, tree, &decisions, &bundled)?;
     if let (Some(key), Some(path)) = (key, cache_path) {
         // Checking farm target AND link prevents hits with replaced

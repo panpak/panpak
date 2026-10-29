@@ -434,8 +434,8 @@ yet) with two worlds:
 
 - **world H** (no glibc in the bundle): a library that is in the bundle
   comes from the bundle, and one that is not comes from the host
-  (`ldconfig -p`, fallback to scanning `/lib*` `/usr/lib*`). Two kinds of
-  exception, both decided from the files, never from a version number:
+  (`ldconfig -p`, fallback to scanning `/lib*` `/usr/lib*`). Four additions
+  follow, decided from the files, never from a version number:
   1. *The host wins* (when the host has the library) for the glibc family
      (`ld-linux*`, `libc`, `libm`, `libdl`, `librt`, `libpthread`,
      `libresolv`, `libutil`, `libanl`, `libBrokenLocale`, `libmvec`,
@@ -454,9 +454,41 @@ yet) with two worlds:
      it and the chosen libraries ask of it (`.gnu.version_r` against
      `.gnu.version_d`); if more than one does, the one with the newest
      versions; if none does, the one that offers more; the bundled one on a tie.
-  The decision is made when the resolution is computed (and cached in the
-  store); it is not part of the package, so the format does not change. Before
-  this rule the host won in world H.
+  3. *Atomic families*: all of a family comes from the bundle or all from the
+     host, never a mix, because the libraries of a family are built against
+     each other and a mix dies with missing symbols (observed: a bundled GLib
+     older than the system `libgobject`, `g_free_sized` not found). If the
+     bundle has every library of the family that the package needs, the bundle
+     is used; otherwise, if the host has them all, the host; otherwise each
+     library follows the general rule. The families are: Qt (`libQt5*`,
+     `libQt6*`, `libKF5*`, `libKF6*`, with the core library in the bundle); GLib
+     (`libglib-2.0`, `libgobject-2.0`, `libgio-2.0`, `libgmodule-2.0`,
+     `libgthread-2.0`); GTK with the libraries whose types it shares (`libgtk-*`,
+     `libgdk-*`, `libgdk_pixbuf-2.0`, `libatk-1.0`, `libatk-bridge-2.0`, `libatspi`,
+     `libpango-1.0`, `libpangocairo-1.0`, `libpangoft2-1.0`, `libpangoxft-1.0`,
+     `libcairo`, `libcairo-gobject`, `libepoxy`, `libgraphene-1.0`); GStreamer
+     (`libgst*`); FFmpeg (`libavcodec`, `libavformat`, `libavutil`,
+     `libswresample`, `libswscale`, `libavfilter`, `libavdevice`, `libpostproc`).
+  4. *Symbol check*: after these rules the runtime reads the ELF files of the
+     entry, the executables next to it, the chosen libraries, the loader and the
+     system libraries that those need in turn, and looks for non-weak undefined
+     symbols (with their version names) that none of them defines; symbols asked
+     of an `allow_missing` library do not count. If there are some, it moves to
+     its other copy (bundle to host, or host to bundle) every library whose other
+     copy defines one of them, together with the rest of its atomic family (only
+     if every member has that other copy), and checks again. A step counts only if
+     it lowers the number of undefined symbols; otherwise it is undone and those
+     libraries are not tried again. It stops when nothing is undefined, when no
+     library can move, or after 8 steps. It never moves a library of exception 1,
+     `libstdc++` or `libgcc_s` (exception 2), a library named in `prefer_host`
+     or `allow_missing`, nor anything in world B. If symbols remain undefined,
+     the app still installs and starts, the runtime prints a warning with the
+     files and symbols at the first start after the resolution is computed, and
+     `panpak doctor` shows the same detail.
+  The decision is made when the resolution is computed, at the first start of
+  an installed package and again when the package, the kernel or the library
+  inventory changes (it is cached in the store); it is not part of the package,
+  so the format does not change. Before this rule the host won in world H.
 - **world B** (glibc in the bundle): everything in the bundle comes
   from the bundle, loader included (`ld-linux` run with
   `--library-path`). The glibc family (loader+libc+libm+...) is
@@ -502,7 +534,7 @@ the two copies of `libstdc++.so.6` and `libgcc_s.so.1`. For every other library
 the §7 resolution applies at equal SONAME, and a possible incompatibility fails
 the loader explicitly (fail-closed). `panpak doctor` reads the ELF files of an
 installed app and reports the undefined symbols that none of the chosen libraries
-defines; it is a diagnosis, not a decision. See also Appendix C.
+defines, after the symbol check above. See also Appendix C.
 
 ## 8. Out of scope of v1 [INFORMATIVE]
 
