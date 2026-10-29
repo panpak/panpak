@@ -86,8 +86,10 @@ portal file/camera.
 
 ## VERNEED fail-closed in practice
 
-There is no symbol-version check: at equal SONAME the host (H-world)
-or bundle (B-world) is chosen and the loader speaks. Observed effects:
+There is no general symbol-version check: at equal SONAME the bundle (since the
+bundle-first change; before it the host in H-world) or the host (for the glibc and
+graphics exceptions, PANPAK-FORMAT.md §7) is chosen and the loader speaks. The
+observations below date from the host-first rule. Observed effects:
 - H-world (A: 1 need, B: 3 needs, 0 bundle libs): works for backward
   compatibility (apps built on glibc 2.36 run on the newer glibc of
   Noble/Fedora);

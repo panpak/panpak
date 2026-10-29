@@ -105,6 +105,14 @@ pub fn resolve(store: &Path, package: &Path, root: &str, tree: &Path, man: &Mani
         if extra.is_empty() { break decisions; }
         needs.extend(extra);
     };
+    // libstdc++ and libgcc_s: the copy with every symbol version the app and its libraries need.
+    let modules = abi::elf_modules(tree, &man.app.entry, &decisions);
+    let prefs = abi::cxx_runtime_prefs(&modules, &host, &bundled, tree);
+    let decisions = if prefs.is_empty() {
+        decisions
+    } else {
+        abi::decide_with(&needs, &prefer, &allowed, &host, &bundled, &prefs)?
+    };
     let plan = abi::apply(store, root, tree, &decisions, &bundled)?;
     if let (Some(key), Some(path)) = (key, cache_path) {
         // Checking farm target AND link prevents hits with replaced

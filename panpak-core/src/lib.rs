@@ -3,10 +3,12 @@
 //!
 //! All numbers in the format are little-endian. See PANPAK-FORMAT.md.
 
+mod elfsym;
 mod errors;
 mod layout;
 mod validate;
 mod view;
+pub use elfsym::{parse_syms, version_number, ElfSyms, Needed};
 pub use errors::{code_of, coded, render, ErrorCode, PanpakError};
 pub use layout::{
     added_permissions, app_dirs, describe_permissions, fonts_conf, is_bus_socket, readonly_user_paths, xdg_search_dirs, AppDirs,
@@ -1546,9 +1548,11 @@ mod tests {
 }
 
 /// ABI resolution (spec §7, SONAME-granular v1).
-/// Symbol versions are not compared: at equal name the host is used,
-/// and if incompatible the loader fails explicitly
-/// (fail-closed), never a silently wrong lib.
+/// At equal SONAME the library included in the package wins, except for the
+/// libraries in `SYSTEM_WINS` (glibc and the graphics stack), and for `libstdc++` and
+/// `libgcc_s`, where the copy that offers every symbol version the app needs wins.
+/// Symbol versions are otherwise not compared: if the chosen library is incompatible the
+/// loader fails explicitly (fail-closed), never a silently wrong lib; `panpak doctor` reports it.
 pub mod abi {
     use anyhow::{bail, ensure, Context, Result};
     use std::{
@@ -1675,6 +1679,14 @@ pub mod abi {
 
     /// For each SONAME in needs decide host vs bundle (spec §7).
     ///
+    /// The rule, in order: `allow_missing` skips the library; `prefer_host` takes the system
+    /// copy or is an error; with glibc in the bundle ("B-world") everything in the bundle comes
+    /// from the bundle; the Qt/KF families are atomic; then, for a library that is in the bundle,
+    /// the bundled copy is used, except for `SYSTEM_WINS` (the system copy when there is one),
+    /// and for `libstdc++.so.6` and `libgcc_s.so.1`, which follow `runtime_prefs` (the copy that
+    /// has every symbol version the app needs, see `cxx_runtime_prefs`; the bundled one when
+    /// there is no preference). A library that is not in the bundle comes from the system.
+    ///
     /// The glibc family is atomic: loader + libc + libm + ... must come
     /// from the SAME build. A 2.36 loader with host 2.39 libc dies with
     /// `undefined symbol: GLIBC_PRIVATE` (found with the test on Noble).
@@ -1683,8 +1695,9 @@ pub mod abi {
     /// for GLIBC_2.38) under the bundle's 2.36 libc dies with
     /// `version GLIBC_2.38 not found`. Only `prefer_host` (e.g. libGL) and
     /// SONAMEs missing from the bundle come from the host.
-    /// Without glibc in the bundle ("H-world"): the host wins, bundle fallback
-    /// (safe for backward compatibility if pack starts from an old baseline).
+    /// Without glibc in the bundle ("H-world") the rule above applies. Before it,
+    /// the system copy won there (kept for packages that start from an old baseline); that
+    /// chose a system `libSoundTouch.so.1` without the symbols Audacity 4 needs.
     const GLIBC_FAMILY: &[&str] = &[
         "libc.so.6",
         "libm.so.6",
@@ -1694,6 +1707,25 @@ pub mod abi {
         "libresolv.so.2",
         "libutil.so.1",
     ];
+    /// Libraries for which the system copy wins even when the package includes one (without glibc
+    /// in the bundle). Taken from the AppImage excludelist
+    /// (<https://github.com/AppImageCommunity/pkg2appimage/blob/master/excludelist>), only the
+    /// entries that MUST come from the system: glibc, whose parts must match each other, and the
+    /// graphics stack, which must match the driver. Globs as in `glob_match`.
+    pub const SYSTEM_WINS: &[&str] = &[
+        // glibc: the loader, libc and the libraries built with it.
+        "ld-linux.so.2", "ld-linux-x86-64.so.2", "libc.so.6", "libm.so.6", "libdl.so.2", "librt.so.1",
+        "libpthread.so.0", "libresolv.so.2", "libutil.so.1", "libanl.so.1", "libBrokenLocale.so.1",
+        "libmvec.so.1", "libthread_db.so.1", "libcidn.so.1", "libnss_*",
+        // Graphics stack: OpenGL, EGL, Vulkan, GBM, DRM and the drivers.
+        "libGL.so.1", "libGLX.so.0", "libGLdispatch.so.0", "libOpenGL.so.0", "libEGL.so.1",
+        "libGLESv1_CM.so.1", "libGLESv2.so.2", "libvulkan.so.1", "libgbm.so.1", "libdrm.so.2",
+        "libdrm_*", "libglapi.so.0", "libxcb-dri2.so.0", "libxcb-dri3.so.0", "libnvidia-*",
+    ];
+
+    /// The C++ and compiler runtime libraries whose copy is chosen by symbol versions.
+    pub const CXX_RUNTIME: &[&str] = &["libstdc++.so.6", "libgcc_s.so.1"];
+
     /// Qt family of a SONAME (Qt5/Qt6), if it belongs to one.
     fn qt_family(n: &str) -> Option<&'static str> {
         if n.starts_with("libQt6") || n.starts_with("libKF6") {
@@ -1718,6 +1750,18 @@ pub mod abi {
         allow_missing: &[String],
         host: &HashMap<String, PathBuf>,
         bundled: &HashMap<String, PathBuf>,
+    ) -> Result<Vec<(String, Source)>> {
+        decide_with(needs, prefer_host, allow_missing, host, bundled, &HashMap::new())
+    }
+
+    /// `decide` with the choices for `CXX_RUNTIME`: name -> true to take the system copy.
+    pub fn decide_with(
+        needs: &[String],
+        prefer_host: &[String],
+        allow_missing: &[String],
+        host: &HashMap<String, PathBuf>,
+        bundled: &HashMap<String, PathBuf>,
+        runtime_prefs: &HashMap<String, bool>,
     ) -> Result<Vec<(String, Source)>> {
         let mut out = Vec::new();
         let bundle_libc = bundled.contains_key("libc.so.6")
@@ -1806,15 +1850,172 @@ pub mod abi {
                 (_, Some(bp)) if bundle_libc => {
                     out.push((n.clone(), Source::Bundled(bp.clone())))
                 }
-                // H-world: host-first, bundle fallback.
-                (Some(hp), _) => out.push((n.clone(), Source::Host(hp.clone()))),
-                (None, Some(bp)) => out.push((n.clone(), Source::Bundled(bp.clone()))),
+                // The C++ runtime: the copy that has every symbol version the app needs.
+                (Some(hp), Some(bp)) if CXX_RUNTIME.contains(&n.as_str()) => {
+                    if runtime_prefs.get(n).copied().unwrap_or(false) {
+                        out.push((n.clone(), Source::Host(hp.clone())))
+                    } else {
+                        out.push((n.clone(), Source::Bundled(bp.clone())))
+                    }
+                }
+                // glibc and the graphics stack: the system copy, even if the package has one.
+                (Some(hp), Some(_)) if SYSTEM_WINS.iter().any(|g| glob_match(g, n)) => {
+                    out.push((n.clone(), Source::Host(hp.clone())))
+                }
+                // Included in the package: the included copy.
+                (_, Some(bp)) => out.push((n.clone(), Source::Bundled(bp.clone()))),
+                // Not included: the system copy.
+                (Some(hp), None) => out.push((n.clone(), Source::Host(hp.clone()))),
                 (None, None) => {
                         bail!("{n} missing on the host and not included in the tree: the app cannot start here (try another distro or report it to the package author)");
                 }
             }
         }
         Ok(out)
+    }
+
+    /// The path of a decided library: the system file, or the one in the tree.
+    pub fn source_path(tree: &Path, src: &Source) -> PathBuf {
+        match src {
+            Source::Host(p) => p.clone(),
+            Source::Bundled(rel) => tree.join(rel),
+        }
+    }
+
+    /// The ELF files whose needs count for the choices: the entry of the app and the other
+    /// executables next to it, and the libraries already decided.
+    pub fn elf_modules(tree: &Path, entry: &str, decisions: &[(String, Source)]) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        let exe = tree.join(entry);
+        if let Some(dir) = exe.parent() {
+            if let Ok(rd) = fs::read_dir(dir) {
+                let mut names: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+                names.sort();
+                out.extend(names.into_iter().filter(|p| *p == exe || fs::read(p).ok().is_some_and(|b| b.starts_with(b"\x7fELF"))));
+            }
+        }
+        if !out.contains(&exe) && exe.is_file() {
+            out.push(exe);
+        }
+        out.extend(decisions.iter().map(|(_, s)| source_path(tree, s)));
+        out
+    }
+
+    /// For each of `CXX_RUNTIME` that exists on the system and in the bundle, choose a copy:
+    /// name -> true for the system one. The copy must offer every symbol version (`GLIBCXX_*`,
+    /// `CXXABI_*`, `GCC_*`) that the modules ask of that library; among the copies that do, the
+    /// one with the newest versions. If none offers them all, the one offering more. Without
+    /// information (unreadable files) the bundled copy is kept.
+    pub fn cxx_runtime_prefs(
+        modules: &[PathBuf],
+        host: &HashMap<String, PathBuf>,
+        bundled: &HashMap<String, PathBuf>,
+        tree: &Path,
+    ) -> HashMap<String, bool> {
+        let mut prefs = HashMap::new();
+        let mut asked: HashMap<&str, HashSet<String>> = HashMap::new();
+        for m in modules {
+            let Ok(b) = fs::read(m) else { continue };
+            let Ok(syms) = crate::parse_syms(&b) else { continue };
+            for (file, version) in syms.verneed {
+                if let Some(lib) = CXX_RUNTIME.iter().find(|l| **l == file) {
+                    asked.entry(lib).or_default().insert(version);
+                }
+            }
+        }
+        for lib in CXX_RUNTIME {
+            let (Some(hp), Some(bp)) = (host.get(*lib), bundled.get(*lib)) else { continue };
+            let provided = |p: &Path| -> Option<HashSet<String>> {
+                let syms = crate::parse_syms(&fs::read(p).ok()?).ok()?;
+                Some(syms.verdef.into_iter().collect())
+            };
+            let (Some(h), Some(b)) = (provided(hp), provided(&tree.join(bp))) else { continue };
+            let want = asked.get(lib).cloned().unwrap_or_default();
+            let missing = |have: &HashSet<String>| want.iter().filter(|v| !have.contains(*v)).count();
+            let newest = |have: &HashSet<String>| have.iter().filter_map(|v| crate::version_number(v)).max();
+            let (mh, mb) = (missing(&h), missing(&b));
+            // Fewer missing versions first, then the newer copy; a tie keeps the bundled one.
+            let use_host = (mb, std::cmp::Reverse(newest(&b))) > (mh, std::cmp::Reverse(newest(&h)));
+            prefs.insert((*lib).to_string(), use_host);
+        }
+        prefs
+    }
+
+    /// What `panpak doctor` finds when it checks the chosen libraries against the app.
+    #[derive(Debug, Default, PartialEq, Eq)]
+    pub struct Diagnosis {
+        /// Modules read.
+        pub modules: usize,
+        /// `(module, symbol)` pairs that no chosen library defines (with the version, if any).
+        pub missing: Vec<(String, String)>,
+    }
+
+    /// Read-only check: for the entry, the executables next to it and every chosen library, each
+    /// non-weak undefined symbol must be defined by one of them (same version name when the
+    /// symbol is versioned; symbols asked of an `allow_missing` library are left out). `loader` is the
+    /// dynamic loader in use. A report, not a decision: the
+    /// loader has the last word.
+    pub fn diagnose(
+        tree: &Path,
+        entry: &str,
+        decisions: &[(String, Source)],
+        loader: Option<&Path>,
+        host: &HashMap<String, PathBuf>,
+        allow_missing: &[String],
+    ) -> Diagnosis {
+        // The dynamic loader defines symbols too (`__tls_get_addr`, `_dl_*`): it is not in the decisions.
+        let mut modules = elf_modules(tree, entry, decisions);
+        modules.extend(loader.map(Path::to_path_buf));
+        // The libraries of the system that the chosen ones need in turn (libcairo asks for libXrender):
+        // the loader finds them on its own, so they are not in the decisions.
+        let mut known: HashSet<String> = decisions.iter().map(|(n, _)| n.clone()).collect();
+        let mut i = 0;
+        while i < modules.len() && modules.len() < 4096 {
+            for need in crate::elf_needs(&modules[i]).unwrap_or_default() {
+                if known.insert(need.clone()) {
+                    if let Some(p) = host.get(&need) {
+                        modules.push(p.clone());
+                    }
+                }
+            }
+            i += 1;
+        }
+        let mut parsed = Vec::new();
+        let mut defined: HashSet<String> = HashSet::new();
+        for m in &modules {
+            let Ok(b) = fs::read(m) else { continue };
+            let Ok(syms) = crate::parse_syms(&b) else { continue };
+            for (name, version) in &syms.defined {
+                defined.insert(match version {
+                    Some(v) => format!("{name}@{v}"),
+                    None => name.clone(),
+                });
+                // A versioned symbol also answers a request without a version.
+                defined.insert(name.clone());
+            }
+            parsed.push((m.clone(), syms));
+        }
+        let mut d = Diagnosis { modules: parsed.len(), missing: Vec::new() };
+        for (path, syms) in &parsed {
+            let shown = path.strip_prefix(tree).unwrap_or(path).display().to_string();
+            for u in &syms.undefined {
+                // A versioned symbol asked of a library that the package declared `allow_missing`
+                // is expected to be undefined.
+                if u.version.as_ref().is_some_and(|(_, file)| allow_missing.iter().any(|g| glob_match(g, file))) {
+                    continue;
+                }
+                let key = match &u.version {
+                    Some((v, _)) => format!("{}@{v}", u.name),
+                    None => u.name.clone(),
+                };
+                if !defined.contains(&key) {
+                    d.missing.push((shown.clone(), key));
+                }
+            }
+        }
+        d.missing.sort();
+        d.missing.dedup();
+        d
     }
 
     pub struct Plan {

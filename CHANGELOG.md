@@ -35,6 +35,12 @@
   says why the view is unavailable and how to fix it. `sockets_allow` also works on kernels below Landlock V9
   when the view is available. Landlock V9 gets `ResolveUnix` rules for the same sockets (not tested: this
   machine has V8).
+- **Libraries: the bundle first.** When a library is in the package, the package copy is used, except for
+  glibc and the graphics stack (which must match the system and the driver) and for `libstdc++` and
+  `libgcc_s` (the copy with every symbol version the app needs). A library that is not in the package comes
+  from the system, as before. This fixes `symbol lookup error` with a system library of the same name and a
+  different API (Audacity and `libSoundTouch.so.1`). `panpak doctor` checks, for an installed app, that the
+  symbols it needs are defined by the chosen libraries. The format does not change. See PANPAK-FORMAT.md §7.
 - **GTK3 dark theme** from `gsettings` at start (at most 200 ms).
 - **Security: paths and text from the manifest.** `app.id` has one strict
   grammar (spec §3.1.1) and every manifest field that becomes a path, a file

@@ -1754,7 +1754,19 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                 let allowed: Vec<String> = man.abi.as_ref().and_then(|a| a.allow_missing.clone()).unwrap_or_default();
                 let tree = store.join("trees").join(panpak_core::hex(&ft.root));
                 let bundled = panpak_core::abi::bundled_libs(&tree);
-                match panpak_core::abi::decide(&need, &prefer, &allowed, &panpak_core::abi::host_libs(), &bundled) {
+                let host = panpak_core::abi::host_libs();
+                let first = panpak_core::abi::decide(&need, &prefer, &allowed, &host, &bundled);
+                // libstdc++ and libgcc_s are chosen by symbol versions, as the stub does at start.
+                let chosen = first.and_then(|ds| {
+                    let modules = panpak_core::abi::elf_modules(&tree, &man.app.entry, &ds);
+                    let prefs = panpak_core::abi::cxx_runtime_prefs(&modules, &host, &bundled, &tree);
+                    if prefs.is_empty() {
+                        Ok(ds)
+                    } else {
+                        panpak_core::abi::decide_with(&need, &prefer, &allowed, &host, &bundled, &prefs)
+                    }
+                });
+                match chosen {
                     Ok(ds) => {
                         for (n, s) in &ds {
                             line(true, &format!("lib {n}: {s:?}"));
@@ -1769,6 +1781,35 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                         }
                         if need.is_empty() {
                             line(true, "no dynamic dependencies (static or script)");
+                        }
+                        // Read-only check of the choices against what the app asks of them.
+                        if tree.join(&man.app.entry).exists() {
+                            let loader = ["ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1"]
+                                .iter()
+                                .find_map(|n| bundled.get(*n).map(|r| tree.join(r)).or_else(|| host.get(*n).cloned()));
+                            let d = panpak_core::abi::diagnose(&tree, &man.app.entry, &ds, loader.as_deref(), &host, &allowed);
+                            if d.missing.is_empty() {
+                                line(true, &format!("symbols: every symbol that the app and the chosen libraries need is defined ({} files read)", d.modules));
+                            } else {
+                                line(false, &format!("symbols: {} needed by the app or the chosen libraries are defined by none of them ({} files read); the loader will fail if they are used", d.missing.len(), d.modules));
+                                // Grouped by file: the first few files, with a few of their symbols.
+                                let mut by_file: Vec<(&str, Vec<&str>)> = Vec::new();
+                                for (module, sym) in &d.missing {
+                                    match by_file.last_mut() {
+                                        Some((m, v)) if *m == module.as_str() => v.push(sym.as_str()),
+                                        _ => by_file.push((module.as_str(), vec![sym.as_str()])),
+                                    }
+                                }
+                                for (module, syms) in by_file.iter().take(8) {
+                                    let shown: Vec<&str> = syms.iter().take(3).copied().collect();
+                                    println!("       {module}: {} symbols, for example {}", syms.len(), shown.join(", "));
+                                }
+                                if by_file.len() > 8 {
+                                    println!("       ... and {} more files", by_file.len() - 8);
+                                }
+                            }
+                        } else {
+                            println!("NOTE symbols: not checked (the app is not installed yet, so its files are not on disk)");
                         }
                     }
                     Err(e) => line(false, &format!("unresolved libraries: {}", panpak_core::err_text(&e))),

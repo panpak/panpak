@@ -432,10 +432,31 @@ files in the tree (union with any declared `needs`; names containing
 The stub resolves at SONAME granularity (names, not symbol versions
 yet) with two worlds:
 
-- **world H** (no glibc in the bundle): the host wins (`ldconfig -p`,
-  fallback to scanning `/lib*` `/usr/lib*`), fallback the copy in
-  `trees/<root>/lib/`. Safe for backward compatibility if pack starts
-  from an old baseline.
+- **world H** (no glibc in the bundle): a library that is in the bundle
+  comes from the bundle, and one that is not comes from the host
+  (`ldconfig -p`, fallback to scanning `/lib*` `/usr/lib*`). Two kinds of
+  exception, both decided from the files, never from a version number:
+  1. *The host wins* (when the host has the library) for the glibc family
+     (`ld-linux*`, `libc`, `libm`, `libdl`, `librt`, `libpthread`,
+     `libresolv`, `libutil`, `libanl`, `libBrokenLocale`, `libmvec`,
+     `libthread_db`, `libcidn`, `libnss_*`) and for the graphics stack that
+     must match the driver (`libGL`, `libGLX`, `libGLdispatch`, `libOpenGL`,
+     `libEGL`, `libGLESv1_CM`, `libGLESv2`, `libvulkan`, `libgbm`, `libdrm`,
+     `libdrm_*`, `libglapi`, `libxcb-dri2`, `libxcb-dri3`, `libnvidia-*`).
+     The list is a subset of the AppImage excludelist
+     (<https://github.com/AppImageCommunity/pkg2appimage/blob/master/excludelist>):
+     only the entries for which the system MUST win. The other entries of
+     that list (X11, fonts, audio, GLib) are not exceptions: a package that
+     wants the system copy of one of them says so with `prefer_host`.
+  2. `libstdc++.so.6` and `libgcc_s.so.1`, when both the host and the bundle
+     have them: the copy that offers every symbol version
+     (`GLIBCXX_*`, `CXXABI_*`, `GCC_*`) that the entry, the executables next to
+     it and the chosen libraries ask of it (`.gnu.version_r` against
+     `.gnu.version_d`); if more than one does, the one with the newest
+     versions; if none does, the one that offers more; the bundled one on a tie.
+  The decision is made when the resolution is computed (and cached in the
+  store); it is not part of the package, so the format does not change. Before
+  this rule the host won in world H.
 - **world B** (glibc in the bundle): everything in the bundle comes
   from the bundle, loader included (`ld-linux` run with
   `--library-path`). The glibc family (loader+libc+libm+...) is
@@ -476,10 +497,12 @@ the loader fails explicitly. Never usable for the glibc family
 (rejected). MUST be declared explicitly (`--allow-missing` of
 `panpak convert`): not a silent fallback.
 
-NOTE v1: symbol-version comparison (`VERNEED` vs host) is not part of
-v1 — at equal SONAME the §7 resolution applies and a possible
-incompatibility fails the loader explicitly (fail-closed). See also
-Appendix C.
+NOTE v1: symbol-version comparison (`VERNEED` vs host) decides only between
+the two copies of `libstdc++.so.6` and `libgcc_s.so.1`. For every other library
+the §7 resolution applies at equal SONAME, and a possible incompatibility fails
+the loader explicitly (fail-closed). `panpak doctor` reads the ELF files of an
+installed app and reports the undefined symbols that none of the chosen libraries
+defines; it is a diagnosis, not a decision. See also Appendix C.
 
 ## 8. Out of scope of v1 [INFORMATIVE]
 
@@ -677,7 +700,8 @@ Notes: on direct execution the kernel launches the stub before any
 verification (trust comes from the §5.3 check, which precedes any use
 of the contents); overlapping or duplicate chunks are structurally
 allowed but verified one by one; symbol-version comparison
-(`VERNEED`) is not part of v1.
+(`VERNEED`) is used only to choose between two copies of `libstdc++.so.6` or
+`libgcc_s.so.1` (§7).
 
 ## Appendix D — licensing, embedded licenses and patents [INFORMATIVE]
 

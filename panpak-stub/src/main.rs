@@ -1773,12 +1773,13 @@ mod tests {
         let bund: HashMap<String, PathBuf> =
             [("a.so", "lib/a.so"), ("b.so", "lib/b.so"), ("gl.so", "lib/gl.so")]
                 .into_iter().map(|(k, v)| (k.into(), v.into())).collect();
-        // host wins when available; bundle as fallback.
-        let d = decide(&["a.so".into(), "b.so".into()], &[], &[], &host, &bund).unwrap();
-        assert!(d.contains(&("a.so".into(), Source::Host("/lib/a.so".into()))));
+        // The included copy wins when the package has one; the system copy when it does not.
+        let d = decide(&["a.so".into(), "b.so".into(), "c.so".into()], &[], &[], &host_c(&host), &bund).unwrap();
+        assert!(d.contains(&("a.so".into(), Source::Bundled("lib/a.so".into()))));
         assert!(d.contains(&("b.so".into(), Source::Bundled("lib/b.so".into()))));
+        assert!(d.contains(&("c.so".into(), Source::Host("/lib/c.so".into()))));
         // prefer_host present even in the bundle: stays host.
-        let d = decide(&["gl.so".into()], &["libGL*".replace("GL", "gl")], &[], &host, &bund).unwrap();
+        let d = decide(&["gl.so".into()], &["gl*".to_string()], &[], &host, &bund).unwrap();
         assert!(d.contains(&("gl.so".into(), Source::Host("/lib/gl.so".into()))));
         // prefer_host missing on the host: error, never substituted.
         assert!(decide(&["missing.so".into()], &["missing*".to_string()], &[], &host, &bund).is_err());
@@ -1787,6 +1788,85 @@ mod tests {
         // Explicit allow_missing: skipped, not an error.
         let d = decide(&["nope.so".into()], &[], &["nope*".into()], &host, &bund).unwrap();
         assert!(d.is_empty());
+    }
+
+    /// `host` plus a library `c.so` that the bundle does not have.
+    fn host_c(host: &std::collections::HashMap<String, PathBuf>) -> std::collections::HashMap<String, PathBuf> {
+        let mut h = host.clone();
+        h.insert("c.so".into(), "/lib/c.so".into());
+        h
+    }
+
+    /// A table of cases for the bundle-first rule: (libraries needed, in the system, in the bundle,
+    /// expected source of the first one). `H` system, `B` bundled.
+    #[test]
+    fn abi_bundle_first_table() {
+        use abi::{decide, decide_with, Source};
+        use std::collections::HashMap;
+        let map = |names: &[&str], dir: &str| -> HashMap<String, PathBuf> {
+            names.iter().map(|n| (n.to_string(), PathBuf::from(format!("{dir}/{n}")))).collect()
+        };
+        let who = |name: &str, host: &[&str], bund: &[&str]| -> char {
+            let d = decide(&[name.to_string()], &[], &[], &map(host, "/usr/lib"), &map(bund, "lib")).unwrap();
+            match &d[0].1 {
+                Source::Host(_) => 'H',
+                Source::Bundled(_) => 'B',
+            }
+        };
+        // (name, in the system, in the bundle, expected)
+        let table: &[(&str, &[&str], &[&str], char)] = &[
+            ("libSoundTouch.so.1", &["libSoundTouch.so.1"], &["libSoundTouch.so.1"], 'B'),
+            ("libfoo.so.1", &["libfoo.so.1"], &[], 'H'),
+            ("libfoo.so.1", &[], &["libfoo.so.1"], 'B'),
+            // glibc: the system wins even when the bundle has the library but no libc.
+            ("libm.so.6", &["libm.so.6"], &["libm.so.6"], 'H'),
+            ("libpthread.so.0", &["libpthread.so.0"], &["libpthread.so.0"], 'H'),
+            ("libnss_files.so.2", &["libnss_files.so.2"], &["libnss_files.so.2"], 'H'),
+            ("libm.so.6", &[], &["libm.so.6"], 'B'),
+            // Graphics stack: the system wins, and the bundle is the fallback.
+            ("libGL.so.1", &["libGL.so.1"], &["libGL.so.1"], 'H'),
+            ("libGLX.so.0", &["libGLX.so.0"], &["libGLX.so.0"], 'H'),
+            ("libEGL.so.1", &["libEGL.so.1"], &["libEGL.so.1"], 'H'),
+            ("libGLESv2.so.2", &["libGLESv2.so.2"], &["libGLESv2.so.2"], 'H'),
+            ("libvulkan.so.1", &["libvulkan.so.1"], &["libvulkan.so.1"], 'H'),
+            ("libgbm.so.1", &["libgbm.so.1"], &["libgbm.so.1"], 'H'),
+            ("libdrm.so.2", &["libdrm.so.2"], &["libdrm.so.2"], 'H'),
+            ("libdrm_amdgpu.so.1", &["libdrm_amdgpu.so.1"], &["libdrm_amdgpu.so.1"], 'H'),
+            ("libnvidia-glcore.so.550", &["libnvidia-glcore.so.550"], &["libnvidia-glcore.so.550"], 'H'),
+            ("libGL.so.1", &[], &["libGL.so.1"], 'B'),
+            // Not on the list: the included copy wins.
+            ("libasound.so.2", &["libasound.so.2"], &["libasound.so.2"], 'B'),
+            ("libfreetype.so.6", &["libfreetype.so.6"], &["libfreetype.so.6"], 'B'),
+        ];
+        for (name, host, bund, want) in table {
+            assert_eq!(who(name, host, bund), *want, "{name} host={host:?} bundle={bund:?}");
+        }
+        // libstdc++ and libgcc_s follow the choice made from the symbol versions; the bundled
+        // copy without a choice; the only copy when there is just one.
+        let both = |prefs: &HashMap<String, bool>, n: &str| -> char {
+            let d = decide_with(&[n.to_string()], &[], &[], &map(&[n], "/usr/lib"), &map(&[n], "lib"), prefs).unwrap();
+            if matches!(d[0].1, Source::Host(_)) { 'H' } else { 'B' }
+        };
+        let none = HashMap::new();
+        let host_pref = HashMap::from([("libstdc++.so.6".to_string(), true), ("libgcc_s.so.1".to_string(), false)]);
+        assert_eq!(both(&none, "libstdc++.so.6"), 'B');
+        assert_eq!(both(&host_pref, "libstdc++.so.6"), 'H');
+        assert_eq!(both(&host_pref, "libgcc_s.so.1"), 'B');
+        assert_eq!(who("libstdc++.so.6", &["libstdc++.so.6"], &[]), 'H');
+        assert_eq!(who("libstdc++.so.6", &[], &["libstdc++.so.6"]), 'B');
+        // allow_missing: skipped even if both copies exist. prefer_host: always the system.
+        assert!(decide(&["libSoundTouch.so.1".into()], &[], &["libSoundTouch*".into()], &map(&["libSoundTouch.so.1"], "/usr/lib"), &map(&["libSoundTouch.so.1"], "lib")).unwrap().is_empty());
+        let d = decide(&["libSoundTouch.so.1".into()], &["libSoundTouch*".into()], &[], &map(&["libSoundTouch.so.1"], "/usr/lib"), &map(&["libSoundTouch.so.1"], "lib")).unwrap();
+        assert!(matches!(d[0].1, Source::Host(_)));
+        // A bundle with its own glibc (B-world) keeps everything in the bundle, graphics included
+        // (it is the case of a package for musl or an old system; prefer_host opts out).
+        let d = decide(
+            &["libc.so.6".into(), "libGL.so.1".into(), "libz.so.1".into()],
+            &[], &[],
+            &map(&["libc.so.6", "libGL.so.1", "libz.so.1"], "/usr/lib"),
+            &map(&["libc.so.6", "libGL.so.1", "libz.so.1"], "lib"),
+        ).unwrap();
+        assert!(d.iter().all(|(_, s)| matches!(s, Source::Bundled(_))), "{d:?}");
     }
 
     #[test]
