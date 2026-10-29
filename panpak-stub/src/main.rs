@@ -15,6 +15,7 @@ use std::{
 #[cfg(target_arch = "x86_64")]
 mod opener;
 mod probe;
+mod sharedtmp;
 mod view;
 
 /// Files past this threshold are assembled streaming, not in RAM.
@@ -1196,7 +1197,17 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     }
     let binds = view::merge_binds(binds);
     let (mounts, opener_server) = open_channel(ctx, cmd, &stub, runtime_text.as_deref());
+    // /tmp and /dev/shm are shared by the copies of this app that run together, and by no other app.
+    let shared = ctx.runtime_dir.and_then(|rt| match sharedtmp::prepare(&rt.join("panpak").join(&ctx.man.app.id)) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            eprintln!("panpak: shared /tmp off, using a private one: {}", panpak_core::err_text(&e));
+            None
+        }
+    });
     let plan = view::ViewPlan {
+        shared_tmp: shared.as_ref().map(|s| s.tmp.clone()),
+        shared_shm: shared.as_ref().map(|s| s.shm.clone()),
         mounts,
         runtime_dir: ctx.runtime_dir.map(Path::to_path_buf),
         sockets: view::unique(sockets),
@@ -1232,9 +1243,10 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     };
     let fd = view::job_memfd(&job)?;
     let plan = view::ViewPlan { fd, ..plan };
-    match opener_server {
-        Some(server) => match view::run_bwrap(&plan, server)? {},
-        None => match view::exec_bwrap(&plan)? {},
+    // The lock of the shared folders must outlive bwrap, so the outer stub stays whenever there is one.
+    match (opener_server, shared) {
+        (None, None) => match view::exec_bwrap(&plan)? {},
+        (server, shared) => match view::run_bwrap(&plan, (server, shared))? {},
     }
 }
 

@@ -292,7 +292,7 @@ mod tests {
         let server = Server::start(&dir.join("s"), Rec(sent.clone())).unwrap();
         let ask = |text: &[u8]| -> String {
             let mut s = UnixStream::connect(server.socket()).unwrap();
-            s.write_all(text).unwrap();
+            let _ = s.write_all(text); // the server may answer and close before a huge request is sent
             let mut r = String::new();
             let _ = BufReader::new(s).read_line(&mut r);
             r.trim_end().to_string()

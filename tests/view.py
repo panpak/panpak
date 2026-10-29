@@ -133,6 +133,17 @@ out['rt_entries'] = ','.join(sorted(os.listdir(rt))) if os.path.isdir(rt) else '
 marker = [a for a in sys.argv[1:] if a.startswith('/tmp/')]
 if marker:
     out['tmp_marker'] = 'visible' if os.path.exists(marker[0]) else 'hidden'
+if '--hold' in sys.argv:
+    # A first copy of the app: leave marks in /tmp and /dev/shm and wait for the harness to let go.
+    import time as _t
+    open('/tmp/copy-held', 'w').write('x')
+    open('/dev/shm/copy-shm', 'w').write('x')
+    for _ in range(300):
+        if os.path.exists('/tmp/copy-release'):
+            break
+        _t.sleep(0.1)
+out['tmp_copy'] = ','.join(sorted(n for n in os.listdir('/tmp') if n.startswith('copy-')))
+out['shm_copy'] = ','.join(sorted(n for n in os.listdir('/dev/shm') if n.startswith('copy-')))
 out['tmp_entries'] = len(os.listdir('/tmp'))
 out['env_TMPDIR'] = os.environ.get('TMPDIR', 'UNSET')
 out['env_SQLITE_TMPDIR'] = os.environ.get('SQLITE_TMPDIR', 'UNSET')
@@ -493,6 +504,31 @@ def main():
                 assert 'https://example.org/gio' in binlog.read_text(), binlog.read_text()
             print('addresses: https and mailto pass, file: and attach are refused, GIO goes through the opener:', rep['gio_https'])
         lab.env['PATH'] = lab.env['PATH'].split(':', 1)[1]
+
+        # 6d. Copies of one app that run together share /tmp and /dev/shm; a start with no copy alive begins empty.
+        if view_here:
+            lab.install('')
+            shared = Path(lab.runtime) / 'panpak' / app_dirs.ID
+            launcher = str(h / '.local/bin' / app_dirs.ID)
+            first = subprocess.Popen([launcher, '--hold'], env=lab.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for _ in range(100):
+                if (shared / 'tmp/copy-held').exists() and (shared / 'shm/copy-shm').exists():
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError('the first copy did not start')
+            assert oct((shared / 'tmp').stat().st_mode & 0o777) == '0o700'
+            _, rep = run_report(lab, [], mask=False)
+            check(rep, tmp_copy='copy-held', shm_copy='copy-shm')
+            (shared / 'tmp/copy-release').write_text('x')
+            assert first.wait(timeout=60) == 0
+            assert (shared / 'tmp/copy-held').exists(), 'nothing may empty the folder of a copy that has just left'
+            _, rep = run_report(lab, [], mask=False)
+            check(rep, tmp_copy='', shm_copy='')
+            assert not (shared / 'tmp/copy-held').exists() and not (shared / 'shm/copy-shm').exists()
+            real_shm = [n for n in os.listdir('/dev/shm') if n.startswith('copy-')]
+            assert not real_shm, f'the app wrote in the real /dev/shm: {real_shm}'
+            print('copies of one app share /tmp and /dev/shm, a start with none alive begins empty: ok')
 
         # 7. doctor tells the layers, with and without bubblewrap.
         d = lab.cli('doctor', check=False).stdout

@@ -159,6 +159,10 @@ pub struct ViewPlan {
     pub binds: Vec<Bind>,
     /// Files mounted read-only at a place of their own: the opener channel and the stub as `xdg-open`.
     pub mounts: Vec<Mount>,
+    /// Folders of the host mounted as `/tmp` and `/dev/shm`, shared by the copies of one app.
+    /// None: a private tmpfs for `/tmp`, and the host's `/dev/shm`.
+    pub shared_tmp: Option<PathBuf>,
+    pub shared_shm: Option<PathBuf>,
     /// The manifest asks for X11: the IPC namespace stays shared (MIT-SHM).
     pub x11_access: bool,
     pub stub: PathBuf,
@@ -179,7 +183,14 @@ pub fn bwrap_args(plan: &ViewPlan) -> Vec<OsString> {
         a.push(os("--unshare-ipc"));
     }
     a.extend(["--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc"].map(os));
-    a.extend(["--tmpfs", "/tmp", "--tmpfs", "/run"].map(os));
+    match &plan.shared_tmp {
+        Some(t) => a.extend([os("--bind"), t.as_os_str().into(), os("/tmp")]),
+        None => a.extend(["--tmpfs", "/tmp"].map(os)),
+    }
+    a.extend(["--tmpfs", "/run"].map(os));
+    if let Some(shm) = &plan.shared_shm {
+        a.extend([os("--bind"), shm.as_os_str().into(), os("/dev/shm")]);
+    }
     // The home folder is empty; the binds below put back only what the app needs. It comes after
     // /tmp and /run so that a home below them is not hidden again.
     if let Some(h) = &plan.home {
@@ -286,6 +297,8 @@ mod tests {
                 Bind { path: "/home/u/.config/gtk-3.0".into(), rw: false },
             ]),
             mounts: vec![],
+            shared_tmp: None,
+            shared_shm: None,
             x11_access: false,
             stub: "/home/u/.local/share/panpak/runtimes/1/panpak-stub".into(),
             fd: 7,
@@ -337,6 +350,19 @@ mod tests {
         assert!(!a.contains(&"--unshare-ipc".to_string()));
         let tmp = pos(&a, &["--tmpfs", "/tmp"]).unwrap();
         assert!(tmp < pos(&a, &["--bind", "/tmp/.X11-unix/X0", "/tmp/.X11-unix/X0"]).unwrap());
+    }
+
+    #[test]
+    fn shared_folders_replace_the_private_tmp_and_the_host_shm() {
+        let mut p = plan();
+        p.shared_tmp = Some("/run/user/1000/panpak/org.example.app/tmp".into());
+        p.shared_shm = Some("/run/user/1000/panpak/org.example.app/shm".into());
+        let a = strings(&p);
+        assert!(pos(&a, &["--tmpfs", "/tmp"]).is_none());
+        let dev = pos(&a, &["--dev-bind", "/dev", "/dev"]).unwrap();
+        let tmp = pos(&a, &["--bind", "/run/user/1000/panpak/org.example.app/tmp", "/tmp"]).unwrap();
+        let shm = pos(&a, &["--bind", "/run/user/1000/panpak/org.example.app/shm", "/dev/shm"]).unwrap();
+        assert!(dev < tmp && dev < shm, "the binds come after the device tree they cover");
     }
 
     #[test]
