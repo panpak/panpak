@@ -20,8 +20,8 @@ Flatpak" phase. Inkscape's site was unreachable, so it was not added.
 | PCSX2 2.8.2 | Qt 6, Vulkan/GL | works (setup wizard) | 1.25 s / 0.32 s | no game or BIOS tried |
 | qBittorrent 5.3.0 | Qt 6, tray | works | 1.36 s / 0.42 s | legal notice pre-accepted in config; stale `lockfile` after a kill (defect 3); a second copy given a `magnet:` address handed it over and exited 0 |
 | Krita 6.0.4 | Qt 6 | works | 6.06 s / 1.1 s | |
-| Jitsi Meet 2026.10.0 | Electron | works | 2.38 s / 0.69 s | needs `allow_missing` for `libdbus-glib-1.so.2`, `libffmpeg.so`, `libindicator3.so.7`; no meeting, camera or microphone tried |
-| Obsidian 1.14.5 | Electron | works | 2.56 s / 0.77 s | same `allow_missing` family |
+| Jitsi Meet 2026.10.0 | Electron | works | 2.38 s / 0.69 s | second copy given `jitsi-meet:` exited 0, first stayed; needs `allow_missing` for `libdbus-glib-1.so.2`, `libffmpeg.so`, `libindicator3.so.7`; no meeting, camera or microphone tried |
+| Obsidian 1.14.5 | Electron | works | 2.56 s / 0.77 s | same `allow_missing` family; second copy given an `obsidian:` address exited 1 |
 | Zulip 5.13.2 | Electron, tray | works | 1.84 s / 0.80 s | same `allow_missing` family; no account |
 | Neovim 0.12.6 | terminal | works | 0.54 s / 0.19 s (`--version`) | writes a file in the `documents` folder |
 | Nextcloud 35.0.1 | Qt, tray | convert fails | | defect 1 |
@@ -35,14 +35,27 @@ Flatpak" phase. Inkscape's site was unreachable, so it was not added.
 | OpenShot 4.0.1 | Qt/PyQt | fails | | image expects host libs not present (Qt5Designer, ImageMagick 6, OpenEXR 2.3) |
 | Shotcut 26.9.27 | Qt 6 | fails | | many Qt 6 libs and `libCuteLogger.so` reported missing (defect 5) |
 | OrcaSlicer 2.4.2 | GTK 3, GL | fails | | needs `libGLU.so.1`, not installed on the host |
-| Bitwarden 2026.10.2 | Electron | fails | | converted entry is `AppRun`, which needs `APPDIR` (defect 7) |
+| Bitwarden 2026.10.2 | Electron | works (with `--entry bitwarden`) | 2.12 s / 0.76 s | default entry `AppRun` fails (defect 7); `allow_missing` for 6 libraries incl. `libc.musl-x86_64.so.1`; a second copy given a `bitwarden:` address exited 0, first copy stayed; no login tried |
 
-Not done in this run: D-Bus logs for most apps, usage tests beyond start, checks of the
-Docker/LXD socket probe, AppImage updater and Electron sandbox notes, tree/package sizes per app.
+Not done in this run: usage tests beyond start (no GUI input), AppImage updater notes (only MuseScore
+bundles `appimageupdatetool`), tree/package sizes for the failed apps.
+Electron apps (Jitsi, Obsidian, Zulip, Bitwarden) print `Failed to connect to the bus` and run anyway, with no sandbox flag needed.
 The D-Bus log with `xdg-dbus-proxy --filter --log` on a private bus was taken for MuseScore (asks
 for `org.freedesktop.portal.Desktop` Settings, `org.a11y.Bus`, `org.gtk.vfs.Daemon`), PCSX2
 (`org.a11y.Bus`) and qBittorrent (`org.freedesktop.Notifications`, `org.kde.StatusNotifierWatcher`,
 `org.gnome.SessionManager`, `org.freedesktop.PowerManagement`).
+
+## Sizes (package / installed tree)
+
+MuseScore 219 MB / 942 MB; PCSX2 70 MB / 186 MB; qBittorrent 127 MB / 305 MB; Krita 435 MB / 1100 MB;
+Jitsi 140 MB / 336 MB; Obsidian 149 MB / 360 MB; Zulip 135 MB / 308 MB; Neovim 16 MB / 36 MB.
+
+## Socket probe (view)
+
+Sockets of Docker, containerd, podman, snapd and libvirt below `/run` and `/var/run` are not visible in
+the view. LXD is not installed here, so its paths (`/var/snap/lxd/...`, `/var/lib/lxd/...`) show nothing.
+A listening socket made in `/var/tmp` (outside `/run`, `/tmp` and the home folder) was reachable from the
+view (Landlock ABI 8 does not restrict path sockets), so any such system socket would be reachable too.
 
 ## Signatures
 
@@ -63,9 +76,20 @@ for `org.freedesktop.portal.Desktop` Settings, `org.a11y.Bus`, `org.gtk.vfs.Daem
 7. Medium, convert: `AppRun` shell scripts as entry lose `APPDIR` (Bitwarden).
 8. Low, convert: name and version default to the desktop name and `1.0`.
 9. Low, `doctor` reports only the first unresolved library.
+10. High, view: sockets outside `/run`, `/tmp` and the home folder (for example LXD below `/var`) stay reachable without Landlock ABI 9.
+11. Medium, same cause as 3: Electron `LOCK` files are also left stale after a kill.
 
 ## D-Bus summary for step 5
 
-Too few apps were logged to count rules. Seen so far: Settings portal (1 of 3), accessibility bus
-(3 of 3), `org.freedesktop.Notifications` and StatusNotifier (qBittorrent), session manager and
-power management (qBittorrent).
+Apps logged: MuseScore, PCSX2, qBittorrent, Krita, Jitsi, Obsidian, Zulip, Bitwarden, Neovim (9).
+
+| Name or interface | Apps |
+|---|---|
+| `org.a11y.Bus` (accessibility) | MuseScore, PCSX2, qBittorrent (3) |
+| `org.freedesktop.portal.Desktop` Settings or Properties | MuseScore, Krita (2) |
+| `org.gtk.vfs.Daemon` | MuseScore (1) |
+| `org.freedesktop.Notifications`, `org.kde.StatusNotifierWatcher`, `org.gnome.SessionManager`, `org.freedesktop.PowerManagement` | qBittorrent (1) |
+| `com.canonical.AppMenu.Registrar` | MuseScore, qBittorrent (2) |
+| nothing logged (no bus connection) | Jitsi, Obsidian, Zulip, Bitwarden, Neovim |
+
+Electron apps did not reach the proxy, so their notification and tray names were not seen.
