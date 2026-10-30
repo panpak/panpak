@@ -107,6 +107,11 @@ def elf_seeds():
     bad = bytearray(dyn)
     bad[dyn_off + 3 * 16 + 8:dyn_off + 3 * 16 + 16] = struct.pack("<Q", 1 << 40)
     out["huge-strsz"] = bytes(bad)
+    # DT_STRSZ just past the end of the file, and a table size above the old fixed limit of 1 MiB.
+    for name, size in (("strsz-past-file", len(dyn) + 1), ("strsz-over-1mib", (1 << 20) + 1), ("strsz-zero", 0)):
+        bad = bytearray(dyn)
+        bad[dyn_off + 3 * 16 + 8:dyn_off + 3 * 16 + 16] = struct.pack("<Q", size)
+        out[name] = bytes(bad)
     # No DT_NULL terminator: all entries are DT_NEEDED, the table runs off the file.
     bad = bytearray(dyn)
     for i in range(4, 5):

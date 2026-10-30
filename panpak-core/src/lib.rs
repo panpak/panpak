@@ -462,6 +462,9 @@ pub fn elf_needs(path: &std::path::Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// Upper bound of `DT_STRSZ`: a guard against absurd values, not the size of real tables.
+const MAX_STRTAB: u64 = 1 << 30;
+
 pub fn elf_needs_bytes(b: &[u8]) -> Result<Vec<String>> {
     if b.len() < 64 || &b[0..4] != b"\x7fELF" || b[4] == 0 || b[5] != 1 {
         return Ok(Vec::new()); // non-ELF (script, data) or unknown endianness
@@ -544,13 +547,22 @@ pub fn elf_needs_bytes(b: &[u8]) -> Result<Vec<String>> {
         }
     }
     let strtab = vaddr_to_off(strtab_v.context("missing STRTAB")?)?;
-    ensure!(strsz <= 1 << 20, "strtab too large");
+    // The string table follows the file and the section: it must lie inside the file, and a name must
+    // end inside it. A wide cap stops absurd sizes; real tables are large (libLLVM has 2 MiB of names).
+    ensure!(strsz <= MAX_STRTAB, "strtab larger than {MAX_STRTAB} bytes");
+    let tab_end = if strsz == 0 {
+        b.len() // no DT_STRSZ: the file is the only bound
+    } else {
+        let end = (strtab as u64).checked_add(strsz).context("strtab overflow")?;
+        ensure!(end <= b.len() as u64, "strtab outside file");
+        end as usize
+    };
     let mut out = Vec::new();
     for idx in needed_idx {
         let idx = usize::try_from(idx).context("needed beyond usize")?;
         let o = strtab.checked_add(idx).context("needed overflow")?;
-        ensure!(o < b.len(), "needed outside file");
-        let end = b[o..].iter().position(|&c| c == 0).context("string is not NUL-terminated")?;
+        ensure!(o < tab_end, "needed outside strtab");
+        let end = b[o..tab_end].iter().position(|&c| c == 0).context("string is not NUL-terminated")?;
         ensure!(end <= 512, "soname too long");
         out.push(String::from_utf8(b[o..o + end].to_vec()).context("non-UTF-8 soname")?);
     }
@@ -1559,6 +1571,59 @@ mod tests {
                 assert_eq!(enc.encode(&data).unwrap(), &want[..], "{n} bytes");
             }
         }
+    }
+
+    /// A minimal ELF64 with one `DT_NEEDED`: `pad` bytes of other names, then `needed`. `strsz` is
+    /// what `DT_STRSZ` says (the real size when None).
+    fn elf_with_strtab(pad: usize, needed: &str, strsz: Option<u64>) -> Vec<u8> {
+        let mut tab = vec![0u8];
+        tab.extend(std::iter::repeat_n(b'x', pad));
+        tab.push(0);
+        let idx = tab.len() as u64;
+        tab.extend(needed.as_bytes());
+        tab.push(0);
+        let (dynoff, taboff) = (64 + 2 * 56, 64 + 2 * 56 + 4 * 16);
+        let mut b = vec![0u8; taboff];
+        b[0..4].copy_from_slice(b"\x7fELF");
+        b[4] = 2;
+        b[5] = 1;
+        b[0x20..0x28].copy_from_slice(&64u64.to_le_bytes());
+        b[0x34..0x36].copy_from_slice(&56u16.to_le_bytes());
+        b[0x38..0x3A].copy_from_slice(&2u16.to_le_bytes());
+        let total = (taboff + tab.len()) as u64;
+        // PT_LOAD over the whole file, then PT_DYNAMIC.
+        b[64..68].copy_from_slice(&1u32.to_le_bytes());
+        b[96..104].copy_from_slice(&total.to_le_bytes()); // p_filesz
+        b[104..112].copy_from_slice(&total.to_le_bytes()); // p_memsz
+        b[120..124].copy_from_slice(&2u32.to_le_bytes());
+        b[128..136].copy_from_slice(&(dynoff as u64).to_le_bytes());
+        for (i, (tag, val)) in [(1i64, idx), (5, taboff as u64), (10, strsz.unwrap_or(tab.len() as u64)), (0, 0)].into_iter().enumerate() {
+            let o = dynoff + i * 16;
+            b[o..o + 8].copy_from_slice(&tag.to_le_bytes());
+            b[o + 8..o + 16].copy_from_slice(&val.to_le_bytes());
+        }
+        b.extend(tab);
+        b
+    }
+
+    #[test]
+    fn elf_needs_limit_follows_the_file_not_a_constant() {
+        // Names after more than 1 MiB of other strings (libLLVM, etcher-util): read.
+        for pad in [10, 1 << 20, 3 << 20, 40 << 20] {
+            let b = elf_with_strtab(pad, "libfoo.so.1", None);
+            assert_eq!(elf_needs_bytes(&b).unwrap(), ["libfoo.so.1"], "pad {pad}");
+        }
+        // A size that reaches beyond the file, or the wide cap, is refused.
+        let honest = elf_with_strtab(100, "libfoo.so.1", None);
+        let real = (honest.len() - (64 + 2 * 56 + 4 * 16)) as u64;
+        assert!(elf_needs_bytes(&elf_with_strtab(100, "libfoo.so.1", Some(real + 1))).is_err());
+        assert!(elf_needs_bytes(&elf_with_strtab(100, "libfoo.so.1", Some(MAX_STRTAB + 1))).is_err());
+        assert!(elf_needs_bytes(&elf_with_strtab(100, "libfoo.so.1", Some(u64::MAX))).is_err());
+        // A name that is cut by the end of the table is not read past it.
+        assert!(elf_needs_bytes(&elf_with_strtab(100, "libfoo.so.1", Some(real - 3))).is_err());
+        // A table smaller than the file is fine; a missing size falls back to the file.
+        assert_eq!(elf_needs_bytes(&elf_with_strtab(100, "libfoo.so.1", Some(real))).unwrap(), ["libfoo.so.1"]);
+        assert_eq!(elf_needs_bytes(&elf_with_strtab(100, "libfoo.so.1", Some(0))).unwrap(), ["libfoo.so.1"]);
     }
 
     #[test]
