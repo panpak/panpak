@@ -218,7 +218,7 @@ default refused, opt-in works; signals to the parent still denied.
 
   | Layer | Needs | Blocks | Does not block |
   |---|---|---|---|
-  | Isolated view (bubblewrap) | `/usr/bin/bwrap` that works (user namespaces allowed) | path sockets under `/run`, `/tmp` and the home folder (it is empty): the app sees only the sockets the policy names | abstract sockets (the network namespace is shared); sockets in other places the policy does not hide (for example a folder outside the home that is not under `/run` or `/tmp`) |
+  | Isolated view (bubblewrap) | `/usr/bin/bwrap` that works (user namespaces allowed) | path sockets anywhere: the view holds only `/usr`, `/etc`, `/sys`, `/dev`, `/proc`, the Nix and Guix stores and the folders the app is granted, so the app sees only the sockets the policy names | abstract sockets (the network namespace is shared); a socket inside a folder the app is granted (the user's own choice) or inside `/usr`, `/etc` or `/dev` (root-owned system folders that hold none on the systems tested) |
   | Landlock V9 (Linux 7.1) | kernel | `connect()` to any path socket that the policy does not name, wherever it is | |
   | Landlock V6 scope | kernel 6.12 | abstract Unix sockets and signals outside the sandbox (off with `x11 = true`) | |
   | none | | | everything, as before: the warning above |
@@ -230,7 +230,7 @@ default refused, opt-in works; signals to the parent still denied.
   tested on a kernel that supports them.
 
   **The isolated view.** The stub runs `/usr/bin/bwrap` (a fixed path, never `PATH`, and it
-  must not be writable by others) with: `/` read-only; `/dev` as it is; a new `/proc`; new
+  must not be writable by others) with: a new tmpfs as `/` (read-only) in which only `/usr`, `/etc` and `/sys` of the host (read-only), the Nix and Guix stores, the top-level links (`/bin`, `/lib*`, `/home` when it is a link) and `/dev` as it is are put; `/var` is a new empty tmpfs with the links `/var/run` and `/var/lock`; `/opt`, `/srv`, `/mnt`, `/media`, `/root`, `/boot` and `/snap` do not exist; a new `/proc`; new
   tmpfs for `/tmp` and `/run`; an empty tmpfs on `$HOME`, made read-only after the binds,
   with only these paths put back: the app folders (writable), the `home_paths` (as declared), the
   settings Landlock lets the app read (read-only, those that exist), with X11 the Xauthority file
@@ -242,6 +242,7 @@ default refused, opt-in works; signals to the parent still denied.
   in `~/.config/gh` and the data folder of another app). With the home folder as a mount of its own the
   paths are resolved with `canonicalize` first. Inside, the session bus, the system bus, systemd of the user, gpg-agent and
   ssh-agent do not exist (tested with fake sockets in a private runtime folder).
+  Why this set (defect found with real apps: a view with `/` read-only showed every socket under `/var`, `/opt`, `/srv`, such as the LXD or a database socket, and `connect()` to a path socket is not mediated by Landlock up to V8): Landlock only lets the app read `/usr`, `/etc`, `/sys`, `/proc`, `/run`, `/dev` and its own folders, so a folder outside that set was reachable only by `connect()`, never useful to read. `/usr` and `/etc` hold the libraries, certificates (`/etc/ssl`), fontconfig (`/etc/fonts`), `machine-id`, `localtime` and `/usr/share/zoneinfo` and locale data. `/sys` holds the GPU and input device data that Mesa and Qt read. `/var` has nothing the app may read (its caches, `/var/lib/dbus` and the certificate store of openSUSE are denied by Landlock anyway), but the links `/var/run` and `/var/lock` keep old paths such as `/var/run/dbus/system_bus_socket` leading to the new `/run`. `/opt` was in the first idea of the change and was left out for the same reason (Landlock never let the app read it). A test builds a fake host with sockets in `/var`, `/opt`, `/srv`, `/mnt`, `/media`, `/root`, `/boot`, `/snap` and Nix, scans the whole visible tree of the old shape of the view (finds them) and of the new view (finds none). Known cost: where the users come from SSSD or another daemon with a socket in `/var`, the app cannot ask it.
   `--unshare-pid` hides the other processes of the user; `--unshare-ipc` is on unless the app
   has X11 access (MIT-SHM needs shared IPC); `--new-session` keeps the app out of the session
   of the terminal (no key injection with `TIOCSTI`; the cost is that Ctrl-C in the terminal does

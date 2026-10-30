@@ -716,7 +716,14 @@ ssh-agent, audio servers) with independent layers, and uses every layer the mach
 
 1. *Isolated view.* If `/usr/bin/bwrap` exists and works, the app runs in a view built by
    bubblewrap. The runtime MUST take bubblewrap only from that fixed path (never from `PATH`)
-   and MUST NOT use it when it is writable by others. The view has: `/` read-only; `/dev` as
+   and MUST NOT use it when it is writable by others. The view has: a new tmpfs as `/`, made read-only,
+   with only these of the host put in it read-only: `/usr`, `/etc`, `/sys` (the folders Landlock lets the app read), `/nix/store` and
+   `/gnu/store` when they exist, and the symbolic links at the top of the host's `/` (`/bin`, `/lib`, `/lib64`, and
+   `/home` where the homes are in `/var/home`). Nothing else of the host's `/` is in the view: not `/var`
+   (a new, empty tmpfs that holds only the links `/var/run` and `/var/lock` to the new `/run`), `/opt`, `/srv`,
+   `/mnt`, `/media`, `/root`, `/boot`, `/snap`, nor the part of `/nix` and `/gnu` that is not the store, because a
+   folder of the host can hold a socket that a Landlock below V9 does not stop the app from using. A path
+   that the runtime must give to the app (a granted folder, an opened file) is mounted at its own place wherever it is. `/dev` as
    it is; a new `/proc`; a new tmpfs for `/run`; `/tmp` and `/dev/shm` as in §9.4, or a new tmpfs for `/tmp` when the runtime folder is not usable; an empty tmpfs on `$HOME` (read-only once the
    binds are made) where only these are put back: the private folders of §9.1 and the `home_paths` as declared,
    the read-only settings listed in §9.1 that exist, the Xauthority file with `x11 = true`, a file opened with

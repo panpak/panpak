@@ -429,8 +429,8 @@ def main():
             assert int(rep['procs']) < 12, f'the app sees {rep["procs"]} processes'
             assert rep['resolv_conf'] == 'ok'
             check(rep, read_secret='err2', no_new_privs='1')
-            print('sockets of containers and snap: hidden. LXD paths below /var:', rep['sock_lxd_snap'], rep['sock_lxd_lib'],
-                  '| a socket outside /run, /tmp and home:', rep['sock_outside_run'])
+            check(rep, sock_lxd_snap='absent', sock_lxd_lib='absent', sock_outside_run='absent')
+            print('sockets of containers, snap and LXD, and one in /var/tmp: not reachable')
             print('view, plain app: ok (', rep['run_entries'], '| runtime:', rep['rt_entries'], ')')
             if rep['dns'] != 'ok':
                 print('note: name resolution failed in the view; checking that it fails outside too')
@@ -446,9 +446,12 @@ def main():
         installed = p.stdout
         assert 'isolation layers: Landlock abstract-socket scope (V6)' in installed or 'Landlock path sockets' in installed, installed
         assert 'NOTE: no isolated view: /usr/bin/bwrap is missing or cannot be run' in installed, installed
-        p, rep = run_report(lab, ['--marker', str(marker)], mask=True)
+        p, rep = run_report(lab, ['--marker', str(marker), str(outside)], mask=True)
         assert p.returncode == 0, p.stdout + p.stderr
         check(rep, tmp_marker='visible', sid=str(os.getsid(0)))
+        # Control: without the view the socket in /var/tmp is reachable.
+        assert rep['sock_outside_run'] == 'ok'
+        print('control: without the view the socket in /var/tmp is reachable')
         assert rep['env_TMPDIR'] != '/tmp', rep['env_TMPDIR']
         assert rep['sock_bus'] in ('ok', 'deny'), 'the session bus should exist outside the view'
         assert rep['home_ssh_dir'] == 'present' and rep['home_gnupg_dir'] == 'present'

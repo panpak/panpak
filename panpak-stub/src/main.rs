@@ -1175,7 +1175,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     // The home folder is an empty tmpfs in the view. Put back only what the app and the inner stub
     // need: the tree, the library folders and the loader of the store, the stub, the private
     // folders and `rw` home paths, the settings Landlock allows to read, the files of `panpak open`
-    // and, with X11, the Xauthority file. Paths outside the home folder are visible through `/`.
+    // and, with X11, the Xauthority file. Paths outside the home folder are mounted too, unless they are in the system folders.
     let home = dirs::home_dir().and_then(|h| fs::canonicalize(h).ok()).filter(|h| h.is_dir() && h != Path::new("/"));
     let in_home = |p: &Path| home.as_ref().is_some_and(|h| p.starts_with(h));
     let real = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
@@ -1204,8 +1204,8 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     }
     for p in ro_wanted {
         let p = real(&p);
-        // Read-only paths outside the home folder and the runtime folder are visible through `/`.
-        if p.exists() && (in_home(&p) || ctx.runtime_dir.is_some_and(|rt| p.starts_with(rt))) {
+        // Read-only paths in the system folders of the view are visible as they are; any other is mounted.
+        if p.exists() && (in_home(&p) || ctx.runtime_dir.is_some_and(|rt| p.starts_with(rt)) || !view::in_system_view(&p)) {
             binds.push(view::Bind { path: p, rw: false });
         }
     }
@@ -1220,6 +1220,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         }
     });
     let plan = view::ViewPlan {
+        root: view::root_layout(Path::new("/")),
         shared_tmp: shared.as_ref().map(|s| s.tmp.clone()),
         shared_shm: shared.as_ref().map(|s| s.shm.clone()),
         mounts,
