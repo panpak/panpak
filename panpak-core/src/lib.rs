@@ -460,6 +460,9 @@ pub fn elf_needs(path: &std::path::Path) -> Result<Vec<String>> {
         out.dedup();
     }
     Ok(out)
+    // A name with a slash is a path for the loader, not a SONAME to look for in the library folders
+    // (FreeCAD's `libqsqlite.so` asks for a file in the build folder of its maker); it is not a need.
+    out.retain(|s| !s.contains('/'));
 }
 
 /// Upper bound of `DT_STRSZ`: a guard against absurd values, not the size of real tables.
@@ -1607,6 +1610,22 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn a_needed_name_with_a_slash_is_not_a_need() {
+        // FreeCAD 1.1.4: a plugin lists /home/runner/work/FreeCAD/.../lib/libsqlite3.so, which the
+        // manifest validation (rightly) refuses as a library name.
+        let dir = std::env::temp_dir().join(format!("panpak-slash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("libplugin.so");
+        std::fs::write(&path, elf_with_strtab(10, "/home/runner/work/FreeCAD/lib/libsqlite3.so", None)).unwrap();
+        assert_eq!(elf_needs_bytes(&std::fs::read(&path).unwrap()).unwrap(), ["/home/runner/work/FreeCAD/lib/libsqlite3.so"]);
+        assert!(elf_needs(&path).unwrap().is_empty());
+        std::fs::write(&path, elf_with_strtab(10, "$ORIGIN/../lib/libpython3.so.1", None)).unwrap();
+        assert_eq!(elf_needs(&path).unwrap(), ["libpython3.so.1"], "$ORIGIN names are still reduced to the SONAME");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn elf_needs_limit_follows_the_file_not_a_constant() {
         // Names after more than 1 MiB of other strings (libLLVM, etcher-util): read.
         for pad in [10, 1 << 20, 3 << 20, 40 << 20] {
