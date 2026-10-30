@@ -799,8 +799,11 @@ for example, a Qt single-instance guard works; without it each copy has its own 
 
 Process ids start again at 1 in every view, so a lock file that stores a process id and was left by a
 copy that was killed would look alive to the next copy. A runtime that holds the exclusive lock (no copy is
-alive) MUST therefore remove the stale lock files of the app before it starts it, and MUST NOT remove them
-while another copy is alive. It recognises them by content, with no list in the manifest: a link
+alive) and the last run of the app did not end normally MUST therefore remove the stale lock files of the app before it
+starts it, and MUST NOT remove them while another copy is alive. The runtime makes a mark `userdata/<id>.in-use`
+(beside the app folder, so the app cannot see it; on disk, because the runtime folder is gone after a shutdown) at
+every start and removes it when the last copy ends normally (exit status 0, or a signal that the runtime passed on);
+without the mark at the next start nothing is searched. It recognises them by content, with no list in the manifest: a link
 `SingletonLock` to `<host>-<pid>` (Chromium and Electron; the links `SingletonSocket` and `SingletonCookie`
 in the same folder go too), a link `lock` to `<ip>:+<pid>` (Firefox), and a regular file of at most 512 bytes
 whose name contains `lock` and whose lines are a process id, an application name and a host name (Qt
