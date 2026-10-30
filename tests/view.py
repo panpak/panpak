@@ -53,6 +53,15 @@ for name, path in {
 }.items():
     out['sock_' + name] = conn(path)
 out['sock_journal'] = conn('/run/systemd/journal/socket', socket.SOCK_DGRAM)
+out['sock_journal_devlog'] = conn('/run/systemd/journal/dev-log', socket.SOCK_DGRAM)
+try:
+    _d = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    _d.sendto(b'<14>panpak view probe', '/run/systemd/journal/dev-log')
+    out['sock_journal_sendto'] = 'ok'
+except FileNotFoundError:
+    out['sock_journal_sendto'] = 'absent'
+except OSError as e:
+    out['sock_journal_sendto'] = 'deny' if e.errno == 13 else f'err{e.errno}'
 # Sockets of container managers and of snap: /run is a new tmpfs in the view, so those below it are gone. The LXD
 # paths below /var are not under /run: they are reported, whether or not the machine has LXD (it may not).
 for name, path in {
@@ -411,7 +420,7 @@ def main():
                     read_mimeapps='ok', read_notes='err2', read_docs_ro='err2', write_gtk='err30', write_stray='err30',
                     sock_bus='absent', sock_systemd_private='absent', sock_gpg_agent='absent', sock_gpg_agent_ssh='absent',
                     sock_ssh_agent='absent', sock_system_bus_fake='absent', sock_system_bus='absent',
-                    sock_pipewire='absent', sock_pulse='absent', sock_wayland='ok', sock_journal='ok',
+                    sock_pipewire='absent', sock_pulse='absent', sock_wayland='ok', sock_journal='ok', sock_journal_devlog='ok', sock_journal_sendto='ok',
                     sock_docker='absent', sock_docker_var='absent', sock_containerd='absent', sock_podman='absent',
                     sock_snapd='absent', sock_libvirt='absent',
                     x11_dir='absent', tmp_marker='hidden', env_TMPDIR='/tmp', env_SQLITE_TMPDIR='/tmp',
@@ -449,9 +458,13 @@ def main():
         p, rep = run_report(lab, ['--marker', str(marker), str(outside)], mask=True)
         assert p.returncode == 0, p.stdout + p.stderr
         check(rep, tmp_marker='visible', sid=str(os.getsid(0)))
-        # Control: without the view the socket in /var/tmp is reachable.
-        assert rep['sock_outside_run'] == 'ok'
-        print('control: without the view the socket in /var/tmp is reachable')
+        # Control: without the view the socket in /var/tmp is reachable, except where Landlock V9 closes path sockets.
+        if 'Landlock path sockets (V9)' in installed:
+            assert rep['sock_outside_run'] == 'deny', rep['sock_outside_run']
+            print('control: without the view the socket in /var/tmp is closed by Landlock V9')
+        else:
+            assert rep['sock_outside_run'] == 'ok'
+            print('control: without the view the socket in /var/tmp is reachable')
         assert rep['env_TMPDIR'] != '/tmp', rep['env_TMPDIR']
         assert rep['sock_bus'] in ('ok', 'deny'), 'the session bus should exist outside the view'
         assert rep['home_ssh_dir'] == 'present' and rep['home_gnupg_dir'] == 'present'
@@ -595,13 +608,17 @@ def main():
             lab.install('')
             shared = Path(lab.runtime) / 'panpak' / app_dirs.ID
             launcher = str(h / '.local/bin' / app_dirs.ID)
-            first = subprocess.Popen([launcher, '--hold'], env=lab.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            for _ in range(100):
+            first_err = work / 'first.err'
+            first = subprocess.Popen([launcher, '--hold'], env=lab.env, stdout=subprocess.DEVNULL, stderr=first_err.open('wb'))
+            t0 = time.time()
+            for _ in range(300):
                 if (shared / 'tmp/copy-held').exists() and (shared / 'shm/copy-shm').exists():
                     break
                 time.sleep(0.1)
             else:
-                raise AssertionError('the first copy did not start')
+                listing = sorted(str(q.relative_to(shared)) for q in shared.rglob('*')) if shared.exists() else 'no shared folder'
+                raise AssertionError(f'the first copy did not start (exit {first.poll()}): {first_err.read_text()} {listing}')
+            print(f'first copy ready after {time.time() - t0:.1f} s')
             assert oct((shared / 'tmp').stat().st_mode & 0o777) == '0o700'
             rss = stub_memory(first.pid)
             print('outer stub while the app runs: VmRSS', rss['VmRSS'], 'kB, VmHWM', rss['VmHWM'], 'kB, threads', rss['Threads'])

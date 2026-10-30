@@ -557,6 +557,21 @@ fn apply_landlock(
 /// Build the ruleset. With `fine_dev` try per-single-node rules
 /// on /dev (null, zero, full, urandom, random, tty) + dri/shm dirs;
 /// otherwise whole /dev in RW (privileged nodes DAC-protected).
+/// Open `path` with `O_PATH` for a Landlock rule. Used for socket files: `landlock::PathFd` fails on them
+/// here (ENXIO, seen on a V9 kernel), which would drop the rule without a message.
+fn open_path(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+    // SAFETY: valid C string; the returned descriptor, if any, is owned by the OwnedFd.
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fd is a new descriptor that nothing else owns.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+}
+
 /// Network (V4+), scope (V6+), Unix sockets (V9): only if the ABI offers them,
 /// otherwise error only if the manifest really requires them.
 fn build_ruleset(
@@ -738,7 +753,7 @@ fn build_ruleset(
     // manifest; under appdata/tmp they already pass via ResolveUnix.
     if new_unix {
         for path in &access.sockets {
-            if let Ok(fd) = PathFd::new(path) {
+            if let Ok(fd) = open_path(path) {
                 let rights = AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::ResolveUnix;
                 rs = rs.add_rule(PathBeneath::new(fd, rights))?;
             }
@@ -746,7 +761,7 @@ fn build_ruleset(
     }
     for s in socks.iter().filter(|_| new_unix) {
         let path = panpak_core::expand_socket_path(s)?;
-        match PathFd::new(&path) {
+        match open_path(&path) {
             Ok(fd) => {
                 let access = AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::ResolveUnix;
                 rs = rs.add_rule(PathBeneath::new(fd, access))?;
@@ -1734,25 +1749,36 @@ mod tests {
         // allowed with allow.
         for (tag, listed) in [("deny", false), ("allow", true)] {
             let dir = tmpdir(&format!("ux-{tag}"));
-            fs::create_dir_all(dir.join("store")).unwrap();
-            let sock = dir.join("store/sock");
+            // Outside /tmp, which the sandbox may write: a socket there passes without any socket rule.
+            let outside = PathBuf::from(format!("/var/tmp/panpak-ux-{}-{tag}", std::process::id()));
+            fs::create_dir_all(&outside).unwrap();
+            let sock = outside.join("sock");
+            let dsock = outside.join("dsock");
             let _listener = UnixListener::bind(&sock).unwrap();
+            let _dgram = std::os::unix::net::UnixDatagram::bind(&dsock).unwrap();
             let extra = if listed {
-                format!("[permissions]\nsockets_allow = [\"{}\"]\n", sock.display())
+                format!("[permissions]\nsockets_allow = [\"{}\", \"{}\"]\n", sock.display(), dsock.display())
             } else {
                 String::new()
             };
             let (panpak, tree, appdata) = fixture_tree_in(&dir, &extra);
             let var = format!("PANPAK_USOCK_{tag}");
             unsafe { std::env::set_var(&var, sock.to_str().unwrap()) };
+            let dvar = format!("PANPAK_UDSOCK_{tag}");
+            unsafe { std::env::set_var(&dvar, dsock.to_str().unwrap()) };
             let expect = if listed { "ok" } else { "deny" };
             let res = fork_lines(&appdata.join("r.txt"), |res| {
                 let _man = child_sandboxed(res, &panpak, &tree, &appdata, None)?;
                 let p = std::env::var(&var).unwrap();
                 let ok = std::os::unix::net::UnixStream::connect(p).is_ok();
                 res.push(format!("ux_{tag}={}\n", if ok { "ok" } else { "deny" }));
+                let d = std::env::var(&dvar).unwrap();
+                let ok = std::os::unix::net::UnixDatagram::unbound().and_then(|u| u.connect(d)).is_ok();
+                res.push(format!("uxd_{tag}={}\n", if ok { "ok" } else { "deny" }));
                 Ok(())
             });
+            assert!(res.contains(&format!("uxd_{tag}={expect}")), "unix datagram socket {tag}: {res}");
+            let _ = fs::remove_dir_all(&outside);
             assert!(res.contains(&format!("ux_{tag}={expect}")), "unix socket {tag}: {res}");
             let _ = dir;
         }

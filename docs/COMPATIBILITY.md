@@ -85,6 +85,7 @@ Fixed in `fix-batch` (one commit each):
 - High, symbol check: loader symbols reported undefined. Cause: no `ldconfig` in `PATH` (`/sbin` is often missing) and the fallback scan did not list the loader.
 - Critical, view: sockets outside `/run`, `/tmp` and home reachable. The root of the view is a new tmpfs with the system folders only.
 - Critical, view/PID namespace: process ids repeat in every view (the app is always process 2), so lock files with a pid (`QLockFile`, Chromium `SingletonLock`, qBittorrent `lockfile`) never expired. The stub removes the recognised ones when no copy is alive; `panpak data unlock <id>` by hand. Limit: a lock with a pid in a format that is not recognised stays; use `data unlock` after extending it, or remove the file.
+- Plan 29, High, Landlock V9: the rules for the sockets every app may reach (journal, Wayland, resolver, audio) and for `sockets_allow` were dropped without a message, so the journal socket was refused. Cause: `landlock::PathFd` fails with ENXIO on a socket file here; the stub now opens these with `open(O_PATH)`. Found on Fedora 44 (Landlock V9), not visible on V8 hosts.
 - Plan 25, High, convert: FreeCAD gave `abi.needs` a name with a path (`DT_NEEDED` of the plugin `libqsqlite.so` is `/home/runner/work/FreeCAD/.../libsqlite3.so`). Names with a slash are not needs.
 
 Open, for Task C (converter) unless noted:
