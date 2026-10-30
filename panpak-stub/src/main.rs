@@ -1212,21 +1212,21 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     let binds = view::merge_binds(binds);
     let (mounts, opener_server) = open_channel(ctx, cmd, &stub, runtime_text.as_deref());
     // /tmp and /dev/shm are shared by the copies of this app that run together, and by no other app.
-    let shared = ctx.runtime_dir.and_then(|rt| match sharedtmp::prepare(&rt.join("panpak").join(&ctx.man.app.id)) {
+    let app_dirs = panpak_core::app_dirs(&ctx.man.app.id).ok();
+    let shared = ctx.runtime_dir.zip(app_dirs.as_ref()).and_then(|(rt, dirs)| match sharedtmp::prepare(&rt.join("panpak").join(&ctx.man.app.id), &panpak_core::stalelocks::in_use_marker(dirs)) {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!("panpak: shared /tmp off, using a private one: {}", panpak_core::err_text(&e));
             None
         }
     });
-    // No other copy is alive (the lock above is ours alone): lock files left by a copy that was killed
-    // hold process ids of a view that no longer exists, and the new view starts counting again.
-    if shared.as_ref().is_some_and(|s| s.alone) {
-        if let Ok(dirs) = panpak_core::app_dirs(&ctx.man.app.id) {
-            let roots = panpak_core::stalelocks::roots_of(&dirs);
-            for gone in panpak_core::stalelocks::remove(&roots.iter().map(PathBuf::as_path).collect::<Vec<_>>()) {
-                eprintln!("panpak: removed a stale lock file: {}", gone.display());
-            }
+    // No other copy is alive and the last run did not end normally (it was killed, or the machine went
+    // down): lock files it left hold process ids of a view that no longer exists, and the new view starts
+    // counting again. After a normal end there is nothing to look for.
+    if let (Some(_), Some(dirs)) = (shared.as_ref().filter(|s| s.stale), app_dirs.as_ref()) {
+        let roots = panpak_core::stalelocks::roots_of(dirs);
+        for gone in panpak_core::stalelocks::remove(&roots.iter().map(PathBuf::as_path).collect::<Vec<_>>()) {
+            eprintln!("panpak: removed a stale lock file: {}", gone.display());
         }
     }
     let plan = view::ViewPlan {
@@ -1271,7 +1271,11 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     // The lock of the shared folders must outlive bwrap, so the outer stub stays whenever there is one.
     match (opener_server, shared) {
         (None, None) => match view::exec_bwrap(&plan)? {},
-        (server, shared) => match view::run_bwrap(&plan, (server, shared))? {},
+        (server, shared) => match view::run_bwrap(&plan, (server, shared), |(_, shared), clean| {
+            if let (true, Some(s)) = (clean, shared) {
+                s.ended_normally();
+            }
+        })? {},
     }
 }
 

@@ -209,6 +209,15 @@ pub fn roots_of(d: &crate::AppDirs) -> [PathBuf; 4] {
     [d.config.clone(), d.data.clone(), d.state.clone(), d.cache.clone()]
 }
 
+/// The mark "in use" of an app: a file beside its `userdata/<id>` folder (so the app cannot see it) that the
+/// stub makes at every start and removes when the app ends normally. It is on disk, not in the runtime
+/// folder, so that it survives a shutdown or a crash of the session. When the next start finds it, the last
+/// run did not end normally and the lock files are searched; otherwise they are not.
+pub fn in_use_marker(d: &crate::AppDirs) -> PathBuf {
+    let name = d.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    d.root.with_file_name(format!("{name}.in-use"))
+}
+
 /// The lock file of the copies of an app in the runtime folder (see `sharedtmp` in the stub).
 pub fn copies_lock_path(runtime_dir: &Path, app_id: &str) -> PathBuf {
     runtime_dir.join("panpak").join(app_id).join("lock")

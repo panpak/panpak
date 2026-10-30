@@ -314,18 +314,23 @@ pub fn exec_bwrap(plan: &ViewPlan) -> Result<std::convert::Infallible> {
 }
 
 static CHILD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// A termination signal was passed on to the app: its end by that signal is a normal end.
+static FORWARDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 extern "C" fn forward_signal(sig: libc::c_int) {
     let pid = CHILD.load(std::sync::atomic::Ordering::Relaxed);
     if pid > 0 {
+        FORWARDED.store(true, std::sync::atomic::Ordering::Relaxed);
         // SAFETY: kill is async-signal-safe.
         unsafe { libc::kill(pid, sig) };
     }
 }
 
 /// Run `bwrap` as a child and stay until it ends, so that `keep` (the opener server) lives as long
-/// as the app. Termination signals go on to `bwrap`; its exit status becomes ours. Returns only on error.
-pub fn run_bwrap(plan: &ViewPlan, keep: impl Sized) -> Result<std::convert::Infallible> {
+/// as the app. Termination signals go on to `bwrap`; its exit status becomes ours. `ended` is called with
+/// `keep` and whether the end was normal (exit status 0, or a signal that this process passed on) before
+/// `keep` is dropped. Returns only on error.
+pub fn run_bwrap<K>(plan: &ViewPlan, keep: K, ended: impl FnOnce(&K, bool)) -> Result<std::convert::Infallible> {
     use std::os::unix::process::ExitStatusExt;
     let args = bwrap_args(plan);
     ensure!(args.iter().all(|a| !a.as_bytes().contains(&0)), "NUL in a bubblewrap argument");
@@ -336,6 +341,8 @@ pub fn run_bwrap(plan: &ViewPlan, keep: impl Sized) -> Result<std::convert::Infa
         unsafe { libc::signal(sig, forward_signal as extern "C" fn(libc::c_int) as libc::sighandler_t) };
     }
     let status = child.wait()?;
+    let forwarded = FORWARDED.load(std::sync::atomic::Ordering::Relaxed);
+    ended(&keep, status.code() == Some(0) || (forwarded && status.signal().is_some()));
     drop(keep);
     std::process::exit(status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
 }
