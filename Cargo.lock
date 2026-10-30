@@ -674,6 +674,7 @@ dependencies = [
  "dirs",
  "ed25519-dalek",
  "landlock",
+ "libc",
  "serde",
  "toml",
  "zstd 0.14.3",

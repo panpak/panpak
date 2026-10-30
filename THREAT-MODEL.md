@@ -243,6 +243,15 @@ default refused, opt-in works; signals to the parent still denied.
   paths are resolved with `canonicalize` first. Inside, the session bus, the system bus, systemd of the user, gpg-agent and
   ssh-agent do not exist (tested with fake sockets in a private runtime folder).
   Why this set (defect found with real apps: a view with `/` read-only showed every socket under `/var`, `/opt`, `/srv`, such as the LXD or a database socket, and `connect()` to a path socket is not mediated by Landlock up to V8): Landlock only lets the app read `/usr`, `/etc`, `/sys`, `/proc`, `/run`, `/dev` and its own folders, so a folder outside that set was reachable only by `connect()`, never useful to read. `/usr` and `/etc` hold the libraries, certificates (`/etc/ssl`), fontconfig (`/etc/fonts`), `machine-id`, `localtime` and `/usr/share/zoneinfo` and locale data. `/sys` holds the GPU and input device data that Mesa and Qt read. `/var` has nothing the app may read (its caches, `/var/lib/dbus` and the certificate store of openSUSE are denied by Landlock anyway), but the links `/var/run` and `/var/lock` keep old paths such as `/var/run/dbus/system_bus_socket` leading to the new `/run`. `/opt` was in the first idea of the change and was left out for the same reason (Landlock never let the app read it). A test builds a fake host with sockets in `/var`, `/opt`, `/srv`, `/mnt`, `/media`, `/root`, `/boot`, `/snap` and Nix, scans the whole visible tree of the old shape of the view (finds them) and of the new view (finds none). Known cost: where the users come from SSSD or another daemon with a socket in `/var`, the app cannot ask it.
+  **Stale lock files.** Because the view has its own PID namespace, the app is always process 2 and
+  process ids repeat; a lock file with a process id left by a killed copy is never stale for the
+  next one. The runtime removes such files when the per-app lock shows that no copy is alive (see
+  PANPAK-FORMAT.md §9.4). What this deletes is bounded: only files recognised by content, only in the app's
+  own `config`, `data`, `state` and cache folders, at most 3 levels deep, no link followed (the link is
+  removed, never its target), each unlink relative to the descriptor of its folder, so an app cannot make
+  the runtime delete a file elsewhere by putting a link in its own folder. A random first process id was
+  not used: it needs a capability in the user namespace, and the AppArmor profile that lets bubblewrap
+  work on Ubuntu 24.04 and later removes the capabilities of its children.
   `--unshare-pid` hides the other processes of the user; `--unshare-ipc` is on unless the app
   has X11 access (MIT-SHM needs shared IPC); `--new-session` keeps the app out of the session
   of the terminal (no key injection with `TIOCSTI`; the cost is that Ctrl-C in the terminal does

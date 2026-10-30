@@ -13,3 +13,4 @@ toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 landlock = "0.4"
 dirs = "6"
+libc = "0.2"

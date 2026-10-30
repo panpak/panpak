@@ -15,6 +15,8 @@ use std::{
 pub struct Shared {
     pub tmp: PathBuf,
     pub shm: PathBuf,
+    /// No other copy of the app was alive when this one started (it holds the exclusive lock first).
+    pub alone: bool,
     _lock: File,
 }
 
@@ -54,7 +56,8 @@ pub fn prepare(base: &Path) -> Result<Shared> {
     let (tmp, shm) = (base.join("tmp"), base.join("shm"));
     // Alone: the exclusive lock is ours, nobody else is in the folders, so empty them. The others
     // wait on the shared lock below until this is done.
-    if flock(&lock, libc::LOCK_EX | libc::LOCK_NB) {
+    let alone = flock(&lock, libc::LOCK_EX | libc::LOCK_NB);
+    if alone {
         reset(&tmp)?;
         reset(&shm)?;
     } else {
@@ -62,7 +65,7 @@ pub fn prepare(base: &Path) -> Result<Shared> {
         private_dir(&shm)?;
     }
     anyhow::ensure!(flock(&lock, libc::LOCK_SH), "cannot take the shared lock");
-    Ok(Shared { tmp, shm, _lock: lock })
+    Ok(Shared { tmp, shm, alone, _lock: lock })
 }
 
 #[cfg(test)]
@@ -95,12 +98,14 @@ mod tests {
         fs::write(base.join("shm/old"), b"x").unwrap();
         std::os::unix::fs::symlink("/etc", base.join("tmp/link")).unwrap();
         let a = prepare(&base).unwrap();
+        assert!(a.alone);
         assert!(!a.tmp.join("qipc_stale").exists() && !a.tmp.join("sub").exists() && !a.shm.join("old").exists());
         assert!(Path::new("/etc/passwd").exists(), "a link in the folder is removed, not followed");
         fs::write(a.tmp.join("qipc_live"), b"x").unwrap();
         // A second copy (another open file description, so a real second holder) keeps the files.
         let b = prepare(&base).unwrap();
         assert!(b.tmp.join("qipc_live").exists());
+        assert!(!b.alone);
         assert_eq!(a.tmp, b.tmp);
         drop(a);
         // One copy is still alive: nothing is emptied.

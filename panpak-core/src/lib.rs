@@ -8,6 +8,7 @@ mod errors;
 mod layout;
 mod openchan;
 mod openurl;
+pub mod stalelocks;
 mod userdirs;
 mod validate;
 mod view;
@@ -459,10 +460,10 @@ pub fn elf_needs(path: &std::path::Path) -> Result<Vec<String>> {
         out.sort();
         out.dedup();
     }
-    Ok(out)
     // A name with a slash is a path for the loader, not a SONAME to look for in the library folders
     // (FreeCAD's `libqsqlite.so` asks for a file in the build folder of its maker); it is not a need.
     out.retain(|s| !s.contains('/'));
+    Ok(out)
 }
 
 /// Upper bound of `DT_STRSZ`: a guard against absurd values, not the size of real tables.
@@ -1610,7 +1611,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn a_needed_name_with_a_slash_is_not_a_need() {
         // FreeCAD 1.1.4: a plugin lists /home/runner/work/FreeCAD/.../lib/libsqlite3.so, which the
         // manifest validation (rightly) refuses as a library name.
@@ -1626,6 +1626,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
     fn elf_needs_limit_follows_the_file_not_a_constant() {
         // Names after more than 1 MiB of other strings (libLLVM, etcher-util): read.
         for pad in [10, 1 << 20, 3 << 20, 40 << 20] {

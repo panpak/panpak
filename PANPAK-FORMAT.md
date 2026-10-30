@@ -797,6 +797,22 @@ both folders without following links. This does not make two copies see each oth
 IPC objects: that depends on the IPC namespace (§9.2). With `x11 = true` the namespace is shared and,
 for example, a Qt single-instance guard works; without it each copy has its own and both start (known limit).
 
+Process ids start again at 1 in every view, so a lock file that stores a process id and was left by a
+copy that was killed would look alive to the next copy. A runtime that holds the exclusive lock (no copy is
+alive) MUST therefore remove the stale lock files of the app before it starts it, and MUST NOT remove them
+while another copy is alive. It recognises them by content, with no list in the manifest: a link
+`SingletonLock` to `<host>-<pid>` (Chromium and Electron; the links `SingletonSocket` and `SingletonCookie`
+in the same folder go too), a link `lock` to `<ip>:+<pid>` (Firefox), and a regular file of at most 512 bytes
+whose name contains `lock` and whose lines are a process id, an application name and a host name (Qt
+`QLockFile`, for example `lockfile` or `*.lock`). Only the private folders of the app are searched (`config`,
+`data`, `state` and the cache folder), to a depth of 3 below each, without entering the usual cache folders
+(`Cache`, `Code Cache`, `GPUCache`, `node_modules` and similar). Never `xdg_dirs`, `home_paths` or documents. Links are not followed: a
+link is removed itself and never its target, and every step is relative to the descriptor of the folder.
+`panpak data unlock <id>` does the same by hand and refuses while a copy is alive; `panpak doctor` points to it
+when it finds such files. A lock with a process id in a format not listed here is left alone: that is the
+case for `data unlock` to be extended, or for the user to remove the file. Without a usable runtime folder
+there is no lock and nothing is removed.
+
 ## Appendix A — test vectors [NORMATIVE]
 
 Minimal valid package (1 file `bin/hi` = `hi\n`, 3 bytes; fake stub of

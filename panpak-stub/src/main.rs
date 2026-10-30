@@ -1219,6 +1219,16 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
             None
         }
     });
+    // No other copy is alive (the lock above is ours alone): lock files left by a copy that was killed
+    // hold process ids of a view that no longer exists, and the new view starts counting again.
+    if shared.as_ref().is_some_and(|s| s.alone) {
+        if let Ok(dirs) = panpak_core::app_dirs(&ctx.man.app.id) {
+            let roots = panpak_core::stalelocks::roots_of(&dirs);
+            for gone in panpak_core::stalelocks::remove(&roots.iter().map(PathBuf::as_path).collect::<Vec<_>>()) {
+                eprintln!("panpak: removed a stale lock file: {}", gone.display());
+            }
+        }
+    }
     let plan = view::ViewPlan {
         root: view::root_layout(Path::new("/")),
         shared_tmp: shared.as_ref().map(|s| s.tmp.clone()),

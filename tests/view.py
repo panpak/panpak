@@ -618,6 +618,47 @@ def main():
             assert not real_shm, f'the app wrote in the real /dev/shm: {real_shm}'
             print('copies of one app share /tmp and /dev/shm, a start with none alive begins empty: ok')
 
+            # 6e. Stale lock files with a process id: kept while a copy is alive, removed when none is, and never
+            # a link's target or anything outside the private folders.
+            cfg = h / '.local/share/panpak/userdata' / app_dirs.ID / 'config'
+            decoy = h / 'Notes/decoy.lock'
+            decoy.write_text('4242\nqbittorrent\nhost\n')
+            bystander = h / 'Notes/bystander.txt'
+            bystander.write_text('keep\n')
+
+            def plant():
+                (cfg / 'App').mkdir(parents=True, exist_ok=True)
+                for link in ('SingletonLock', 'SingletonSocket', 'SingletonCookie'):
+                    (cfg / 'App' / link).unlink(missing_ok=True)
+                (cfg / 'App/SingletonLock').symlink_to('somehost-4242')
+                (cfg / 'App/SingletonSocket').symlink_to('/tmp/org.chromium.Chromium.x/SingletonSocket')
+                (cfg / 'App/SingletonCookie').symlink_to('123456')
+                (cfg / 'qt.lock').write_text('4242\nqbittorrent\nsomehost\n')
+                (cfg / 'App/lock').unlink(missing_ok=True)
+                (cfg / 'App/lock').symlink_to(str(bystander))   # a link named like a lock that points at a file: not a lock
+                (cfg / 'App/other.lock').unlink(missing_ok=True)
+                (cfg / 'App/other.lock').symlink_to(str(decoy))  # a link to a real lock-like file outside: never followed
+            plant()
+            first = subprocess.Popen([launcher, '--hold'], env=lab.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for _ in range(100):
+                if (shared / 'tmp/copy-held').exists():
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError('the first copy did not start')
+            # The first copy found nobody alive and cleaned; plant again while it runs, then start a second copy.
+            plant()
+            _, rep = run_report(lab, [], mask=False)
+            assert os.path.lexists(cfg / 'App/SingletonLock') and (cfg / 'qt.lock').exists(), 'a lock was removed while a copy is alive'
+            (shared / 'tmp/copy-release').write_text('x')
+            assert first.wait(timeout=60) == 0
+            _, rep = run_report(lab, [], mask=False)
+            for gone in ('App/SingletonLock', 'App/SingletonSocket', 'App/SingletonCookie', 'qt.lock'):
+                assert not os.path.lexists(cfg / gone), f'{gone} is stale and was not removed'
+            assert os.path.lexists(cfg / 'App/lock') and os.path.lexists(cfg / 'App/other.lock'), 'a link that is not a lock was removed'
+            assert decoy.exists() and bystander.read_text() == 'keep\n', 'something outside the private folders was touched'
+            print('stale lock files: kept while a copy is alive, removed when none is, links not followed, nothing else touched: ok')
+
         # 6e. URL schemes: the desktop entry declares them, the desktop learns of them, the launcher gets the address.
         p = lab.install('[desktop]\nschemes = ["panpaktest", "panpak-two"]\n')
         assert p.returncode == 0, p.stdout + p.stderr

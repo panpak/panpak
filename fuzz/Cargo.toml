@@ -27,6 +27,10 @@ name = "fuzz_pubkey"
 path = "fuzz_targets/fuzz_pubkey.rs"
 
 [[bin]]
+name = "fuzz_locks"
+path = "fuzz_targets/fuzz_locks.rs"
+
+[[bin]]
 name = "fuzz_path"
 path = "fuzz_targets/fuzz_path.rs"
 

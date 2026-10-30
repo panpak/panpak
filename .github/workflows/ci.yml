@@ -85,6 +85,7 @@ jobs:
           - fuzz_pubkey
           - fuzz_rotation
           - fuzz_path
+          - fuzz_locks
           - fuzz_zstd
           - fuzz_elf
           - fuzz_squash

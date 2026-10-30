@@ -25,7 +25,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [-o <out.panpak>]\n  panpak install-runtime <stub>
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak rollback <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -1853,6 +1853,11 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         match checked {
             Ok((ft, man)) => {
                 line(true, &format!("verified package: {} {} (root {})", man.app.id, man.app.version, &panpak_core::hex(&ft.root)[..16]));
+                if let Ok(locks) = panpak_core::stalelocks::find_for_app(&man.app.id) {
+                    if !locks.is_empty() {
+                        println!("NOTE {} stale lock file(s) of {} (left by a copy that was killed; the app may refuse to start): run `panpak data unlock {}`", locks.len(), man.app.id, man.app.id);
+                    }
+                }
                 let need: Vec<String> = man.abi.as_ref().and_then(|a| a.needs.clone()).unwrap_or_default();
                 let prefer: Vec<String> = man.abi.as_ref().and_then(|a| a.prefer_host.clone()).unwrap_or_default();
                 let allowed: Vec<String> = man.abi.as_ref().and_then(|a| a.allow_missing.clone()).unwrap_or_default();
@@ -2194,7 +2199,16 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                     ensure_code!(yes <= (*action == "clear"), ErrorCode::E5001, "--yes only goes with `data clear`");
                     cmd_data(action, id, yes)
                 }
-                [] | ["path" | "clear"] => bail_code!(ErrorCode::E5002, "data path <app-id> | data clear [--yes] <app-id>"),
+                ["unlock", id] => {
+                    ensure_code!(!yes, ErrorCode::E5001, "--yes only goes with `data clear`");
+                    let gone = panpak_core::stalelocks::unlock_app(id).map_err(|e| panpak_core::coded(ErrorCode::E2000, format!("{e:#}")))?;
+                    for g in &gone {
+                        println!("removed {}", g.display());
+                    }
+                    println!("{} stale lock file(s) removed", gone.len());
+                    Ok(())
+                }
+                [] | ["path" | "clear" | "unlock"] => bail_code!(ErrorCode::E5002, "data path <app-id> | data clear [--yes] <app-id> | data unlock <app-id>"),
                 _ => bail_code!(ErrorCode::E5001, "unexpected argument\n{usage}", usage = usage()),
             }
         }
