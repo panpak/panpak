@@ -261,6 +261,11 @@ mod tests {
     /// child can release. 500 launches, a watchdog that ends the process if one hangs.
     #[test]
     fn launches_do_not_hang_while_other_threads_allocate() {
+        // 500 forks in this process would also copy the descriptors that other tests have open for writing at
+        // that moment (a script being written and then run fails with ETXTBSY), so it runs alone.
+        if !crate::testutil::alone() {
+            return;
+        }
         use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let done = std::sync::Arc::new(AtomicBool::new(false));
@@ -319,6 +324,10 @@ mod tests {
 
     #[test]
     fn the_process_is_detached_from_the_stub_and_stays_alive() {
+        // A script written and then run fails with ETXTBSY if another thread forks while it is open for writing.
+        if !crate::testutil::alone() {
+            return;
+        }
         use std::os::unix::io::AsRawFd;
         let dir = std::env::temp_dir().join(format!("panpak-opener-detach-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -364,6 +373,10 @@ mod tests {
 
     #[test]
     fn at_most_four_processes_stay_alive_and_none_is_waited_for() {
+        // A script written and then run fails with ETXTBSY if another thread forks while it is open for writing.
+        if !crate::testutil::alone() {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("panpak-opener-live-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
