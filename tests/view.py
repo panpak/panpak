@@ -53,6 +53,18 @@ for name, path in {
 }.items():
     out['sock_' + name] = conn(path)
 out['sock_journal'] = conn('/run/systemd/journal/socket', socket.SOCK_DGRAM)
+# Sockets of container managers and of snap: /run is a new tmpfs in the view, so those below it are gone. The LXD
+# paths below /var are not under /run: they are reported, whether or not the machine has LXD (it may not).
+for name, path in {
+    'docker': '/run/docker.sock', 'docker_var': '/var/run/docker.sock', 'containerd': '/run/containerd/containerd.sock',
+    'podman': '/run/podman/podman.sock', 'snapd': '/run/snapd.socket', 'libvirt': '/run/libvirt/libvirt-sock',
+    'lxd_snap': '/var/snap/lxd/common/lxd/unix.socket', 'lxd_lib': '/var/lib/lxd/unix.socket',
+}.items():
+    out['sock_' + name] = conn(path)
+# A socket the harness made outside /run, /tmp and the home folder, standing for any such system socket.
+fake = [a for a in sys.argv[1:] if a.startswith('/var/tmp/')]
+if fake:
+    out['sock_outside_run'] = conn(fake[0])
 disp = os.environ.get('DISPLAY', '')
 out['sock_x11'] = conn('/tmp/.X11-unix/X' + disp[1:].split('.')[0]) if disp.startswith(':') else 'nodisplay'
 home = os.path.expanduser('~')
@@ -367,6 +379,13 @@ def main():
     lab.env['WAYLAND_DISPLAY'] = 'wayland-0'
     marker = Path('/tmp') / f'panpak-view-marker-{os.getpid()}'
     marker.write_text('host tmp\n')
+    # A listening socket in /var/tmp: outside the folders the view replaces (home, /tmp, /run).
+    outside = Path('/var/tmp') / f'panpak-view-outside-{os.getpid()}.sock'
+    outside.unlink(missing_ok=True)
+    outside_srv = socket.socket(socket.AF_UNIX)
+    outside_srv.bind(str(outside))
+    outside_srv.listen(4)
+    threading.Thread(target=Fake.accept, args=(outside_srv,), daemon=True).start()
     host_ns = {ns: os.readlink(f'/proc/self/ns/{ns}') for ns in ('pid', 'ipc', 'mnt', 'user', 'net')}
     x = None
     try:
@@ -383,7 +402,7 @@ def main():
         print(p.stdout.strip().splitlines()[-3:])
         if view_here:
             assert 'isolated view (bubblewrap)' in layers, layers
-        p, rep = run_report(lab, ['--marker', str(marker)], mask=False)
+        p, rep = run_report(lab, ['--marker', str(marker), str(outside)], mask=False)
         assert p.returncode == 0, p.stderr
         gone = dict(sock_ssh_cm='absent', sock_gpg_home='absent', home_ssh_dir='absent', home_gnupg_dir='absent', home_secret='absent',
                     home_xauthority='absent', store_packages='absent', store_blobs='absent', store_apps='absent',
@@ -393,6 +412,8 @@ def main():
                     sock_bus='absent', sock_systemd_private='absent', sock_gpg_agent='absent', sock_gpg_agent_ssh='absent',
                     sock_ssh_agent='absent', sock_system_bus_fake='absent', sock_system_bus='absent',
                     sock_pipewire='absent', sock_pulse='absent', sock_wayland='ok', sock_journal='ok',
+                    sock_docker='absent', sock_docker_var='absent', sock_containerd='absent', sock_podman='absent',
+                    sock_snapd='absent', sock_libvirt='absent',
                     x11_dir='absent', tmp_marker='hidden', env_TMPDIR='/tmp', env_SQLITE_TMPDIR='/tmp',
                     write_tmpdir='ok', write_data='ok', write_runtime='ok',
                     uid=str(os.getuid()), uid_map=f'{os.getuid()} {os.getuid()} 1')
@@ -408,6 +429,8 @@ def main():
             assert int(rep['procs']) < 12, f'the app sees {rep["procs"]} processes'
             assert rep['resolv_conf'] == 'ok'
             check(rep, read_secret='err2', no_new_privs='1')
+            print('sockets of containers and snap: hidden. LXD paths below /var:', rep['sock_lxd_snap'], rep['sock_lxd_lib'],
+                  '| a socket outside /run, /tmp and home:', rep['sock_outside_run'])
             print('view, plain app: ok (', rep['run_entries'], '| runtime:', rep['rt_entries'], ')')
             if rep['dns'] != 'ok':
                 print('note: name resolution failed in the view; checking that it fails outside too')
@@ -677,6 +700,8 @@ def main():
         if x:
             x.terminate()
         marker.unlink(missing_ok=True)
+        outside.unlink(missing_ok=True)
+        outside_srv.close()
         for s in fake.socks:
             s.close()
         teardown(lab)
