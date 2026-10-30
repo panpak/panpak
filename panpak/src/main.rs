@@ -664,6 +664,11 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
         }
     }
 
+    // The manifest is complete here (the libraries found in the files are in `abi.needs`): check it with
+    // the rules `install` applies, before anything is written or signed. A package that install refuses
+    // must not exist.
+    panpak_core::validate_manifest(&man).context("the manifest that would be signed is invalid; nothing was written")?;
+
     let out_path = match out {
         Some(p) => p.to_path_buf(),
         None => PathBuf::from(format!("{}.panpak", man.app.id)),
@@ -2462,6 +2467,41 @@ mod tests {
         fs::write(tree.join(".panpak/x"), "x").unwrap();
         let e = cmd_pack(&tree, &stub, &secret, None, Some(&dir.join("c.panpak"))).unwrap_err();
         assert!(panpak_core::err_text(&e).contains("reserved"), "{e:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pack_refuses_a_manifest_that_install_would_refuse() {
+        // The FreeCAD case: a library name found in a file of the tree is not a valid name. It is added to
+        // `abi.needs` after the first check of the manifest, so only the check before signing sees it.
+        let dir = std::env::temp_dir().join(format!("panpak-badneed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let tree = dir.join("tree");
+        fs::create_dir_all(tree.join("bin")).unwrap();
+        let mut elf = tiny_elf();
+        elf[241..250].copy_from_slice(b"lib c.so6"); // a space is not allowed in a library name
+        fs::write(tree.join("bin/app"), &elf).unwrap();
+        fs::set_permissions(tree.join("bin/app"), fs::Permissions::from_mode(0o755)).unwrap();
+        let secret = "29".repeat(32);
+        let sk = panpak_core::parse_secret(&secret).unwrap();
+        let key = format!("ed25519:{}", panpak_core::hex(sk.verifying_key().as_bytes()));
+        fs::write(
+            tree.join("panpak.toml"),
+            format!("[app]\nid=\"org.example.bad\"\nname=\"B\"\nversion=\"1\"\nentry=\"bin/app\"\n[update]\nkey=\"{key}\"\n"),
+        )
+        .unwrap();
+        let stub = dir.join("stub");
+        fs::write(&stub, b"FAKE-STUB").unwrap();
+        let out = dir.join("a.panpak");
+        let e = cmd_pack(&tree, &stub, &secret, None, Some(&out)).unwrap_err();
+        let text = panpak_core::render(&e, ErrorCode::E0000);
+        assert!(text.contains("invalid") && text.contains("abi.needs") && text.contains("nothing was written"), "{text}");
+        assert!(!out.exists(), "a file was written for an invalid manifest");
+        // The same tree with a valid name is packed.
+        elf[241..250].copy_from_slice(b"libc.so.6");
+        fs::write(tree.join("bin/app"), &elf).unwrap();
+        cmd_pack(&tree, &stub, &secret, None, Some(&out)).unwrap();
+        assert!(out.exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
