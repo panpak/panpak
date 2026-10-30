@@ -1701,7 +1701,7 @@ pub mod abi {
                 let name = e.file_name().to_string_lossy().into_owned();
                 if p.is_dir() && d < depth {
                     stack.push((p, d + 1));
-                } else if name.starts_with("lib") && name.contains(".so") {
+                } else if (name.starts_with("lib") && name.contains(".so")) || is_loader_name(&name) {
                     map.entry(name).or_insert(p);
                 }
             }
@@ -1709,17 +1709,50 @@ pub mod abi {
         map
     }
 
+    /// The name of a dynamic loader (`ld-linux-x86-64.so.2`, `ld.so`). It defines symbols that the
+    /// libraries need (`__tls_get_addr`, `_rtld_global_ro`), so the inventory must list it.
+    fn is_loader_name(name: &str) -> bool {
+        name.starts_with("ld-linux") || name == "ld.so"
+    }
+
+    /// The output of `ldconfig -p`: from `PATH` first, then from the folders of the system tools,
+    /// which an ordinary user's `PATH` often lacks.
+    pub fn ldconfig_output() -> Option<String> {
+        ["ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"].iter().find_map(|c| {
+            let out = std::process::Command::new(c).arg("-p").output().ok().filter(|o| o.status.success())?;
+            Some(String::from_utf8_lossy(&out.stdout).into_owned())
+        })
+    }
+
     /// Host map SONAME -> path: `ldconfig -p`, fallback to dir scan.
     pub fn host_libs() -> HashMap<String, PathBuf> {
-        if let Ok(out) = std::process::Command::new("ldconfig").arg("-p").output() {
-            if out.status.success() {
-                let map = parse_ldconfig(&String::from_utf8_lossy(&out.stdout));
-                if !map.is_empty() {
-                    return map;
-                }
+        if let Some(text) = ldconfig_output() {
+            let map = parse_ldconfig(&text);
+            if !map.is_empty() {
+                return map;
             }
         }
         scan_dirs(&["/lib", "/lib64", "/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu"], 2)
+    }
+
+    #[cfg(test)]
+    mod inventory_tests {
+        use super::*;
+
+        #[test]
+        fn the_scan_of_the_library_folders_lists_the_loader() {
+            let d = std::env::temp_dir().join(format!("panpak-scan-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&d);
+            fs::create_dir_all(d.join("sub")).unwrap();
+            for f in ["libc.so.6", "ld-linux-x86-64.so.2", "sub/ld.so", "sub/libm.so.6", "notalib.txt", "ld-notaloader.txt"] {
+                fs::write(d.join(f), b"x").unwrap();
+            }
+            let m = scan_dirs(&[d.to_str().unwrap()], 2);
+            let mut names: Vec<&str> = m.keys().map(String::as_str).collect();
+            names.sort();
+            assert_eq!(names, ["ld-linux-x86-64.so.2", "ld.so", "libc.so.6", "libm.so.6"]);
+            let _ = fs::remove_dir_all(&d);
+        }
     }
 
     /// Inventory of libs included in the tree: SONAME -> relative path.
@@ -2296,9 +2329,16 @@ pub mod abi {
 
     /// The dynamic loader in use: the bundled one (glibc in the bundle) or the system's.
     fn loader_path(tree: &Path, host: &HashMap<String, PathBuf>, bundled: &HashMap<String, PathBuf>) -> Option<PathBuf> {
-        ["ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1"]
+        const NAMES: [&str; 2] = ["ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1"];
+        // The loader of the bundle, else the one in the inventory of the system, else the one at the
+        // standard places: without it every symbol it defines would be reported as missing.
+        NAMES
             .iter()
             .find_map(|n| bundled.get(*n).map(|r| tree.join(r)).or_else(|| host.get(*n).cloned()))
+            .or_else(|| {
+                let dirs = ["/lib64", "/lib", "/usr/lib64", "/usr/lib", "/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu"];
+                dirs.iter().flat_map(|d| NAMES.iter().map(move |n| Path::new(d).join(n))).find(|p| p.is_file())
+            })
     }
 
     /// `decide` (with the C++ runtime choice) followed by the symbol check: if some symbol that the

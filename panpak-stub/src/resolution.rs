@@ -10,7 +10,7 @@
 //! `ldconfig` and never reads a library.
 use anyhow::{Context, Result};
 use panpak_core::{abi, Manifest};
-use std::{collections::HashSet, fs, os::unix::fs::MetadataExt, path::{Path, PathBuf}, process::Command};
+use std::{collections::HashSet, fs, os::unix::fs::MetadataExt, path::{Path, PathBuf}};
 
 const MAX_CACHE: u64 = 4 << 20;
 
@@ -135,8 +135,7 @@ fn load(path: &Path, key: &str) -> Option<abi::Plan> {
 /// The system library inventory: `ldconfig -p`, or None if it is missing or empty (musl, minimal
 /// systems): then nothing is cached, and the scan of the library folders stays fresh.
 fn host_inventory() -> Option<std::collections::HashMap<String, PathBuf>> {
-    let out = Command::new("ldconfig").arg("-p").output().ok().filter(|o| o.status.success())?;
-    let map = abi::parse_ldconfig(&String::from_utf8_lossy(&out.stdout));
+    let map = abi::parse_ldconfig(&abi::ldconfig_output()?);
     (!map.is_empty()).then_some(map)
 }
 
@@ -270,7 +269,7 @@ fn trace(state: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::{collections::HashMap, process::Command};
 
     fn parts<'a>(root: &'a str, kernel: &'a [u8], stub: &'a str, ld_cache: &'a str) -> KeyParts<'a> {
         KeyParts { root, abi_toml: "needs=[\"a\"]", entry: "bin/app", stub, kernel, ld_cache }

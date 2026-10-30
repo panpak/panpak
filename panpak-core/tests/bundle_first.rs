@@ -320,3 +320,41 @@ fn a_step_that_does_not_help_is_undone_and_the_loop_ends() {
     assert!(r.decisions.contains(&("libglib-2.0.so.0".to_string(), Source::Bundled(PathBuf::from("lib/libglib-2.0.so.0")))));
     assert!(!r.diagnosis.missing.is_empty());
 }
+
+/// A program that uses thread-local storage. The loader defines `__tls_get_addr` and, for glibc itself,
+/// the `GLIBC_PRIVATE` symbols; none of the libraries does. An inventory of the system that lacks the
+/// loader (the fallback when `ldconfig` cannot be run) used to turn them into a false "missing".
+#[test]
+fn symbols_defined_by_the_loader_are_not_reported_missing() {
+    use panpak_core::abi::{diagnose, resolve_consistent, InfoCache};
+    let dir = std::env::temp_dir().join(format!("panpak-tls-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    for d in ["tree/bin", "tree/lib"] {
+        fs::create_dir_all(dir.join(d)).unwrap();
+    }
+    fs::write(dir.join("tls.c"), "__thread int counter;\nint next(void) { return ++counter; }\n").unwrap();
+    fs::write(dir.join("main.c"), "#include <stdio.h>\nint next(void);\nint main(void) { printf(\"%d\\n\", next()); return 0; }\n").unwrap();
+    let built = zig_cc(&dir, &["-shared", "-fPIC", "-ftls-model=global-dynamic", "-Wl,-soname,libtls.so.1", "-o", "tree/lib/libtls.so.1", "tls.c"])
+        && zig_cc(&dir, &["-o", "tree/bin/app", "main.c", "tree/lib/libtls.so.1", "-Wl,-z,now"]);
+    let full = panpak_core::abi::host_libs();
+    if !built || !full.contains_key("libc.so.6") || !full.contains_key("ld-linux-x86-64.so.2") {
+        eprintln!("skipped: Zig cannot be run (set PANPAK_ZIG) or there is no glibc here");
+        let _ = fs::remove_dir_all(&dir);
+        return;
+    }
+    let tree = dir.join("tree");
+    let decisions = vec![("libtls.so.1".to_string(), Source::Bundled(PathBuf::from("lib/libtls.so.1")))];
+    // The program does use __tls_get_addr, and nothing but the loader defines it.
+    let mut inventory = full.clone();
+    inventory.remove("ld-linux-x86-64.so.2");
+    let without_loader = diagnose(&tree, "bin/app", &decisions, None, &inventory, &[]);
+    assert!(without_loader.missing.iter().any(|(_, s)| s.starts_with("__tls_get_addr@")), "the control does not see the symbol: {without_loader:?}");
+    // With the loader of the system the check is clean.
+    let loader = full["ld-linux-x86-64.so.2"].clone();
+    assert!(diagnose(&tree, "bin/app", &decisions, Some(&loader), &full, &[]).missing.is_empty());
+    // And the resolution finds the loader on its own, also when the inventory does not list it.
+    let bundled = HashMap::from([("libtls.so.1".to_string(), PathBuf::from("lib/libtls.so.1"))]);
+    let r = resolve_consistent(&mut InfoCache::default(), &tree, "bin/app", &["libtls.so.1".to_string()], &[], &[], &inventory, &bundled).unwrap();
+    assert!(r.diagnosis.missing.is_empty(), "{:?}", r.diagnosis);
+    let _ = fs::remove_dir_all(&dir);
+}
