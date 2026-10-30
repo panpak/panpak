@@ -58,10 +58,18 @@ impl SystemXdgOpen {
     }
 }
 
-/// Close every descriptor from 3 up. Runs between `fork` and `exec`: only async-signal-safe calls.
+/// Close every descriptor from 3 up. Runs between `fork` and `exec`, in a process that was copied from
+/// one with other threads: only async-signal-safe calls, nothing that allocates or takes a lock (so no
+/// listing of `/proc/self/fd`). First `close_range(3, ~0, CLOSE_RANGE_CLOEXEC)` (Linux 5.11): the
+/// descriptors close at the `exec`, and the pipe on which the standard library reports a failed `exec`
+/// stays usable. Then `close_range(3, ~0, 0)` (Linux 5.9), then a plain loop with no allocation.
 fn close_from_3() {
+    const CLOSE_RANGE_CLOEXEC: u32 = 4;
     // SAFETY: close_range and close are async-signal-safe; the descriptors are this process's own.
     unsafe {
+        if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, CLOSE_RANGE_CLOEXEC) == 0 {
+            return;
+        }
         if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) != 0 {
             for fd in 3..1024 {
                 libc::close(fd);
@@ -246,6 +254,52 @@ mod tests {
         drop(server);
         assert!(!path.exists(), "the socket goes away with the server");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Other threads allocate all the time while the opener forks: the child between `fork` and `exec` must
+    /// not need the allocator or any lock, or it would wait for ever for a lock that no thread of the
+    /// child can release. 500 launches, a watchdog that ends the process if one hangs.
+    #[test]
+    fn launches_do_not_hang_while_other_threads_allocate() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let load: Vec<_> = (0..4)
+            .map(|i| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let mut keep: Vec<String> = Vec::new();
+                    while !stop.load(SeqCst) {
+                        keep.push(format!("{i}-{}", keep.len()).repeat(8));
+                        if keep.len() > 2000 {
+                            keep.clear();
+                        }
+                    }
+                })
+            })
+            .collect();
+        let d = done.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(90));
+            if !d.load(SeqCst) {
+                eprintln!("a launch hung between fork and exec");
+                std::process::exit(99);
+            }
+        });
+        let mut t = SystemXdgOpen::new(PathBuf::from("/bin/true"));
+        let mut launched = 0;
+        while launched < 500 {
+            match t.open("https://example.org/") {
+                Ok(()) => launched += 1,
+                Err(e) if e.contains("too many") => std::thread::sleep(Duration::from_millis(1)),
+                Err(e) => panic!("{e}"),
+            }
+        }
+        done.store(true, SeqCst);
+        stop.store(true, SeqCst);
+        for h in load {
+            h.join().unwrap();
+        }
     }
 
     /// The program the opener starts is a fake browser that stays alive. It records where it runs.

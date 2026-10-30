@@ -22,7 +22,6 @@ use std::{
     os::unix::{
         fs::{FileExt as _, OpenOptionsExt as _},
         io::FromRawFd as _,
-        process::CommandExt as _,
     },
     path::Path,
     process::Command,
@@ -442,36 +441,88 @@ fn last_err() -> std::io::Error {
     std::io::Error::last_os_error()
 }
 
+/// The command prepared for `execve` before the fork: between `fork` and `exec` the child may only
+/// call async-signal-safe functions (no allocation, no lock), so everything it needs is built here.
+struct ExecPlan {
+    program: std::ffi::CString,
+    _argv: Vec<std::ffi::CString>,
+    _envp: Vec<std::ffi::CString>,
+    argv_ptrs: Vec<*const libc::c_char>,
+    envp_ptrs: Vec<*const libc::c_char>,
+}
+
+impl ExecPlan {
+    fn new(cmd: &Command) -> Result<Self> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let c = |s: &std::ffi::OsStr| std::ffi::CString::new(s.as_bytes()).context("NUL in the command of the app");
+        let program = c(cmd.get_program())?;
+        if cmd.get_current_dir().is_some() || !program.as_bytes().contains(&b'/') {
+            bail!("the probe needs an absolute program and no working directory");
+        }
+        let mut argv = vec![program.clone()];
+        for a in cmd.get_args() {
+            argv.push(c(a)?);
+        }
+        // The environment of this process, changed as the command says.
+        let mut env: BTreeMap<std::ffi::OsString, std::ffi::OsString> = std::env::vars_os().collect();
+        for (k, v) in cmd.get_envs() {
+            match v {
+                Some(v) => env.insert(k.to_os_string(), v.to_os_string()),
+                None => env.remove(k),
+            };
+        }
+        let mut envp = Vec::with_capacity(env.len());
+        for (k, v) in env {
+            let mut kv = k.as_bytes().to_vec();
+            kv.push(b'=');
+            kv.extend_from_slice(v.as_bytes());
+            envp.push(std::ffi::CString::new(kv).context("NUL in the environment of the app")?);
+        }
+        let ptrs = |v: &[std::ffi::CString]| v.iter().map(|s| s.as_ptr()).chain(std::iter::once(std::ptr::null())).collect::<Vec<_>>();
+        let (argv_ptrs, envp_ptrs) = (ptrs(&argv), ptrs(&envp));
+        Ok(Self { program, _argv: argv, _envp: envp, argv_ptrs, envp_ptrs })
+    }
+}
+
+/// Write a fixed message to stderr. Async-signal-safe.
+fn say(msg: &'static [u8]) {
+    // SAFETY: write(2) of a static buffer.
+    unsafe { libc::write(2, msg.as_ptr().cast(), msg.len()) };
+}
+
 /// In the forked child: set the death signal, install the filter, hand the listener to the parent,
-/// wait for its acknowledgement. Returns the error text on failure.
-unsafe fn child_setup(prog: &libc::sock_fprog, to_parent: libc::c_int, from_parent: libc::c_int) -> std::result::Result<(), std::io::Error> {
+/// wait for its acknowledgement. Only async-signal-safe calls (no allocation, no formatting): the
+/// error is the `errno` value, 0 for success.
+unsafe fn child_setup(prog: &libc::sock_fprog, to_parent: libc::c_int, from_parent: libc::c_int) -> libc::c_int {
+    let errno = || *libc::__errno_location();
     if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0) != 0 {
-        return Err(last_err());
+        return errno();
     }
     if libc::getppid() == 1 {
-        return Err(std::io::Error::other("supervisor already gone"));
+        return libc::ESRCH; // the supervisor is already gone
     }
     if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1 as libc::c_ulong, 0, 0, 0) != 0 {
-        return Err(last_err());
+        return errno();
     }
     let fd = libc::syscall(libc::SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_NEW_LISTENER, prog as *const _);
-    let msg: i32 = if fd < 0 { -(last_err().raw_os_error().unwrap_or(libc::EINVAL)) } else { fd as i32 };
+    let e = if fd < 0 { errno() } else { 0 };
+    let msg: i32 = if fd < 0 { -e } else { fd as i32 };
     if libc::write(to_parent, msg.to_ne_bytes().as_ptr().cast(), 4) != 4 {
-        return Err(last_err());
+        return errno();
     }
     if fd < 0 {
-        return Err(std::io::Error::from_raw_os_error(-msg));
+        return e;
     }
     let mut ack = [0u8; 1];
     if libc::read(from_parent, ack.as_mut_ptr().cast(), 1) != 1 {
-        return Err(std::io::Error::other("no acknowledgement from the supervisor"));
+        return libc::EPIPE; // no acknowledgement from the supervisor
     }
-    Ok(())
+    0
 }
 
 /// Run `cmd` as a child under the probe and return its exit code (128 + n if a signal ended it).
 /// The supervisor waits for every process that descends from the app.
-pub fn run(mut cmd: Command, log: File) -> Result<i32> {
+pub fn run(cmd: Command, log: File) -> Result<i32> {
     eprintln!("panpak: SOCKET PROBE is on: measurement only, it checks and blocks nothing (PANPAK_SOCKET_PROBE)");
     let prog_insns = filter_program();
     let prog = libc::sock_fprog { len: prog_insns.len() as u16, filter: prog_insns.as_ptr() as *mut libc::sock_filter };
@@ -486,20 +537,23 @@ pub fn run(mut cmd: Command, log: File) -> Result<i32> {
             bail!("PR_SET_CHILD_SUBREAPER: {}", last_err());
         }
     }
-    // SAFETY: the stub has one thread, so the child may use the allocator before exec.
+    let plan = ExecPlan::new(&cmd)?;
+    // SAFETY: after the fork the child calls only async-signal-safe functions (see `child_setup`,
+    // `say`, `execve`, `_exit`) on data prepared above; the stub may have other threads by now.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         bail!("fork: {}", last_err());
     }
     if pid == 0 {
         // SAFETY: in the child, after fork; the pipes are valid.
-        let res = unsafe { child_setup(&prog, c2p[1], p2c[0]) };
-        if let Err(e) = res {
-            eprintln!("panpak: socket probe: cannot set up the filter: {e}");
+        let err = unsafe { child_setup(&prog, c2p[1], p2c[0]) };
+        if err != 0 {
+            say(b"panpak: socket probe: cannot set up the filter\n");
             unsafe { libc::_exit(126) };
         }
-        let err = cmd.exec();
-        eprintln!("panpak: exec failed: {err}");
+        // SAFETY: execve with NUL-terminated arrays built before the fork.
+        unsafe { libc::execve(plan.program.as_ptr(), plan.argv_ptrs.as_ptr(), plan.envp_ptrs.as_ptr()) };
+        say(b"panpak: exec failed\n");
         unsafe { libc::_exit(127) };
     }
     CHILD.store(pid, Ordering::Relaxed);

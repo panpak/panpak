@@ -1514,6 +1514,44 @@ mod tests {
         (panpak, tree, appdata)
     }
 
+    /// The tests that fork run the body in the child, which allocates and takes locks. A fork of a process
+    /// that has other threads (the other tests, the opener) can copy the allocator in the middle of a call by
+    /// another thread, and the child then waits for ever. So each of them runs again alone in a new
+    /// process: one test, one thread, a time limit. Returns true where the body is to run (the new process,
+    /// or a run that is already alone), false in the first process, which has only waited for the result.
+    fn alone() -> bool {
+        const VAR: &str = "PANPAK_TEST_ALONE";
+        let name = std::thread::current().name().map(str::to_string).unwrap_or_default();
+        if std::env::var_os(VAR).is_some() || !name.starts_with("tests::") {
+            return true;
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--test-threads=1", "--nocapture"])
+            .env(VAR, "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let start = std::time::Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait().unwrap() {
+                break s;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(120) {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("{name} did not finish in 120 s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let mut out = String::new();
+        for mut pipe in [child.stdout.take().map(|p| Box::new(p) as Box<dyn std::io::Read>), child.stderr.take().map(|p| Box::new(p) as Box<dyn std::io::Read>)].into_iter().flatten() {
+            let _ = pipe.read_to_string(&mut out);
+        }
+        assert!(status.success(), "{name} failed when run alone:\n{out}");
+        false
+    }
+
     /// Run `body` in a forked child (the parent stays free);
     /// return the lines written to `results` (inside a writable dir).
     fn fork_lines<F>(results: &Path, body: F) -> String
@@ -1583,6 +1621,9 @@ mod tests {
 
     #[test]
     fn sandbox_network_denied_by_default_and_allowlist() {
+        if !alone() {
+            return;
+        }
         use std::net::TcpListener;
         if !require_abi(landlock::ABI::V4, "TCP network") {
             return;
@@ -1640,6 +1681,9 @@ mod tests {
 
     #[test]
     fn sandbox_scope_signals_and_abstract_sockets() {
+        if !alone() {
+            return;
+        }
         if !require_abi(landlock::ABI::V6, "scope") {
             return;
         }
@@ -1694,6 +1738,9 @@ mod tests {
 
     #[test]
     fn x11_keeps_signal_scope() {
+        if !alone() {
+            return;
+        }
         if !require_abi(landlock::ABI::V6, "X11 signal scope") { return; }
         let (dir, pkg, tree, appdata) = fixture_tree("x11-signal", "[permissions]\nx11 = true\n");
         let parent = std::process::id() as i32;
@@ -1708,6 +1755,9 @@ mod tests {
 
     #[test]
     fn sandbox_unix_allow_path() {
+        if !alone() {
+            return;
+        }
         if !require_abi(landlock::ABI::V9, "unix path") {
             return;
         }
@@ -2339,6 +2389,9 @@ mod tests {
 
     #[test]
     fn sandbox_open_file_only_that_one() {
+        if !alone() {
+            return;
+        }
         // Fixture outside /tmp/appdata/tree: the `open` rule must
         // cover only the exact file, even in the same folder.
         let (dir, panpak, tree, appdata) = fixture_tree("open-ro", "");
@@ -2380,6 +2433,9 @@ mod tests {
 
     #[test]
     fn sandbox_open_file_writable_with_flag() {
+        if !alone() {
+            return;
+        }
         use std::io::Write as _;
         let (dir, panpak, tree, appdata) = fixture_tree("open-rw", "");
         let outside = outside_tmpdir("open-rw");
@@ -2409,6 +2465,9 @@ mod tests {
 
     #[test]
     fn sandbox_open_rename_without_reading_neighbours() {
+        if !alone() {
+            return;
+        }
         use std::io::Write as _;
         // Atomic-save pattern (temp+rename): granted only with rename,
         // no reading/listing of neighbors.
@@ -2443,6 +2502,9 @@ mod tests {
 
     #[test]
     fn sandbox_open_rename_denied_without_flag() {
+        if !alone() {
+            return;
+        }
         // Without rename, the temp+rename pattern is denied (fail-closed).
         let (dir, panpak, tree, appdata) = fixture_tree("open-norename", "");
         let outside = outside_tmpdir("open-norename");
@@ -2461,6 +2523,9 @@ mod tests {
 
     #[test]
     fn private_tmp_writable_and_var_tmp_denied() {
+        if !alone() {
+            return;
+        }
         use std::io::Write as _;
         // Under sandbox: SQLite-style (O_EXCL 0600 like etilqs_*) ok in the
         // private tmp folder, denied in /var/tmp (default-deny).
@@ -2486,6 +2551,9 @@ mod tests {
 
     #[test]
     fn sandbox_tree_readonly_app_writable() {
+        if !alone() {
+            return;
+        }
         use std::io::Write as _;
         // Fixture: materialized tree (with write-bit strip) + appdata.
         let (dir, panpak, tree, appdata) = fixture_tree("sandbox-ro", "");
