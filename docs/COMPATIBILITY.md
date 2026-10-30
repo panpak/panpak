@@ -27,7 +27,7 @@ Flatpak" phase. Inkscape's site was unreachable, so it was not added.
 | Nextcloud 35.0.1 | Qt 6 + KF6, tray | converts now; does not start | | 39 `allow_missing` libraries, the image expects KDE Frameworks 6 of the host (`KZip`, `libKF6*`); D-Bus: `RequestName`, `Activate` |
 | PrusaSlicer 2.8.1 | GTK 3 | works | 1.37 s / 0.33 s | convert now passes; 105 MB / 249 MB |
 | Cura 5.13.0 | Qt 6 | converts now; does not start | | PyInstaller bundle: `GLIBC_2.38 not found` from the `libc.so.6` of the farm (plan defect 26) |
-| FreeCAD 1.1.4 | Qt 6 | converts; install refused until round 2 | | `abi.needs` holds a name the install validation rejects (plan defect 25; fixed in round 2: a `DT_NEEDED` with a path, `/home/runner/work/FreeCAD/.../libsqlite3.so`, in the plugin `libqsqlite.so`) |
+| FreeCAD 1.1.4 | Qt 6 | converts and installs (round 2); does not start | | `libQt63DAnimation.so.6` and other Qt 6 libraries missing on the host, not in the image;  `abi.needs` holds a name the install validation rejects (plan defect 25; fixed in round 2: a `DT_NEEDED` with a path, `/home/runner/work/FreeCAD/.../libsqlite3.so`, in the plugin `libqsqlite.so`) |
 | GIMP 3.2.6 | GTK 3 | works (with `--entry usr/bin/gimp-3.2`) | 4.26 s / 0.64 s | convert now passes (`libLLVM`); 39 `allow_missing`; 278 MB / 824 MB |
 | balenaEtcher 2.1.3 (prerelease) | Electron | converts now; aborts | | Chromium: `The SUID sandbox helper binary was found, but is not configured correctly`; needs `--no-sandbox` (plan defect 27); root case not reached |
 | VSCodium 1.143 | Electron | not converted | | "anylinux" AppImage is DwarFS, convert reads squashfs only (DwarFS) |
