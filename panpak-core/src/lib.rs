@@ -26,7 +26,7 @@ pub use layout::{
     PARTIAL_ISOLATION_WARNING,
 };
 pub use view::{
-    bwrap_version, implied_sockets, open_o_path, resolv_conf_run_dir, unopenable_rule_paths, view_status, view_status_at, ViewProblem,
+    bwrap_version, implied_sockets, network_requested, open_o_path, resolv_conf_run_dir, unopenable_rule_paths, view_status, view_status_at, ViewProblem,
     ViewStatus, BWRAP, SYSTEM_RULE_PATHS,
 };
 pub use validate::{

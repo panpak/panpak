@@ -206,6 +206,25 @@ try:
 except OSError as e:
     out['dns'] = 'fail'
 
+# Network: a datagram and a connection to the listeners the harness keeps on the loopback of the host.
+net_port = [a.split('=')[1] for a in sys.argv[1:] if a.startswith('--net-port=')]
+if net_port:
+    try:
+        u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        u.sendto(b'udp-from-the-app', ('127.0.0.1', int(net_port[0])))
+        out['udp_loopback'] = 'sent'
+    except OSError as e:
+        out['udp_loopback'] = f'err{e.errno}'
+    try:
+        t = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        t.settimeout(2)
+        t.connect(('127.0.0.1', int(net_port[0])))
+        out['tcp_loopback'] = 'ok'
+    except OSError as e:
+        out['tcp_loopback'] = f'err{e.errno}'
+    # /proc/net/dev lists the interfaces of the network namespace of the process.
+    out['net_ifaces'] = ','.join(sorted(l.split(':')[0].strip() for l in open('/proc/net/dev').read().splitlines()[2:]))
+
 # Namespaces and processes.
 for ns in ('pid', 'ipc', 'mnt', 'user', 'net'):
     out['ns_' + ns] = os.readlink(f'/proc/self/ns/{ns}')
@@ -396,6 +415,35 @@ def main():
     outside_srv.listen(4)
     threading.Thread(target=Fake.accept, args=(outside_srv,), daemon=True).start()
     host_ns = {ns: os.readlink(f'/proc/self/ns/{ns}') for ns in ('pid', 'ipc', 'mnt', 'user', 'net')}
+    # Listeners on the loopback of the host (UDP and TCP, same port): what the app can reach on the network.
+    net_got = []
+    net_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    net_udp.bind(('127.0.0.1', 0))
+    net_port = net_udp.getsockname()[1]
+    net_tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    net_tcp.bind(('127.0.0.1', net_port))
+    net_tcp.listen(4)
+
+    def net_listen():
+        while True:
+            try:
+                data, _ = net_udp.recvfrom(100)
+                net_got.append('udp')
+            except OSError:
+                return
+
+    def net_accept():
+        while True:
+            try:
+                c, _ = net_tcp.accept()
+                net_got.append('tcp')
+                c.close()
+            except OSError:
+                return
+
+    threading.Thread(target=net_listen, daemon=True).start()
+    threading.Thread(target=net_accept, daemon=True).start()
+    net_arg = f'--net-port={net_port}'
     x = None
     try:
         status = subprocess.run(['/usr/bin/bwrap', '--unshare-user', '--ro-bind', '/', '/', '/usr/bin/true'],
@@ -411,7 +459,7 @@ def main():
         print(p.stdout.strip().splitlines()[-3:])
         if view_here:
             assert 'isolated view (bubblewrap)' in layers, layers
-        p, rep = run_report(lab, ['--marker', str(marker), str(outside)], mask=False)
+        p, rep = run_report(lab, ['--marker', str(marker), str(outside), net_arg], mask=False)
         assert p.returncode == 0, p.stderr
         gone = dict(sock_ssh_cm='absent', sock_gpg_home='absent', home_ssh_dir='absent', home_gnupg_dir='absent', home_secret='absent',
                     home_xauthority='absent', store_packages='absent', store_blobs='absent', store_apps='absent',
@@ -434,19 +482,20 @@ def main():
             assert rep['tmp_entries'] == '1' or int(rep['tmp_entries']) <= 2, rep['tmp_entries']
             for ns in ('pid', 'ipc', 'mnt', 'user'):
                 assert rep['ns_' + ns] != host_ns[ns], f'{ns} namespace is the host one'
-            assert rep['ns_net'] == host_ns['net'], 'the network namespace must be shared'
+            # No network asked for: the view has a network namespace of its own with only the loopback interface.
+            assert rep['ns_net'] != host_ns['net'], 'an app with no network shares the network namespace of the host'
+            assert rep['net_ifaces'] == 'lo', rep['net_ifaces']
+            time.sleep(0.3)
+            assert net_got == [], f'an app with no network reached the host: {net_got}'
+            assert rep['tcp_loopback'] != 'ok'
             assert int(rep['procs']) < 12, f'the app sees {rep["procs"]} processes'
             assert rep['resolv_conf'] == 'ok'
             check(rep, read_secret='err2', no_new_privs='1')
             check(rep, sock_lxd_snap='absent', sock_lxd_lib='absent', sock_outside_run='absent')
             print('sockets of containers, snap and LXD, and one in /var/tmp: not reachable')
             print('view, plain app: ok (', rep['run_entries'], '| runtime:', rep['rt_entries'], ')')
-            if rep['dns'] != 'ok':
-                print('note: name resolution failed in the view; checking that it fails outside too')
-                out = subprocess.run(['getent', 'hosts', 'example.com'], capture_output=True)
-                assert out.returncode != 0, 'DNS works on the host but not in the view'
-            else:
-                print('DNS in the view: ok')
+            assert rep['dns'] == 'fail', 'name resolution works for an app with no network'
+            print('no network: no interface but lo, no datagram or connection reached the host, no name resolution')
 
         # 2. The same app where bubblewrap cannot be used: as before the view existed.
         p = masked(lab, BIN_PANPAK(), 'install', '--yes', '--accept-new-permissions',
@@ -455,8 +504,14 @@ def main():
         installed = p.stdout
         assert 'isolation layers: Landlock abstract-socket scope (V6)' in installed or 'Landlock path sockets' in installed, installed
         assert 'NOTE: no isolated view: /usr/bin/bwrap is missing or cannot be run' in installed, installed
-        p, rep = run_report(lab, ['--marker', str(marker), str(outside)], mask=True)
+        net_got.clear()
+        p, rep = run_report(lab, ['--marker', str(marker), str(outside), net_arg], mask=True)
         assert p.returncode == 0, p.stdout + p.stderr
+        # Without the view, Landlock stops TCP only: a datagram still reaches the host (documented limit).
+        time.sleep(0.3)
+        assert net_got == ['udp'], f'without the view: {net_got}'
+        assert rep['tcp_loopback'] != 'ok'
+        print('without the view: TCP is refused and UDP gets through (known limit, THREAT-MODEL.md)')
         check(rep, tmp_marker='visible', sid=str(os.getsid(0)))
         # Control: without the view the socket in /var/tmp is reachable, except where Landlock V9 closes path sockets.
         if 'Landlock path sockets (V9)' in installed:
@@ -657,7 +712,7 @@ def main():
                 (cfg / 'App/other.lock').symlink_to(str(decoy))  # a link to a real lock-like file outside: never followed
             def hold():
                 p = subprocess.Popen([launcher, '--hold'], env=lab.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                for _ in range(100):
+                for _ in range(300):
                     if (shared / 'tmp/copy-held').exists():
                         return p
                     time.sleep(0.1)
@@ -755,6 +810,19 @@ def main():
                     except OSError:
                         pass
             print('browser started by the opener: own session, no inherited descriptors, alive after the app ended:', len(started), 'process(es)')
+
+        # 6h. An app that asks for network keeps the network namespace of the host: its datagrams get out.
+        if view_here:
+            lab.install('[permissions]\nnetwork = true\n')
+            net_got.clear()
+            _, rep = run_report(lab, [net_arg], mask=False)
+            time.sleep(0.3)
+            assert rep['ns_net'] == host_ns['net'], 'an app with network does not share the network namespace'
+            assert 'udp' in net_got, net_got
+            # Names: the resolver socket is in the view for an app that asks for network.
+            if subprocess.run(['getent', 'hosts', 'example.com'], capture_output=True).returncode == 0:
+                assert rep['dns'] == 'ok', 'name resolution fails for an app with network'
+            print('network = true: same network namespace, a datagram reaches the host, names resolve')
 
         # 6g. Several first starts at once, on a store without the tree: all of them start (defect 19).
         lab.install('')
