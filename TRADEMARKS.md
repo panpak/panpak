@@ -44,6 +44,4 @@ official project (for example "Foo, a fork of Panpak").
 
 ## Questions
 
-Ask the maintainers through the project's issue tracker. The name is still
-provisional (see `NAME-CLEARANCE.md`); this policy applies to whatever name the
-project finally uses.
+Ask the maintainers through the project's issue tracker.
