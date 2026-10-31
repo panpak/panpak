@@ -205,14 +205,14 @@ jobs:
           "$RUNNER_TEMP/gitleaks/gitleaks" git --log-opts="--all" --redact --no-banner .
 
   release-guard:
-    # Only on release tags: the security contact must be set, not a placeholder.
+    # Only on release tags: SECURITY.md must name the reporting channel, not a placeholder.
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Security contact defined
+      - name: Reporting channel defined
         run: |
-          if grep -qF '[SECURITY-CONTACT-TO-BE-SET]' SECURITY.md || ! grep -qF 'security@panpak.org' SECURITY.md; then
-            echo "SECURITY.md must name security@panpak.org and contain no placeholder before a release"
+          if grep -qF 'TO-BE-SET' SECURITY.md || ! grep -qF 'private vulnerability reporting' SECURITY.md; then
+            echo "SECURITY.md must describe private vulnerability reporting and contain no placeholder before a release"
             exit 1
           fi

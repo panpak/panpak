@@ -1,48 +1,76 @@
-# Reporting vulnerabilities
+# Security policy
 
-If you found a security problem in `Panpak` (sandbox bypass,
-signature verification, TOFU/pin, Landlock, supply chain), report it
-privately: **do not open public issues** until it is fixed.
+Panpak is pre-alpha software. The format may change and nothing here is a
+promise of security for important data. This file says how to report a
+problem and what to expect.
+
+## Supported versions
+
+Only the `main` branch. There are no stable releases yet, so older commits
+and tags get no fixes: a report is checked against the current `main`.
 
 ## How to report
 
-Write to **security@panpak.org**
-with:
+Use GitHub's private vulnerability reporting: open the repository, choose
+**Security**, then **Report a vulnerability**. The report is visible only to
+the maintainers. Please do not open a public issue or pull request for a
+vulnerability before it is fixed.
 
-1. problem description and estimated impact;
-2. minimal steps to reproduce (commands, test `.panpak` if useful);
-3. version (`panpak --version`, commit hash) and kernel (`uname -r`);
-4. if possible, a proposed fix or mitigation.
+A useful report has:
 
-Do not send working exploits against other people's systems; tests
-must run only locally or in dedicated containers.
+1. what the problem is and what an attacker gains;
+2. the steps to reproduce it (commands, and a test `.panpak` if that helps);
+3. the commit (`git rev-parse HEAD`), `panpak doctor` output and `uname -r`;
+4. a proposed fix or mitigation, if you have one.
 
-## What happens next
+Test only on your own machines or in containers and virtual machines you
+control. Do not send working exploits against other people's systems.
 
-- **Acknowledgment within 3 working days** (indicative, not a guarantee).
-- Assessment and reproduction within about **14 days**; if confirmed,
-  fix prioritized by impact:
-  - sandbox bypass / unverified execution: immediate fix;
-  - partial weakenings or local DoS: fix in the next cycle.
-- Coordinated disclosure: the fix ships before the public
-  announcement; the reporter is credited (if they wish).
+## What to expect
 
-## Rules and expectations
+Panpak is maintained by volunteers. These are targets, not commitments:
 
-- Send reports by email to the address above. No PGP key is published yet;
-  until one exists, do not include working exploit code or secrets in the
-  message and ask for a secure channel if details are sensitive.
-- Panpak is a volunteer project. Times above are targets, not commitments.
-- There is **no bug bounty** and no promise of payment or reward. Reporters
-  are credited if they wish.
-- Keep the report private until a fix is released or 90 days have passed,
-  whichever comes first, unless we agree otherwise.
+- an answer to the report within **7 days**;
+- a first assessment (confirmed, not a vulnerability, or needs more
+  information) within **30 days**;
+- a fix, or a documented decision not to fix, within **90 days** for a
+  confirmed problem. A problem that lets a package run unverified code or
+  leave the sandbox is handled first.
 
-## Scope
+Disclosure is coordinated: the fix is published before the details, and the
+reporter is credited unless they prefer not to be. If no fix exists after 90
+days, the reporter may publish the report.
 
-In scope: `panpak`, `panpak-stub`, format/verify (spec
-`PANPAK-FORMAT.md`), update/rollback/TOFU, Landlock rules,
-build/release scripts. Out of scope: D-Bus/X11/Wayland/PulseAudio
-(known surface documented in `THREAT-MODEL.md`, mitigated only by the
-future broker), kernel and drivers, phishing/initial TOFU over a
-hostile channel.
+There is **no bug bounty** and no payment of any kind.
+
+## In scope
+
+- Verification before execution: the signature, the stub hash, the index and
+  chunk hashes, trust on first use and the key pin, key rotation.
+- `panpak update` and `panpak rollback`: the download, the checks before the
+  switch, the rules for new permissions.
+- The stub and the sandbox it builds: the Landlock rules, the isolated view
+  (bubblewrap), the files and folders it creates, the launcher and `.desktop`
+  files written by `install`, the channel that opens addresses, the removal of
+  stale lock files.
+- The parsers of untrusted input: the package format, the manifest, and
+  `panpak convert` reading an AppImage.
+- The build and release scripts, and the reproducibility of the binaries.
+
+## Out of scope
+
+- The limits listed in `THREAT-MODEL.md`, section "Known limitations". They
+  are known and documented. A way to make one of them worse, or to get past a
+  defence that the document says holds, is in scope.
+- Bugs in the Linux kernel, Landlock, bubblewrap, the C library or the desktop
+  (report those to their projects), unless Panpak uses them in an unsafe way.
+- Vulnerabilities of the applications inside a package, and the content of
+  third-party AppImages. A flaw in the way `panpak convert` handles them is in
+  scope.
+- An attacker who already runs code as the same user outside the sandbox: the
+  local store is trusted (`THREAT-MODEL.md`, section 1).
+- A hostile channel for the first install: the first key is pinned without an
+  out-of-band check.
+- Denial of service by an app against its own resources.
+- Social engineering, and reports from automated scanners with no
+  demonstration of impact.
