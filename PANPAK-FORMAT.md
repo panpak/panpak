@@ -649,9 +649,8 @@ before distributing the converted package.
   by default, and MAY start ONLY with `--network-unfiltered` from the
   CLI (never from the manifest), with a warning at every start. UDP is
   never filtered.
-- Landlock ABI: highest supported detected with HardRequirement (on
-  kernel 7.0: V8; V9 declared by the crate but unsupported by the
-  kernel). Minimum: V1 (kernel 5.13).
+- Landlock ABI: highest supported detected with HardRequirement (kernel 7.0:
+  V8; kernel 7.2.7: V9). Minimum: V1 (kernel 5.13).
 - Fail-closed self-test after `restrict`: `/dev/null` MUST open and
   creating a file in the tree MUST fail, otherwise hard error.
 - If Landlock is not applicable: hard error, NEVER silent fallback.

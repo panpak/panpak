@@ -3,6 +3,9 @@
 Status: v1 (runtime ABI 1). Empirically verified where stated (tests),
 assumed where explicitly marked.
 
+Every limit known today is listed in one place, §5 "Known limitations", with
+its practical consequence and where it is described.
+
 ## 1. Attackers considered
 
 - **A1 — malicious package**: `.panpak` built by the attacker, run by
@@ -13,7 +16,7 @@ assumed where explicitly marked.
 - **A3 — hostile update**: package or key replacement. Goal: make the
   victim run code unauthorized by the original author.
 - **A4 — network and kernel**: out of model (no network filtering, no
-  seccomp, see §4).
+  seccomp, see §3 and §5).
 
 The local store (`~/.local/share/panpak`) is considered **trusted**
 (same uid, non-hostile fs). Same-uid competitors are out of model.
@@ -225,9 +228,11 @@ default refused, opt-in works; signals to the parent still denied.
 
   The policy is the same for the two path layers: the sockets in `sockets_allow`, plus the
   sockets every app gets (the Wayland compositor, the journal, the resolver of systemd-resolved,
-  and with `audio = true` PipeWire and PulseAudio). This machine has Landlock V8, so the view is
-  the only layer for path sockets here; the Landlock V9 rules are written but could not be
-  tested on a kernel that supports them.
+  and with `audio = true` PipeWire and PulseAudio). On Landlock V8 and below the view is the
+  only layer for path sockets. The V9 rules were tested on Fedora 44 (Bluefin, kernel 7.2.7,
+  SELinux enforcing): `tests/view.py` passes there, and the test on that kernel found that the
+  rules for the sockets every app may reach were dropped on the musl build (fixed; the stub now
+  prints a warning when it leaves any rule out).
 
   **The isolated view.** The stub runs `/usr/bin/bwrap` (a fixed path, never `PATH`, and it
   must not be writable by others) with: a new tmpfs as `/` (read-only) in which only `/usr`, `/etc` and `/sys` of the host (read-only), the Nix and Guix stores, the top-level links (`/bin`, `/lib*`, `/home` when it is a link) and `/dev` as it is are put; `/var` is a new empty tmpfs with the links `/var/run` and `/var/lock`; `/opt`, `/srv`, `/mnt`, `/media`, `/root`, `/boot` and `/snap` do not exist; a new `/proc`; new
@@ -341,8 +346,7 @@ default refused, opt-in works; signals to the parent still denied.
   present. Up to and including V8, Landlock does not mediate `connect()` to
   filesystem sockets: only the isolated view hides them.
 - **Per-ABI table** (best-effort detected with HardRequirement, never
-  silent clamp; on kernel 7.0: **V8** — V9 declared by the crate but
-  `ResolveUnix` unsupported):
+  silent clamp; kernel 7.0: **V8**, kernel 7.2.7: **V9**):
 
 | ABI | kernel | FS base | Refer | Truncate | Net TCP | Ioctl | sig/abstract scope | Unix path |
 |---|---|---|---|---|---|---|---|---|
@@ -352,7 +356,7 @@ default refused, opt-in works; signals to the parent still denied.
 | V4 | 6.7 | ✓ | ✓ | ✓ | ✓ | — | — | — |
 | V5/V6 | 6.10/6.12 | ✓ | ✓ | ✓ | ✓ | ✓ | (V6) ✓ | — |
 | V7/V8 | newer | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
-| V9 | future | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| V9 | 7.1 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
   On ABI < V4 the sandbox starts ONLY with explicit
   `--network-unfiltered` (warning at every start): the network stays
@@ -384,7 +388,7 @@ default refused, opt-in works; signals to the parent still denied.
 ## 4. Known requirements and limits
 
 - **Minimum kernel: 5.13** (Landlock ABI V1). Best-effort detected up
-  to V9 (on kernel 7.0: V9). Below 5.13 = hard error, never free run.
+  to V9 (kernel 7.0: V8, kernel 7.2.7: V9). Below 5.13 = hard error, never free run.
 - **Alpine/musl**: no host libc → only packages with glibc in the
   bundle (B-world, tested) or static binaries; no `ldconfig`
   (fallback to dir scan). `prefer_host` with included glibc rejected by
@@ -402,3 +406,123 @@ default refused, opt-in works; signals to the parent still denied.
 - **Key succession**: supported and verified against the pin
   (`rotation_old` + `rotation_sig`, spec §3.2); without a valid
   succession, key change = manual reinstall.
+
+## 5. Known limitations
+
+One list of what Panpak does not do or does not guarantee today. Each entry says what
+the limit is, what it means in practice, and where the detail is. The entries in §3 and
+§4 give the reasons; this section is the summary to read before relying on the sandbox.
+Status of the project: pre-alpha.
+
+**Sockets, buses and the desktop**
+
+- **KL-1 X11 gives no isolation.** With `x11 = true` the app can read the keys and the
+  screen of other windows of the same X server and inject input. The option also turns off
+  the abstract-socket scope, so non-X11 abstract sockets are open too. In practice: use
+  Wayland where possible and do not grant `x11` to an app you do not trust. `install` and
+  every start print a warning. See §3 (X11 opt-in) and `PANPAK-FORMAT.md` §3.1.
+- **KL-2 Copies of an app without X11 do not see each other's System V IPC.** Each copy has
+  its own IPC namespace, so a single-instance guard that uses System V semaphores or
+  shared memory does not find the other copy. In practice: such an app may open a second
+  window instead of passing the request to the first. Copies share `/tmp` and `/dev/shm`,
+  so guards based on files or sockets there work. See §2.3 and `CHANGELOG.md`.
+- **KL-3 Landlock 8 and below has no rules for sockets by path.** `connect()` to a Unix
+  socket is not mediated before ABI V9 (Linux 7.1). In practice: on these kernels only the
+  isolated view keeps the session bus, ssh-agent, gpg-agent and the sockets of container
+  managers out of reach, and the view is the only layer (§3, "Layers against local
+  sockets"). The V9 rules were tested on one system (Fedora 44, kernel 7.2.7).
+- **KL-4 Without bubblewrap the app runs with Landlock alone.** If `/usr/bin/bwrap` is
+  missing, user namespaces are off, or AppArmor blocks it (Ubuntu needs a profile for
+  `bwrap`), the view is not used. In practice: on a kernel below V9 the app can reach the
+  session bus and agents through their sockets, `/proc`, `/sys` and `/run` are readable,
+  and `/tmp` is shared with every process of the user. `doctor` says which layers are
+  active and why the view is missing; `install` and `update` warn. See §3 ("Not available").
+- **KL-5 No D-Bus filter and no portals yet.** An app that is granted a bus socket gets the
+  whole bus ("Full access to desktop services"). Without it the app has no bus at all, so
+  notifications, tray icons, the settings portal, the file chooser portal, global menus
+  and accessibility do not work. In practice: apps start, but some desktop features are
+  missing. A filter and a broker are planned. See `docs/COMPATIBILITY.md` (D-Bus summary),
+  `PORTAL-DESIGN.md`, `docs/PORTALS-STUDY.md`.
+- **KL-6 No keyring.** `org.freedesktop.secrets` is never given to an app, because it would
+  expose every password of the user's keyring. In practice: apps that store a password
+  there (Bitwarden and Obsidian ask for it in the tests) start without a keyring, and the
+  feature that uses it is not available. See `docs/COMPATIBILITY.md` (D-Bus summary).
+- **KL-7 The file chooser and the clipboard are not mediated.** They travel over Wayland
+  or D-Bus, which the app can reach. In practice: the clipboard is not protected, and the app
+  does not get the system (portal) file chooser; `panpak open` and `xdg_dirs` grant files and
+  folders instead. See §4 and
+  `PORTAL-DESIGN.md`.
+- **KL-8 Opening addresses is a channel to the user's programs.** An app can make the user's
+  browser or mail client open any `http`, `https` or `mailto` address, up to 5 a second at
+  first. In practice: it can show a deceptive page; it cannot open files or attach them.
+  A browser the app starts by its full path runs inside the sandbox and is usually
+  useless. See §2.3 and `PANPAK-FORMAT.md` §9.3.
+
+**Processes, files and the system**
+
+- **KL-9 The internal sandbox of Electron and Chromium is not available.** Chromium needs
+  user namespaces or a setuid helper for its own sandbox, and a user namespace cannot be
+  nested in the view. In practice: Electron apps run in Panpak's sandbox only. Most start
+  (Jitsi, Obsidian, Zulip and others, see the compatibility table), and balenaEtcher aborts
+  on its SUID helper. See `docs/COMPATIBILITY.md` (plan defect 27).
+- **KL-10 No seccomp.** System calls that are legal for the user stay available, for example
+  `process_vm_readv` toward processes of the same user outside the view and keyrings. The
+  view hides other processes with its own PID namespace; without the view, Yama (ptrace scope 1)
+  limits `ptrace` and nothing else stops these calls. See §3 ("No seccomp").
+- **KL-11 `/proc`, `/sys` and `/run` are readable without the view.** The app can list
+  processes and read the system bus socket directory. With the view `/proc` shows only the
+  app, and `/run` holds only the allowed sockets. Render nodes of the GPU are shared with
+  the whole desktop. See §3.
+- **KL-12 Stale lock files in formats Panpak does not recognise.** After a kill or a crash
+  the runtime removes the lock files it recognises by content (Chromium, Qt `QLockFile`,
+  Firefox style). Any other format stays. In practice: an app with its own lock format may
+  refuse to start after a crash; `panpak data unlock <id>` removes the recognised ones, and
+  `panpak data clear <id>` removes all data. See §3 ("Stale lock files") and
+  `PANPAK-FORMAT.md` §9.4.
+- **KL-13 Shared `/tmp`.** Without the view, `/tmp` is the machine's `/tmp`: visible and
+  writable by every process of the user, with the usual race and link attacks on
+  predictable names. In the view it is shared only among copies of the same app. See §3.
+- **KL-14 `rw` home paths are open to the whole user session.** An `rw` path from
+  `home_paths` or `xdg_dirs` is readable and writable by the app and by every other process
+  of the user. The list of refused places is incomplete by nature. `install` shows
+  "Partial access to your home". See §2.2.
+
+**Network**
+
+- **KL-15 UDP is never filtered.** Landlock filters TCP `bind` and `connect` only. In
+  practice: even with `network = false` an app can send data over UDP, including DNS.
+  Not fixable without seccomp or a firewall. See §3 ("TCP networking").
+- **KL-16 Ports, not addresses; no ephemeral ports.** A rule for a port opens it for every
+  address, and a rule cannot express `bind` on port 0 followed by a connect to the
+  assigned port. In practice: apps that use a random local port (OpenShot thumbnails) do
+  not work with a network allowlist. On kernels below V4 the network cannot be filtered
+  at all (the stub refuses unless `--network-unfiltered`). See §3.
+
+**Trust and the store**
+
+- **KL-17 The first key is pinned without proof.** Trust on first use shows the
+  fingerprint once; a hostile channel at that moment can supply the wrong key. In practice:
+  compare the fingerprint with one published elsewhere. See §3 ("Initial TOFU").
+- **KL-18 The local store is trusted.** The store is under the user's account, and a
+  process of the same user outside the sandbox is out of the model. The tree is checked
+  when it is built and not rehashed at every start, so a change between the check and the
+  start is possible. See §1 and §3.
+- **KL-19 The theme is read outside the sandbox.** At start the stub runs `gsettings`
+  (found only at `/usr/bin` or `/bin`, at most 200 ms) to set the dark theme. In practice:
+  the app does not follow a later change of theme. See §3.
+- **KL-20 The socket probe protects nothing.** `PANPAK_SOCKET_PROBE` is a measurement mode,
+  off by default, that logs the calls of an app. See §3 and `docs/SOCKET-PROBE.md`.
+
+**Platform**
+
+- **KL-21 Kernel and distribution.** Landlock needs Linux 5.13 or later; network rules need
+  6.7, scopes 6.12, socket paths 7.1 (§3 table). Without Landlock the stub refuses to run.
+  Alpine and other musl hosts have no host libc: only packages that carry glibc, or static
+  programs, run there. The isolated view is tested on Ubuntu (AppArmor profile for `bwrap`)
+  and Fedora (SELinux enforcing); other combinations are not tested. See §4 and
+  `distro-matrix.md`.
+- **KL-22 Conversion of AppImages has gaps.** Absolute symbolic links, libraries found
+  through a directory that only `AppRun` adds to `LD_LIBRARY_PATH`, DwarFS images and
+  images that rely on system libraries that are absent are not handled or are reported
+  late. In practice: some AppImages do not convert or do not start. See
+  `docs/COMPATIBILITY.md` (Defects).
