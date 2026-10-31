@@ -257,7 +257,9 @@ default refused, opt-in works; signals to the parent still denied.
   has X11 access (MIT-SHM needs shared IPC); `--new-session` keeps the app out of the session
   of the terminal (no key injection with `TIOCSTI`; the cost is that Ctrl-C in the terminal does
   not reach an app started from it, but it ends the stub, which ends the app);
-  `--die-with-parent`. `TMPDIR` is `/tmp` there, a tmpfs of its own.
+  `--die-with-parent`; `--unshare-net` when the manifest asks for no network (the app keeps a loopback
+  interface and nothing else; path sockets, which the view mounts, do not depend on it).
+  `TMPDIR` is `/tmp` there, a tmpfs of its own.
   Landlock is applied on top, inside the view, so the two layers add up: the view makes the
   folder read-only, Landlock decides what may be read at all (the user's secrets are not in the view at all; what is in it and Landlock does not allow, such as the tree of another path, gets `EACCES`).
 
@@ -299,7 +301,7 @@ default refused, opt-in works; signals to the parent still denied.
 - **Network ports**: `network_allow_tcp` and `network_bind_tcp` use the Landlock
   network rules (ABI V4, kernel 6.7 or later). They filter by TCP port, not by
   address: a port opened for `127.0.0.1` is open for any address the app
-  uses. UDP is not filtered. Checked with Joplin, whose local server on port
+  uses. UDP is not filtered by Landlock (see below for what the view adds). Checked with Joplin, whose local server on port
   2658 needs both a connect and a bind rule.
 - **Dark theme**: the stub reads `gsettings` once at start (at most 200 ms,
   before the sandbox) to set `GTK_THEME`. The app does not follow a later change.
@@ -321,11 +323,17 @@ default refused, opt-in works; signals to the parent still denied.
   On ABI < V4 the network is NOT filterable: `network = true` is always
   a hard error; `network = false` is default refusal, bypassable ONLY
   with `--network-unfiltered` from the CLI (never from the manifest),
-  which prints a warning at every start. **UDP never filtered by any
-  ABI, even with active rules** (Landlock filters cover only TCP
-  bind/connect: an app can exfiltrate via UDP/DNS even with
-  `network = false`; known permanent limit, not fixable without
-  seccomp/netfilter).
+  which prints a warning at every start. **Landlock never filters UDP,
+  in any ABI** (its rules cover TCP bind and connect only). What stops UDP is the isolated view: when
+  the manifest asks for no network (`network` not true and no TCP port) the view gets a network
+  namespace of its own, with only the loopback interface, so a datagram, a name lookup or any other
+  protocol has nowhere to go (tested: `tests/view.py`, a listener on the host receives nothing). The
+  resolver socket of systemd is not in the view of such an app, so the resolver cannot be used to look
+  names up for it. **Without the view the limit is exact:** with `network = false`, Landlock refuses
+  TCP `connect` and `bind`, and an app can still send UDP datagrams (to loopback, to the local network
+  and to the Internet, DNS included) and use any non-TCP protocol the kernel offers; that is an
+  exfiltration channel. An app that asks for network (`network = true` or a port) shares the network
+  namespace of the host and has the resolver; UDP is open for it in both cases.
 - **The `panpak update` network**: HTTPS only (HTTP only to
   localhost/test with flag, never redirects); max 3 redirects without
   downgrade; timeouts; caps on manifest/index/file before allocating;

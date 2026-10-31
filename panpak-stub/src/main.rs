@@ -1270,6 +1270,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         home,
         binds,
         x11_access: x11,
+        no_network: !panpak_core::network_requested(ctx.man.permissions.as_ref()),
         stub,
         fd: -1,
     };

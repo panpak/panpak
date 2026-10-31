@@ -185,8 +185,17 @@ pub fn bwrap_version() -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Whether the manifest asks for any network: `network = true`, or a TCP port to connect to or to bind.
+/// Without it the isolated view has no network but the loopback interface.
+pub fn network_requested(perms: Option<&Permissions>) -> bool {
+    perms.is_some_and(|p| {
+        p.network == Some(true) || p.network_allow_tcp.as_ref().is_some_and(|v| !v.is_empty()) || p.network_bind_tcp.as_ref().is_some_and(|v| !v.is_empty())
+    })
+}
+
 /// Path sockets every app may reach without listing them: the Wayland compositor, the
-/// audio servers when `audio = true`, the journal (logs) and the resolver of systemd.
+/// audio servers when `audio = true`, the journal (logs) and, when the manifest asks for network, the
+/// resolver of systemd.
 /// Only the ones that exist matter; the caller filters. The same list feeds the view
 /// (what is mounted into it) and Landlock V9 (`ResolveUnix` rules).
 pub fn implied_sockets(perms: Option<&Permissions>, runtime_dir: Option<&Path>, wayland_display: Option<&str>) -> Vec<PathBuf> {
@@ -203,7 +212,11 @@ pub fn implied_sockets(perms: Option<&Permissions>, runtime_dir: Option<&Path>, 
     }
     out.push(PathBuf::from("/run/systemd/journal/socket"));
     out.push(PathBuf::from("/run/systemd/journal/dev-log"));
-    out.push(PathBuf::from("/run/systemd/resolve/io.systemd.Resolve"));
+    // The resolver does the lookups for the app: an app with no network must not have it, or it could
+    // send names to a server of its choice through the resolver.
+    if network_requested(perms) {
+        out.push(PathBuf::from("/run/systemd/resolve/io.systemd.Resolve"));
+    }
     out
 }
 
@@ -325,6 +338,21 @@ mod tests {
     }
 
     #[test]
+    fn network_is_requested_by_the_flag_or_by_a_port() {
+        assert!(!network_requested(None));
+        let none: Permissions = toml::from_str("x11 = true").unwrap();
+        assert!(!network_requested(Some(&none)));
+        let off: Permissions = toml::from_str("network = false\nnetwork_allow_tcp = []").unwrap();
+        assert!(!network_requested(Some(&off)));
+        let on: Permissions = toml::from_str("network = true").unwrap();
+        assert!(network_requested(Some(&on)));
+        let conn: Permissions = toml::from_str("network_allow_tcp = [443]").unwrap();
+        assert!(network_requested(Some(&conn)));
+        let bind: Permissions = toml::from_str("network_bind_tcp = [8080]").unwrap();
+        assert!(network_requested(Some(&bind)));
+    }
+
+    #[test]
     fn implied_sockets_follow_the_permissions() {
         let rt = Path::new("/run/user/1000");
         let none = implied_sockets(None, Some(rt), Some("wayland-0"));
@@ -340,6 +368,11 @@ mod tests {
         assert_eq!(abs[0], PathBuf::from("/tmp/wl"));
         // Without a runtime folder only the system sockets remain.
         assert!(implied_sockets(Some(&audio), None, Some("wayland-0")).iter().all(|p| p.starts_with("/run/systemd")));
+        // The resolver only for an app that asks for network.
+        let resolver = PathBuf::from("/run/systemd/resolve/io.systemd.Resolve");
+        assert!(!none.contains(&resolver));
+        let net: Permissions = toml::from_str("network = true").unwrap();
+        assert!(implied_sockets(Some(&net), Some(rt), None).contains(&resolver));
     }
 
     #[test]

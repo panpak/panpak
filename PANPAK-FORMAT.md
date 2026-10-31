@@ -647,8 +647,9 @@ before distributing the converted package.
   loopback or not. Needs Landlock V4 (kernel 6.7 or later). On kernels without
   Landlock V4 the network is not filterable: the runtime MUST refuse
   by default, and MAY start ONLY with `--network-unfiltered` from the
-  CLI (never from the manifest), with a warning at every start. UDP is
-  never filtered.
+  CLI (never from the manifest), with a warning at every start. Landlock
+  never filters UDP; in the isolated view (§9.2) an app that asks for no network has no
+  network but the loopback interface.
 - Landlock ABI: highest supported detected with HardRequirement (on
   kernel 7.0: V8; V9 declared by the crate but unsupported by the
   kernel). Minimum: V1 (kernel 5.13).
@@ -731,7 +732,10 @@ ssh-agent, audio servers) with independent layers, and uses every layer the mach
    the stub (read-only); a new tmpfs for `$XDG_RUNTIME_DIR`
    with only the sockets of the policy below; the folder in `/run` that holds the target of `/etc/resolv.conf` read-only (name resolution);
    the X11 socket of `$DISPLAY` only with `x11 = true`. The view uses its own user, PID and mount
-   namespaces, and its own IPC namespace unless `x11 = true`. It shares the network namespace. The app
+   namespaces, and its own IPC namespace unless `x11 = true`. It shares the network namespace of the host when the
+   manifest asks for network (`network = true`, `network_allow_tcp` or `network_bind_tcp`) and has a network
+   namespace of its own, with only the loopback interface, when it does not; the resolver socket is
+   in the view only in the first case. The app
    is in a new session and ends with the runtime. Inside, `TMPDIR` and `SQLITE_TMPDIR` are `/tmp`.
 2. *Landlock*, as in §9, applied inside the view when there is one. With Landlock V9 (path
    sockets) the sockets of the policy get a `ResolveUnix` rule and every other path socket is denied.

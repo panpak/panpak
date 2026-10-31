@@ -225,6 +225,9 @@ pub struct ViewPlan {
     pub shared_shm: Option<PathBuf>,
     /// The manifest asks for X11: the IPC namespace stays shared (MIT-SHM).
     pub x11_access: bool,
+    /// The manifest asks for no network at all (`network` false, no TCP port): the view gets a network
+    /// namespace of its own with only the loopback interface, which also stops UDP.
+    pub no_network: bool,
     pub stub: PathBuf,
     pub fd: i32,
 }
@@ -251,6 +254,11 @@ fn view_args(plan: &ViewPlan) -> Vec<OsString> {
     // SysV and POSIX IPC objects are separate, except with X11 (MIT-SHM needs the shared ones).
     if !plan.x11_access {
         a.push(os("--unshare-ipc"));
+    }
+    // Landlock filters TCP only. A new network namespace is what keeps UDP (DNS included) and every other
+    // protocol away from the network; the loopback interface is all the app has left.
+    if plan.no_network {
+        a.push(os("--unshare-net"));
     }
     // The root is a new tmpfs: only the system folders come in. `/var` is an empty tmpfs with the
     // two links that name the runtime folder, so that old paths like /var/run/... still lead there.
@@ -384,6 +392,7 @@ mod tests {
             shared_tmp: None,
             shared_shm: None,
             x11_access: false,
+            no_network: false,
             stub: "/home/u/.local/share/panpak/runtimes/1/panpak-stub".into(),
             fd: 7,
         }
@@ -546,6 +555,16 @@ mod tests {
         let after = sockets_in(view_args(&p), &[]);
         assert!(after.is_empty(), "sockets reachable in the new view: {after:?}");
         let _ = std::fs::remove_dir_all(&host);
+    }
+
+    #[test]
+    fn no_network_gives_the_view_a_network_namespace_of_its_own() {
+        let mut p = plan();
+        p.no_network = true;
+        let a = strings(&p);
+        assert!(a.contains(&"--unshare-net".to_string()));
+        p.no_network = false;
+        assert!(!strings(&p).contains(&"--unshare-net".to_string()));
     }
 
     #[test]

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **No network means no network in the isolated view.** An app whose manifest asks for no network (`network` not
+  true, no TCP port) runs in a network namespace of its own with only the loopback interface, so it can no longer
+  send UDP datagrams or look names up; before, Landlock stopped TCP only and UDP went out. The resolver socket
+  of systemd is in the view only for apps that ask for network. Without bubblewrap nothing changes: UDP is still
+  open (see THREAT-MODEL.md).
 - **Fix: first starts at the same time.** Two starts that overlapped on a store without the tree could end with
   `PANPAK-E2000: No such file or directory`, because they built in the same `.partial` folder. The tree is now
   built under an `flock`, in a folder apart, and published with one rename; the others wait and then use it.
