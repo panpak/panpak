@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **Fix: Landlock V9 rules were dropped on the musl build.** The rules for the sockets every app may reach
+  (journal, Wayland, resolver, audio) and for `sockets_allow` were left out without a message, because
+  `landlock::PathFd` opens files with the standard library, which drops `O_PATH` on musl. On a V9 kernel the
+  journal socket was refused. Every rule now opens its path with `O_PATH`; a rule left out for any reason
+  other than a missing path prints a warning, the fallbacks for `/dev` say why they were used, and
+  `panpak doctor` lists rule paths that cannot be opened.
+- **Fix: sockets outside `/run`, `/tmp` and the home folder.** The root of the isolated view is a new tmpfs with
+  only `/usr`, `/etc`, `/sys`, `/dev`, `/proc`, the Nix and Guix stores and the top-level links, so a socket
+  in `/var`, `/opt`, `/srv` or the folder of a container manager is not in the view.
+- **Fix: stale lock files in the view.** The app is always process 2 in its own PID namespace, so lock files
+  with a process id (Chromium `SingletonLock`, Qt `QLockFile`, Firefox `lock`) never expired. The runtime now
+  removes the ones it recognises by content, in the app's private folders only, when no copy is alive and the
+  mark `userdata/<id>.in-use` shows that the last run did not end normally. New command
+  `panpak data unlock <id>`.
+- **Fix: `panpak convert`.** The manifest is validated with the rules of `install` before it is signed;
+  a `DT_NEEDED` entry with a path is not a library name; the string table limit follows the file instead of a
+  fixed 1 MiB; the loader symbols are no longer reported undefined when `ldconfig` is not in `PATH`.
+- **Fix: processes started after a fork.** Between `fork` and `exec` the opener and the socket probe call
+  only async-signal-safe functions, so a start made while other threads allocate cannot hang.
+- **Documentation.** `SECURITY.md` uses GitHub's private vulnerability reporting; `THREAT-MODEL.md` has one
+  list of known limitations; `docs/BENCHMARKS.md` and the scripts in `bench/` give reproducible measurements.
+
 - **Fix: first starts at the same time.** Two starts that overlapped on a store without the tree could end with
   `PANPAK-E2000: No such file or directory`, because they built in the same `.partial` folder. The tree is now
   built under an `flock`, in a folder apart, and published with one rename; the others wait and then use it.
@@ -51,8 +73,8 @@
   the start is as before. New manifest key `permissions.audio` (PipeWire and PulseAudio sockets).
   `socket_isolation` now reports the active layers; `doctor`, `install` and `update` show them, and `doctor`
   says why the view is unavailable and how to fix it. `sockets_allow` also works on kernels below Landlock V9
-  when the view is available. Landlock V9 gets `ResolveUnix` rules for the same sockets (not tested: this
-  machine has V8).
+  when the view is available. Landlock V9 gets `ResolveUnix` rules for the same sockets (tested on Fedora 44,
+  kernel 7.2.7; see the fix below).
 - **Libraries: the bundle first.** When a library is in the package, the package copy is used, except for
   glibc and the graphics stack (which must match the system and the driver) and for `libstdc++` and
   `libgcc_s` (the copy with every symbol version the app needs). A library that is not in the package comes

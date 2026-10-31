@@ -76,8 +76,8 @@ index + manifest + 80-byte footer to the stub.
 
 The first line is the passed verification: signature, root-hash and
 every chunk are checked *before* running anything. The app runs in a
-Landlock sandbox (read-only tree; data in
-`~/.local/share/org.example.hello`).
+Landlock sandbox (read-only tree; private data
+folders under `~/.local/share/panpak/userdata/org.example.hello`, see `panpak data path`).
 
 ## Then: install and update
 

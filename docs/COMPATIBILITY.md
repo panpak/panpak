@@ -1,6 +1,6 @@
 # Compatibility tests with real AppImages
 
-Status: step 4 of the plan, second round. Build under test: branch `fix-batch` (fixes applied for the string table limit, the loader symbols, the reachable sockets, the stale lock files and the FreeCAD library name), first round on `app-tests`. X11 on Xvfb only
+Status: second round of tests. The build under test has the fixes listed under Defects (string table limit, loader symbols, reachable sockets, stale lock files, a library name with a path); the first round was made before them. X11 on Xvfb only
 (no headless Wayland compositor was available), isolated HOME, one app at a time. Converted
 packages are local and are not redistributed. Times are the first window that appeared (it can be
 a splash or a first-run dialog); "first" is the first start after install, "later" the median of 5.
@@ -26,10 +26,10 @@ Flatpak" phase. Inkscape's site was unreachable, so it was not added.
 | Neovim 0.12.6 | terminal | works | 0.54 s / 0.19 s (`--version`) | writes a file in the `documents` folder |
 | Nextcloud 35.0.1 | Qt 6 + KF6, tray | converts now; does not start | | 39 `allow_missing` libraries, the image expects KDE Frameworks 6 of the host (`KZip`, `libKF6*`); D-Bus: `RequestName`, `Activate` |
 | PrusaSlicer 2.8.1 | GTK 3 | works | 1.37 s / 0.33 s | convert now passes; 105 MB / 249 MB |
-| Cura 5.13.0 | Qt 6 | converts now; does not start | | PyInstaller bundle: `GLIBC_2.38 not found` from the `libc.so.6` of the farm (plan defect 26) |
-| FreeCAD 1.1.4 | Qt 6 | converts and installs (round 2); does not start | | `libQt63DAnimation.so.6` and other Qt 6 libraries missing on the host, not in the image;  `abi.needs` holds a name the install validation rejects (plan defect 25; fixed in round 2: a `DT_NEEDED` with a path, `/home/runner/work/FreeCAD/.../libsqlite3.so`, in the plugin `libqsqlite.so`) |
+| Cura 5.13.0 | Qt 6 | converts now; does not start | | PyInstaller bundle: `GLIBC_2.38 not found` from the `libc.so.6` of the farm (defect 26 below) |
+| FreeCAD 1.1.4 | Qt 6 | converts and installs (round 2); does not start | | `libQt63DAnimation.so.6` and other Qt 6 libraries missing on the host, not in the image;  `abi.needs` holds a name the install validation rejects (fixed in round 2: a `DT_NEEDED` with a path, `/home/runner/work/FreeCAD/.../libsqlite3.so`, in the plugin `libqsqlite.so`) |
 | GIMP 3.2.6 | GTK 3 | works (with `--entry usr/bin/gimp-3.2`) | 4.26 s / 0.64 s | convert now passes (`libLLVM`); 39 `allow_missing`; 278 MB / 824 MB |
-| balenaEtcher 2.1.3 (prerelease) | Electron | converts now; aborts | | Chromium: `The SUID sandbox helper binary was found, but is not configured correctly`; needs `--no-sandbox` (plan defect 27); root case not reached |
+| balenaEtcher 2.1.3 (prerelease) | Electron | converts now; aborts | | Chromium: `The SUID sandbox helper binary was found, but is not configured correctly`; needs `--no-sandbox` (see Defects); root case not reached |
 | VSCodium 1.143 | Electron | not converted | | "anylinux" AppImage is DwarFS, convert reads squashfs only (DwarFS) |
 | LMMS 1.2.2 | Qt 5 | fails | | image does not carry Qt 5 or `libFLAC.so.8`; host has none |
 | OpenShot 4.0.1 | Qt/PyQt | fails | | image expects host libs not present (Qt5Designer, ImageMagick 6, OpenEXR 2.3) |
@@ -61,7 +61,7 @@ Simplenote 156 MB / 473 MB; Joplin 224 MB / 641 MB; Cura 356 MB / 943 MB; Etcher
 
 Round 1: sockets of Docker, containerd, podman, snapd and libvirt below `/run` and `/var/run` were not
 visible, and a listening socket made in `/var/tmp` was reachable from the view (Landlock ABI 8 does not
-restrict path sockets). Round 2 (`fix-batch`): the root of the view is a new tmpfs with only `/usr`, `/etc`,
+restrict path sockets). Round 2: the root of the view is a new tmpfs with only `/usr`, `/etc`,
 `/sys`, `/dev`, `/proc` and the top-level links, so that socket is no longer reachable
 (`tests/view.py`), and a scan of the whole visible tree finds no socket in a fake host with sockets in `/var`,
 `/opt`, `/srv`, `/mnt`, `/media`, `/root`, `/boot`, `/snap` and the Nix daemon folder
@@ -77,30 +77,28 @@ restrict path sockets). Round 2 (`fix-batch`): the root of the view is a new tmp
 
 ## Defects (priority, state, plan task)
 
-The numbers of the plan are used where a defect has one (25, 26, 27); the others are described.
-
-Fixed in `fix-batch` (one commit each):
+Fixed, one commit each:
 
 - High, convert: `.dynstr` over 1 MiB refused. The limit now follows the file and the section (cap 1 GiB).
 - High, symbol check: loader symbols reported undefined. Cause: no `ldconfig` in `PATH` (`/sbin` is often missing) and the fallback scan did not list the loader.
 - Critical, view: sockets outside `/run`, `/tmp` and home reachable. The root of the view is a new tmpfs with the system folders only.
 - Critical, view/PID namespace: process ids repeat in every view (the app is always process 2), so lock files with a pid (`QLockFile`, Chromium `SingletonLock`, qBittorrent `lockfile`) never expired. The stub removes the recognised ones when no copy is alive; `panpak data unlock <id>` by hand. Limit: a lock with a pid in a format that is not recognised stays; use `data unlock` after extending it, or remove the file.
-- Plan 29, High, Landlock V9: the rules for the sockets every app may reach (journal, Wayland, resolver, audio) and for `sockets_allow` were dropped without a message, so the journal socket was refused. Cause: `landlock::PathFd` opens files with the standard library, which drops `O_PATH` on musl (musl's `O_ACCMODE` contains `O_PATH`), so the file is opened for reading: ENXIO on a socket, a block on a fifo, EACCES on an unreadable file. All rules of the stub now use `open(O_PATH)`; a rule left out for any reason other than a missing path prints a warning, and `doctor` lists rule paths that cannot be opened. Found on Fedora 44 (Landlock V9), not visible on V8 hosts.
-- Plan 25, High, convert: FreeCAD gave `abi.needs` a name with a path (`DT_NEEDED` of the plugin `libqsqlite.so` is `/home/runner/work/FreeCAD/.../libsqlite3.so`). Names with a slash are not needs.
+- High, Landlock V9: the rules for the sockets every app may reach (journal, Wayland, resolver, audio) and for `sockets_allow` were dropped without a message, so the journal socket was refused. Cause: `landlock::PathFd` opens files with the standard library, which drops `O_PATH` on musl (musl's `O_ACCMODE` contains `O_PATH`), so the file is opened for reading: ENXIO on a socket, a block on a fifo, EACCES on an unreadable file. All rules of the stub now use `open(O_PATH)`; a rule left out for any reason other than a missing path prints a warning, and `doctor` lists rule paths that cannot be opened. Found on Fedora 44 (Landlock V9), not visible on V8 hosts.
+- High, convert: `panpak convert` now validates the manifest it writes with the rules of `install`, before it signs it, and fails with a clear error; before, a name that `install` refused was signed (this is how the FreeCAD name got through).
+- High, convert: FreeCAD gave `abi.needs` a name with a path (`DT_NEEDED` of the plugin `libqsqlite.so` is `/home/runner/work/FreeCAD/.../libsqlite3.so`). Names with a slash are not needs.
 
-Open, for Task C (converter) unless noted:
+Open, in the converter unless noted:
 
 - Medium: absolute symlinks accepted by convert and refused by the stub at first start.
 - Medium: libraries in directories that only `AppRun` adds to `LD_LIBRARY_PATH`, or `$ORIGIN` neighbours (`libffmpeg.so`), reported missing.
 - Medium: DwarFS AppImages unsupported; entry taken from `usr/bin` only, symlinks not followed.
 - Medium: `AppRun` as entry loses `APPDIR` (Bitwarden, Simplenote).
 - Medium: AppImages that rely on system libraries that are absent (LMMS, OpenShot, Shotcut, OrcaSlicer, Nextcloud with KF6) must be told clearly at convert and at install, not crash at start.
-- Medium: convert does not validate the manifest it writes (this is how the FreeCAD name got through to install).
 - Low: default name and version (`1.0`); `doctor` reports only the first unresolved library, which makes the loop that allows missing libraries one by one take 29 to 39 rounds for Audacity, Kdenlive, QOwnNotes, GIMP, Nextcloud and Cura.
-- Plan 26, Medium, resolution (not Task C): Cura (PyInstaller) gets `libc.so.6` from the farm and fails with `GLIBC_2.38 not found`: a libc of the bundle is chosen next to libraries that need a newer one.
-- Plan 27, Medium, launch: Etcher aborts on the Chromium SUID sandbox (`chrome-sandbox` found, not setuid; user namespaces cannot be nested in the view). Other Electron apps ran without `--no-sandbox`. Needs a launch option or a documented flag.
+- Medium, resolution (defect 26, not the converter): Cura (PyInstaller) gets `libc.so.6` from the farm and fails with `GLIBC_2.38 not found`: a libc of the bundle is chosen next to libraries that need a newer one.
+- Medium, launch (defect 27): Etcher aborts on the Chromium SUID sandbox (`chrome-sandbox` found, not setuid; user namespaces cannot be nested in the view). Other Electron apps ran without `--no-sandbox`. Needs a launch option or a documented flag.
 
-## D-Bus summary for step 5
+## D-Bus summary
 
 Apps logged, 18: MuseScore, PCSX2, qBittorrent, Krita, Jitsi, Obsidian, Zulip, Bitwarden, Neovim, Audacity,
 Kdenlive, QOwnNotes, Simplenote, Joplin, PrusaSlicer, GIMP, Nextcloud, Cura and Etcher (Cura, Etcher and
@@ -110,11 +108,11 @@ set `DBUS_SESSION_BUS_ADDRESS` (a test error, fixed); now they do.
 | Name or interface | Apps | Rule proposal |
 |---|---|---|
 | `org.freedesktop.portal.Desktop` (Settings `Read`/`ReadAll`, Properties) | MuseScore, Krita, Kdenlive, Audacity, Simplenote (5 call it); 8 watch the name | allow `Settings` |
-| `org.a11y.Bus` (`GetAddress`, `Properties.Get`) | MuseScore, Audacity, PrusaSlicer, GIMP, Bitwarden, Jitsi, Obsidian, Zulip (8) | deny quietly for now; real accessibility needs a separate proxy on the accessibility bus, as Flatpak does (evaluate in step 5) |
+| `org.a11y.Bus` (`GetAddress`, `Properties.Get`) | MuseScore, Audacity, PrusaSlicer, GIMP, Bitwarden, Jitsi, Obsidian, Zulip (8) | deny quietly for now; real accessibility needs a separate proxy on the accessibility bus, as Flatpak does (to evaluate) |
 | `org.gtk.vfs.Daemon` (`ListMountableInfo`) and volume monitors | MuseScore, Audacity, PrusaSlicer, GIMP, Bitwarden, Jitsi, Obsidian, Zulip (8); GIMP also the monitors | deny (GVfs would show host mounts) |
 | `org.freedesktop.DBus.StartServiceByName` | 8 | needed by the above, deny |
 | `org.freedesktop.systemd1` (name watched) | Bitwarden, Jitsi, Obsidian, Zulip (4) | deny |
-| `org.freedesktop.IBus` (name watched) | Bitwarden, Jitsi, Zulip, Simplenote (4) | not the IBus bus directly; through `org.freedesktop.portal.IBus`, the portal made for sandboxes (evaluate in step 5) |
+| `org.freedesktop.IBus` (name watched) | Bitwarden, Jitsi, Zulip, Simplenote (4) | not the IBus bus directly; through `org.freedesktop.portal.IBus`, the portal made for sandboxes (to evaluate) |
 | `org.kde.StatusNotifierWatcher` | qBittorrent, Zulip, Bitwarden (3) | allow with a tray permission |
 | `com.canonical.AppMenu.Registrar` | MuseScore, Audacity, Kdenlive, qBittorrent (4) | deny |
 | `org.freedesktop.secrets` | Bitwarden, Obsidian (2) | NEVER, not even with a permission (it exposes every password of the keyring); these two stay without a keyring until the per-app service after the beta |
@@ -137,4 +135,4 @@ of everything bubblewrap starts (documented there: "its children do not have cap
 therefore cannot work on Ubuntu 24.04 and later, nor on any system with
 `apparmor_restrict_unprivileged_userns`. Also: the process that runs the app is the inner stub itself, which
 is pid 2, so it would have to fork the app and wait for it. The lock files are removed instead (see above).
-Start cost of the removal: 6 ms more for a private folder of 2,200 entries (median of 30 runs, 33.0 ms against 39.4 ms).
+Start cost of the stale-lock search: scanning at every start took 38.8 ms against 33.4 ms with the mark `userdata/<id>.in-use` (median of 40 alternating pairs, a private folder of 2,200 entries); with the mark the search runs only after a run that did not end normally.

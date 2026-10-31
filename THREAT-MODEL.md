@@ -196,8 +196,7 @@ default refused, opt-in works; signals to the parent still denied.
   below V9 (the stub refuses it there). On V9 the default is the opposite: a
   path socket is denied unless `sockets_allow` lists it. A package that lists
   a bus socket makes `install` and `update` print "Full access to desktop
-  services (D-Bus): this app is not isolated". A D-Bus filter is planned for
-  phase 3.
+  services (D-Bus): this app is not isolated". A D-Bus filter is planned.
 
   What the stub does today, and what it does not: it removes `SSH_AUTH_SOCK`,
   `GPG_AGENT_INFO` and `SSH_AGENT_PID` from the environment of every app, and it
@@ -464,7 +463,7 @@ Status of the project: pre-alpha.
   user namespaces or a setuid helper for its own sandbox, and a user namespace cannot be
   nested in the view. In practice: Electron apps run in Panpak's sandbox only. Most start
   (Jitsi, Obsidian, Zulip and others, see the compatibility table), and balenaEtcher aborts
-  on its SUID helper. See `docs/COMPATIBILITY.md` (plan defect 27).
+  on its SUID helper. See `docs/COMPATIBILITY.md` (Defects).
 - **KL-10 No seccomp.** System calls that are legal for the user stay available, for example
   `process_vm_readv` toward processes of the same user outside the view and keyrings. The
   view hides other processes with its own PID namespace; without the view, Yama (ptrace scope 1)
