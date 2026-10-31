@@ -10,6 +10,8 @@ description = "Known non-secrets"
 paths = [
   # Fuzzer corpus: random manifest bytes that happen to look like `key = "..."`.
   '''^fuzz/corpus/''',
+  # Public SHA-256 values of release files, next to a field called `key`.
+  '''^bench/inputs\.py$''',
 ]
 regexes = [
   # A list of library names in the ABI code ("libglapi.so.0", "libxcb-dri2.so.0", ...) matches the generic key rule.
