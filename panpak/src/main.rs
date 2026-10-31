@@ -1826,6 +1826,22 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         }
         Err(_) => line(true, "GPU /dev/dri absent (software rendering only)"),
     }
+    // The paths the sandbox opens for its rules: one that exists but cannot be opened is left out of the
+    // rules by the stub (with a warning at each start) and stays denied.
+    {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute());
+        let wayland = std::env::var("WAYLAND_DISPLAY").ok();
+        let mut paths: Vec<PathBuf> = panpak_core::SYSTEM_RULE_PATHS.iter().map(PathBuf::from).collect();
+        paths.extend(panpak_core::implied_sockets(None, runtime.as_deref(), wayland.as_deref()));
+        let bad = panpak_core::unopenable_rule_paths(paths.iter().map(PathBuf::as_path));
+        if bad.is_empty() {
+            line(true, "sandbox rule paths: all that exist can be opened");
+        } else {
+            for (path, e) in bad {
+                line(false, &format!("sandbox rule path {} cannot be opened ({e}); the stub leaves its rule out", path.display()));
+            }
+        }
+    }
     // Host glibc.
     match host_glibc() {
         Some((kind, ver)) => line(true, &format!("libc host: {kind} {ver}")),

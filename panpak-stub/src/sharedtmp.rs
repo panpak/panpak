@@ -46,6 +46,7 @@ fn reset(p: &Path) -> Result<()> {
         Ok(_) => {
             fs::remove_file(p).with_context(|| format!("remove {}", p.display()))?;
         }
+        // Not there (or not readable): `private_dir` creates it and reports any failure.
         Err(_) => {}
     }
     private_dir(p)

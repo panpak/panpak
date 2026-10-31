@@ -25,7 +25,10 @@ pub use layout::{
     allows_desktop_bus, allows_session_bus, allows_system_bus, is_system_bus_socket, socket_isolation, IsolationReport, SocketIsolation, ABSTRACT_SOCKETS_WARNING, DESKTOP_BUS_WARNING, FONTS_CONF_MARKER,
     PARTIAL_ISOLATION_WARNING,
 };
-pub use view::{bwrap_version, implied_sockets, resolv_conf_run_dir, view_status, view_status_at, ViewProblem, ViewStatus, BWRAP};
+pub use view::{
+    bwrap_version, implied_sockets, open_o_path, resolv_conf_run_dir, unopenable_rule_paths, view_status, view_status_at, ViewProblem,
+    ViewStatus, BWRAP, SYSTEM_RULE_PATHS,
+};
 pub use validate::{
     validate_app_id, validate_manifest, BROAD_HOME_PATHS, FORBIDDEN_ENV, FORBIDDEN_ENV_PREFIXES, FORBIDDEN_HOME_PATHS, PLACEHOLDERS,
     MAX_APP_ID_LEN,

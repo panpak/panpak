@@ -158,6 +158,7 @@ pub fn view_status_at(bwrap: &Path, cache_dir: Option<&Path>) -> ViewStatus {
     }
     let status = probe(bwrap);
     if let (ViewStatus::Usable, Some(f), Some(l), Some(d)) = (&status, &file, &line, cache_dir) {
+        // The cache only saves the next probe: if it cannot be written, the probe runs again.
         let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(d);
         let tmp = d.join(format!(".view-probe.{}", std::process::id()));
         if fs::write(&tmp, format!("{l}\n")).is_ok() && fs::rename(&tmp, f).is_err() {
@@ -213,6 +214,37 @@ pub fn resolv_conf_run_dir() -> Option<PathBuf> {
     let target = fs::canonicalize("/etc/resolv.conf").ok()?;
     let dir = target.parent()?;
     (dir.starts_with("/run") && dir != Path::new("/run")).then(|| dir.to_path_buf())
+}
+
+/// Host folders the sandbox opens read-only, one Landlock rule each.
+pub const SYSTEM_RULE_PATHS: [&str; 7] = ["/usr", "/lib", "/lib64", "/etc", "/proc", "/sys", "/run"];
+
+/// Open `path` with `O_PATH` for a Landlock rule. `landlock::PathFd` cannot be used on the musl build:
+/// the standard library drops `O_PATH` from the custom flags there (musl's `O_ACCMODE` contains it), so the
+/// file is opened for reading, which fails on a socket (ENXIO) and may block on a fifo.
+pub fn open_o_path(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+    // SAFETY: valid C string; the descriptor, if any, is owned by the OwnedFd.
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fd is a new descriptor that nothing else owns.
+    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
+}
+
+/// The paths among `paths` that exist but cannot be opened for a rule, with the reason. A path that is not
+/// there is not listed: the sandbox has nothing to allow, and access stays denied.
+pub fn unopenable_rule_paths<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Vec<(PathBuf, std::io::Error)> {
+    paths
+        .into_iter()
+        .filter_map(|p| match open_o_path(p) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Some((p.to_path_buf(), e)),
+            _ => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -308,5 +340,27 @@ mod tests {
         assert_eq!(abs[0], PathBuf::from("/tmp/wl"));
         // Without a runtime folder only the system sockets remain.
         assert!(implied_sockets(Some(&audio), None, Some("wayland-0")).iter().all(|p| p.starts_with("/run/systemd")));
+    }
+
+    #[test]
+    fn rule_paths_open_sockets_and_report_what_cannot_be_opened() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("panpak-rulepath-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("closed")).unwrap();
+        let sock = dir.join("sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        // A socket opens (`O_PATH`), also where the std library would try to read it.
+        open_o_path(&sock).unwrap();
+        let hidden = dir.join("closed/inner");
+        fs::write(&hidden, "x").unwrap();
+        fs::set_permissions(dir.join("closed"), fs::Permissions::from_mode(0o000)).unwrap();
+        let missing = dir.join("missing");
+        let bad = unopenable_rule_paths([sock.as_path(), missing.as_path(), hidden.as_path()]);
+        fs::set_permissions(dir.join("closed"), fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        // A missing path is not a problem; a path that exists but cannot be reached is.
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        assert_eq!(bad[0].0, hidden);
     }
 }

@@ -437,6 +437,8 @@ fn xdg_grants(man: &panpak_core::Manifest, store: &Path, installed_mode: bool, a
     let home = dirs::home_dir().context("no home dir")?;
     let text = match dirs::config_dir().map(|c| c.join("user-dirs.dirs")).map(fs::read_to_string) {
         Some(Ok(t)) => Some(t),
+        // No file, or unreadable: the default folder names apply; a folder that then differs from the one
+        // pinned at install is refused with a message below.
         _ => None,
     };
     let mut out = Vec::new();
@@ -530,16 +532,16 @@ fn apply_landlock(
     // restrict), explicit fallback to whole /dev. Never a silent denial.
     let rs = match build_ruleset(tree, access, man, abi, true, allow_unfiltered, open) {
         Ok(rs) => rs,
-        Err(_) => {
-            eprintln!("panpak: cannot build per-node /dev rules on this kernel, using whole /dev");
+        Err(e) => {
+            eprintln!("panpak: cannot build per-node /dev rules on this kernel ({}), using whole /dev", panpak_core::err_text(&e));
             build_ruleset(tree, access, man, abi, false, allow_unfiltered, open)?
         }
     };
     let res = rs.restrict_self();
     let st = match res {
         Ok(st) => st,
-        Err(_) => {
-            eprintln!("panpak: kernel rejected per-node /dev rules, using whole /dev (DAC still applies)");
+        Err(e) => {
+            eprintln!("panpak: kernel rejected per-node /dev rules ({e}), using whole /dev (DAC still applies)");
             build_ruleset(tree, access, man, abi, false, allow_unfiltered, open)?
                 .restrict_self()
                 .map_err(|_| anyhow::anyhow!("cannot enforce sandbox on this kernel: cannot run safely, upgrade the kernel (>= 5.13)"))?
@@ -557,19 +559,18 @@ fn apply_landlock(
 /// Build the ruleset. With `fine_dev` try per-single-node rules
 /// on /dev (null, zero, full, urandom, random, tty) + dri/shm dirs;
 /// otherwise whole /dev in RW (privileged nodes DAC-protected).
-/// Open `path` with `O_PATH` for a Landlock rule. Used for socket files: `landlock::PathFd` fails on them
-/// here (ENXIO, seen on a V9 kernel), which would drop the rule without a message.
-fn open_path(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
-    use std::os::fd::FromRawFd;
-    use std::os::unix::ffi::OsStrExt;
-    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|_| std::io::ErrorKind::InvalidInput)?;
-    // SAFETY: valid C string; the returned descriptor, if any, is owned by the OwnedFd.
-    let fd = unsafe { libc::open(c.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error());
+/// The descriptor for a Landlock rule on `path` (`O_PATH`, see `panpak_core::open_o_path`). A path that is
+/// not there gives `None` without a message: there is nothing to allow and access stays denied. Any other
+/// failure (permission, wrong type) is reported, because the rule is left out.
+fn rule_fd(path: &Path) -> Option<std::os::fd::OwnedFd> {
+    match panpak_core::open_o_path(path) {
+        Ok(fd) => Some(fd),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            eprintln!("panpak: WARNING: Landlock rule for {} left out ({e}); access stays denied", path.display());
+            None
+        }
     }
-    // SAFETY: fd is a new descriptor that nothing else owns.
-    Ok(unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) })
 }
 
 /// Network (V4+), scope (V6+), Unix sockets (V9): only if the ABI offers them,
@@ -584,7 +585,7 @@ fn build_ruleset(
     open: Option<(&Path, OpenGrant)>,
 ) -> Result<landlock::RulesetCreated> {
     use landlock::{
-        Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, Ruleset, RulesetAttr,
+        Access, AccessFs, AccessNet, NetPort, PathBeneath, Ruleset, RulesetAttr,
         RulesetCreatedAttr, Scope,
     };
     let new_abi = abi >= landlock::ABI::V4;
@@ -628,7 +629,7 @@ fn build_ruleset(
     let mut rs = b.create()?;
     if x11 {
         eprintln!("panpak: WARNING X11: the app can observe other apps' input and screen; abstract sockets are not isolated");
-        if let Ok(fd) = PathFd::new("/tmp/.X11-unix") {
+        if let Some(fd) = rule_fd(Path::new("/tmp/.X11-unix")) {
             let mut access = AccessFs::from_read(abi);
             if new_unix {
                 access |= AccessFs::ResolveUnix;
@@ -637,7 +638,7 @@ fn build_ruleset(
         }
     }
     for p in ["/usr", "/lib", "/lib64", "/etc", "/proc", "/sys", "/run"] {
-        if let Ok(fd) = PathFd::new(p) {
+        if let Some(fd) = rule_fd(Path::new(p)) {
             rs = rs.add_rule(PathBeneath::new(fd, AccessFs::from_read(abi)))?;
         }
     }
@@ -654,7 +655,7 @@ fn build_ruleset(
             ("/dev/random", false),
             ("/dev/tty", true),
         ] {
-            if let Ok(fd) = PathFd::new(node) {
+            if let Some(fd) = rule_fd(Path::new(node)) {
                 let access = if write {
                     AccessFs::ReadFile | AccessFs::WriteFile
                 } else {
@@ -664,50 +665,50 @@ fn build_ruleset(
             }
         }
         for d in ["/dev/dri", "/dev/shm"] {
-            if let Ok(fd) = PathFd::new(d) {
+            if let Some(fd) = rule_fd(Path::new(d)) {
                 let rw = AccessFs::from_all(abi) & !AccessFs::Refer;
                 rs = rs.add_rule(PathBeneath::new(fd, rw))?;
             }
         }
-    } else if let Ok(fd) = PathFd::new("/dev") {
+    } else if let Some(fd) = rule_fd(Path::new("/dev")) {
         let rw = AccessFs::from_all(abi) & !AccessFs::Refer;
         rs = rs.add_rule(PathBeneath::new(fd, rw))?;
     }
     // Tree: read + execute, NEVER write (blobs are shared
     // across trees and apps: a write would alter them everywhere).
     let rx = AccessFs::from_read(abi) | AccessFs::Execute;
-    rs = rs.add_rule(PathBeneath::new(PathFd::new(tree)?, rx))?;
+    rs = rs.add_rule(PathBeneath::new(panpak_core::open_o_path(tree).with_context(|| format!("open {}", tree.display()))?, rx))?;
     // Writable dirs (app roots, rw home paths, tmp, dev): everything EXCEPT Refer. From ABI V2
     // from_all includes Refer (link/rename across different dirs): granting it
     // would allow hardlinks to tree files. Without Refer, same-dir
     // renames stay possible (atomic-save) but no external links.
     let rw = AccessFs::from_all(abi) & !AccessFs::Refer;
     for dir in &access.rw {
-        rs = rs.add_rule(PathBeneath::new(PathFd::new(dir)?, rw))?;
+        rs = rs.add_rule(PathBeneath::new(panpak_core::open_o_path(dir).with_context(|| format!("open {}", dir.display()))?, rw))?;
     }
     // The home folder can be listed inside the view, so that the granted user folders show up in it.
     if let (true, Some(home)) = (access.in_view, &access.home_list) {
-        rs = rs.add_rule(PathBeneath::new(PathFd::new(home)?, AccessFs::ReadDir))?;
+        rs = rs.add_rule(PathBeneath::new(panpak_core::open_o_path(home).with_context(|| format!("open {}", home.display()))?, AccessFs::ReadDir))?;
     }
     // Read only: theme, fonts and icons of the user, ro home paths. A missing or
     // unreadable entry is skipped. Files get file rights only (the kernel refuses
     // directory rights on a file); nothing here can be executed.
     for path in &access.ro {
-        if let Ok(fd) = PathFd::new(path) {
+        if let Some(fd) = rule_fd(Path::new(path)) {
             let rights = if path.is_dir() { AccessFs::ReadFile | AccessFs::ReadDir } else { AccessFs::ReadFile.into() };
             rs = rs.add_rule(PathBeneath::new(fd, rights))?;
         }
     }
     // Shared /tmp (RW): nearly all apps require it; denying it by
     // default would break even trivial scripts. Future: [permissions]tmp.
-    if let Ok(fd) = PathFd::new("/tmp") {
+    if let Some(fd) = rule_fd(Path::new("/tmp")) {
         rs = rs.add_rule(PathBeneath::new(fd, rw))?;
     }
     // Explicitly opened file (`panpak open` / double click): ONLY that path,
     // read by default, write only with explicit declaration.
     // The caller passes the already canonicalized path.
     if let Some((path, grant)) = open {
-        let fd = PathFd::new(path)
+        let fd = panpak_core::open_o_path(path)
             .with_context(|| format!("open: cannot open file: {}", path.display()))?;
         let access = if grant.write || grant.rename {
             if grant.rename {
@@ -729,7 +730,7 @@ fn build_ruleset(
         // but overwritable/deletable (documented exposure).
         if grant.rename {
             if let Some(parent) = path.parent() {
-                let fd = PathFd::new(parent).with_context(|| {
+                let fd = panpak_core::open_o_path(parent).with_context(|| {
                     format!("open: cannot open directory: {}", parent.display())
                 })?;
                 rs = rs.add_rule(PathBeneath::new(
@@ -753,7 +754,7 @@ fn build_ruleset(
     // manifest; under appdata/tmp they already pass via ResolveUnix.
     if new_unix {
         for path in &access.sockets {
-            if let Ok(fd) = open_path(path) {
+            if let Some(fd) = rule_fd(path) {
                 let rights = AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::ResolveUnix;
                 rs = rs.add_rule(PathBeneath::new(fd, rights))?;
             }
@@ -761,12 +762,15 @@ fn build_ruleset(
     }
     for s in socks.iter().filter(|_| new_unix) {
         let path = panpak_core::expand_socket_path(s)?;
-        match open_path(&path) {
+        match panpak_core::open_o_path(&path) {
             Ok(fd) => {
                 let access = AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::ResolveUnix;
                 rs = rs.add_rule(PathBeneath::new(fd, access))?;
             }
-            Err(_) => eprintln!("panpak: socket {s} absent, rule omitted (access remains denied)"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("panpak: socket {s} absent, rule omitted (access remains denied)")
+            }
+            Err(e) => eprintln!("panpak: WARNING: socket {s}: rule omitted ({e}); access remains denied"),
         }
     }
     Ok(rs)
@@ -847,6 +851,7 @@ fn read_interface_settings(gsettings: &Path, timeout: std::time::Duration) -> Op
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
+            // Only the dark-theme hint depends on it: a program that cannot start means "no preference".
             .ok()
     };
     let mut kids = [spawn("color-scheme"), spawn("gtk-theme")];
@@ -1140,6 +1145,7 @@ fn real_main() -> Result<()> {
     // stub applies Landlock itself and starts the app, as it always did.
     if panpak_core::view_status().usable() {
         // Only with the view: its home folder is an empty tmpfs, so listing it shows nothing else.
+        // Only a convenience (the home folder shows the granted folders when listed): without it the listing is empty.
         access.home_list = dirs::home_dir().and_then(|h| fs::canonicalize(h).ok()).filter(|h| h.is_dir() && h != Path::new("/"));
         let mut store_paths = plan.ld_path.clone();
         store_paths.extend(plan.loader.clone());
@@ -1229,7 +1235,13 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     let binds = view::merge_binds(binds);
     let (mounts, opener_server) = open_channel(ctx, cmd, &stub, runtime_text.as_deref());
     // /tmp and /dev/shm are shared by the copies of this app that run together, and by no other app.
-    let app_dirs = panpak_core::app_dirs(&ctx.man.app.id).ok();
+    let app_dirs = match panpak_core::app_dirs(&ctx.man.app.id) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            eprintln!("panpak: WARNING: app folders unavailable ({}); no shared /tmp, no stale lock search", panpak_core::err_text(&e));
+            None
+        }
+    };
     let shared = ctx.runtime_dir.zip(app_dirs.as_ref()).and_then(|(rt, dirs)| match sharedtmp::prepare(&rt.join("panpak").join(&ctx.man.app.id), &panpak_core::stalelocks::in_use_marker(dirs)) {
         Ok(s) => Some(s),
         Err(e) => {

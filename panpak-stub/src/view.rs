@@ -173,15 +173,19 @@ pub fn root_layout(host: &Path) -> RootLayout {
         }
     }
     let mut links = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(host) {
-        for e in rd.flatten() {
-            let name = e.file_name();
-            let hidden = name.to_str().is_none_or(|n| HIDDEN_TOP.contains(&n) || SYSTEM_DIRS.contains(&n));
-            if hidden || !e.file_type().is_ok_and(|t| t.is_symlink()) {
-                continue;
-            }
-            if let Ok(target) = std::fs::read_link(e.path()) {
-                links.push((target, Path::new("/").join(&name)));
+    match std::fs::read_dir(host) {
+        Err(e) => eprintln!("panpak: WARNING: cannot list {}: {e}; the view has no top-level links", host.display()),
+        Ok(rd) => {
+            for e in rd.flatten() {
+                let name = e.file_name();
+                let hidden = name.to_str().is_none_or(|n| HIDDEN_TOP.contains(&n) || SYSTEM_DIRS.contains(&n));
+                if hidden || !e.file_type().is_ok_and(|t| t.is_symlink()) {
+                    continue;
+                }
+                match std::fs::read_link(e.path()) {
+                    Ok(target) => links.push((target, Path::new("/").join(&name))),
+                    Err(err) => eprintln!("panpak: WARNING: cannot read the link {}: {err}; it is missing in the view", e.path().display()),
+                }
             }
         }
     }
