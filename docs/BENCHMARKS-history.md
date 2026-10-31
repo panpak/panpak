@@ -1,4 +1,10 @@
-# Benchmark Panpak vs AppImage
+# Benchmark Panpak vs AppImage (earlier measurements)
+
+These are the measurements of 26 and 27 October 2026, kept as a record. They were made with
+earlier builds and with scripts that need local data. The current, reproducible numbers are in
+[BENCHMARKS.md](BENCHMARKS.md); where the two disagree, use that file. In particular, the
+"always redownloads 100%" remark in section 3 no longer applies: updates fetch only the missing
+chunks (see [../INCREMENTAL-RESULTS.md](../INCREMENTAL-RESULTS.md) and BENCHMARKS.md).
 
 ## 0. Cold/warm start, current cycle (27 October 2026, no optimization)
 

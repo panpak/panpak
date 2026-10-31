@@ -1,0 +1,21 @@
+# date_utc: 2026-10-31T01:36:47Z
+# cpu: AMD Ryzen 7 7735HS with Radeon Graphics
+# threads: 16
+# ram_mib: 14652
+# kernel: 7.0.0-38-generic
+# os: Ubuntu 26.04.1 LTS
+# filesystem_of_work_dir: ext4
+# landlock: OK   kernel 7.0.0-38-generic, Landlock V8 (fs + network + ioctl + signal/abstract-socket scope (+Unix paths if V9 supported))
+# bubblewrap: bubblewrap 0.11.1
+# python: 3.14.4
+# rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+# panpak_commit: ae4c209
+# panpak_sha256: 3d39049f9d0175d6
+# stub_sha256: dbfee7a4d837730b
+app,version,command,variant,n,median_s,min_s,max_s,stdev_s
+ail,3.0.0-beta-3,ail-cli --help,resolution-cache-on,10,0.0447,0.0401,0.0578,0.0064
+ail,3.0.0-beta-3,ail-cli --help,resolution-cache-off,10,0.0576,0.0547,0.0750,0.0061
+qownnotes,26.10.9,"--version, QT_QPA_PLATFORM=offscreen",resolution-cache-on,10,0.0547,0.0454,0.0596,0.0054
+qownnotes,26.10.9,"--version, QT_QPA_PLATFORM=offscreen",resolution-cache-off,10,0.0877,0.0783,0.0943,0.0049
+prusaslicer,2.8.1,--help,resolution-cache-on,10,0.0872,0.0776,0.1006,0.0055
+prusaslicer,2.8.1,--help,resolution-cache-off,10,0.1084,0.0989,0.1233,0.0082

@@ -2,7 +2,7 @@
 
 Status: format v1, runtime ABI 1, Landlock V8 on kernel 7.0.0-38.
 This guide says WHERE to look, not what to conclude. Measured facts
-live in `BENCHMARKS.md`, `PILOT.md`, `INCREMENTAL-RESULTS.md`,
+live in `docs/BENCHMARKS.md`, `PILOT.md`, `INCREMENTAL-RESULTS.md`,
 `STARTUP-CACHE.md`; threats in `THREAT-MODEL.md`; the norm in
 `PANPAK-FORMAT.md`. Nothing in this repo is legal advice.
 

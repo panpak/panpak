@@ -20,7 +20,7 @@ actually sent, independently of the client counter.
 | difference from analytic | **0** |
 
 151 new chunks out of 3,195, 6 requests, identical stub reused. 92.19%
-saving vs the full package. The old analytic measure in BENCHMARKS.md
+saving vs the full package. The old analytic measure in docs/BENCHMARKS-history.md
 needlessly included the stub: here the identical signed stub is
 reused. Comparison uses compressed/raw hashes and lengths.
 

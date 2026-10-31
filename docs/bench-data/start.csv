@@ -1,0 +1,33 @@
+# date_utc: 2026-10-31T01:36:47Z
+# cpu: AMD Ryzen 7 7735HS with Radeon Graphics
+# threads: 16
+# ram_mib: 14652
+# kernel: 7.0.0-38-generic
+# os: Ubuntu 26.04.1 LTS
+# filesystem_of_work_dir: ext4
+# landlock: OK   kernel 7.0.0-38-generic, Landlock V8 (fs + network + ioctl + signal/abstract-socket scope (+Unix paths if V9 supported))
+# bubblewrap: bubblewrap 0.11.1
+# python: 3.14.4
+# rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+# panpak_commit: ae4c209
+# panpak_sha256: 3d39049f9d0175d6
+# stub_sha256: dbfee7a4d837730b
+app,version,command,variant,n,median_s,min_s,max_s,stdev_s
+ail,3.0.0-beta-3,ail-cli --help,panpak-install,5,0.0380,0.0362,0.0455,0.0040
+ail,3.0.0-beta-3,ail-cli --help,panpak-first-start,5,0.2953,0.2860,0.3034,0.0069
+ail,3.0.0-beta-3,ail-cli --help,panpak-later-warm,10,0.0420,0.0408,0.0531,0.0045
+ail,3.0.0-beta-3,ail-cli --help,panpak-later-cold,10,0.2243,0.0399,0.2619,0.0598
+ail,3.0.0-beta-3,ail-cli --help,appimage-warm,10,0.0186,0.0181,0.0270,0.0025
+ail,3.0.0-beta-3,ail-cli --help,appimage-cold,10,0.0609,0.0581,0.0678,0.0025
+qownnotes,26.10.9,"--version, QT_QPA_PLATFORM=offscreen",panpak-install,5,0.0488,0.0456,0.0551,0.0034
+qownnotes,26.10.9,"--version, QT_QPA_PLATFORM=offscreen",panpak-first-start,5,0.5771,0.5461,0.6004,0.0176
+qownnotes,26.10.9,"--version, QT_QPA_PLATFORM=offscreen",panpak-later-warm,10,0.0498,0.0466,0.0618,0.0048
+qownnotes,26.10.9,"--version, QT_QPA_PLATFORM=offscreen",panpak-later-cold,10,0.2427,0.0478,0.2539,0.0593
+qownnotes,26.10.9,"--version, QT_QPA_PLATFORM=offscreen",appimage-warm,10,0.2031,0.1876,0.2270,0.0110
+qownnotes,26.10.9,"--version, QT_QPA_PLATFORM=offscreen",appimage-cold,10,0.2926,0.2765,0.3060,0.0087
+prusaslicer,2.8.1,--help,panpak-install,5,0.0632,0.0563,0.1480,0.0348
+prusaslicer,2.8.1,--help,panpak-first-start,5,0.7011,0.6540,0.7087,0.0200
+prusaslicer,2.8.1,--help,panpak-later-warm,10,0.0872,0.0782,0.0938,0.0049
+prusaslicer,2.8.1,--help,panpak-later-cold,10,0.1952,0.1116,0.2102,0.0265
+prusaslicer,2.8.1,--help,appimage-warm,10,0.3146,0.2978,0.3264,0.0096
+prusaslicer,2.8.1,--help,appimage-cold,10,0.4343,0.4139,0.4571,0.0141

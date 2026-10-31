@@ -1,4 +1,14 @@
-# Panpak bench: environment variables
+# Panpak bench
+
+## Public benchmarks (reproducible)
+
+`inputs.py` downloads the official AppImages with a pinned SHA-256, `public_bench.py` measures
+(update size, first and later starts, cost of the view, library resolution) and writes CSV files to
+`docs/bench-data/`, and `make_charts.py` draws the SVG charts from them. Method, results, limits and
+the commands to run them again are in [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
+
+## Earlier scripts: environment variables
+
 
 Scripts in `bench/` contain no absolute paths: data directories are
 read from the environment. Defaults are meant for a dev machine, with
