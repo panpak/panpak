@@ -12,7 +12,7 @@ Three crates, one file, two phases:
 
 - `panpak` (CLI, `panpak/src/main.rs`, ~1900 lines): `pack` (signs),
   `install` (verify + TOFU/pin + launcher), `update`/`rollback`,
-  `open` (per-file grant), `convert` (AppImage→panpak), `doctor`,
+  `open` (per-file grant), `convert` (AppImage→`.panpak`), `doctor`,
   `install-runtime`, `release`.
 - `panpak-core` (`panpak-core/src/lib.rs`, ~1500 lines): parsing and
   verification (footer, strict TOML manifest, zstd index, BLAKE3 hash,

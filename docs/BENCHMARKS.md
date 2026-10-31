@@ -46,7 +46,10 @@ the bytes of every response it sends. The count of the server and the count prin
 are the same in every row. The packages are re-signed with a test key so that the update URL points
 to the local server; the content is not changed. One run per app: the number of bytes does not vary.
 
-![Update size](bench-data/delta.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="bench-data/delta-dark.svg">
+  <img alt="Update size" src="bench-data/delta.svg">
+</picture>
 
 | App | Old to new | New AppImage | New package | Fetched by `update` | Share of the package | Chunks new / total | Requests |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -77,7 +80,10 @@ the time of the first window is a different measure (see below).
 - *AppImage*: the original file, run through userspace FUSE (libfuse2), warm (two discarded, ten timed)
   and cold (evicted before each of ten runs).
 
-![Start time](bench-data/start.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="bench-data/start-dark.svg">
+  <img alt="Start time" src="bench-data/start.svg">
+</picture>
 
 Medians in milliseconds (minimum to maximum in brackets):
 
@@ -110,7 +116,10 @@ the stub starts the app with Landlock alone. That wrapper has a cost of its own,
 `/bin/true`: 0.9 ms alone and 5.6 ms under the wrapper, a difference of 4.7 ms that sits on the "without"
 side.
 
-![Cost of the view](bench-data/view.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="bench-data/view-dark.svg">
+  <img alt="Cost of the view" src="bench-data/view.svg">
+</picture>
 
 | App | With the view | Without the view (inside the wrapper) | Difference | Difference plus the 4.7 ms of the wrapper |
 |---|---:|---:|---:|---:|
@@ -131,7 +140,10 @@ the stub resolves the libraries at every start: it reads the ELF files, chooses 
 symbol check (see PANPAK-FORMAT.md section 7). The difference is the cost of that work. The symbol check
 is part of it and is not timed on its own.
 
-![Library resolution](bench-data/resolution.svg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="bench-data/resolution-dark.svg">
+  <img alt="Library resolution" src="bench-data/resolution.svg">
+</picture>
 
 | App | Cache on | Cache off | Cost of the resolution |
 |---|---:|---:|---:|
@@ -182,4 +194,4 @@ python3 bench/make_charts.py                               # writes docs/bench-d
   the folder of the CSV files.
 - The measurements need `bubblewrap`, `python3` with the `cryptography` package (used to re-sign the test
   packages) and about 3 GB of space (inputs, converted packages and one installed app at a time).
-- Run on an idle machine. The charts depend only on the CSV files: the same files give the same SVG.
+- Run on an idle machine. The charts depend only on the CSV files: the same files give the same SVG, in a light and a dark version (`<name>.svg` and `<name>-dark.svg`).

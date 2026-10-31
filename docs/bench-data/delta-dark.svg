@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="396" viewBox="0 0 760 396" role="img" aria-label="Update size: bytes downloaded for the new version">
+<title>Update size: bytes downloaded for the new version</title>
+<style>
+  .bg { fill: #0d1117; }
+  .fg { fill: #e6edf3; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .muted { fill: #9198a1; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .grid { stroke: #3d444d; stroke-width: 1; }
+  .s0 { fill: #58a6ff; }
+  .s1 { fill: #f0883e; }
+  .s2 { fill: #3fb68b; }
+  .s3 { fill: #8b949e; }
+  .s4 { fill: #b392f0; }
+</style>
+<rect class="bg" x="0" y="0" width="760" height="396"/>
+<text class="fg" x="16" y="26" font-size="16" font-weight="600">Update size: bytes downloaded for the new version</text>
+<text class="muted" x="16" y="46" font-size="12">Local HTTP server counts the bytes it sends; one run per app (the size does not vary)</text>
+<line class="grid" x1="215" y1="62" x2="215" y2="334"/>
+<text class="fg" x="205" y="105" font-size="13" text-anchor="end">ail 2.2.0 to 3.0.0-beta-3</text>
+<rect class="s0" x="215" y="70" width="101.7" height="18" rx="2"/>
+<text class="fg" x="322.7" y="83" font-size="12">36.5 MB</text>
+<rect class="s1" x="215" y="92" width="122.0" height="18" rx="2"/>
+<text class="fg" x="343.0" y="105" font-size="12">43.9 MB</text>
+<rect class="s2" x="215" y="114" width="109.9" height="18" rx="2"/>
+<text class="fg" x="330.9" y="127" font-size="12">39.5 MB</text>
+<text class="fg" x="205" y="189" font-size="13" text-anchor="end">qownnotes 26.10.8 to 26.10.9</text>
+<rect class="s0" x="215" y="154" width="173.4" height="18" rx="2"/>
+<text class="fg" x="394.4" y="167" font-size="12">62.3 MB</text>
+<rect class="s1" x="215" y="176" width="190.0" height="18" rx="2"/>
+<text class="fg" x="411.0" y="189" font-size="12">68.3 MB</text>
+<rect class="s2" x="215" y="198" width="14.7" height="18" rx="2"/>
+<text class="fg" x="235.7" y="211" font-size="12">5.3 MB</text>
+<text class="fg" x="205" y="273" font-size="13" text-anchor="end">simplenote 2.27.0 to 2.27.1</text>
+<rect class="s0" x="215" y="238" width="409.5" height="18" rx="2"/>
+<text class="fg" x="630.5" y="251" font-size="12">147.2 MB</text>
+<rect class="s1" x="215" y="260" width="435.0" height="18" rx="2"/>
+<text class="fg" x="656.0" y="273" font-size="12">156.4 MB</text>
+<rect class="s2" x="215" y="282" width="4.8" height="18" rx="2"/>
+<text class="fg" x="225.8" y="295" font-size="12">1.7 MB</text>
+<rect class="s0" x="16" y="346" width="12" height="12" rx="2"/>
+<text class="fg" x="34" y="357" font-size="12">New AppImage (whole file)</text>
+<rect class="s1" x="231" y="346" width="12" height="12" rx="2"/>
+<text class="fg" x="249" y="357" font-size="12">New Panpak package (whole file)</text>
+<rect class="s2" x="488" y="346" width="12" height="12" rx="2"/>
+<text class="fg" x="506" y="357" font-size="12">Panpak update (bytes fetched)</text>
+<text class="muted" x="16" y="384" font-size="11">AMD Ryzen 7 7735HS, Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic, 2026-10-31</text>
+</svg>

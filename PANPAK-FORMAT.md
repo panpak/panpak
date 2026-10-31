@@ -907,4 +907,4 @@ will not assert any patent claim they own or control against an implementation
 that conforms to this specification, to the extent the claim is necessarily
 infringed by implementing the normative parts of it. This statement is not a
 patent license for anything beyond conforming implementations, and it does not
-cover use of the name "panpak" (see `TRADEMARKS.md`).
+cover use of the name "Panpak" (see `TRADEMARKS.md`).

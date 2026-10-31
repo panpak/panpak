@@ -78,7 +78,7 @@ file names or file content outside the store.
 | `app.name` or another text field with a line break adds keys such as `Exec=` to the `.desktop` file, or terminal escape sequences to the TOFU prompt | Text fields reject control, line-separator and bidirectional characters (`PANPAK-E0007`). The `.desktop` writer also escapes values as the Desktop Entry Specification requires and quotes the `Exec` path (spaces, `"`, `` ` ``, `$`, `\`, `%`). Test: `desktop_entry_values_cannot_start_a_line`, fixture `invalid-name-newline` |
 | `app.entry`, `[abi]` library names or index paths with `..`, `/` or control characters reach `Command::new(tree.join(entry))` or `farm.join(name)` | Same field rules in `verify`; index paths and symlink targets reject control characters. Fixtures `invalid-entry-*`, `invalid-abi-name`, `invalid-index-control` |
 | A symbolic link planted at `~/.local/bin/<id>` or `applications/<id>.desktop` makes `install` or `update` overwrite another file | The destination is checked with `lstat`; a link, a directory or a non-regular file is refused (`PANPAK-E2001`). The file is written to a temporary file in the same directory (O_EXCL, O_NOFOLLOW) and renamed over the destination, which replaces a link instead of following it. Test: `symlink_in_place_of_the_launcher_is_refused` |
-| `install` overwrites a launcher or `.desktop` file of another program | A file is replaced only if it carries panpak's marker for the same app (`# X-Panpak-App-Id:` in the launcher, `X-Panpak-App-Id=` in the `.desktop` file) or is one written by an older panpak. The check runs before the store is touched. Test: `foreign_files_are_not_overwritten` |
+| `install` overwrites a launcher or `.desktop` file of another program | A file is replaced only if it carries Panpak's marker for the same app (`# X-Panpak-App-Id:` in the launcher, `X-Panpak-App-Id=` in the `.desktop` file) or is one written by an older panpak. The check runs before the store is touched. Test: `foreign_files_are_not_overwritten` |
 | `panpak convert` copies strings from an untrusted AppImage (names, versions, file names) into `panpak.toml` or into a shell wrapper, so a quote or a newline adds a `[permissions]` section or shell code | The strings go through the TOML serializer and are single-quoted for the shell. Test: `convert_strings_cannot_add_keys_or_sections` |
 | A launcher path with shell metacharacters (`$`, backtick, `'`) in `$HOME` runs code when the launcher starts | Paths are single-quoted in the generated launcher; control characters in them are refused |
 
@@ -442,7 +442,7 @@ Status of the project: pre-alpha.
   missing, user namespaces are off, or AppArmor blocks it (Ubuntu needs a profile for
   `bwrap`), the view is not used. In practice: on a kernel below V9 the app can reach the
   session bus and agents through their sockets, `/proc`, `/sys` and `/run` are readable,
-  and `/tmp` is shared with every process of the user. `doctor` says which layers are
+  `/tmp` is shared with every process of the user, and UDP is open (KL-15). `doctor` says which layers are
   active and why the view is missing; `install` and `update` warn. See §3 ("Not available").
 - **KL-5 No D-Bus filter and no portals yet.** An app that is granted a bus socket gets the
   whole bus ("Full access to desktop services"). Without it the app has no bus at all, so
@@ -496,9 +496,12 @@ Status of the project: pre-alpha.
 
 **Network**
 
-- **KL-15 UDP is never filtered.** Landlock filters TCP `bind` and `connect` only. In
-  practice: even with `network = false` an app can send data over UDP, including DNS.
-  Not fixable without seccomp or a firewall. See §3 ("TCP networking").
+- **KL-15 Landlock never filters UDP.** Landlock filters TCP `bind` and `connect` only. In the
+  isolated view an app that asks for no network has a network namespace of its own with only the
+  loopback interface, so UDP, DNS and every other protocol are cut. Without the view (KL-4), with
+  `network = false` the app cannot connect by TCP but can still send UDP datagrams to loopback, the
+  local network and the Internet, DNS included, and use any other non-TCP protocol: a way to send data
+  out. An app that asks for network has UDP in both cases. See §3 ("TCP networking").
 - **KL-16 Ports, not addresses; no ephemeral ports.** A rule for a port opens it for every
   address, and a rule cannot express `bind` on port 0 followed by a connect to the
   assigned port. In practice: apps that use a random local port (OpenShot thumbnails) do

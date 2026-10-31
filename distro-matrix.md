@@ -102,7 +102,7 @@ observations below date from the host-first rule. Observed effects:
   recent glibc distros can ship lean bundles; whoever wants Alpine or
   old distros bundles glibc.
 
-## AppImage → panpak (OB5, `panpak convert`, no FUSE)
+## AppImage → Panpak (OB5, `panpak convert`, no FUSE)
 
 | AppImage | conversion | sandboxed run |
 |---|---|---|

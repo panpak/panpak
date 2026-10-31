@@ -105,7 +105,7 @@
   given. Index paths and symlink targets reject control characters.
 - **Security: launchers and `.desktop` files.** Written through a temporary
   file and a rename, never through a symbolic link, and only over a file that
-  panpak wrote for the same app (`PANPAK-E2001`). Values are escaped as the
+  Panpak wrote for the same app (`PANPAK-E2001`). Values are escaped as the
   Desktop Entry Specification requires and the `Exec` path is quoted.
   `panpak convert` escapes the strings it copies from an AppImage.
 - **Test and bench scripts** refuse to run when HOME is not inside their work

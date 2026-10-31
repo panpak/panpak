@@ -6,6 +6,7 @@ Usage: python3 scripts/check-doc-links.py
 
 For every tracked .md file: each relative link `[text](path#anchor)` must point to a file
 that exists and, for a Markdown target, to a heading that exists (GitHub's anchor rules).
+`src` and `srcset` attributes of HTML in the text are checked like links.
 Paths in backticks that name a tracked file with a directory (for example
 `docs/BENCHMARKS.md`) are checked too. Exit status 1 if anything is missing.
 """
@@ -56,8 +57,8 @@ for md in mds:
             fence = not fence
         if fence:
             continue
-        for m in re.finditer(r'(?<!\!)\[[^\]]*\]\(([^)\s]+)\)|!\[[^\]]*\]\(([^)\s]+)\)', line):
-            target = m.group(1) or m.group(2)
+        for m in re.finditer(r'(?<!\!)\[[^\]]*\]\(([^)\s]+)\)|!\[[^\]]*\]\(([^)\s]+)\)|(?:src|srcset)="([^"]+)"', line):
+            target = m.group(1) or m.group(2) or m.group(3)
             if re.match(r'[a-z][a-z0-9+.-]*:', target):
                 continue
             path, _, frag = target.partition('#')

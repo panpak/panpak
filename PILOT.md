@@ -178,7 +178,7 @@ mediated); X11 is blocked by the Landlock scope (by design): apps that
 is classified: **our bug** (fixed here), **model limit** (documented,
 not worked around), **unsuitable app**, **environment**.
 
-| app (toolkit) | conv. | panpak start | basic use | save | network | update | outcome / cause / class |
+| app (toolkit) | conv. | Panpak start | basic use | save | network | update | outcome / cause / class |
 |---|---|---|---|---|---|---|---|
 | Audacity 4.0.1 (wx/Qt) | OK (`--entry bin/audacity4portable`) | KO: `SoundTouch ... setPitchSemiTones` not found (host 1.x vs bundle 2.x, same SONAME) | — | — | — | n/a | KO: **model limit** (implicit version at equal SONAME; needs version-aware resolution or prefer-bundled) |
 | qBittorrent 5.3.0 (Qt6) | OK (+pxbackend) | OK both, no window (tray app, same) | runs | n/a | default deny (DHT untested) | n/a | **OK with allow_missing**; AppImage parity |

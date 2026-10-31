@@ -5,8 +5,8 @@
 Usage: python3 bench/make_charts.py [data-dir] [out-dir]
 
 Standard library only. The SVG is written directly, so the same CSV files always give
-the same bytes. Colors follow the reader's theme (`prefers-color-scheme`), which GitHub
-passes on to images.
+the same bytes. Every chart is written twice, `<name>.svg` (light) and `<name>-dark.svg`
+(dark), for a `<picture>` element with a `prefers-color-scheme: dark` source.
 """
 import csv
 from pathlib import Path
@@ -18,19 +18,17 @@ ROOT = Path(__file__).resolve().parents[1]
 # Series colors: light theme, dark theme. Blue, orange, teal, grey, purple.
 PALETTE = [('#1f6feb', '#58a6ff'), ('#d9730d', '#f0883e'), ('#1a7f64', '#3fb68b'), ('#6e7781', '#8b949e'), ('#8250df', '#b392f0')]
 
+THEMES = {
+    'light': dict(bg='#ffffff', fg='#1f2328', muted='#59636e', grid='#d1d9e0', series=[c[0] for c in PALETTE]),
+    'dark': dict(bg='#0d1117', fg='#e6edf3', muted='#9198a1', grid='#3d444d', series=[c[1] for c in PALETTE]),
+}
+
 STYLE = '''
-  .bg { fill: #ffffff; }
-  .fg { fill: #1f2328; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
-  .muted { fill: #59636e; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
-  .grid { stroke: #d1d9e0; stroke-width: 1; }
-%(light)s
-  @media (prefers-color-scheme: dark) {
-    .bg { fill: #0d1117; }
-    .fg { fill: #e6edf3; }
-    .muted { fill: #9198a1; }
-    .grid { stroke: #3d444d; }
-%(dark)s
-  }
+  .bg { fill: %(bg)s; }
+  .fg { fill: %(fg)s; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .muted { fill: %(muted)s; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .grid { stroke: %(grid)s; stroke-width: 1; }
+%(series)s
 '''
 
 
@@ -49,7 +47,7 @@ def footer(meta):
     return f"{meta.get('cpu', '?').replace(' with Radeon Graphics', '')}, {meta.get('os', '?')}, kernel {meta.get('kernel', '?')}, {meta.get('date_utc', '?')[:10]}"
 
 
-def bar_chart(title, subtitle, groups, series, fmt, note):
+def bar_chart(title, subtitle, groups, series, fmt, note, theme='light'):
     """groups: [(label, [value or None per series])]; series: [label]. Horizontal bars, one scale."""
     left, right, top = 215, 110, 70
     bar_h, gap, group_gap = 18, 4, 18
@@ -68,11 +66,12 @@ def bar_chart(title, subtitle, groups, series, fmt, note):
     notes = [note] if isinstance(note, str) else note
     height = top + sum(len([v for v in vals if v is not None]) * (bar_h + gap) + group_gap for _, vals in groups) + 40 + 20 * len(rows) + 14 * len(notes)
     out = []
-    light = '\n'.join(f'  .s{i} {{ fill: {l}; }}' for i, (l, d) in enumerate(PALETTE))
-    dark = '\n'.join(f'    .s{i} {{ fill: {d}; }}' for i, (l, d) in enumerate(PALETTE))
+    t = THEMES[theme]
+    css = STYLE % dict(bg=t['bg'], fg=t['fg'], muted=t['muted'], grid=t['grid'],
+                       series='\n'.join(f'  .s{i} {{ fill: {c}; }}' for i, c in enumerate(t['series'])))
     out.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-label="{escape(title)}">')
     out.append(f'<title>{escape(title)}</title>')
-    out.append('<style>' + (STYLE % dict(light=light, dark=dark)) + '</style>')
+    out.append('<style>' + css + '</style>')
     out.append(f'<rect class="bg" x="0" y="0" width="{width}" height="{height}"/>')
     out.append(f'<text class="fg" x="16" y="26" font-size="16" font-weight="600">{escape(title)}</text>')
     out.append(f'<text class="muted" x="16" y="46" font-size="12">{escape(subtitle)}</text>')
@@ -107,7 +106,7 @@ def mb(v):
     return f'{v / 1e6:.1f} MB'
 
 
-def delta_chart(data_dir):
+def delta_chart(data_dir, theme):
     meta, rows = read_csv(data_dir / 'delta.csv')
     groups = []
     for r in rows:
@@ -115,10 +114,10 @@ def delta_chart(data_dir):
                        [float(r['appimage_new_bytes']), float(r['panpak_new_bytes']), float(r['downloaded_bytes'])]))
     return bar_chart('Update size: bytes downloaded for the new version',
                      'Local HTTP server counts the bytes it sends; one run per app (the size does not vary)', groups,
-                     ['New AppImage (whole file)', 'New Panpak package (whole file)', 'Panpak update (bytes fetched)'], mb, footer(meta))
+                     ['New AppImage (whole file)', 'New Panpak package (whole file)', 'Panpak update (bytes fetched)'], mb, footer(meta), theme)
 
 
-def start_chart(data_dir):
+def start_chart(data_dir, theme):
     meta, rows = read_csv(data_dir / 'start.csv')
     order = ['panpak-first-start', 'panpak-later-warm', 'panpak-later-cold', 'appimage-warm', 'appimage-cold']
     apps = list(dict.fromkeys(r['app'] for r in rows))
@@ -128,10 +127,10 @@ def start_chart(data_dir):
         groups.append((a, [by.get(k) for k in order]))
     return bar_chart('Start time of an exiting command: first start and later starts',
                      'Median of 5 first starts and of 10 later starts per bar; AppImage through userspace FUSE', groups,
-                     ['Panpak, first start', 'Panpak, later (warm)', 'Panpak, later (cold)', 'AppImage warm', 'AppImage cold'], ms, footer(meta))
+                     ['Panpak, first start', 'Panpak, later (warm)', 'Panpak, later (cold)', 'AppImage warm', 'AppImage cold'], ms, footer(meta), theme)
 
 
-def view_chart(data_dir):
+def view_chart(data_dir, theme):
     meta, rows = read_csv(data_dir / 'view.csv')
     apps = [a for a in dict.fromkeys(r['app'] for r in rows) if not a.startswith('(')]
     groups = []
@@ -142,10 +141,10 @@ def view_chart(data_dir):
     note = [footer(meta), f"Control: /bin/true takes {ms(ctl['plain-true'])} alone and {ms(ctl['wrapper-true'])} under the wrapper that disables the view."]
     return bar_chart('Cost of the isolated view: later starts with and without it',
                      'Median of 10 alternating runs per bar; the no-view side runs inside a namespace wrapper that makes bubblewrap unusable', groups,
-                     ['With the view', 'Without the view (wrapper)'], ms, note)
+                     ['With the view', 'Without the view (wrapper)'], ms, note, theme)
 
 
-def resolution_chart(data_dir):
+def resolution_chart(data_dir, theme):
     meta, rows = read_csv(data_dir / 'resolution.csv')
     apps = list(dict.fromkeys(r['app'] for r in rows))
     groups = []
@@ -154,7 +153,7 @@ def resolution_chart(data_dir):
         groups.append((a, [by['resolution-cache-on'], by['resolution-cache-off']]))
     return bar_chart('Library resolution at start (includes the symbol check)',
                      'Later starts with the resolution cache on and off (PANPAK_NO_ABI_CACHE=1); median of 10 alternating runs', groups,
-                     ['Cache on (a hit)', 'Cache off (resolve every start)'], ms, footer(meta))
+                     ['Cache on (a hit)', 'Cache off (resolve every start)'], ms, footer(meta), theme)
 
 
 def main():
@@ -163,8 +162,9 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, fn in [('delta', delta_chart), ('start', start_chart), ('view', view_chart), ('resolution', resolution_chart)]:
         if (data_dir / f'{name}.csv').exists():
-            (out_dir / f'{name}.svg').write_text(fn(data_dir))
-            print('wrote', out_dir / f'{name}.svg')
+            for theme, suffix in (('light', ''), ('dark', '-dark')):
+                (out_dir / f'{name}{suffix}.svg').write_text(fn(data_dir, theme))
+                print('wrote', out_dir / f'{name}{suffix}.svg')
 
 
 if __name__ == '__main__':

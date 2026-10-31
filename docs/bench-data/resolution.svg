@@ -10,17 +10,6 @@
   .s2 { fill: #1a7f64; }
   .s3 { fill: #6e7781; }
   .s4 { fill: #8250df; }
-  @media (prefers-color-scheme: dark) {
-    .bg { fill: #0d1117; }
-    .fg { fill: #e6edf3; }
-    .muted { fill: #9198a1; }
-    .grid { stroke: #3d444d; }
-    .s0 { fill: #58a6ff; }
-    .s1 { fill: #f0883e; }
-    .s2 { fill: #3fb68b; }
-    .s3 { fill: #8b949e; }
-    .s4 { fill: #b392f0; }
-  }
 </style>
 <rect class="bg" x="0" y="0" width="760" height="330"/>
 <text class="fg" x="16" y="26" font-size="16" font-weight="600">Library resolution at start (includes the symbol check)</text>

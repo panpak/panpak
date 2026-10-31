@@ -86,5 +86,5 @@ sign-off. To fix missing sign-offs:
 
 ## Name and trademark
 
-The code is free; the name "panpak" is covered by `TRADEMARKS.md`. Do not
+The code is free; the name "Panpak" is covered by `TRADEMARKS.md`. Do not
 use it for modified forks or products in a way that suggests endorsement.

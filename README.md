@@ -67,7 +67,8 @@ The format is described in [PANPAK-FORMAT.md](PANPAK-FORMAT.md).
 
 What is tested (see [THREAT-MODEL.md](THREAT-MODEL.md)):
 
-- **Nothing runs before verification:** signature, stub hash, index and every chunk.
+- **Nothing of an installed app runs before verification:** signature, stub hash, index and every chunk
+  (two limits of this claim follow the list).
 - **Trust on first use, then a pin:** the key is shown at install and enforced at every start; a
   changed key is refused, and signed rotation is supported.
 - **Read-only tree, confined writes:** the app writes only to its own folders, `/tmp` and the paths the
@@ -77,18 +78,72 @@ What is tested (see [THREAT-MODEL.md](THREAT-MODEL.md)):
 - **Local sockets:** with the isolated view, or with Landlock 9 (Linux 7.1), an app cannot reach the
   session bus, ssh-agent, gpg-agent or the sockets of container managers, unless its manifest lists them.
 
-What is not guaranteed includes: X11 gives no isolation between windows; UDP is not filtered; there is
-no seccomp filter; without bubblewrap and below Landlock 9 the session bus is reachable; there is no
-D-Bus filter, portal or keyring yet; the first key is pinned without proof. The complete list, each
+The two limits of the first point:
+
+- **Running a `.panpak` file directly runs its own stub first.** The file is an executable: the stub
+  inside it starts, then verifies the package and starts the app. If the file is hostile, that stub can
+  do anything the user can, before any check. Install the package instead: `panpak install` verifies it
+  with the `panpak` program and the installed runtime, and the launcher never runs the stub of the
+  package. Run a `.panpak` directly only if you would run any program from the same source.
+- **The runtime itself is not verified when you install it from a local file.** `panpak install-runtime
+  <stub> --allow-unsigned` (and `panpak install --runtime <stub>`) installs the stub you give it, and says so
+  ("NOT verified"): use a stub you built. A release archive is checked against a signature and a release
+  key with `panpak install-runtime <archive> --release-key ...`, but no release has been published yet.
+
+What is not guaranteed includes: X11 gives no isolation between windows; there is no seccomp filter;
+without bubblewrap, Landlock does not stop UDP (an app with no network permission can still send
+datagrams, DNS included), and below Landlock 9 the session bus is reachable; there is no D-Bus filter,
+portal or keyring yet; the first key is pinned without proof. With the isolated view, an app with no
+network permission has no network but the loopback interface. The complete list, each
 with its consequence, is in
 [Known limitations](THREAT-MODEL.md#5-known-limitations). Report vulnerabilities as described in
 [SECURITY.md](SECURITY.md).
+
+## What Panpak is not
+
+- Not a store: there is no catalogue, search or review. You get a `.panpak` file from its author, or
+  convert an AppImage yourself.
+- No shared runtime: an app carries the libraries the system does not provide, and uses the system's
+  for the rest; Panpak installs no set of common libraries that apps depend on.
+- No central repository or service: nothing is hosted by the project, and updates come from the URL in
+  the package's manifest.
+
+## Requirements
+
+- **Architecture:** x86-64 Linux. The runtime is a static musl binary built for
+  `x86_64-unknown-linux-musl`; other architectures are not supported yet.
+- **Kernel, with Landlock enabled** (`landlock` among the active security modules). Linux 5.13 is the
+  minimum (Landlock 1, file rules): below it the runtime refuses to start an app. Later versions add:
+  Linux 6.7 (Landlock 4) TCP port rules. Without it an app can only be started with
+  `--network-unfiltered`, and an app that asks for network is refused. Linux 6.12 (Landlock 6): scopes
+  that confine abstract Unix sockets and signals. Linux 7.1 (Landlock 9): rules for Unix sockets by path.
+  Details in the table of [THREAT-MODEL.md](THREAT-MODEL.md).
+- **bubblewrap** (`/usr/bin/bwrap`, optional) with unprivileged user namespaces. It provides the isolated
+  view. Without it the app runs with Landlock alone: below Landlock 9 it can reach the session bus and
+  the agents through their sockets, it sees the real `/proc`, `/sys`, `/run` and `/tmp`, it has no own
+  process and IPC namespaces, links it opens go to the system `xdg-open` from inside the sandbox, and an
+  app with no network permission can still send UDP. `panpak doctor` says whether it is usable and why
+  not. On Ubuntu 24.04 and later an AppArmor profile for `bwrap` is needed (the distribution ships one).
+- **systemd:** not required. If they exist, the journal socket and the systemd-resolved socket are made
+  available to the app (the resolver only if it asks for network), and `XDG_RUNTIME_DIR` is used for the
+  sockets and the shared `/tmp` of an app's copies.
+- **glibc:** no fixed minimum. An app uses the glibc of the system unless its package carries its own;
+  an app built against a newer glibc than the system's does not start (Cura needs 2.38 in the
+  compatibility tests). `panpak doctor` shows the host's. Hosts with another libc (Alpine) run only
+  packages that carry glibc and its loader, or static programs.
+- **Also used:** `xdg-open` to open links, a Wayland or X11 session for graphical apps, and for
+  `convert` an AppImage with a SquashFS image (DwarFS images are not supported).
 
 ## Measured numbers
 
 One machine (Ryzen 7 7735HS, Ubuntu 26.04, kernel 7.0, ext4), three or four apps, apps that exit at
 once. Method, raw data, charts and limits are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md); the
 scripts download pinned official inputs and can be run again.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/bench-data/delta-dark.svg">
+  <img alt="Bytes downloaded for an update, against the whole new AppImage and the whole new package, for three apps" src="docs/bench-data/delta.svg">
+</picture>
 
 | Measure | Result | Method |
 |---|---|---|
@@ -115,11 +170,14 @@ There is no comparison with Flatpak or Snap yet.
 ## Quick start
 
 Build from source. The runtime is a static musl binary; Zig acts as the C compiler and linker, from a
-pinned wheel:
+pinned wheel. Install it in a virtual environment: recent Ubuntu and Debian block `pip` outside one
+(PEP 668), and may need the `python3-venv` package.
 
 ```sh
-pip install --require-hashes -r tools/requirements-zig.txt   # Zig 0.17.0
-rustup target add x86_64-unknown-linux-musl                  # Rust 1.99.1 comes from rust-toolchain.toml
+python3 -m venv .venv-zig
+.venv-zig/bin/pip install --require-hashes -r tools/requirements-zig.txt     # Zig 0.17.0
+export PANPAK_ZIG="$(.venv-zig/bin/python -c 'import os, ziglang; print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))')"
+rustup target add x86_64-unknown-linux-musl           # Rust 1.99.1 comes from rust-toolchain.toml
 cargo build --release --target x86_64-unknown-linux-musl
 export PATH="$PWD/target/x86_64-unknown-linux-musl/release:$PATH"
 ```
@@ -131,7 +189,7 @@ panpak keygen -o my.key                                    # your signing key (k
 panpak convert App.AppImage --id org.example.app \
     --stub target/x86_64-unknown-linux-musl/release/panpak-stub \
     --secret-file my.key -o app.panpak                     # add --entry PATH if it asks for one
-panpak install-runtime target/x86_64-unknown-linux-musl/release/panpak-stub
+panpak install-runtime target/x86_64-unknown-linux-musl/release/panpak-stub --allow-unsigned   # your own build
 panpak install app.panpak                                  # shows the key fingerprint to pin
 ~/.local/bin/org.example.app
 panpak doctor                                              # kernel, Landlock, bubblewrap, runtime
@@ -158,4 +216,4 @@ licensed under [CC BY 4.0](LICENSE-DOCS), with a patent non-assertion statement 
 implementations (see PANPAK-FORMAT.md, Appendix D). Contributions are accepted under these licenses and
 signed off under the DCO, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-The name "panpak" and its logo follow a usage policy, see [TRADEMARKS.md](TRADEMARKS.md).
+The name "Panpak" and its logo follow a usage policy, see [TRADEMARKS.md](TRADEMARKS.md).

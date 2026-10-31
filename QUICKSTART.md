@@ -82,7 +82,7 @@ folders under `~/.local/share/panpak/userdata/org.example.hello`, see `panpak da
 ## Then: install and update
 
 ```sh
-panpak install-runtime ./target/x86_64-unknown-linux-musl/release/panpak-stub
+panpak install-runtime ./target/x86_64-unknown-linux-musl/release/panpak-stub --allow-unsigned   # your own build, not verified
 panpak install hello.panpak               # TOFU: confirm with y/yes to pin the key
 # panpak install --yes hello.panpak       # explicit non-interactive confirmation
 ~/.local/bin/org.example.hello       # launcher on the installed runtime

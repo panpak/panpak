@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="330" viewBox="0 0 760 330" role="img" aria-label="Library resolution at start (includes the symbol check)">
+<title>Library resolution at start (includes the symbol check)</title>
+<style>
+  .bg { fill: #0d1117; }
+  .fg { fill: #e6edf3; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .muted { fill: #9198a1; font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .grid { stroke: #3d444d; stroke-width: 1; }
+  .s0 { fill: #58a6ff; }
+  .s1 { fill: #f0883e; }
+  .s2 { fill: #3fb68b; }
+  .s3 { fill: #8b949e; }
+  .s4 { fill: #b392f0; }
+</style>
+<rect class="bg" x="0" y="0" width="760" height="330"/>
+<text class="fg" x="16" y="26" font-size="16" font-weight="600">Library resolution at start (includes the symbol check)</text>
+<text class="muted" x="16" y="46" font-size="12">Later starts with the resolution cache on and off (PANPAK_NO_ABI_CACHE=1); median of 10 alternating runs</text>
+<line class="grid" x1="215" y1="62" x2="215" y2="268"/>
+<text class="fg" x="205" y="94" font-size="13" text-anchor="end">ail</text>
+<rect class="s0" x="215" y="70" width="179.4" height="18" rx="2"/>
+<text class="fg" x="400.4" y="83" font-size="12">45 ms</text>
+<rect class="s1" x="215" y="92" width="231.1" height="18" rx="2"/>
+<text class="fg" x="452.1" y="105" font-size="12">58 ms</text>
+<text class="fg" x="205" y="156" font-size="13" text-anchor="end">qownnotes</text>
+<rect class="s0" x="215" y="132" width="219.5" height="18" rx="2"/>
+<text class="fg" x="440.5" y="145" font-size="12">55 ms</text>
+<rect class="s1" x="215" y="154" width="351.9" height="18" rx="2"/>
+<text class="fg" x="572.9" y="167" font-size="12">88 ms</text>
+<text class="fg" x="205" y="218" font-size="13" text-anchor="end">prusaslicer</text>
+<rect class="s0" x="215" y="194" width="349.9" height="18" rx="2"/>
+<text class="fg" x="570.9" y="207" font-size="12">87 ms</text>
+<rect class="s1" x="215" y="216" width="435.0" height="18" rx="2"/>
+<text class="fg" x="656.0" y="229" font-size="12">108 ms</text>
+<rect class="s0" x="16" y="280" width="12" height="12" rx="2"/>
+<text class="fg" x="34" y="291" font-size="12">Cache on (a hit)</text>
+<rect class="s1" x="168" y="280" width="12" height="12" rx="2"/>
+<text class="fg" x="186" y="291" font-size="12">Cache off (resolve every start)</text>
+<text class="muted" x="16" y="318" font-size="11">AMD Ryzen 7 7735HS, Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic, 2026-10-31</text>
+</svg>

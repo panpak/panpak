@@ -76,7 +76,7 @@ App (real versions, two consecutive releases where indicated):
 
 ## 1. Startup of the previous cycle — SUPERSEDED by §0 data (kept for history)
 
-| app | panpak warm | panpak cold | AppImage warm | AppImage cold |
+| app | Panpak warm | Panpak cold | AppImage warm | AppImage cold |
 |---|---|---|---|---|
 | AIL 2.2 | 0.365 (0.315-0.367) | 0.465 (0.365-0.465) | 0.032 (0.032-0.032) | 0.115 (0.115-0.117) |
 | AIL 3.0 | 0.265 (0.264-0.266) | 0.365 (0.315-0.415) | 0.032 (0.032-0.032) | 0.115 (0.114-0.116) |
