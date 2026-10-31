@@ -533,9 +533,10 @@ mod tests {
                 std::os::unix::net::UnixListener::bind(p).unwrap()
             })
             .collect();
-        // Control: the old shape (the real root, read-only) with those folders of the fake host on top.
+        // Control: the old shape (the real root, read-only) with those folders of the fake host on top. A folder
+        // that is a link on this system (/opt on Bluefin) cannot be covered, so it is left out.
         let mut old: Vec<OsString> = ["--unshare-user", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc"].map(os).into();
-        let on_top: Vec<&str> = ["var", "opt", "srv", "mnt", "media", "root", "boot", "snap"].into_iter().filter(|d| Path::new("/").join(d).is_dir()).collect();
+        let on_top: Vec<&str> = ["var", "opt", "srv", "mnt", "media", "root", "boot", "snap"].into_iter().filter(|d| Path::new("/").join(d).symlink_metadata().is_ok_and(|m| m.is_dir())).collect();
         for d in &on_top {
             old.extend([os("--ro-bind"), host.join(d).into(), Path::new("/").join(d).into()]);
         }
