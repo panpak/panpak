@@ -120,6 +120,33 @@ with open(os.environ['XDG_DATA_HOME'] + '/report.txt', 'w') as f:
 '''
 
 
+# The proxy the closed-list checks run against. PANPAK_TEST_PROXY names another build, for example the
+# 0.1.5 of Ubuntu 24.04 unpacked from its package; the stub itself always uses the system one.
+PROXY = os.environ.get('PANPAK_TEST_PROXY') or '/usr/bin/xdg-dbus-proxy'
+
+
+def direct_checks(sess, lab, pkg):
+    """Behaviour the product relies on, seen through a proxy started by hand with the product rules."""
+    rules = rules_of(lab, pkg)
+    bus = proxy_for(sess, rules, None, 'direct')
+    rc, t = sess.call('org.freedesktop.portal.Desktop', '/org/freedesktop/portal/desktop', 'org.freedesktop.portal.Settings.ReadOne', 'org.freedesktop.appearance', 'color-scheme', bus=bus)
+    need(rc == 0 and 'uint32' in t, f'Settings.ReadOne through {PROXY}: {t}')
+    rc, t = sess.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.RequestName', f'{app_dirs.ID}', 'uint32 4', bus=bus)
+    need(rc == 0 and '(uint32 1,)' in t, f'own id through {PROXY}: {t}')
+    rc, t = sess.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.RequestName', 'org.example.notmine.Name', 'uint32 4', bus=bus)
+    need(rc != 0 and ('AccessDenied' in t or 'ServiceUnknown' in t), f'other name through {PROXY}: {t}')
+    # a signal crosses: the harness changes the theme while a monitor listens through the proxy
+    mon = subprocess.Popen(['gdbus', 'monitor', '-a', bus, '--dest', 'org.freedesktop.portal.Desktop', '--object-path', '/org/freedesktop/portal/desktop'], env=sess.env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    time.sleep(1)
+    sess.call('org.freedesktop.impl.portal.desktop.fake', '/test/fake', 'test.Fake.SetColorScheme', 'uint32 2')
+    time.sleep(1.5)
+    mon.terminate()
+    need('SettingChanged' in mon.stdout.read(), f'SettingChanged did not cross {PROXY}')
+    sess.call('org.freedesktop.impl.portal.desktop.fake', '/test/fake', 'test.Fake.SetColorScheme', 'uint32 1')
+    ver = subprocess.run([PROXY, '--version'], capture_output=True, text=True).stdout.strip()
+    print(f'direct checks with {ver}: settings, own id, refusal of another name, SettingChanged: ok')
+
+
 def need(cond, msg):
     if not cond:
         raise SystemExit(f'FAIL: {msg}')
@@ -175,7 +202,7 @@ def walk(sess, dest, path, seen, out):
 
 def proxy_for(sess, rules, work, name):
     sock = Path(sess.rt) / f'{name}.sock'
-    proc = subprocess.Popen(['/usr/bin/xdg-dbus-proxy', sess.addr, str(sock), *rules], env={}, stdin=subprocess.DEVNULL)
+    proc = subprocess.Popen([PROXY, sess.addr, str(sock), *rules], env={}, stdin=subprocess.DEVNULL)
     sess.procs.append(proc)
     for _ in range(100):
         if sock.exists():
@@ -277,6 +304,7 @@ def run_all(lab, sess, work):
     both = lab.pack('[permissions]\nnotifications = true\ntray = true\ndbus_own = ["org.example.dirs.Second"]\n')
     closed_list(sess, lab, plain)
     closed_list(sess, lab, both)
+    direct_checks(sess, lab, plain)
     # --- 2. an app in the view
     need(lab.install('[permissions]\nnotifications = true\ndbus_own = ["org.example.dirs.Second"]\n').returncode == 0, 'install failed')
     sess.log.write_text('')
