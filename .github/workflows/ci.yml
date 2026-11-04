@@ -3,19 +3,24 @@
 # No secrets (only the default read-only token), no publish.
 #
 # Where each job runs (the minutes budget is the reason for this split):
-#   - push to main: only the fast checks (build-test with conformance, clippy,
-#     licenses with cargo-deny, DCO, secrets). main receives only fast-forwards
-#     of commits that already passed every job in their pull request, so the
-#     heavy jobs (fuzz-smoke, distro, repro) would repeat that result.
-#   - pull_request: everything. The heavy jobs are skipped when the pull request
-#     touches only documentation (*.md and docs/**); a change to
+#   - always (pull request, push to main, manual and monthly runs): the fast
+#     checks clippy, licenses (with cargo-deny), secrets and, on a pull request or
+#     a push, DCO.
+#   - pull_request: the heavy jobs (build-test with conformance, fuzz-smoke, repro,
+#     distro) run only when the pull request touches more than documentation
+#     (*.md and docs/**, see scripts/ci-changes.sh). A change to
 #     REPRODUCIBLE-HASHES.md always starts repro.
+#   - push to main: only the fast checks. main receives only fast-forwards of
+#     commits that already passed every job in their pull request.
 #   - workflow_dispatch and the monthly schedule: everything, with a longer fuzz
 #     run on the schedule. This catches new advisories, new nightly toolchains
 #     and drift in the base images even when nobody opens a pull request.
 #     The schedule is monthly, not weekly, only while the repository is private
 #     (every minute is billed): make it weekly again when the repository goes
 #     public, where Actions minutes are free.
+#   - gate: always the last job. It fails when a job that had to run did not
+#     succeed, and also when a job that had to run was skipped
+#     (scripts/ci-gate.sh). Require this job, not the others, in the branch rules.
 
 name: ci
 
@@ -27,7 +32,7 @@ on:
   schedule:
     # First Monday of the month, 03:17 UTC. Cron cannot say that: with both a
     # day of the month and a weekday, it fires when either matches. So the
-    # trigger fires on days 1 to 7 and the gate job below lets only Monday through.
+    # trigger fires on days 1 to 7 and the monday job below lets only Monday through.
     - cron: "17 3 1-7 * *"
 
 # One run per ref: a new push cancels the previous run of the same branch or pull
@@ -50,7 +55,7 @@ env:
   FUZZ_NIGHTLY: "nightly-2026-10-20"
 
 jobs:
-  gate:
+  monday:
     # Scheduled runs only: continue on the first Monday of the month, stop on the
     # other days 1 to 7. Every other job lists this one in needs and starts unless
     # the answer is exactly "false" (the job is skipped on other events, which
@@ -69,8 +74,8 @@ jobs:
   changes:
     # Decides whether the heavy jobs are needed for a pull request. Plain git,
     # no third-party action. Not needed on push: the heavy jobs never run there.
-    needs: gate
-    if: ${{ !cancelled() && github.event_name != 'push' && needs.gate.outputs.run != 'false' }}
+    needs: monday
+    if: ${{ !cancelled() && github.event_name != 'push' && needs.monday.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
     outputs:
       heavy: ${{ steps.classify.outputs.heavy }}
@@ -93,8 +98,8 @@ jobs:
           fi
 
   build-test:
-    needs: gate
-    if: ${{ !cancelled() && needs.gate.outputs.run != 'false' }}
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -137,8 +142,8 @@ jobs:
           path: target/x86_64-unknown-linux-musl/release/panpak-stub
 
   clippy:
-    needs: gate
-    if: ${{ !cancelled() && needs.gate.outputs.run != 'false' }}
+    needs: monday
+    if: ${{ !cancelled() && needs.monday.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -248,8 +253,8 @@ jobs:
 
   licenses:
     # SPDX headers on every source file; dependency licenses, bans and sources.
-    needs: gate
-    if: ${{ !cancelled() && needs.gate.outputs.run != 'false' }}
+    needs: monday
+    if: ${{ !cancelled() && needs.monday.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -260,7 +265,9 @@ jobs:
       - name: panpak-core and panpak-stub use only zstd 0.14
         run: ./scripts/check-zstd-copies.sh
       - name: CI helper scripts
-        run: ./tests/ci-changes-test.sh
+        run: |
+          ./tests/ci-changes-test.sh
+          ./tests/ci-gate-test.sh
       - name: Cache the cargo-deny binary
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -326,8 +333,8 @@ jobs:
 
   secrets:
     # Scans the whole git history for leaked secrets.
-    needs: gate
-    if: ${{ !cancelled() && needs.gate.outputs.run != 'false' }}
+    needs: monday
+    if: ${{ !cancelled() && needs.monday.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -344,6 +351,33 @@ jobs:
           mkdir -p "$RUNNER_TEMP/gitleaks" && tar xzf gitleaks.tgz -C "$RUNNER_TEMP/gitleaks" gitleaks
           rm gitleaks.tgz
           "$RUNNER_TEMP/gitleaks/gitleaks" git --log-opts="--all" --redact --no-banner .
+
+  gate:
+    # Passes only when every job ended as scripts/ci-gate.sh expects for this
+    # event and these changed files. Runs even when a job before it failed or was
+    # skipped, so a skip by mistake cannot look like a pass.
+    if: ${{ always() }}
+    needs: [monday, changes, build-test, clippy, fuzz-smoke, repro, licenses, distro, dco, secrets]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Every required job ran and succeeded
+        env:
+          EVENT: ${{ github.event_name }}
+          MONDAY_RUN: ${{ needs.monday.outputs.run }}
+          HEAVY: ${{ needs.changes.outputs.heavy }}
+          REPRO: ${{ needs.changes.outputs.repro }}
+          R_MONDAY: ${{ needs.monday.result }}
+          R_CHANGES: ${{ needs.changes.result }}
+          R_BUILD_TEST: ${{ needs.build-test.result }}
+          R_CLIPPY: ${{ needs.clippy.result }}
+          R_FUZZ_SMOKE: ${{ needs.fuzz-smoke.result }}
+          R_REPRO_JOB: ${{ needs.repro.result }}
+          R_LICENSES: ${{ needs.licenses.result }}
+          R_DISTRO: ${{ needs.distro.result }}
+          R_DCO: ${{ needs.dco.result }}
+          R_SECRETS: ${{ needs.secrets.result }}
+        run: ./scripts/ci-gate.sh
 
   release-guard:
     # Only on release tags: the security contact must be set, not a placeholder.

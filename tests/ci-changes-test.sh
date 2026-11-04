@@ -48,6 +48,15 @@ expect "workflow" true true
 reset; mkdir -p docs; echo b >docs/deep.md; mkdir -p src/notes; echo b >src/notes/n.md; git add -A; git commit -q -m t
 expect "markdown in a source directory" false false
 
+for f in bench/make_charts.py tests/view.py fuzz/fuzz_targets/x.rs scripts/repro-build.sh conformance/run.py tools/requirements-zig.txt newdir/file.txt; do
+  reset; mkdir -p "$(dirname "$f")"; echo b >"$f"; git add -A; git commit -q -m t
+  expect "$f" true true
+done
+reset; mkdir -p docs/bench-data; echo b >docs/bench-data/delta.svg; echo b >docs/bench-data/a.csv; git add -A; git commit -q -m t
+expect "docs/bench-data only" false false
+reset; mkdir -p docs/bench-data bench; echo b >docs/bench-data/a.csv; echo b >bench/inputs.py; git add -A; git commit -q -m t
+expect "bench data and bench code" true true
+
 if "$here/scripts/ci-changes.sh" nosuchrev HEAD 2>/dev/null; then
   echo "FAIL unknown revision accepted"
   fail=1

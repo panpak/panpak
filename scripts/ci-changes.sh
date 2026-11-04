@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # Classify the files changed in <base>...<head> for the CI workflow.
-# A file is documentation if it ends in .md or lives under docs/.
+# A file is documentation if it ends in .md or lives under docs/ (this includes
+# docs/bench-data/, the measured data and charts). Everything else is code for
+# this purpose, fail closed: the Rust crates, bench/, tests/, fuzz/, scripts/,
+# conformance/, tools/, the workflows (so that a change to the CI runs the jobs
+# it changes) and any folder added later.
 # Prints two lines for $GITHUB_OUTPUT:
 #   heavy=true|false   some changed file is not documentation (fuzz and distro run)
 #   repro=true|false   heavy, or REPRODUCIBLE-HASHES.md changed (repro runs)
@@ -36,6 +40,8 @@ while IFS= read -r f; do
   case "$f" in
     REPRODUCIBLE-HASHES.md) hashes=true ;;
     *.md | docs/*) ;;
+    # Listed only to say that they count: the default below gives the same answer.
+    bench/* | tests/* | fuzz/* | scripts/* | conformance/* | tools/* | .github/*) heavy=true ;;
     *) heavy=true ;;
   esac
 done <<<"$files"
