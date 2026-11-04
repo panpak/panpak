@@ -140,7 +140,7 @@ fn installed_desktop_entry_does_not_claim_the_package_type() {
     assert!(pack(&env, Some("a.panpak")).status.success());
     let i = cli(&env, &["install", "--yes", "a.panpak"]);
     assert!(i.status.success(), "{}", text(&i));
-    let entry = fs::read_to_string(env.dir.join("data/applications/org.example.ext.desktop")).unwrap();
+    let entry = fs::read_to_string(env.dir.join("data/applications/panpak.org.example.ext.desktop")).unwrap();
     assert!(entry.contains("Name=Ext"), "{entry}");
     assert!(!entry.contains("MimeType"), "{entry}");
 }

@@ -757,13 +757,13 @@ def main():
         p = lab.install('[desktop]\nschemes = ["panpaktest", "panpak-two"]\n')
         assert p.returncode == 0, p.stdout + p.stderr
         assert 'URL scheme panpaktest' in p.stdout and 'URL scheme panpak-two' in p.stdout, p.stdout
-        entry = (h / f'.local/share/applications/{app_dirs.ID}.desktop').read_text()
+        entry = (h / f'.local/share/applications/panpak.{app_dirs.ID}.desktop').read_text()
         assert 'MimeType=x-scheme-handler/panpaktest;x-scheme-handler/panpak-two;\n' in entry, entry
         exec_line = next(l for l in entry.splitlines() if l.startswith('Exec='))
         assert exec_line.endswith(' %U') and str(h / '.local/bin' / app_dirs.ID) in exec_line, exec_line
         if shutil.which('update-desktop-database') and shutil.which('xdg-mime'):
             q = subprocess.run(['xdg-mime', 'query', 'default', 'x-scheme-handler/panpaktest'], env=lab.env, capture_output=True, text=True)
-            assert q.stdout.strip() == f'{app_dirs.ID}.desktop', (q.stdout, q.stderr)
+            assert q.stdout.strip() == f'panpak.{app_dirs.ID}.desktop', (q.stdout, q.stderr)
         _, rep = run_report(lab, ['panpaktest://open/1?x=y'], mask=False)
         check(rep, args='panpaktest://open/1?x=y')
         try:
@@ -772,7 +772,7 @@ def main():
         except AssertionError as e:
             assert 'PANPAK-E0007' in str(e) and 'reserved scheme' in str(e), e
         lab.install('')
-        assert 'MimeType' not in (h / f'.local/share/applications/{app_dirs.ID}.desktop').read_text()
+        assert 'MimeType' not in (h / f'.local/share/applications/panpak.{app_dirs.ID}.desktop').read_text()
         print('URL schemes: declared in the entry, known to the desktop, the address reaches the launcher: ok')
 
         # 6f. A browser started through the opener belongs to nobody: it is in a session of its own, has no

@@ -26,7 +26,7 @@ fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [-o <out.panpak>]\n  panpak install-runtime <stub>
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
-  panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
+  panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
 fn agent_for(url: &str, allow_insecure: bool, timeout_secs: u64) -> Result<ureq::Agent> {
@@ -314,12 +314,13 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     let (xdg_found, xdg_problems) = resolve_xdg_dirs(&man);
     print_xdg_dirs(&xdg_found, &xdg_problems);
     write_xdg_pin(&appdir, &xdg_found)?;
-    let desktop = dirs::data_dir().context("no data dir")?.join("applications").join(format!("{app_id}.desktop"));
+    let desktop = desktop_path(app_id)?;
     let schemes = manifest_schemes(&man);
-    if desktop.exists() || !schemes.is_empty() {
+    if desktop.exists() || legacy_desktop_path(app_id)?.exists() || !schemes.is_empty() {
         fs::create_dir_all(desktop.parent().unwrap())?;
-        write_replacing(&desktop, &desktop_file(app_id, &man.app.name, &launcher, &schemes)?, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
-        if !schemes.is_empty() {
+        write_replacing(&desktop, &desktop_file(app_id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man))?, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
+        let moved = remove_legacy_desktop(app_id, &launcher)?;
+        if !schemes.is_empty() || moved {
             refresh_desktop_database(desktop.parent().unwrap());
         }
     }
@@ -1346,7 +1347,7 @@ fn desktop_exec_arg(p: &str) -> Result<String> {
 /// The entry declares no MimeType: the manifest has no field for MIME types, and
 /// `application/x-panpak` is the type of the packages themselves, not of the
 /// files an app opens.
-fn desktop_file(app_id: &str, name: &str, launcher: &Path, schemes: &[String]) -> Result<String> {
+fn desktop_file(app_id: &str, name: &str, launcher: &Path, schemes: &[String], wm_class: Option<&str>) -> Result<String> {
     // The URL schemes the manifest declares; every name is checked again here, whatever the caller did.
     let mut mime = String::new();
     for sc in schemes {
@@ -1354,12 +1355,52 @@ fn desktop_file(app_id: &str, name: &str, launcher: &Path, schemes: &[String]) -
         mime += &format!("x-scheme-handler/{sc};");
     }
     let mime = if mime.is_empty() { String::new() } else { format!("MimeType={mime}\n") };
+    // The window class the app sets, so that the desktop groups its windows under this entry.
+    let class = match wm_class {
+        Some(w) => {
+            ensure!(!w.is_empty() && w.len() <= 100 && w.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-')), "wm_class {w:?} is not a plain window class");
+            format!("StartupWMClass={w}\n")
+        }
+        None => String::new(),
+    };
     Ok(format!(
-        "[Desktop Entry]\nType=Application\nName={}\nExec={} %U\nTerminal=false\nCategories=Utility;\n{mime}{DESKTOP_MARKER}{}\n",
+        "[Desktop Entry]\nType=Application\nName={}\nExec={} %U\nTerminal=false\nCategories=Utility;\n{mime}{class}{DESKTOP_MARKER}{}\n",
         desktop_string(name)?,
         desktop_exec_arg(path_text(launcher)?)?,
         desktop_string(app_id)?
     ))
+}
+
+/// The `.desktop` file of an app: `panpak.<id>.desktop`. The portals know the app as `panpak.<id>` (the
+/// name of its systemd scope), and look for the file of that name; the prefix also keeps the entry
+/// apart from the Flatpak or distribution entry of an app with the same upstream id.
+fn desktop_path(app_id: &str) -> Result<PathBuf> {
+    Ok(dirs::data_dir().context("no data dir")?.join("applications").join(format!("panpak.{app_id}.desktop")))
+}
+
+/// The name this entry had before the prefix: `<id>.desktop`.
+fn legacy_desktop_path(app_id: &str) -> Result<PathBuf> {
+    Ok(dirs::data_dir().context("no data dir")?.join("applications").join(format!("{app_id}.desktop")))
+}
+
+/// Remove the entry of the old name if panpak wrote it. One that is not ours stays. Returns whether one was removed.
+fn remove_legacy_desktop(app_id: &str, launcher: &Path) -> Result<bool> {
+    let old = legacy_desktop_path(app_id)?;
+    match fs::symlink_metadata(&old) {
+        Ok(m) if m.file_type().is_file() && m.len() <= 1 << 20 => {
+            let ours = fs::read(&old).ok().and_then(|b| String::from_utf8(b).ok()).is_some_and(|s| desktop_is_ours(&s, app_id, launcher));
+            if ours {
+                fs::remove_file(&old).with_context(|| format!("remove {}", old.display()))?;
+            }
+            Ok(ours)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// The window class of the manifest.
+fn manifest_wm_class(man: &panpak_core::Manifest) -> Option<&str> {
+    man.desktop.as_ref().and_then(|d| d.wm_class.as_deref())
 }
 
 /// The URL schemes the manifest declares.
@@ -1674,7 +1715,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     panpak_core::verify_stub_range(&mut f, stub_len, &man)?;
     // Check the launcher and desktop entry destinations before touching the store.
     let launcher = dirs::home_dir().context("no home dir")?.join(".local/bin").join(&man.app.id);
-    let desktop = dirs::data_dir().context("no data dir")?.join("applications").join(format!("{}.desktop", man.app.id));
+    let desktop = desktop_path(&man.app.id)?;
     check_replaceable(&launcher, "launcher", &|s| launcher_is_ours(s, &man.app.id))?;
     check_replaceable(&desktop, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
     let key = &man.update.as_ref().context("manifest without [update].key")?.key;
@@ -1758,8 +1799,13 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     write_replacing(&launcher, &launcher_sh(&man.app.id, &runtime, &current)?, 0o755, "launcher", &|s| launcher_is_ours(s, &man.app.id))?;
     fs::create_dir_all(desktop.parent().unwrap())?;
     let schemes = manifest_schemes(&man);
-    write_replacing(&desktop, &desktop_file(&man.app.id, &man.app.name, &launcher, &schemes)?, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
-    if !schemes.is_empty() {
+    write_replacing(&desktop, &desktop_file(&man.app.id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man))?, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
+    // An entry written under the old name by an earlier version is replaced by this one.
+    let moved = remove_legacy_desktop(&man.app.id, &launcher)?;
+    if moved {
+        println!("note: the desktop entry is now panpak.{}.desktop; the old {}.desktop was removed", man.app.id, man.app.id);
+    }
+    if !schemes.is_empty() || moved {
         refresh_desktop_database(desktop.parent().unwrap());
     }
 
@@ -1804,6 +1850,24 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
     }
     if let Some(w) = iso.level.warning() {
         println!("     {w}");
+    }
+    // The filtered session bus (portals, notifications): needs the view, a systemd user manager and xdg-dbus-proxy.
+    {
+        use panpak_core::dbus::ProxyStatus::*;
+        match panpak_core::dbus::proxy_status() {
+            Usable { path, version } if view.usable() => {
+                let user_bus = std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|rt| Path::new(&rt).join("bus").exists());
+                if user_bus {
+                    println!("OK   D-Bus filter: xdg-dbus-proxy {}.{}.{} at {}; apps get portals (settings, inhibit) and the notifications and tray they ask for", version.0, version.1, version.2, path.display());
+                } else {
+                    println!("NOTE D-Bus filter: no user bus ($XDG_RUNTIME_DIR/bus), so no systemd user manager to make the scope; apps get no session bus");
+                }
+            }
+            Usable { .. } => println!("NOTE D-Bus filter: xdg-dbus-proxy is there but the isolated view is not available; apps get no filtered session bus"),
+            NotFound => println!("NOTE D-Bus filter: xdg-dbus-proxy not found ({}); apps get no session bus (no portals, notifications or tray)", panpak_core::dbus::PROXY_PATHS.join(", ")),
+            TooOld { path, version } => println!("NOTE D-Bus filter: {} is {}.{}.{}, {}.{}.{} or newer is needed; apps get no session bus", path.display(), version.0, version.1, version.2, panpak_core::dbus::MIN_PROXY.0, panpak_core::dbus::MIN_PROXY.1, panpak_core::dbus::MIN_PROXY.2),
+            Broken { path, why } => println!("NOTE D-Bus filter: {} does not work ({why}); apps get no session bus", path.display()),
+        }
     }
     // User namespaces (needed by containers/tooling, not the stub).
     match fs::read_to_string("/proc/sys/user/max_user_namespaces") {
@@ -2009,7 +2073,7 @@ fn host_glibc() -> Option<(String, String)> {
 /// Generic code for errors that carry no specific one, by subcommand.
 fn generic_code(sub: Option<&str>) -> ErrorCode {
     match sub {
-        Some("pack" | "convert" | "dump-index" | "dump-manifest") => ErrorCode::E0000,
+        Some("pack" | "convert" | "dump-index" | "dump-manifest" | "dbus-rules") => ErrorCode::E0000,
         Some("keygen" | "release" | "install-runtime") => ErrorCode::E1000,
         Some("install" | "rollback" | "open" | "doctor" | "desktop-integration" | "data") => ErrorCode::E2000,
         Some("update") => ErrorCode::E4000,
@@ -2272,6 +2336,17 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                 }
             }
             cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, yes, accept_new, allow, insecure, timeout)?;
+            Ok(())
+        }
+        Some("dbus-rules") => {
+            // The arguments the stub gives xdg-dbus-proxy for this package, one per line. For tests and review.
+            let pkg = args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "dbus-rules <package>"))?;
+            let mut f = File::open(pkg)?;
+            let ft = panpak_core::read_footer(&mut f)?;
+            let (man, _) = panpak_core::verify(&mut f, &ft)?;
+            for a in panpak_core::dbus::proxy_args(&panpak_core::dbus::BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref(), tray_names: &[] }) {
+                println!("{a}");
+            }
             Ok(())
         }
         Some("dump-index") | Some("dump-manifest") => {
@@ -2608,7 +2683,7 @@ mod tests {
         assert!(sh.contains("apps/org.x/current"));
         assert!(sh.contains("\n# X-Panpak-App-Id: org.x\n"));
         assert!(sh.ends_with("\"$@\"\n"));
-        let d = desktop_file("org.x", "X App", Path::new("/home/u/.local/bin/org.x"), &[]).unwrap();
+        let d = desktop_file("org.x", "X App", Path::new("/home/u/.local/bin/org.x"), &[], None).unwrap();
         assert!(d.contains("Name=X App\n"));
         assert!(d.contains("Exec=\"/home/u/.local/bin/org.x\" %U\n"));
         assert!(d.contains("\nX-Panpak-App-Id=org.x\n"));
@@ -2624,16 +2699,16 @@ mod tests {
     #[test]
     fn desktop_entry_values_cannot_start_a_line() {
         let l = Path::new("/home/u/.local/bin/org.x");
-        let d = desktop_file("org.x", "Evil\nExec=/bin/sh\r\nTerminal=true", l, &[]).unwrap();
+        let d = desktop_file("org.x", "Evil\nExec=/bin/sh\r\nTerminal=true", l, &[], None).unwrap();
         assert_eq!(d.lines().count(), 7, "{d}");
         assert_eq!(d.lines().filter(|l| l.starts_with("Exec=")).count(), 1, "{d}");
         assert!(d.contains("Name=Evil\\nExec=/bin/sh\\r\\nTerminal=true\n"), "{d}");
         // Backslash is escaped, other controls are refused.
-        assert!(desktop_file("org.x", "A\\B", l, &[]).unwrap().contains("Name=A\\\\B\n"));
+        assert!(desktop_file("org.x", "A\\B", l, &[], None).unwrap().contains("Name=A\\\\B\n"));
         for bad in ["a\u{1}b", "a\u{7f}b", "a\u{9b}b"] {
-            assert!(desktop_file("org.x", bad, l, &[]).is_err(), "{bad:?}");
+            assert!(desktop_file("org.x", bad, l, &[], None).is_err(), "{bad:?}");
         }
-        assert!(desktop_file("org.x", "N", Path::new("/home/u\n/x"), &[]).is_err());
+        assert!(desktop_file("org.x", "N", Path::new("/home/u\n/x"), &[], None).is_err());
     }
 
     #[test]
@@ -2665,7 +2740,7 @@ mod tests {
         assert!(!launcher_is_ours("#!/bin/sh\necho mine\n", "org.x"));
         // Written before the marker existed.
         assert!(launcher_is_ours("#!/bin/sh\n# Generated by `panpak install`: do not edit.\n# Points to apps/<id>/current; x\n", "org.x"));
-        let d = desktop_file("org.x", "X", l, &[]).unwrap();
+        let d = desktop_file("org.x", "X", l, &[], None).unwrap();
         assert!(desktop_is_ours(&d, "org.x", l));
         assert!(!desktop_is_ours(&d, "org.y", l));
         assert!(!desktop_is_ours("[Desktop Entry]\nType=Application\nName=Mine\nExec=/bin/mine\n", "org.x", l));

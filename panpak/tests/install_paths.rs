@@ -60,6 +60,11 @@ struct Env {
 }
 
 fn setup(name: &str) -> Env {
+    setup_with(name, "")
+}
+
+/// As `setup`, with extra manifest text (sections other than [app] and [update]) in the package.
+fn setup_with(name: &str, extra: &str) -> Env {
     let home = work(name);
     let key = home.join("secret.key");
     let o = cli(&home, &["keygen", "-o", key.to_str().unwrap()]);
@@ -71,7 +76,7 @@ fn setup(name: &str) -> Env {
     fs::set_permissions(tree.join("bin/hello"), fs::Permissions::from_mode(0o755)).unwrap();
     fs::write(
         tree.join("panpak.toml"),
-        format!("[app]\nid = \"{ID}\"\nname = \"Paths\"\nversion = \"1\"\nentry = \"bin/hello\"\n[update]\nkey = \"{pubkey}\"\n"),
+        format!("[app]\nid = \"{ID}\"\nname = \"Paths\"\nversion = \"1\"\nentry = \"bin/hello\"\n{extra}[update]\nkey = \"{pubkey}\"\n"),
     )
     .unwrap();
     let stub = home.join("stub");
@@ -90,7 +95,7 @@ impl Env {
         self.home.join(".local/bin").join(ID)
     }
     fn desktop(&self) -> PathBuf {
-        self.home.join(".local/share/applications").join(format!("{ID}.desktop"))
+        self.home.join(".local/share/applications").join(format!("panpak.{ID}.desktop"))
     }
     fn install(&self) -> Output {
         cli(&self.home, &["install", "--yes", self.pkg.to_str().unwrap()])
@@ -232,4 +237,36 @@ fn foreign_files_are_not_overwritten() {
     let o = env.install();
     assert!(!o.status.success() && text(&o).contains("PANPAK-E2001"), "{}", text(&o));
     assert_eq!(fs::read_to_string(env.launcher()).unwrap(), other);
+}
+
+#[test]
+fn an_entry_under_the_old_name_is_replaced_but_a_foreign_one_stays() {
+    let env = setup("legacy-desktop");
+    assert!(env.install().status.success());
+    let old = env.home.join(".local/share/applications").join(format!("{ID}.desktop"));
+    // What an earlier version wrote under the old name.
+    let ours = fs::read_to_string(env.desktop()).unwrap();
+    fs::write(&old, &ours).unwrap();
+    let o = env.install();
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!old.exists(), "the old entry is still there");
+    assert!(env.desktop().exists());
+    assert!(text(&o).contains(&format!("panpak.{ID}.desktop")), "{}", text(&o));
+    // An entry of that name that panpak did not write (the distribution's or a Flatpak's) is left alone.
+    let theirs = "[Desktop Entry]\nType=Application\nName=Theirs\nExec=/usr/bin/theirs\n";
+    fs::write(&old, theirs).unwrap();
+    let o = env.install();
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(fs::read_to_string(&old).unwrap(), theirs);
+}
+
+#[test]
+fn the_window_class_of_the_manifest_goes_into_the_entry() {
+    let env = setup_with("wm-class", "[desktop]\nwm_class = \"Audacity\"\n");
+    assert!(env.install().status.success());
+    let d = fs::read_to_string(env.desktop()).unwrap();
+    assert!(d.contains("StartupWMClass=Audacity\n"), "{d}");
+    let env = setup("no-wm-class");
+    assert!(env.install().status.success());
+    assert!(!fs::read_to_string(env.desktop()).unwrap().contains("StartupWMClass"));
 }
