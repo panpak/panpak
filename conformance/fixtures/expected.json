@@ -26,6 +26,89 @@
   ],
   "ok": false
  },
+ "invalid-dbus-own-a11y.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
+ "invalid-dbus-own-dconf.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
+ "invalid-dbus-own-freedesktop.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
+ "invalid-dbus-own-gnome-shell.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
+ "invalid-dbus-own-kde-other.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
+ "invalid-dbus-own-kde-service.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
+ "invalid-dbus-own-many.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
+ "invalid-dbus-own-portal.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
+ "invalid-dbus-own-short.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
+ "invalid-dbus-own-twice.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
+ "invalid-dbus-own-type.panpak": {
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
+ "invalid-dbus-own-wildcard.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "dbus_own"
+  ],
+  "ok": false
+ },
  "invalid-dotdot.panpak": {
   "err": [
    "unsafe"
@@ -223,6 +306,12 @@
   ],
   "ok": false
  },
+ "invalid-notifications-type.panpak": {
+  "err": [
+   "notifications"
+  ],
+  "ok": false
+ },
  "invalid-root.panpak": {
   "err": [
    "root hash"
@@ -325,6 +414,27 @@
   ],
   "ok": false
  },
+ "invalid-wm-class-empty.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "wm_class"
+  ],
+  "ok": false
+ },
+ "invalid-wm-class-long.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "wm_class"
+  ],
+  "ok": false
+ },
+ "invalid-wm-class-space.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "wm_class"
+  ],
+  "ok": false
+ },
  "invalid-xdg-access.panpak": {
   "code": "PANPAK-E0007",
   "err": [
@@ -351,6 +461,10 @@
    "magic"
   ],
   "ok": false
+ },
+ "valid-bus-fields.panpak": {
+  "err": [],
+  "ok": true
  },
  "valid-empty-tree.panpak": {
   "err": [],

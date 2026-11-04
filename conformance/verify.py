@@ -277,6 +277,47 @@ def check_desktop(man):
             raise Fail(f"invalid manifest field desktop.schemes: {str(sc)[:60]!r}")
 
 
+# Names an app never owns on the session bus (PANPAK-FORMAT.md section 3.1.5). The same list as
+# panpak-core/src/dbus/rules.rs; the fixtures make the two agree.
+NEVER_OWN = (
+    "org.freedesktop", "org.gtk", "org.gnome.Shell", "org.gnome.SessionManager", "org.gnome.Mutter", "org.gnome.SettingsDaemon",
+    "org.gnome.keyring", "org.gnome.evolution", "org.gnome.OnlineAccounts", "org.gnome.ScreenSaver", "org.a11y", "ca.desrt.dconf",
+    "com.canonical", "com.ubuntu", "org.ayatana", "org.ibus", "org.fcitx", "org.mpris", "org.xfce", "org.mate", "org.cinnamon",
+    "org.pantheon", "org.lxqt", "org.bluez", "net.hadess", "org.pulseaudio", "org.PulseAudio1", "org.pipewire", "fi.w1",
+    "com.system76", "com.redhat", "org.fedoraproject", "org.opensuse", "org.cups",
+)
+BUS_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+")
+
+
+def own_name_ok(name, app):
+    if not (isinstance(name, str) and len(name) <= 255 and BUS_NAME.fullmatch(name) and name.count(".") >= 2):
+        return False
+    if any(name == f or name.startswith(f + ".") for f in NEVER_OWN):
+        return False
+    if name.startswith("org.kde."):
+        rest = name[len("org.kde."):]
+        norm = lambda w: "".join(c.lower() for c in w if c.isascii() and c.isalnum())
+        mine = [app["id"].rsplit(".", 1)[-1], app["name"], app["entry"].rsplit("/", 1)[-1]]
+        return re.fullmatch(r"[a-z0-9]+", rest) is not None and any(w and norm(w) == rest for w in mine)
+    return True
+
+
+def check_bus(man):
+    perms = man.get("permissions", {})
+    for k in ("notifications", "tray"):
+        if k in perms and not isinstance(perms[k], bool):
+            raise Fail(f"invalid manifest field permissions.{k}")
+    own = perms.get("dbus_own", [])
+    if not isinstance(own, list) or len(own) > 8:
+        raise Fail("invalid manifest field permissions.dbus_own")
+    for i, n in enumerate(own):
+        if not own_name_ok(n, man["app"]) or n in own[:i]:
+            raise Fail(f"invalid manifest field permissions.dbus_own: {str(n)[:60]!r}")
+    w = man.get("desktop", {}).get("wm_class")
+    if w is not None and not (isinstance(w, str) and re.fullmatch(r"[A-Za-z0-9._+-]{1,100}", w)):
+        raise Fail("invalid manifest field desktop.wm_class")
+
+
 def check_fields(man):
     """Field rules of PANPAK-FORMAT.md section 3.1.1 (applied even to signed manifests)."""
     app = man["app"]
@@ -305,6 +346,7 @@ def check_fields(man):
     check_home_paths(man)
     check_xdg_dirs(man)
     check_desktop(man)
+    check_bus(man)
     check_launch(man)
     if "origin" in man:
         o = man["origin"]

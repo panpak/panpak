@@ -285,6 +285,34 @@ def main():
         ("scheme-many", '[desktop]\nschemes = [' + ", ".join(f'"a{i}"' for i in range(9)) + ']\n', "desktop.schemes"),
     ]:
         bad_manifest(f"invalid-{fname}.panpak", manifest(extra=extra), field, code="PANPAK-E0007")
+    # notifications, tray, extra bus names and the window class (PANPAK-FORMAT.md section 3.1.5)
+    put("valid-bus-fields.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=(
+        '[permissions]\nnotifications = true\ntray = true\ndbus_own = ["org.example.app.Second", "org.kde.conf"]\n'
+        '[desktop]\nwm_class = "Example-App"\n')),
+        blobs=std_index()[2]), True)
+    for fname, extra, field in [
+        ("dbus-own-freedesktop", '[permissions]\ndbus_own = ["org.freedesktop.Notifications"]\n', "dbus_own"),
+        ("dbus-own-portal", '[permissions]\ndbus_own = ["org.freedesktop.portal.Desktop"]\n', "dbus_own"),
+        ("dbus-own-gnome-shell", '[permissions]\ndbus_own = ["org.gnome.Shell.Screenshot"]\n', "dbus_own"),
+        ("dbus-own-dconf", '[permissions]\ndbus_own = ["ca.desrt.dconf"]\n', "dbus_own"),
+        ("dbus-own-a11y", '[permissions]\ndbus_own = ["org.a11y.Bus"]\n', "dbus_own"),
+        ("dbus-own-kde-service", '[permissions]\ndbus_own = ["org.kde.StatusNotifierWatcher"]\n', "dbus_own"),
+        ("dbus-own-kde-other", '[permissions]\ndbus_own = ["org.kde.plasmashell"]\n', "dbus_own"),
+        ("dbus-own-wildcard", '[permissions]\ndbus_own = ["org.example.app.*"]\n', "dbus_own"),
+        ("dbus-own-short", '[permissions]\ndbus_own = ["org.example"]\n', "dbus_own"),
+        ("dbus-own-twice", '[permissions]\ndbus_own = ["org.example.a.B", "org.example.a.B"]\n', "dbus_own"),
+        ("dbus-own-many", '[permissions]\ndbus_own = [' + ", ".join(f'"org.example.a.n{i}"' for i in range(9)) + ']\n', "dbus_own"),
+        ("wm-class-space", '[desktop]\nwm_class = "My App"\n', "wm_class"),
+        ("wm-class-empty", '[desktop]\nwm_class = ""\n', "wm_class"),
+        ("wm-class-long", '[desktop]\nwm_class = "' + "a" * 101 + '"\n', "wm_class"),
+    ]:
+        bad_manifest(f"invalid-{fname}.panpak", manifest(extra=extra), field, code="PANPAK-E0007")
+    # A value of the wrong type is a TOML type error in Rust (no field code), and an invalid field in the verifier.
+    for fname, extra, field in [
+        ("dbus-own-type", '[permissions]\ndbus_own = "org.example.app.X"\n', "dbus_own"),
+        ("notifications-type", '[permissions]\nnotifications = "yes"\n', "notifications"),
+    ]:
+        put(f"invalid-{fname}.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=extra), blobs=std_index()[2]), False, [field])
     # index path with a control character
     _d = b"xy"
     _c = zstd_enc(_d)
