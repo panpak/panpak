@@ -17,7 +17,3 @@ regexes = [
   # A list of library names in the ABI code ("libglapi.so.0", "libxcb-dri2.so.0", ...) matches the generic key rule.
   '''libxcb-dri2\.so\.0''',
 ]
-regexes = [
-  # A list of library names in the ABI code ("libglapi.so.0", "libxcb-dri2.so.0", ...) matches the generic key rule.
-  '''libxcb-dri2\.so\.0''',
-]
