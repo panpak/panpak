@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **A filtered session bus for apps in the isolated view.** With `xdg-dbus-proxy` (0.1.5 or newer), a systemd user
+  manager and the view, an app gets a session bus that reaches only: the appearance and inhibit portals, its
+  own `app.id` (single instance across copies), and, if the manifest asks, notifications, a tray icon and up to 8
+  declared names (`[permissions] notifications`, `tray`, `dbus_own`). Every other interface and name is refused.
+  The outer stub moves itself into a systemd scope `app-panpak.<id>-<n>.scope` so that the portal knows the app as
+  `panpak.<id>`, and the folder `doc/by-app/panpak.<id>` of the document portal is in the view. Without the parts the
+  app has no bus, as before; `panpak doctor` reports it. See PANPAK-FORMAT.md §3.1.5 and §9.5, THREAT-MODEL.md §3 and KL-5, KL-23 to KL-27.
+- **The desktop entry is `panpak.<id>.desktop`** (it was `<id>.desktop`) and carries `StartupWMClass` when the manifest has
+  `[desktop] wm_class`. `install` and `update` remove the entry of the old name when panpak wrote it. After an update,
+  the launcher of an app is found under the new name in menus and the dock.
+- New command `panpak dbus-rules <package>` prints the arguments the stub gives the proxy.
+- A small D-Bus client for the outer stub in `panpak-core` (no new dependencies), with the fuzz targets `fuzz_dbus` and `fuzz_dbus_names`.
 - **No network means no network in the isolated view.** An app whose manifest asks for no network (`network` not
   true, no TCP port) runs in a network namespace of its own with only the loopback interface, so it can no longer
   send UDP datagrams or look names up; before, Landlock stopped TCP only and UDP went out. The resolver socket

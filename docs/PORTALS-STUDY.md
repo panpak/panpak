@@ -1,6 +1,6 @@
 # Portals and D-Bus: study and decision
 
-Status: study, no code. Branch `portal-study`. Measured on Ubuntu 26.04.1 (GNOME,
+Status: study. Section 9 was updated when step 5a was implemented (the scope form changed, and the checks are marked). The rest is as written then. Branch `portal-study`. Measured on Ubuntu 26.04.1 (GNOME,
 xdg-desktop-portal 1.21.1, xdg-desktop-portal-gtk 1.15.3, xdg-dbus-proxy 0.1.7,
 bubblewrap 0.11.1, systemd 259, kernel 7.0, Landlock ABI 8).
 
@@ -453,7 +453,7 @@ prefixed id, `panpak.<id>`, where `<id>` is the app id of the manifest:
 
 | Where | Name |
 |---|---|
-| Scope | `app-panpak-panpak.<id>-<n>.scope` (portal id is `panpak.<id>`) |
+| Scope | `app-panpak.<id>-<n>.scope`, no launcher part (portal id is `panpak.<id>`); `-` of the id is written `\x2d` |
 | Desktop file | `panpak.<id>.desktop` |
 | Documents folder | `$XDG_RUNTIME_DIR/doc/by-app/panpak.<id>` |
 | D-Bus name owned by the app (single instance) | whatever the app asks, limited by the proxy rules; not the prefixed id |
@@ -461,8 +461,12 @@ prefixed id, `panpak.<id>`, where `<id>` is the app id of the manifest:
 The prefixed id is a valid D-Bus name (at least two elements, each element made of letters,
 digits, `_` and `-`, none starting with a digit; the app id rules of PANPAK-FORMAT.md §3.1.1
 already give that) and the portal accepts it (`^app-(?:[[:alnum:]]+\-)?(.+?)(?:\-[[:alnum:]]*)(?:\.scope|\.slice)$`,
-`xdp-app-info-host.c:130`). The final form is open until step 5 checks that nothing in the
-portals, GNOME or the proxy rules objects to a first element without a top-level domain.
+`xdp-app-info-host.c:130`). The first form of this section, `app-panpak-panpak.<id>-<n>.scope`, repeated the
+name as a launcher; the regex makes the launcher part optional, and the first group cannot take `panpak.`
+because of the dot, so `app-panpak.<id>-<n>.scope` reads back as `panpak.<id>` (checked for ids with `-`, `_`, digits
+and `-N` endings, written both with `-` and with `\x2d`; `panpak-core` has the same parse in a test, and the real portal
+reported `panpak.org.example.dirs` in `tests/dbus_filter.py`). A first element without a top-level domain was not a
+problem for the portal. Implemented in step 5a: PANPAK-FORMAT.md §9.5.
 
 **Reasons.**
 
@@ -482,19 +486,16 @@ portals, GNOME or the proxy rules objects to a first element without a top-level
 `StartupWMClass=<what the app sets>`. Where that value comes from (the manifest, or measured by
 `convert`) is open.
 
-**To verify in step 5 (nothing is implemented now).**
+**Checks listed for step 5, and what was found in step 5a.**
 
-- GNOME on Wayland and on X11: a window of an app started from the prefixed desktop file is
-  grouped under it (one icon in the dash, the right name and icon in the overview, the alt-tab
-  list and the window title bar), with `StartupWMClass` set and, as a control, unset.
-- The same for apps whose `app_id` or `WM_CLASS` differs from their `.desktop` name (many
-  Electron and Qt apps), and for apps that set no class at all.
-- That the portal gives the prefixed id to the app (as in §5) when the stub makes its own scope,
-  and an empty id when it does not.
-- That documents, permissions and the permission store entries are separate between a Flatpak and a
-  package with the same upstream id.
-- That the name `app-panpak-panpak.<id>-<n>.scope` (or the form we settle on) is parsed back to
-  the right id, including ids with `-` and `_` (unit-name escaping).
-- That a desktop that is not GNOME (KDE) also groups the windows; not tested in the study.
-- Effects on `panpak install` / `update` / `remove`: a desktop file of the new name, and the
-  removal of the old one for packages installed before.
+- GNOME on Wayland and on X11, window grouping with `StartupWMClass` set and unset, apps whose
+  `app_id` or `WM_CLASS` differs from their `.desktop` name: **not tested by the tool; to be looked at by eye**
+  (the desktop entry has `StartupWMClass` when the manifest has `desktop.wm_class`).
+- The portal gives the prefixed id to the app when the stub makes its own scope: **tested** with the real portal
+  on a private bus. The empty id without a scope: shown in this study (§1), not repeated, because the stub always makes the scope.
+- Documents, permissions and permission store entries separate between a Flatpak and a package with the same upstream id: **by
+  construction** (the ids differ); not run against a Flatpak.
+- The scope name read back to the right id, including `-` and `_`: **tested** (Rust test and the Python check above).
+- KDE grouping: not tested.
+- `panpak install` and `update`: **done**, the entry of the new name is written and the old one is removed when panpak wrote it.
+  There is no `panpak remove` command in this version.

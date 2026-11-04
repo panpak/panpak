@@ -144,6 +144,9 @@ network_allow_tcp = [80, 443]  # outbound ports (connect); only with network=tru
 network_bind_tcp = []          # listen ports (bind); only with network=true
 sockets_allow = ["$XDG_RUNTIME_DIR/bus"]  # path Unix sockets (requires ABI V9);
                                # leading $XDG_RUNTIME_DIR and $HOME expanded
+notifications = false           # opt-in, §3.1.5: desktop notifications
+tray = false                   # opt-in, §3.1.5: a tray icon
+dbus_own = []                  # §3.1.5: extra names the app may own on the session bus (at most 8)
 
 [[permissions.home_paths]]     # last resort, §3.1.2: a fixed path in the home folder
 path = ".config/editor"        # relative to the home, no ".."
@@ -155,6 +158,7 @@ access = "ro"                  # "ro" or "rw"
 
 [desktop]                      # §3.1.4
 schemes = ["myapp"]            # URL schemes the app opens (x-scheme-handler/<scheme>)
+wm_class = "Editor"            # §3.1.5: the window class the app sets (StartupWMClass)
 
 [launch]                       # §3.1.2
 args = ["--profile", "${XDG_CONFIG_HOME}/editor"]   # put before the user's arguments
@@ -333,6 +337,46 @@ lowercase letter and has only lowercase letters, digits, `+`, `.` and `-`. These
 desktop entry as `MimeType=x-scheme-handler/<scheme>;` with `Exec=` the launcher and `%U` (the
 address arrives as an argument of the launcher). It then runs `update-desktop-database` on the
 folder of the entry, when the tool exists at `/usr/bin` or `/bin`; a failure is only a note.
+
+### 3.1.5 Bus permissions and the window class [NORMATIVE]
+
+These fields are used only when the filtered session bus (§9.5) is active.
+
+**`permissions.notifications`** (boolean). Lets the app show desktop notifications: the notification
+portal (`org.freedesktop.portal.Notification`) and the methods `Notify`, `CloseNotification`,
+`GetCapabilities` and `GetServerInformation` of `org.freedesktop.Notifications`. The signals of that
+older service (`ActionInvoked`, `NotificationClosed`) are broadcasts that every client on the bus
+can see; the runtime MUST NOT forward them (measured on GNOME Shell: `NotificationClosed` is sent with no destination). Actions
+are delivered only by the portal.
+
+**`permissions.tray`** (boolean). Lets the app put an icon in the notification area: it may talk to
+`org.kde.StatusNotifierWatcher` and own the item names `org.freedesktop.StatusNotifierItem-2-N` and
+`org.kde.StatusNotifierItem-2-N` for N from 1 to 3. 2 is the process id of the app in the view (§9.2).
+The runtime MUST NOT own or let the app own any other name for this permission, and MUST NOT use a wildcard.
+
+**`permissions.dbus_own`** (list of strings, at most 8, each at most once). Names the app may own
+on the session bus besides its own `app.id`. Each is a D-Bus well-known name of at least three
+elements (`[A-Za-z_][A-Za-z0-9_]*` separated by `.`, at most 255 bytes), with no `*`. A name is refused
+by `pack`, `install`, `update` and the verifier when it is, or is below, one of these: `org.freedesktop`,
+`org.gtk`, `org.gnome.Shell`, `org.gnome.SessionManager`, `org.gnome.Mutter`, `org.gnome.SettingsDaemon`,
+`org.gnome.keyring`, `org.gnome.evolution`, `org.gnome.OnlineAccounts`, `org.gnome.ScreenSaver`, `org.a11y`,
+`ca.desrt.dconf`, `com.canonical`, `com.ubuntu`, `org.ayatana`, `org.ibus`, `org.fcitx`, `org.mpris`,
+`org.xfce`, `org.mate`, `org.cinnamon`, `org.pantheon`, `org.lxqt`, `org.bluez`, `net.hadess`, `org.pulseaudio`,
+`org.PulseAudio1`, `org.pipewire`, `fi.w1`, `com.system76`, `com.redhat`, `org.fedoraproject`, `org.opensuse`,
+`org.cups`. Names that start with `org.kde.` are accepted only as `org.kde.<word>` with `<word>` in lower
+case letters and digits that equals the last element of `app.id`, `app.name` or the file name of `app.entry`, with
+letters and digits only and lower case (KDE applications register that name for single instance). The same list applies to the
+app's own id: an id below a listed family is not owned on the bus. `install` and `update` MUST show each name and
+count a name that the installed version did not have as a new permission.
+
+**`desktop.wm_class`** (string, 1 to 100 bytes of `A-Z a-z 0-9 . _ + -`). The class the app sets on its windows
+(Wayland `app_id` or X11 `WM_CLASS`). `install` and `update` write it as `StartupWMClass=` in the desktop entry,
+which is how the desktop groups the windows under the entry. Without it the entry has no `StartupWMClass`.
+
+The desktop entry is `panpak.<app.id>.desktop` (not `<app.id>.desktop`): the portals know the app as `panpak.<app.id>` (§9.5)
+and look for the entry of that name, and the prefix keeps the entry apart from the Flatpak or distribution entry of an
+app that has the same upstream id. `install` and `update` MUST remove `<app.id>.desktop` when panpak wrote it
+(it has the `X-Panpak-App-Id` marker or the `Exec` line panpak writes) and MUST leave it when it did not.
 
 ### 3.2 Public key and TOFU [NORMATIVE]
 
@@ -741,6 +785,9 @@ ssh-agent, audio servers) with independent layers, and uses every layer the mach
 3. *None*: the runtime starts the app with Landlock alone, as before the view existed, and `install`,
    `update` and `doctor` MUST say that path sockets are not blocked.
 
+On top of the view there is an optional fourth layer, the filtered session bus (§9.5). Without it the app
+has no session bus, as before.
+
 The sockets of the policy are the `sockets_allow` entries and these, when they exist: the Wayland
 socket named by `WAYLAND_DISPLAY`, the journal sockets `/run/systemd/journal/socket` and
 `/run/systemd/journal/dev-log`, the resolver socket `/run/systemd/resolve/io.systemd.Resolve`, and, with
@@ -818,6 +865,48 @@ link is removed itself and never its target, and every step is relative to the d
 when it finds such files. A lock with a process id in a format not listed here is left alone: that is the
 case for `data unlock` to be extended, or for the user to remove the file. Without a usable runtime folder
 there is no lock and nothing is removed.
+
+### 9.5 The filtered session bus [NORMATIVE for the policy; the mechanism is INFORMATIVE]
+
+Without a bus the app has no portals (appearance, inhibit), no notifications and no tray icon. The runtime
+gives it a filtered bus when all of these hold: the isolated view is used; the manifest does not list the session
+bus in `sockets_allow` (then the app has the whole bus and nothing is filtered); a systemd user manager is
+reachable on `$XDG_RUNTIME_DIR/bus`; the session bus socket exists; and `xdg-dbus-proxy` 0.1.5 or newer is at
+`/usr/bin/xdg-dbus-proxy` or `/run/current-system/sw/bin/xdg-dbus-proxy` (never from `PATH`, as for bubblewrap).
+When one is missing the app gets no bus and `doctor` says which. A failure of the user's systemd or of the proxy
+that is not a missing component MUST be printed at the start.
+
+*Identity.* The outer runtime MUST move itself into a new transient scope named
+`app-panpak.<id>-<n>.scope` (`StartTransientUnit` on the user bus, property `PIDs`, slice `app.slice`), where `<id>` is
+`app.id` with each `-` written `\x2d` and `<n>` is eight lower-case hex digits chosen for this start, even when it was started
+from a terminal that has its own scope. The portal reads the scope of the caller and parses the id with
+`^app-(?:[[:alnum:]]+\-)?(.+?)(?:\-[[:alnum:]]*)(?:\.scope|\.slice)$`, so it knows the app as `panpak.<id>` if
+`panpak.<id>.desktop` exists (§3.1.5); the runtime MUST NOT let the app call `org.freedesktop.host.portal.Registry`.
+The id never equals the id of a Flatpak or of the distribution entry of the same upstream app.
+
+*Proxy.* One `xdg-dbus-proxy` per start, started by the outer runtime in the same scope with a clean environment, filtering
+(`--filter`). Its socket is in a private folder (0700) of the runtime folder and is mounted in the view as
+`$XDG_RUNTIME_DIR/bus`; `DBUS_SESSION_BUS_ADDRESS` points there. With Landlock V9 the socket has a `ResolveUnix` rule. The proxy ends when the
+outer runtime ends (the runtime holds the read end of the pipe given with `--fd`, and the proxy is killed
+when the runtime stops waiting for the app). The runtime also sets `GTK_USE_PORTAL=1`, and
+`QT_QPA_PLATFORMTHEME=xdgdesktopportal` unless the manifest sets it in `[launch.env]`.
+
+*Rules.* The portal is reached only through `--call` rules for named interfaces, never `--talk`:
+`org.freedesktop.portal.Settings.*` and the signal `SettingChanged`, `org.freedesktop.portal.Inhibit.*` and its `StateChanged`,
+`Request.*` with the signal `Response`, and `Session.*` with the signal `Closed`, each on its own object path
+(`/org/freedesktop/portal/desktop`, `.../request/*`, `.../session/*`). The app may own and talk to its own `app.id`
+(single instance across copies) and to the names of `dbus_own`. `notifications` and `tray` add the rules of §3.1.5.
+Every other interface, method and name is refused, including `org.freedesktop.DBus.Properties`, `Introspectable`, every other portal interface
+(Location, Background, Screenshot, ScreenCast, RemoteDesktop, Camera, Secret, Account, FileChooser, OpenURI and
+the rest), `org.freedesktop.portal.Documents`, `org.freedesktop.secrets` and `org.freedesktop.systemd1`. The rules MUST
+come from one function that the tests also use (`panpak dbus-rules <package>` prints them).
+
+*Documents.* When `$XDG_RUNTIME_DIR/doc/by-app` exists the runtime mounts `$XDG_RUNTIME_DIR/doc/by-app/panpak.<id>` in the
+view as `$XDG_RUNTIME_DIR/doc`, from the start, read-write. The Landlock rule for the runtime folder covers
+documents added later. The app never gets the document portal on the bus and never gets another folder of `doc`: the outer runtime
+grants a file with `Documents.AddFull` for the app id `panpak.<id>`.
+
+The runtime reports the state of this layer in `doctor`.
 
 ## Appendix A — test vectors [NORMATIVE]
 

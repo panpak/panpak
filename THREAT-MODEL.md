@@ -196,7 +196,44 @@ default refused, opt-in works; signals to the parent still denied.
   below V9 (the stub refuses it there). On V9 the default is the opposite: a
   path socket is denied unless `sockets_allow` lists it. A package that lists
   a bus socket makes `install` and `update` print "Full access to desktop
-  services (D-Bus): this app is not isolated". A D-Bus filter is planned.
+  services (D-Bus): this app is not isolated". An app that does not list a bus
+  socket gets no bus, or, in the isolated view with a systemd user manager and
+  `xdg-dbus-proxy`, the filtered bus below.
+
+**The filtered session bus (PANPAK-FORMAT.md §9.5; tested in tests/dbus_filter.py).**
+An app in the isolated view can have a session bus that goes through `xdg-dbus-proxy`, one per start.
+What it can do: read the appearance settings and be told when they change; ask the desktop not to
+sleep or lock (Inhibit); own and reach its own application id, so that copies of one app find each other
+(single instance); and, with the permissions, show notifications, put a tray icon, own up to
+8 names declared in the manifest. What it cannot do: everything else on the bus. The test calls every
+method of the 30 interfaces that the real portal exports on a private bus (102 methods) through the
+proxy with the product rules: 6 reach the portal (Settings, Inhibit), 8 with `notifications`,
+the others are refused by the proxy; names of other services (`org.freedesktop.secrets`,
+`org.freedesktop.systemd1`, the keyring, `ca.desrt.dconf`, the shell, the accessibility bus, `login1`,
+`PolicyKit1`) are refused even though a service answers on each of them. The rules never use `--talk` for the
+portal: `--talk` would open every interface. The same checks give the same result with the proxy 0.1.5 of
+Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with the system proxy, 0.1.7).
+- *Identity.* The portal treats a host app as trusted (location is exact, background is
+  always allowed, notifications are not asked, file choosers return real paths). The id it
+  uses comes from the systemd scope of the caller, so the outer stub always makes its own scope,
+  `app-panpak.<id>-<n>.scope`, even when started from a terminal; otherwise the app would be
+  known by the id of the terminal (`app-gnome-org.gnome.Ptyxis-…`), with its permissions. The id is
+  `panpak.<id>`, never the upstream id: an app converted from a Flatpak or an AppImage that has the
+  Flathub id does not share the grants, documents or desktop entry of that Flatpak. The app can never call
+  `org.freedesktop.host.portal.Registry.Register`, which would let it choose any id that has a desktop file.
+- *Documents.* The app sees only the files granted to `panpak.<id>`, in `$XDG_RUNTIME_DIR/doc`, with the rights
+  the outer stub gave each file, and the user can revoke them in the desktop settings. The app never has the document portal.
+- *Addresses.* The portal's `OpenURI` is never given: the portal passes `mailto:a@b?attach=/home/user/.ssh/id_ed25519`
+  to the mail program unchanged (tested in the study), and the proxy cannot look at arguments. Addresses
+  go through the stub's channel (PANPAK-FORMAT.md §9.3).
+- *Notification signals.* `NotificationClosed` of the older service is sent to everyone (measured on the GNOME Shell of
+  the development machine: the message has no destination). `ActionInvoked` was not measured, because it needs a click;
+  it is treated the same. Any client with a match rule would see them. Not forwarded.
+- *Tray.* The watcher sees the app's object and, through `RegisteredStatusNotifierItems`, which other icons exist.
+- *Attack surface.* The proxy parses the D-Bus protocol of an app that is not trusted, in C with GLib. It has
+  been used by Flatpak for years, and it is a system package: Panpak does not ship it. The Rust client in the
+  outer stub (`panpak-core::dbus`) parses the replies of the bus with strict limits and is fuzzed
+  (`fuzz_dbus`, `fuzz_dbus_names`); it never reads from the app today, and was written to be able to.
 
   What the stub does today, and what it does not: it removes `SSH_AUTH_SOCK`,
   `GPG_AGENT_INFO` and `SSH_AGENT_PID` from the environment of every app, and it
@@ -444,12 +481,12 @@ Status of the project: pre-alpha.
   session bus and agents through their sockets, `/proc`, `/sys` and `/run` are readable,
   `/tmp` is shared with every process of the user, and UDP is open (KL-15). `doctor` says which layers are
   active and why the view is missing; `install` and `update` warn. See §3 ("Not available").
-- **KL-5 No D-Bus filter and no portals yet.** An app that is granted a bus socket gets the
-  whole bus ("Full access to desktop services"). Without it the app has no bus at all, so
-  notifications, tray icons, the settings portal, the file chooser portal, global menus
-  and accessibility do not work. In practice: apps start, but some desktop features are
-  missing. A filter and a broker are planned. See `docs/COMPATIBILITY.md` (D-Bus summary),
-  `PORTAL-DESIGN.md`, `docs/PORTALS-STUDY.md`.
+- **KL-5 The bus is filtered only in the isolated view, and only with the needed system parts.** The filtered
+  session bus (§3, "The filtered session bus") needs the isolated view, a systemd user manager, and
+  `xdg-dbus-proxy` 0.1.5 or newer at a fixed path. Without one of them, or with a manifest that lists the
+  bus socket in `sockets_allow`, the app has no bus (or the whole bus, the second case), so notifications, tray icons and the
+  appearance portal are missing. Not mediated yet: the file chooser (KL-7), the clipboard, global menus. `doctor` says
+  which part is missing. See `docs/COMPATIBILITY.md` (D-Bus summary), `PORTAL-DESIGN.md`, `docs/PORTALS-STUDY.md`.
 - **KL-6 No keyring.** `org.freedesktop.secrets` is never given to an app, because it would
   expose every password of the user's keyring. In practice: apps that store a password
   there (Bitwarden and Obsidian ask for it in the tests) start without a keyring, and the
@@ -536,3 +573,24 @@ Status of the project: pre-alpha.
   images that rely on system libraries that are absent are not handled or are reported
   late. In practice: some AppImages do not convert or do not start. See
   `docs/COMPATIBILITY.md` (Defects).
+
+- **KL-23 No input methods through the bus.** `org.freedesktop.portal.IBus`, `org.ibus` and `org.fcitx` are not given. In
+  practice: apps in the view cannot use IBus or Fcitx, so typing Chinese, Japanese or Korean (and other languages
+  that need an input method) does not work in them, except through what the toolkit does without the bus. The portal
+  of IBus (`IBUS_USE_PORTAL=1`) is a candidate for later; it was not tried because the test
+  setup has no input method engine.
+- **KL-24 No accessibility bus.** `org.a11y.Bus` is not given: it hands out the address of a bus where every
+  application exposes its widgets and where input can be sent, so one app could read and drive the others. In
+  practice: screen readers and other assistive tools do not see the apps in the view. A permission with a bus of its
+  own and a closed list is a possible later step.
+- **KL-25 Tray icon names can collide.** Chromium and Electron ask for `org.freedesktop.StatusNotifierItem-<pid>-<n>`, and the
+  `pid` is the one in the view (always 2). The proxy has no wildcard inside a name, so the runtime lists the names for
+  pid 2 and the first three icons. Two such apps with a tray icon at the same time ask for the same name and the
+  second does not get it (inferred, not measured; the second test app did not connect to the bus). Qt 6 registers with its unique name and is not
+  affected.
+- **KL-26 Actions of the older notification service are not delivered.** The signals that carry them are broadcasts
+  (KL-5). In practice: notifications of apps that use `org.freedesktop.Notifications` (for example Qt's `showMessage`)
+  are shown, but a click or an action button may not reach the app (which apps lose actions is to be measured with real apps). Apps that use the portal are not affected.
+- **KL-27 The single-instance name is the upstream id.** The app owns its own `app.id` on the session bus, as GTK and KDE
+  applications do for single instance. A Flatpak or a distribution package of the same program that runs on the same bus competes for the
+  name, and a request from one can reach the other. Other programs cannot own or talk to that name unless the user runs them.

@@ -92,8 +92,9 @@ The two limits of the first point:
 
 What is not guaranteed includes: X11 gives no isolation between windows; there is no seccomp filter;
 without bubblewrap, Landlock does not stop UDP (an app with no network permission can still send
-datagrams, DNS included), and below Landlock 9 the session bus is reachable; there is no D-Bus filter,
-portal or keyring yet; the first key is pinned without proof. With the isolated view, an app with no
+datagrams, DNS included), and below Landlock 9 the session bus is reachable; the filtered session bus
+needs the isolated view, a systemd user manager and `xdg-dbus-proxy`, and there is no file chooser portal,
+input method, accessibility or keyring through it; the first key is pinned without proof. With the isolated view, an app with no
 network permission has no network but the loopback interface. The complete list, each
 with its consequence, is in
 [Known limitations](THREAT-MODEL.md#5-known-limitations). Report vulnerabilities as described in
@@ -127,6 +128,11 @@ with its consequence, is in
 - **systemd:** not required. If they exist, the journal socket and the systemd-resolved socket are made
   available to the app (the resolver only if it asks for network), and `XDG_RUNTIME_DIR` is used for the
   sockets and the shared `/tmp` of an app's copies.
+- **xdg-dbus-proxy** 0.1.5 or newer (`/usr/bin/xdg-dbus-proxy`, optional, a dependency of Flatpak) with a
+  systemd user manager and the isolated view. It gives the app a filtered session bus: the appearance
+  and inhibit portals, and, if the manifest asks, notifications, a tray icon and a few named bus names.
+  Without it the app has no session bus (no portals, notifications or tray icon). `panpak doctor` says
+  whether it is usable.
 - **glibc:** no fixed minimum. An app uses the glibc of the system unless its package carries its own;
   an app built against a newer glibc than the system's does not start (Cura needs 2.38 in the
   compatibility tests). `panpak doctor` shows the host's. Hosts with another libc (Alpine) run only
