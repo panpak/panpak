@@ -6,4 +6,9 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      # One pull request for all the actions, so that one CI run covers them.
+      github-actions:
+        patterns:
+          - "*"
