@@ -337,6 +337,15 @@ pub fn describe_permissions(man: &Manifest) -> Vec<String> {
             list(&p.network_bind_tcp)
         ));
     }
+    if p.notifications == Some(true) {
+        out.push("notifications: the app can show desktop notifications (the notification portal and the older notification service)".to_string());
+    }
+    if p.tray == Some(true) {
+        out.push("tray icon: the app can put an icon and a menu in the notification area, and sees which icons are there".to_string());
+    }
+    for n in p.dbus_own.iter().flatten() {
+        out.push(format!("D-Bus name: the app can own {n} on your session bus, besides its own id"));
+    }
     for s in p.sockets_allow.iter().flatten() {
         out.push(format!("Unix socket: {s}"));
     }
@@ -365,6 +374,18 @@ pub fn added_permissions(old: &Manifest, new: &Manifest) -> Vec<String> {
     }
     if n.audio == Some(true) && o.and_then(|p| p.audio) != Some(true) {
         out.push("audio access".to_string());
+    }
+    if n.notifications == Some(true) && o.and_then(|p| p.notifications) != Some(true) {
+        out.push("notifications".to_string());
+    }
+    if n.tray == Some(true) && o.and_then(|p| p.tray) != Some(true) {
+        out.push("tray icon".to_string());
+    }
+    let had_own = o.map(|p| p.dbus_own.clone().unwrap_or_default()).unwrap_or_default();
+    for name in n.dbus_own.iter().flatten() {
+        if !had_own.contains(name) {
+            out.push(format!("D-Bus name {name}"));
+        }
     }
     let had_net = o.is_some_and(|p| p.network == Some(true));
     if n.network == Some(true) && !had_net {
@@ -475,6 +496,22 @@ mod tests {
         let from_ro = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n");
         assert_eq!(added_permissions(&from_ro, &raised).len(), 1);
         assert_eq!(added_permissions(&man(""), &old).len(), 3);
+    }
+
+    #[test]
+    fn bus_permissions_are_shown_and_counted_as_new() {
+        let none = man("");
+        let m = man("[permissions]\nnotifications=true\ntray=true\ndbus_own=[\"com.example.app.Second\"]\n");
+        let d = describe_permissions(&m);
+        assert!(d.iter().any(|l| l.starts_with("notifications:")) && d.iter().any(|l| l.starts_with("tray icon:")) && d.iter().any(|l| l.contains("com.example.app.Second")), "{d:?}");
+        let added = added_permissions(&none, &m);
+        assert_eq!(added, ["notifications", "tray icon", "D-Bus name com.example.app.Second"]);
+        // Nothing new when the new version asks for the same; a second name is new.
+        assert!(added_permissions(&m, &m).is_empty());
+        let more = man("[permissions]\nnotifications=true\ntray=true\ndbus_own=[\"com.example.app.Second\", \"com.example.app.Third\"]\n");
+        assert_eq!(added_permissions(&m, &more), ["D-Bus name com.example.app.Third"]);
+        // Dropping a permission is not new.
+        assert!(added_permissions(&m, &none).is_empty());
     }
 
     #[test]

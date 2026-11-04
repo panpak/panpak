@@ -1,0 +1,194 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+//! The filtered session bus of an app in the view (PANPAK-FORMAT.md §9.5).
+//!
+//! Outside the sandbox, before bubblewrap: put the stub in its own systemd scope (so that the
+//! portal knows the app as `panpak.<id>`), start one `xdg-dbus-proxy` for this start in the same
+//! scope, and give the view the proxy's socket as the session bus plus the app's folder of the
+//! document portal. When any step cannot be done the app gets no bus, as before, and the reason is
+//! printed once.
+
+use crate::view::Mount;
+use anyhow::{bail, ensure, Context, Result};
+use panpak_core::dbus::{self, BusNeeds, Connection};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
+
+/// Everything the view needs from the layer.
+pub struct Layer {
+    /// The proxy socket at `$XDG_RUNTIME_DIR/bus`, and the document folder at `$XDG_RUNTIME_DIR/doc`.
+    pub mounts: Vec<Mount>,
+    /// Variables for the app.
+    pub env: Vec<(&'static str, String)>,
+    /// Paths in the view that Landlock (ABI 9) must let the app connect to.
+    pub landlock_sockets: Vec<PathBuf>,
+    _guard: Guard,
+}
+
+/// Ends the proxy and removes its folder when the stub is done with the app.
+struct Guard {
+    child: Child,
+    dir: PathBuf,
+    /// Read end of the pipe the proxy writes to: closing it (end of this process) stops the proxy.
+    _sync: OwnedFd,
+}
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A reason for having no layer that needs no warning at every start: the system has no proxy, or
+/// the manifest already gives the app the bus. `doctor` and `install` report these.
+#[derive(Debug)]
+pub struct Quiet(pub String);
+
+impl std::fmt::Display for Quiet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Quiet {}
+
+/// What the layer needs to know about the app.
+pub struct Request<'a> {
+    pub man: &'a panpak_core::Manifest,
+    pub runtime_dir: &'a Path,
+}
+
+fn token() -> Result<String> {
+    use std::io::Read;
+    let mut b = [0u8; 4];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut b)?;
+    Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+/// The last component of the cgroup of this process, from `/proc/self/cgroup`.
+fn current_unit() -> Option<String> {
+    let s = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let line = s.lines().find(|l| l.starts_with("0::"))?;
+    Some(line.trim_start_matches("0::").rsplit('/').next()?.to_string())
+}
+
+/// Move this process into a new scope named for the app. The scope is asked of the user's systemd,
+/// which is on `$XDG_RUNTIME_DIR/bus` (the session bus the proxy forwards to is another thing in a
+/// session that is not the user manager's).
+fn enter_scope(runtime_dir: &Path, app_id: &str, name: &str) -> Result<String> {
+    let unit = dbus::scope_name(app_id, name)?;
+    let bus = runtime_dir.join("bus");
+    // No bus socket, or a bus without systemd on it: this system has no user manager. Not an error to shout about.
+    if !bus.exists() {
+        return Err(Quiet("no user bus: this system has no systemd user manager".into()).into());
+    }
+    let mut c = Connection::open(&bus, Duration::from_secs(10)).context("cannot reach the user's systemd bus")?;
+    if let Err(e) = dbus::start_scope(&mut c, &unit, &format!("Panpak: {app_id}"), std::process::id(), Some("app.slice")) {
+        let no_systemd = e.downcast_ref::<dbus::DbusError>().is_some_and(|d| matches!(d.name.as_str(), "org.freedesktop.DBus.Error.ServiceUnknown" | "org.freedesktop.DBus.Error.NameHasNoOwner"));
+        return Err(if no_systemd { Quiet("the bus has no systemd: this system has no systemd user manager".into()).into() } else { e.context("the user's systemd refused the scope") });
+    }
+    ensure!(current_unit().as_deref() == Some(unit.as_str()), "the process is not in {unit} after the scope was made");
+    Ok(unit)
+}
+
+fn pipe() -> Result<(OwnedFd, OwnedFd)> {
+    let mut p = [0; 2];
+    // SAFETY: pipe2 fills two descriptors.
+    ensure!(unsafe { libc::pipe2(p.as_mut_ptr(), libc::O_CLOEXEC) } == 0, "pipe: {}", std::io::Error::last_os_error());
+    // SAFETY: both are new descriptors that nothing else owns.
+    Ok(unsafe { (OwnedFd::from_raw_fd(p[0]), OwnedFd::from_raw_fd(p[1])) })
+}
+
+/// Wait up to `ms` for one byte on `fd`.
+fn wait_ready(fd: RawFd, ms: i32) -> bool {
+    let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    // SAFETY: one valid pollfd.
+    let n = unsafe { libc::poll(&mut p, 1, ms) };
+    if n <= 0 {
+        return false;
+    }
+    let mut b = [0u8; 1];
+    // SAFETY: reads one byte into a buffer of one.
+    unsafe { libc::read(fd, b.as_mut_ptr().cast(), 1) == 1 }
+}
+
+fn start_proxy(proxy: &Path, bus: &Path, dir: &Path, args: &[String]) -> Result<Guard> {
+    let (r, w) = pipe()?;
+    let wfd = w.as_raw_fd();
+    let mut cmd = Command::new(proxy);
+    cmd.arg(format!("--fd={wfd}")).arg(format!("unix:path={}", bus.display())).arg(dir.join("bus")).args(args);
+    cmd.env_clear().stdin(Stdio::null());
+    // SAFETY: only fcntl runs between fork and exec; it clears close-on-exec on the write end.
+    unsafe {
+        cmd.pre_exec(move || {
+            let fl = libc::fcntl(wfd, libc::F_GETFD);
+            if fl < 0 || libc::fcntl(wfd, libc::F_SETFD, fl & !libc::FD_CLOEXEC) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = cmd.spawn().with_context(|| format!("cannot run {}", proxy.display()))?;
+    drop(w);
+    let mut g = Guard { child, dir: dir.to_path_buf(), _sync: r };
+    if !wait_ready(g._sync.as_raw_fd(), 5000) {
+        let st = g.child.try_wait().ok().flatten();
+        bail!("the proxy did not become ready ({})", st.map_or("still running".to_string(), |s| format!("exited with {s}")));
+    }
+    ensure!(dir.join("bus").exists(), "the proxy made no socket");
+    Ok(g)
+}
+
+/// Build the layer, or say why there is none.
+pub fn start(req: &Request<'_>) -> Result<Layer> {
+    let man = req.man;
+    if panpak_core::allows_session_bus(man.permissions.as_ref()) {
+        return Err(Quiet("the manifest lists the session bus socket: the app has the whole bus".into()).into());
+    }
+    let status = dbus::proxy_status();
+    let dbus::ProxyStatus::Usable { path: proxy, .. } = status else {
+        return Err(if matches!(status, dbus::ProxyStatus::NotFound | dbus::ProxyStatus::TooOld { .. }) { Quiet(describe_status(&status)).into() } else { anyhow::anyhow!("{}", describe_status(&status)) });
+    };
+    let Some(bus) = dbus::session_bus_path() else { return Err(Quiet("no session bus socket".into()).into()) };
+    let n = token()?;
+    enter_scope(req.runtime_dir, &man.app.id, &n)?;
+    let dir = req.runtime_dir.join("panpak").join(&man.app.id).join(format!("dbus-{n}"));
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let args = dbus::proxy_args(&BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref(), tray_names: &[] });
+    let guard = match start_proxy(&proxy, &bus, &dir, &args) {
+        Ok(g) => g,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(e);
+        }
+    };
+    let view_bus = req.runtime_dir.join("bus");
+    let mut mounts = vec![Mount::ro(dir.join("bus"), view_bus.clone())];
+    let landlock_sockets = vec![view_bus.clone()];
+    // The app's folder of the document portal (empty until the stub grants a document).
+    let by_app = req.runtime_dir.join("doc/by-app");
+    if by_app.is_dir() {
+        mounts.push(Mount { src: by_app.join(format!("panpak.{}", man.app.id)), dest: req.runtime_dir.join("doc"), rw: true });
+    }
+    let launch_env = |k: &str| man.launch.as_ref().and_then(|l| l.env.as_ref()).is_some_and(|e| e.contains_key(k));
+    let mut env = vec![("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", view_bus.display())), ("GTK_USE_PORTAL", "1".to_string())];
+    if !launch_env("QT_QPA_PLATFORMTHEME") {
+        env.push(("QT_QPA_PLATFORMTHEME", "xdgdesktopportal".to_string()));
+    }
+    Ok(Layer { mounts, env, landlock_sockets, _guard: guard })
+}
+
+pub fn describe_status(s: &dbus::ProxyStatus) -> String {
+    use dbus::ProxyStatus::*;
+    match s {
+        Usable { path, version } => format!("xdg-dbus-proxy {}.{}.{} at {}", version.0, version.1, version.2, path.display()),
+        NotFound => format!("xdg-dbus-proxy not found (looked in {})", dbus::PROXY_PATHS.join(", ")),
+        TooOld { path, version } => format!("{} is version {}.{}.{}, {}.{}.{} or newer is needed", path.display(), version.0, version.1, version.2, dbus::MIN_PROXY.0, dbus::MIN_PROXY.1, dbus::MIN_PROXY.2),
+        Broken { path, why } => format!("{} does not work: {why}", path.display()),
+    }
+}

@@ -13,6 +13,7 @@ use std::{
 };
 
 #[cfg(target_arch = "x86_64")]
+mod dbus_layer;
 mod opener;
 mod probe;
 mod sharedtmp;
@@ -1233,7 +1234,24 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         }
     }
     let binds = view::merge_binds(binds);
-    let (mounts, opener_server) = open_channel(ctx, cmd, &stub, runtime_text.as_deref());
+    let (mut mounts, opener_server) = open_channel(ctx, cmd, &stub, runtime_text.as_deref());
+    // The filtered session bus, when this system can give it. Before the sockets and the job are
+    // fixed: it adds mounts, variables and one path Landlock must allow.
+    let dbus = ctx.runtime_dir.and_then(|rt| match dbus_layer::start(&dbus_layer::Request { man: ctx.man, runtime_dir: rt }) {
+        Ok(l) => Some(l),
+        Err(e) => {
+            if e.downcast_ref::<dbus_layer::Quiet>().is_none() {
+                eprintln!("panpak: WARNING: no D-Bus for the app (portals, notifications): {}", panpak_core::err_text(&e));
+            }
+            None
+        }
+    });
+    if let Some(l) = &dbus {
+        mounts.extend(l.mounts.iter().cloned());
+        for (k, v) in &l.env {
+            cmd.env(k, v);
+        }
+    }
     // /tmp and /dev/shm are shared by the copies of this app that run together, and by no other app.
     let app_dirs = match panpak_core::app_dirs(&ctx.man.app.id) {
         Ok(d) => Some(d),
@@ -1287,7 +1305,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         manifest: ctx.man.clone(),
         rw: job_rw,
         ro: job_ro,
-        sockets: ctx.access.sockets.clone(),
+        sockets: ctx.access.sockets.iter().cloned().chain(dbus.iter().flat_map(|l| l.landlock_sockets.iter().cloned())).collect(),
         allow_unfiltered: ctx.allow_unfiltered,
         home_list: ctx.access.home_list.clone(),
         open: ctx.open.map(|(p, g)| view::JobOpen { path: p.clone(), write: g.write, rename: g.rename }),
@@ -1299,9 +1317,9 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     let fd = view::job_memfd(&job)?;
     let plan = view::ViewPlan { fd, ..plan };
     // The lock of the shared folders must outlive bwrap, so the outer stub stays whenever there is one.
-    match (opener_server, shared) {
-        (None, None) => match view::exec_bwrap(&plan)? {},
-        (server, shared) => match view::run_bwrap(&plan, (server, shared), |(_, shared), clean| {
+    match (opener_server, shared, dbus) {
+        (None, None, None) => match view::exec_bwrap(&plan)? {},
+        (server, shared, dbus) => match view::run_bwrap(&plan, (server, shared, dbus), |(_, shared, _), clean| {
             if let (true, Some(s)) = (clean, shared) {
                 s.ended_normally();
             }
@@ -1330,16 +1348,16 @@ fn open_channel(ctx: &ViewStart, cmd: &mut Command, stub: &Path, runtime: Option
         }
     };
     let rtp = Path::new(rt);
-    let mut mounts = vec![view::Mount { src: server.socket().to_path_buf(), dest: rtp.join(opener::SOCKET) }];
+    let mut mounts = vec![view::Mount::ro(server.socket().to_path_buf(), rtp.join(opener::SOCKET))];
     for n in opener::NAMES {
-        mounts.push(view::Mount { src: stub.to_path_buf(), dest: rtp.join(opener::BIN_DIR).join(n) });
+        mounts.push(view::Mount::ro(stub.to_path_buf(), rtp.join(opener::BIN_DIR).join(n)));
     }
     // Over every `xdg-open` the system has in its PATH, outside the home folder.
     let home = dirs::home_dir();
     for d in std::env::split_paths(&path).filter(|d| d.is_absolute() && home.as_ref().is_none_or(|h| !d.starts_with(h))) {
         let p = d.join("xdg-open");
         if fs::symlink_metadata(&p).is_ok() {
-            mounts.push(view::Mount { src: stub.to_path_buf(), dest: p });
+            mounts.push(view::Mount::ro(stub.to_path_buf(), p));
         }
     }
     let bin = format!("{rt}/{}", opener::BIN_DIR);
@@ -2780,6 +2798,9 @@ mod tests {
             sockets_allow: Some(vec!["/run/dbus.sock".into()]),
             home_paths: None,
             portal: None,
+            notifications: None,
+            tray: None,
+            dbus_own: None,
         });
         let access = Access { rw: vec![appdata.clone()], ..Access::default() };
         let err = build_ruleset(&tree, &access, &man, abi, true, false, None).unwrap_err();

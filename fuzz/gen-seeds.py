@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Generate the fuzz seed corpus for fuzz_elf, fuzz_squash and fuzz_dbus.
+"""Generate the fuzz seed corpus for fuzz_elf, fuzz_squash, fuzz_dbus and fuzz_dbus_names.
 
 Every seed is written by this script from scratch (hand-built ELF headers) or
 built from small text files created here (squashfs, via mksquashfs). No
@@ -211,6 +211,12 @@ def dbus_seeds():
     return out
 
 
+def dbus_names_seeds():
+    names = ["org.example.app.Second", "org.freedesktop.Notifications", "org.kde.kdenlive", "org.kde.StatusNotifierWatcher",
+             "org.example.*", "a.b", "ca.desrt.dconf", "org.example.app\norg.example.app\nApp", "org.gtk.vfs.Daemon", "x.y.z" + "a" * 260]
+    return {f"{i}": n.encode() for i, n in enumerate(names)}
+
+
 def write(target, seeds, prefix):
     d = CORPUS / target
     d.mkdir(parents=True, exist_ok=True)
@@ -223,6 +229,7 @@ def main():
     write("fuzz_elf", elf_seeds(), "seed")
     write("fuzz_squash", squash_seeds(), "seed")
     write("fuzz_dbus", dbus_seeds(), "seed")
+    write("fuzz_dbus_names", dbus_names_seeds(), "seed")
 
 
 if __name__ == "__main__":

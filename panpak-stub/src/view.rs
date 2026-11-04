@@ -118,11 +118,18 @@ pub struct Bind {
     pub rw: bool,
 }
 
-/// A file mounted read-only into the view at another path.
+/// A file or folder mounted into the view at another path, read-only unless `rw`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mount {
     pub src: PathBuf,
     pub dest: PathBuf,
+    pub rw: bool,
+}
+
+impl Mount {
+    pub fn ro(src: PathBuf, dest: PathBuf) -> Mount {
+        Mount { src, dest, rw: false }
+    }
 }
 
 /// Order and thin out the binds: parents before children, no duplicates, and no read-only
@@ -296,7 +303,7 @@ fn view_args(plan: &ViewPlan) -> Vec<OsString> {
         a.extend([os(if b.rw { "--bind" } else { "--ro-bind" }), b.path.as_os_str().into(), b.path.as_os_str().into()]);
     }
     for m in &plan.mounts {
-        a.extend([os("--ro-bind"), m.src.as_os_str().into(), m.dest.as_os_str().into()]);
+        a.extend([os(if m.rw { "--bind" } else { "--ro-bind" }), m.src.as_os_str().into(), m.dest.as_os_str().into()]);
     }
     // Nothing can be created in the home folder any more, outside the binds.
     if let Some(h) = &plan.home {
@@ -596,8 +603,8 @@ mod tests {
     fn mounts_come_after_the_runtime_folder_and_before_the_home_is_sealed() {
         let mut p = plan();
         p.mounts = vec![
-            Mount { src: "/h/open.5.sock".into(), dest: "/run/user/1000/panpak/open.sock".into() },
-            Mount { src: "/h/panpak-stub".into(), dest: "/usr/bin/xdg-open".into() },
+            Mount::ro("/h/open.5.sock".into(), "/run/user/1000/panpak/open.sock".into()),
+            Mount::ro("/h/panpak-stub".into(), "/usr/bin/xdg-open".into()),
         ];
         let a = strings(&p);
         let rt = pos(&a, &["--tmpfs", "/run/user/1000"]).unwrap();

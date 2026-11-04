@@ -193,6 +193,13 @@ pub struct Permissions {
     /// The user's folders (music, documents, ...), found in `user-dirs.dirs` when the app is installed.
     pub xdg_dirs: Option<Vec<XdgDir>>,
     pub portal: Option<Portal>,
+    /// Notifications: the notification portal and the older `org.freedesktop.Notifications` service
+    /// (PANPAK-FORMAT.md §3.1.5).
+    pub notifications: Option<bool>,
+    /// A tray icon (StatusNotifierItem).
+    pub tray: Option<bool>,
+    /// Extra names the app may own on the session bus, besides its own id (at most 8, no wildcards).
+    pub dbus_own: Option<Vec<String>>,
 }
 /// A user folder the app asks for (PANPAK-FORMAT.md §3.1.4).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -208,6 +215,9 @@ pub struct XdgDir {
 pub struct Desktop {
     /// URL schemes the app opens (`x-scheme-handler/<scheme>`), for example the return from a login.
     pub schemes: Option<Vec<String>>,
+    /// The window class the app sets (Wayland `app_id` or X11 `WM_CLASS`), written as `StartupWMClass`
+    /// so that the desktop groups its windows under the entry (PANPAK-FORMAT.md §3.1.3).
+    pub wm_class: Option<String>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Portal {
@@ -349,12 +359,12 @@ pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
     let v: toml::Value = toml::from_str(input).context("panpak.toml is not TOML")?;
     let t = v.as_table().context("panpak.toml: table required")?;
     const TOP: &[&str] = &["app", "abi", "permissions", "launch", "desktop", "runtime", "origin", "update"];
-    const DESKTOP: &[&str] = &["schemes"];
+    const DESKTOP: &[&str] = &["schemes", "wm_class"];
     const XDG_DIR: &[&str] = &["name", "access"];
     const LAUNCH: &[&str] = &["args", "env"];
     const APP: &[&str] = &["id", "name", "version", "entry"];
     const ABI: &[&str] = &["glibc_min", "needs", "prefer_host", "allow_missing"];
-    const PERM: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal"];
+    const PERM: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal", "notifications", "tray", "dbus_own"];
     const HOME_PATH: &[&str] = &["path", "access"];
     const PORTAL: &[&str] = &["files", "camera"];
     const RUNTIME: &[&str] = &["min_runtime", "stub_hash"];

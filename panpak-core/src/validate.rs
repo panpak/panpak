@@ -293,6 +293,11 @@ fn desktop(d: &crate::Desktop) -> Result<()> {
             return Err(bad_field(F, &format!("{sc} listed twice")));
         }
     }
+    if let Some(w) = &d.wm_class {
+        if w.is_empty() || w.len() > 100 || !w.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-')) {
+            return Err(bad_field("desktop.wm_class", "1 to 100 characters of letters, digits and . _ + -"));
+        }
+    }
     Ok(())
 }
 
@@ -317,6 +322,9 @@ pub fn validate_manifest(man: &Manifest) -> Result<()> {
             if s.is_empty() || s.len() > MAX_PATH_LEN || s.chars().any(char::is_control) {
                 return Err(bad_field("permissions.sockets_allow", "empty, too long or with control characters"));
             }
+        }
+        if let Err(e) = crate::dbus::check_dbus_own(p.dbus_own.as_deref().unwrap_or_default(), &man.app.id, &man.app.name, &man.app.entry) {
+            return Err(bad_field("permissions.dbus_own", &format!("{e}")));
         }
         home_paths(p.home_paths.as_deref().unwrap_or_default())?;
         xdg_dirs(p.xdg_dirs.as_deref().unwrap_or_default())?;
@@ -518,6 +526,20 @@ mod tests {
 
     fn launch_manifest(args: &str, env: &str) -> Manifest {
         with(&format!("[launch]\nargs={args}\n[launch.env]\n{env}\n"))
+    }
+
+    #[test]
+    fn bus_fields_are_validated() {
+        let ok = |extra: &str| validate_manifest(&with(extra));
+        ok("[permissions]\nnotifications=true\ntray=true\ndbus_own=[\"org.example.app.Second\"]\n").unwrap();
+        ok("[desktop]\nwm_class=\"Audacity\"\n").unwrap();
+        assert_eq!(code(ok("[permissions]\ndbus_own=[\"org.freedesktop.Notifications\"]\n")), ErrorCode::E0007);
+        assert_eq!(code(ok("[permissions]\ndbus_own=[\"org.example.*\"]\n")), ErrorCode::E0007);
+        assert_eq!(code(ok("[permissions]\ndbus_own=[\"a.b.c1\",\"a.b.c2\",\"a.b.c3\",\"a.b.c4\",\"a.b.c5\",\"a.b.c6\",\"a.b.c7\",\"a.b.c8\",\"a.b.c9\"]\n")), ErrorCode::E0007);
+        for w in ["", "a b", "a;b", "a\\nb", "é"] {
+            assert_eq!(code(ok(&format!("[desktop]\nwm_class={w:?}\n"))), ErrorCode::E0007, "{w:?}");
+        }
+        assert_eq!(code(ok(&format!("[desktop]\nwm_class=\"{}\"\n", "a".repeat(101)))), ErrorCode::E0007);
     }
 
     #[test]
