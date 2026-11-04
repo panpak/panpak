@@ -159,7 +159,7 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
     enter_scope(req.runtime_dir, &man.app.id, &n)?;
     let dir = req.runtime_dir.join("panpak").join(&man.app.id).join(format!("dbus-{n}"));
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    let args = dbus::proxy_args(&BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref(), tray_names: &[] });
+    let args = dbus::proxy_args(&BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref(), tray_names: &dbus::tray_names() });
     let guard = match start_proxy(&proxy, &bus, &dir, &args) {
         Ok(g) => g,
         Err(e) => {

@@ -2344,7 +2344,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             let mut f = File::open(pkg)?;
             let ft = panpak_core::read_footer(&mut f)?;
             let (man, _) = panpak_core::verify(&mut f, &ft)?;
-            for a in panpak_core::dbus::proxy_args(&panpak_core::dbus::BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref(), tray_names: &[] }) {
+            for a in panpak_core::dbus::proxy_args(&panpak_core::dbus::BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref(), tray_names: &panpak_core::dbus::tray_names() }) {
                 println!("{a}");
             }
             Ok(())

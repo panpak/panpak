@@ -58,8 +58,34 @@ const NEVER_OWN: &[(&str, &str)] = &[
     ("org.cups", "printing"),
 ];
 
-/// Names a tray icon owns, and the watcher it talks to. Allowed only with the `tray` permission.
+/// The watcher a tray icon registers with. Allowed only with the `tray` permission.
 pub const TRAY_WATCHER: &str = "org.kde.StatusNotifierWatcher";
+
+/// The process id the app has in the view: bubblewrap is 1 and the stub that becomes the app is 2.
+pub const VIEW_APP_PID: u32 = 2;
+
+/// How many icons of one app get a name (the counter at the end of the name).
+const TRAY_ITEMS: u32 = 3;
+
+/// The names a tray icon of an app in the view can ask for: `<prefix>StatusNotifierItem-<pid>-<n>`.
+/// Measured: Chromium (Zulip 5.13.2) asks for `org.freedesktop.StatusNotifierItem-2-1`; Qt 6
+/// (qBittorrent 5.3.0) registers with its unique name and asks for none. The proxy has no wildcard
+/// for the middle of a name, so the names are listed exactly: pid 2, the first three icons, both
+/// prefixes. The pid belongs to the view, not to the host, so two apps with a tray icon of this
+/// kind that run at once ask for the same name; the second does not get it.
+pub fn tray_names() -> Vec<String> {
+    let mut v = Vec::new();
+    for prefix in ["org.freedesktop", "org.kde"] {
+        for n in 1..=TRAY_ITEMS {
+            v.push(format!("{prefix}.StatusNotifierItem-{VIEW_APP_PID}-{n}"));
+        }
+    }
+    v
+}
+
+fn is_tray_name(t: &str) -> bool {
+    tray_names().iter().any(|n| n == t)
+}
 
 fn normalized(s: &str) -> String {
     s.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
@@ -123,7 +149,7 @@ pub struct BusNeeds<'a> {
     pub app_name: &'a str,
     pub entry: &'a str,
     pub perms: Option<&'a Permissions>,
-    /// Exact `org.kde.StatusNotifierItem-<pid>-<n>` names to own, when `tray` is on.
+    /// The tray item names to own when `tray` is on: `tray_names()`.
     pub tray_names: &'a [String],
 }
 
@@ -164,7 +190,7 @@ pub fn proxy_args(n: &BusNeeds<'_>) -> Vec<String> {
     if n.perms.is_some_and(|p| p.tray == Some(true)) && !n.tray_names.is_empty() {
         a.push(format!("--talk={TRAY_WATCHER}"));
         for t in n.tray_names {
-            if t.starts_with("org.kde.StatusNotifierItem-") && valid_dotted_name(t, true) && !t.contains('*') {
+            if is_tray_name(t) && valid_dotted_name(t, true) && !t.contains('*') {
                 a.push(format!("--own={t}"));
             }
         }
@@ -275,12 +301,16 @@ mod tests {
         // The old service's signals are broadcasts seen by every client: not forwarded.
         assert!(a.iter().all(|x| !(x.starts_with("--broadcast=org.freedesktop.Notifications") || x.contains("ActionInvoked") || x.contains("NotificationClosed"))), "{a:?}");
         assert!(a.iter().all(|x| x != "--talk=org.freedesktop.Notifications"));
-        // The tray needs names: with none, no rule.
-        assert!(args("tray = true\n", &[]).iter().all(|x| !x.contains("StatusNotifier")));
-        let t = args("tray = true\n", &["org.kde.StatusNotifierItem-2-1".into(), "org.kde.*".into(), "org.kde.StatusNotifierWatcher".into()]);
-        assert!(t.iter().any(|x| x == "--own=org.kde.StatusNotifierItem-2-1"));
+        // The tray: the watcher, and the exact item names of the view (never a wildcard, never the watcher).
+        assert!(args("tray = true\n", &[]).iter().all(|x| !x.contains("StatusNotifier")), "without names there is no rule");
+        let t = args("tray = true\n", &tray_names());
         assert!(t.iter().any(|x| x == "--talk=org.kde.StatusNotifierWatcher"));
-        assert!(t.iter().all(|x| x != "--own=org.kde.*" && x != "--own=org.kde.StatusNotifierWatcher"), "{t:?}");
+        assert!(t.iter().any(|x| x == "--own=org.freedesktop.StatusNotifierItem-2-1"));
+        assert!(t.iter().any(|x| x == "--own=org.kde.StatusNotifierItem-2-3"));
+        assert_eq!(t.iter().filter(|x| x.starts_with("--own=") && x.contains("StatusNotifierItem")).count(), 6);
+        // A name that is not one of those is dropped, whatever the caller passes.
+        let t = args("tray = true\n", &["org.kde.*".into(), "org.kde.StatusNotifierWatcher".into(), "org.kde.StatusNotifierItem-99-1".into(), "org.freedesktop.Notifications".into()]);
+        assert!(t.iter().all(|x| !x.starts_with("--own=org.kde") && !x.starts_with("--own=org.freedesktop")), "{t:?}");
     }
 
     #[test]

@@ -35,13 +35,14 @@ def missing():
 
 
 class Session:
-    def __init__(self, tests_dir, portal=True, data_home=None):
+    def __init__(self, tests_dir, portal=True, data_home=None, bus_rel='session', fake=True):
         uid = os.getuid()
         self.rt = Path(tempfile.mkdtemp(prefix='pkd-', dir=f'/run/user/{uid}'))
         self.rt.chmod(0o700)
         (self.rt / 'bus').symlink_to(f'/run/user/{uid}/bus')
         self.home = Path(tempfile.mkdtemp(prefix='pkdh-'))
-        self.addr = f'unix:path={self.rt}/session'
+        (self.rt / bus_rel).parent.mkdir(parents=True, exist_ok=True)
+        self.addr = f'unix:path={self.rt}/{bus_rel}'
         self.log = self.rt / 'fake.log'
         self.procs = []
         self.env = {'PATH': os.environ['PATH'], 'HOME': str(self.home), 'XDG_RUNTIME_DIR': str(self.rt),
@@ -57,12 +58,13 @@ class Session:
             'UseIn=panpaktest\n')
         self.env['XDG_DESKTOP_PORTAL_DIR'] = str(pdir)
         self.daemon = self._spawn(['dbus-daemon', '--session', '--nofork', f'--address={self.addr}'])
-        self._wait(self.rt / 'session')
-        self.fake = self._spawn(['python3', str(Path(tests_dir) / 'dbus_fake_backend.py'), str(self.log)])
-        for _ in range(100):
-            if self.log.exists() and 'ready' in self.log.read_text():
-                break
-            time.sleep(0.05)
+        self._wait(self.rt / bus_rel)
+        if fake:
+            self._spawn(['python3', str(Path(tests_dir) / 'dbus_fake_backend.py'), str(self.log)])
+            for _ in range(100):
+                if self.log.exists() and 'ready' in self.log.read_text():
+                    break
+                time.sleep(0.05)
         if portal:
             # Activated by the first call; started now so that its start is not in a test's time.
             self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.StartServiceByName', 'org.freedesktop.portal.Desktop', '0')
