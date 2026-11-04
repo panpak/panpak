@@ -11,3 +11,7 @@ paths = [
   # Fuzzer corpus: random manifest bytes that happen to look like `key = "..."`.
   '''^fuzz/corpus/''',
 ]
+regexes = [
+  # A list of library names in the ABI code ("libglapi.so.0", "libxcb-dri2.so.0", ...) matches the generic key rule.
+  '''libxcb-dri2\.so\.0''',
+]
