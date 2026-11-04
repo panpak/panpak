@@ -57,6 +57,20 @@ expect "docs/bench-data only" false false
 reset; mkdir -p docs/bench-data bench; echo b >docs/bench-data/a.csv; echo b >bench/inputs.py; git add -A; git commit -q -m t
 expect "bench data and bench code" true true
 
+# The CI case: a pull request that changes only a workflow. The job checks the repository out
+# with full history (fetch-depth 0) in a fresh clone and passes the base and head commits of the
+# pull request, which are not the checked-out merge commit.
+reset; mkdir -p .github/workflows; echo b >.github/workflows/ci.yml; git add -A; git commit -q -m t
+head=$(git rev-parse HEAD)
+git checkout -q -b other "$base"; echo c >README.md; git commit -q -am other; git checkout -q main
+git merge -q --no-ff -m "merge of the pull request" "$head" 2>/dev/null || true
+ci="$tmp-ci"
+git clone -q --no-local "$tmp" "$ci"
+out=$(cd "$ci" && "$here/scripts/ci-changes.sh" "$base" "$head")
+rm -rf "$ci"
+if [ "$out" = $'heavy=true\nrepro=true' ]; then echo "ok   pull request with a changed workflow, fresh full clone"; else echo "FAIL pull request with a changed workflow: got $(tr '\n' ' ' <<<"$out")"; fail=1; fi
+reset
+
 if "$here/scripts/ci-changes.sh" nosuchrev HEAD 2>/dev/null; then
   echo "FAIL unknown revision accepted"
   fail=1

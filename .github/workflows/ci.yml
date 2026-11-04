@@ -21,6 +21,9 @@
 #   - gate: always the last job. It fails when a job that had to run did not
 #     succeed, and also when a job that had to run was skipped
 #     (scripts/ci-gate.sh). Require this job, not the others, in the branch rules.
+#   - every job that depends on a job that can be skipped has !cancelled() in its
+#     if: an if: without a status function means success(), which is false when any
+#     job above it, however far, was skipped (tests/ci-workflow-test.py checks this).
 
 name: ci
 
@@ -99,7 +102,7 @@ jobs:
 
   build-test:
     needs: changes
-    if: needs.changes.outputs.heavy == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -174,7 +177,7 @@ jobs:
 
   fuzz-smoke:
     needs: changes
-    if: needs.changes.outputs.heavy == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
     env:
       # 30 s per target on pull requests and manual runs, 5 min in the scheduled run.
@@ -225,7 +228,7 @@ jobs:
   repro:
     # No cache of any kind: the double build must start from nothing.
     needs: changes
-    if: needs.changes.outputs.repro == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.repro == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -268,6 +271,7 @@ jobs:
         run: |
           ./tests/ci-changes-test.sh
           ./tests/ci-gate-test.sh
+          python3 -I tests/ci-workflow-test.py
       - name: Cache the cargo-deny binary
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -285,7 +289,7 @@ jobs:
 
   distro:
     needs: [build-test, changes]
-    if: needs.changes.outputs.heavy == 'true'
+    if: ${{ !cancelled() && needs.changes.outputs.heavy == 'true' && needs.build-test.result == 'success' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
