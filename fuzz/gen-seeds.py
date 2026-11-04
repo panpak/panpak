@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Generate the fuzz seed corpus for fuzz_elf and fuzz_squash.
+"""Generate the fuzz seed corpus for fuzz_elf, fuzz_squash and fuzz_dbus.
 
 Every seed is written by this script from scratch (hand-built ELF headers) or
 built from small text files created here (squashfs, via mksquashfs). No
@@ -166,6 +166,51 @@ def squash_seeds():
     return out
 
 
+def _al(b, n):
+    return b + b"\0" * (-len(b) % n)
+
+
+def _str(s):
+    d = s.encode()
+    return struct.pack("<I", len(d)) + d + b"\0"
+
+
+def dbus_message(kind, serial, fields, bodysig="", body=b"", flags=0):
+    """A little-endian message. `fields` is a list of (code, signature, payload-after-alignment)."""
+    arr = b""
+    for code, sig, payload in fields:
+        arr = _al(arr, 8)
+        item = bytes([code, len(sig)]) + sig.encode() + b"\0"
+        # alignment is relative to the start of the message: the array starts at offset 16
+        pos = 16 + len(arr) + len(item)
+        item += b"\0" * (-pos % (1 if sig == "g" else 4)) + payload
+        arr += item
+    if bodysig:
+        arr = _al(arr, 8)
+        sg = bytes([8, 1]) + b"g\0" + bytes([len(bodysig)]) + bodysig.encode() + b"\0"
+        arr += sg
+    head = b"l" + bytes([kind, flags, 1]) + struct.pack("<II", len(body), serial) + struct.pack("<I", len(arr))
+    return _al(head + arr, 8) + body
+
+
+def dbus_seeds():
+    out = {}
+    path = lambda p: (1, "o", _str(p))
+    iface = lambda i: (2, "s", _str(i))
+    member = lambda m: (3, "s", _str(m))
+    dest = lambda d: (6, "s", _str(d))
+    out["hello"] = bytes([0]) + dbus_message(1, 1, [path("/org/freedesktop/DBus"), iface("org.freedesktop.DBus"), member("Hello"), dest("org.freedesktop.DBus")])
+    out["return-string"] = bytes([0]) + dbus_message(2, 2, [(5, "u", struct.pack("<I", 1))], "s", _str(":1.42"))
+    out["error"] = bytes([0]) + dbus_message(3, 3, [(4, "s", _str("org.freedesktop.DBus.Error.UnknownMethod")), (5, "u", struct.pack("<I", 1))], "s", _str("no such method"))
+    out["signal"] = bytes([0]) + dbus_message(4, 4, [path("/org/freedesktop/DBus"), iface("org.freedesktop.DBus"), member("NameAcquired")], "s", _str(":1.42"))
+    out["call-with-fd"] = bytes([4]) + dbus_message(1, 5, [path("/org/x"), iface("org.x.I"), member("Do"), (9, "u", struct.pack("<I", 1))], "hs", struct.pack("<I", 0) + _str("hi"))
+    ent = _str("PIDs") + bytes([2]) + b"au\0"
+    ent = _al(ent, 4) + struct.pack("<I", 4) + struct.pack("<I", 1234)
+    arr = struct.pack("<I", len(ent)) + b"\0" * 4 + ent
+    out["a-sv-body"] = bytes([0]) + dbus_message(1, 6, [path("/org/x"), member("Props")], "a{sv}", arr)
+    return out
+
+
 def write(target, seeds, prefix):
     d = CORPUS / target
     d.mkdir(parents=True, exist_ok=True)
@@ -177,6 +222,7 @@ def write(target, seeds, prefix):
 def main():
     write("fuzz_elf", elf_seeds(), "seed")
     write("fuzz_squash", squash_seeds(), "seed")
+    write("fuzz_dbus", dbus_seeds(), "seed")
 
 
 if __name__ == "__main__":

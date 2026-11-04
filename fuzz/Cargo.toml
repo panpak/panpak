@@ -65,3 +65,7 @@ path = "fuzz_targets/fuzz_userdirs.rs"
 [[bin]]
 name = "fuzz_openchan"
 path = "fuzz_targets/fuzz_openchan.rs"
+
+[[bin]]
+name = "fuzz_dbus"
+path = "fuzz_targets/fuzz_dbus.rs"

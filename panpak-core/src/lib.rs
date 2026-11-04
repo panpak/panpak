@@ -3,6 +3,7 @@
 //!
 //! All numbers in the format are little-endian. See PANPAK-FORMAT.md.
 
+pub mod dbus;
 mod elfsym;
 mod errors;
 mod layout;
