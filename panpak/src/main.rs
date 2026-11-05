@@ -23,7 +23,7 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [-o <out.panpak>]\n  panpak install-runtime <stub>
+    "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [-o <out.panpak>]\n  panpak install-runtime <stub> --allow-unsigned      (your own build; the file, not a folder)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
@@ -2164,10 +2164,11 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             Ok(())
         }
         Some("install-runtime") => {
-            let src = args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "install-runtime <file>"))?;
+            // The file may come before or after the flags.
+            let mut src: Option<&String> = None;
             let mut key = None;
             let mut allow_unsigned = false;
-            let mut i = 3;
+            let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
                     "--release-key" => {
@@ -2181,9 +2182,15 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                     "--yes" => {
                         i += 1; // Accepted for compatibility (no prompt here).
                     }
-                    x => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    x if x.starts_with("--") => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    _ if src.is_none() => {
+                        src = Some(&args[i]);
+                        i += 1;
+                    }
+                    _ => bail_code!(ErrorCode::E5002, "install-runtime takes one file"),
                 }
             }
+            let src = src.ok_or_else(|| coded(ErrorCode::E5002, "install-runtime <file> (a stub or a release .tar.gz, not a folder)"))?;
             cmd_install_runtime(Path::new(src), key.as_deref(), allow_unsigned)?;
             Ok(())
         }

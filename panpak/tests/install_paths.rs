@@ -270,3 +270,15 @@ fn the_window_class_of_the_manifest_goes_into_the_entry() {
     assert!(env.install().status.success());
     assert!(!fs::read_to_string(env.desktop()).unwrap().contains("StartupWMClass"));
 }
+
+#[test]
+fn install_runtime_takes_the_flag_before_or_after_the_file_and_refuses_a_folder() {
+    let env = setup("runtime-args");
+    let stub = env.home.join("stub");
+    let o = cli(&env.home, &["install-runtime", "--allow-unsigned", stub.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    let o = cli(&env.home, &["install-runtime", env.home.to_str().unwrap(), "--allow-unsigned"]);
+    assert!(!o.status.success(), "a folder is not a runtime");
+    let o = cli(&env.home, &["install-runtime", "--allow-unsigned"]);
+    assert!(text(&o).contains("install-runtime <file>"), "{}", text(&o));
+}
