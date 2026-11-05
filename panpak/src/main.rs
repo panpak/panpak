@@ -1802,7 +1802,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         }
         if let Some(allow) = man.abi.as_ref().and_then(|a| a.allow_missing.clone()) {
             if !allow.is_empty() {
-                println!("WARNING: libraries excluded from resolution (allow_missing declared by the author):");
+                println!("WARNING: libraries excluded from resolution (allow_missing declared by the author; `panpak doctor <package>` checks the symbols that stay undefined):");
                 for g in &allow {
                     println!("  {g} (if actually needed, the app will fail at startup)");
                 }

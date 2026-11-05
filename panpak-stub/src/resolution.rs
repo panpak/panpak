@@ -215,10 +215,10 @@ fn resolve_in(
         resolution.changed.len()
     ));
     let decisions = &resolution.decisions;
-    if !resolution.changed.is_empty() {
+    if panpak_core::debug_enabled() && !resolution.changed.is_empty() {
         eprintln!("panpak: libraries taken from their other copy so that every symbol is defined: {}", resolution.changed.join(", "));
     }
-    if !resolution.diagnosis.missing.is_empty() {
+    if panpak_core::debug_enabled() && !resolution.diagnosis.missing.is_empty() {
         let d = &resolution.diagnosis;
         eprintln!(
             "panpak: WARNING: {} symbols that the app or its libraries need are defined by none of the chosen libraries; the app will fail if it uses them. `panpak doctor <package>` lists them",

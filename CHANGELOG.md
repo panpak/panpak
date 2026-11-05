@@ -12,6 +12,10 @@
 - **The desktop entry is `panpak.<id>.desktop`** (it was `<id>.desktop`) and carries `StartupWMClass` when the manifest has
   `[desktop] wm_class`. `install` and `update` remove the entry of the old name when panpak wrote it. After an update,
   the launcher of an app is found under the new name in menus and the dock.
+- **Quiet start.** The lines about `allow_missing`, libraries taken from another copy and undefined symbols are no longer printed
+  at every start; they appear with `PANPAK_DEBUG` set. `install` lists the excluded libraries once and `doctor <package>` checks the symbols.
+- `install-runtime` replaces the runtime by a rename (open apps are not disturbed) and takes the flags before or after the file.
+- In the isolated view, writable folders get the Landlock `Refer` right, so a rename between folders works (Qt local sockets).
 - New command `panpak dbus-rules <package>` prints the arguments the stub gives the proxy.
 - A small D-Bus client for the outer stub in `panpak-core` (no new dependencies), with the fuzz targets `fuzz_dbus` and `fuzz_dbus_names`.
 - **No network means no network in the isolated view.** An app whose manifest asks for no network (`network` not

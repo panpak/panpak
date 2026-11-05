@@ -210,6 +210,13 @@ pub struct XdgDir {
     pub access: String,
 }
 
+/// `PANPAK_DEBUG` set: the runtime also says on stderr what it only logs otherwise (library decisions and the like).
+/// At start nothing but real errors and warnings about the permissions is printed; `install` and `doctor` report
+/// the rest once.
+pub fn debug_enabled() -> bool {
+    std::env::var_os("PANPAK_DEBUG").is_some()
+}
+
 /// A window class as written into `StartupWMClass=`: 1 to 100 bytes of ASCII letters, digits, `.`, `_`, `+`, `-`
 /// and inner spaces (a real AppImage uses a class such as `Audacity 4`). No control character, no `;`.
 pub fn valid_wm_class(w: &str) -> bool {
@@ -2028,7 +2035,9 @@ pub mod abi {
             // Never for the glibc family (it would break the whole B-world).
             if allow_missing.iter().any(|g| glob_match(g, n)) {
                 ensure!(!in_family, "{n} in allow_missing but part of glibc: refused");
-                eprintln!("panpak: {n} ignored by explicit allow_missing");
+                if crate::debug_enabled() {
+                    eprintln!("panpak: {n} ignored by explicit allow_missing");
+                }
                 continue;
             }
             // prefer_host: always host, never substituted. Period.

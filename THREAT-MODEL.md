@@ -603,3 +603,9 @@ Status of the project: pre-alpha.
 - **KL-27 The single-instance name is the upstream id.** The app owns its own `app.id` on the session bus, as GTK and KDE
   applications do for single instance. A Flatpak or a distribution package of the same program that runs on the same bus competes for the
   name, and a request from one can reach the other. Other programs cannot own or talk to that name unless the user runs them.
+- **KL-28 No Wayland activation token for a second start.** When the user starts an app that is already running, the
+  second copy hands its request to the first one (for example through the single-instance socket of the toolkit) and
+  exits. A compositor lets the first copy raise its window only with an activation token (`xdg_activation_v1`) from the
+  second one; probably the token does not reach the first copy (not verified). Observed with qBittorrent 5.3.0 on GNOME
+  (Wayland): no second copy opens, but the existing window does not come to the front. A fix needs the runtime to pass
+  `XDG_ACTIVATION_TOKEN`/`DESKTOP_STARTUP_ID` from the launcher to the app and the app to use it; not done.
