@@ -350,9 +350,9 @@ can see; the runtime MUST NOT forward them (measured on GNOME Shell: `Notificati
 are delivered only by the portal.
 
 **`permissions.tray`** (boolean). Lets the app put an icon in the notification area: it may talk to
-`org.kde.StatusNotifierWatcher` and own the item names `org.freedesktop.StatusNotifierItem-2-N` and
-`org.kde.StatusNotifierItem-2-N` for N from 1 to 3. 2 is the process id of the app in the view (§9.2).
-The runtime MUST NOT own or let the app own any other name for this permission, and MUST NOT use a wildcard.
+`org.kde.StatusNotifierWatcher`. The runtime MUST NOT let the app own any `StatusNotifierItem` name for this
+permission, and MUST NOT use a wildcard. An app that cannot own such a name registers the icon with the unique name of
+its connection (measured with Chromium and Qt 6), which the host can read and activate through the filter.
 
 **`permissions.dbus_own`** (list of strings, at most 8, each at most once). Names the app may own
 on the session bus besides its own `app.id`. Each is a D-Bus well-known name of at least three

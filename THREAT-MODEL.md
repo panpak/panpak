@@ -583,11 +583,12 @@ Status of the project: pre-alpha.
   application exposes its widgets and where input can be sent, so one app could read and drive the others. In
   practice: screen readers and other assistive tools do not see the apps in the view. A permission with a bus of its
   own and a closed list is a possible later step.
-- **KL-25 Tray icon names can collide.** Chromium and Electron ask for `org.freedesktop.StatusNotifierItem-<pid>-<n>`, and the
-  `pid` is the one in the view (always 2). The proxy has no wildcard inside a name, so the runtime lists the names for
-  pid 2 and the first three icons. Two such apps with a tray icon at the same time ask for the same name and the
-  second does not get it (inferred, not measured; the second test app did not connect to the bus). Qt 6 registers with its unique name and is not
-  affected.
+- **KL-25 Tray icons are registered with the unique name.** The runtime owns no `StatusNotifierItem-<pid>-<n>` name
+  (the pid is the one in the view, always 2, so two apps would compete for it). Chromium (Zulip 5.13.2) and Qt 6
+  (qBittorrent 5.3.0), with every such name refused, register the icon with the unique name of their connection, and a
+  test host read the item and activated it through the filter, with both apps running at once. Measured on a private bus
+  with a fake watcher and host, not on GNOME Shell with the AppIndicator extension (which GNOME needs for any tray icon).
+  An app or a host that insists on a well-known item name does not get an icon.
 - **KL-26 Actions of the older notification service are not delivered.** `ActionInvoked` and `NotificationClosed` of
   `org.freedesktop.Notifications` are broadcasts in every released GNOME Shell (46.0, 48.0, 49.0 and 50.1:
   `js/ui/notificationDaemon.js` calls `this._dbusImpl.emit_signal('NotificationClosed', ...)` and

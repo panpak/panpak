@@ -61,32 +61,6 @@ const NEVER_OWN: &[(&str, &str)] = &[
 /// The watcher a tray icon registers with. Allowed only with the `tray` permission.
 pub const TRAY_WATCHER: &str = "org.kde.StatusNotifierWatcher";
 
-/// The process id the app has in the view: bubblewrap is 1 and the stub that becomes the app is 2.
-pub const VIEW_APP_PID: u32 = 2;
-
-/// How many icons of one app get a name (the counter at the end of the name).
-const TRAY_ITEMS: u32 = 3;
-
-/// The names a tray icon of an app in the view can ask for: `<prefix>StatusNotifierItem-<pid>-<n>`.
-/// Measured: Chromium (Zulip 5.13.2) asks for `org.freedesktop.StatusNotifierItem-2-1`; Qt 6
-/// (qBittorrent 5.3.0) registers with its unique name and asks for none. The proxy has no wildcard
-/// for the middle of a name, so the names are listed exactly: pid 2, the first three icons, both
-/// prefixes. The pid belongs to the view, not to the host, so two apps with a tray icon of this
-/// kind that run at once ask for the same name; the second does not get it.
-pub fn tray_names() -> Vec<String> {
-    let mut v = Vec::new();
-    for prefix in ["org.freedesktop", "org.kde"] {
-        for n in 1..=TRAY_ITEMS {
-            v.push(format!("{prefix}.StatusNotifierItem-{VIEW_APP_PID}-{n}"));
-        }
-    }
-    v
-}
-
-fn is_tray_name(t: &str) -> bool {
-    tray_names().iter().any(|n| n == t)
-}
-
 fn normalized(s: &str) -> String {
     s.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
 }
@@ -149,8 +123,6 @@ pub struct BusNeeds<'a> {
     pub app_name: &'a str,
     pub entry: &'a str,
     pub perms: Option<&'a Permissions>,
-    /// The tray item names to own when `tray` is on: `tray_names()`.
-    pub tray_names: &'a [String],
 }
 
 /// The arguments for the session bus part of `xdg-dbus-proxy`, after `ADDRESS PATH`.
@@ -187,13 +159,11 @@ pub fn proxy_args(n: &BusNeeds<'_>) -> Vec<String> {
             call(&mut a, "org.freedesktop.Notifications", &format!("org.freedesktop.Notifications.{m}"), "/org/freedesktop/Notifications");
         }
     }
-    if n.perms.is_some_and(|p| p.tray == Some(true)) && !n.tray_names.is_empty() {
+    // The tray: only the watcher. Measured with Chromium (Zulip 5.13.2) and Qt 6 (qBittorrent 5.3.0): with every
+    // `StatusNotifierItem-*` name refused, both register the icon with the unique name of their connection, and the
+    // host reads and activates the item through it. No item name is owned, so two apps never compete for one.
+    if n.perms.is_some_and(|p| p.tray == Some(true)) {
         a.push(format!("--talk={TRAY_WATCHER}"));
-        for t in n.tray_names {
-            if is_tray_name(t) && valid_dotted_name(t, true) && !t.contains('*') {
-                a.push(format!("--own={t}"));
-            }
-        }
     }
     a
 }
@@ -266,14 +236,14 @@ mod tests {
         toml::from_str::<crate::Manifest>(&t).unwrap().permissions.unwrap()
     }
 
-    fn args(extra: &str, tray: &[String]) -> Vec<String> {
+    fn args(extra: &str) -> Vec<String> {
         let p = perms(extra);
-        proxy_args(&BusNeeds { app_id: "com.example.app", app_name: "App", entry: "bin/app", perms: Some(&p), tray_names: tray })
+        proxy_args(&BusNeeds { app_id: "com.example.app", app_name: "App", entry: "bin/app", perms: Some(&p) })
     }
 
     #[test]
     fn the_base_rules_use_call_for_the_portal_and_never_talk() {
-        let a = args("", &[]);
+        let a = args("");
         assert_eq!(a[0], "--filter");
         assert!(a.iter().all(|x| !x.starts_with("--talk=org.freedesktop")), "{a:?}");
         assert!(a.iter().all(|x| !x.starts_with("--see")), "{a:?}");
@@ -295,36 +265,32 @@ mod tests {
 
     #[test]
     fn permissions_add_exactly_their_rules() {
-        let a = args("notifications = true\n", &[]);
+        let a = args("notifications = true\n");
         assert!(a.iter().any(|x| x.contains("org.freedesktop.portal.Notification.*@/org/freedesktop/portal/desktop")));
         assert!(a.iter().any(|x| x == "--call=org.freedesktop.Notifications=org.freedesktop.Notifications.Notify@/org/freedesktop/Notifications"));
         // The old service's signals are broadcasts seen by every client: not forwarded.
         assert!(a.iter().all(|x| !(x.starts_with("--broadcast=org.freedesktop.Notifications") || x.contains("ActionInvoked") || x.contains("NotificationClosed"))), "{a:?}");
         assert!(a.iter().all(|x| x != "--talk=org.freedesktop.Notifications"));
-        // The tray: the watcher, and the exact item names of the view (never a wildcard, never the watcher).
-        assert!(args("tray = true\n", &[]).iter().all(|x| !x.contains("StatusNotifier")), "without names there is no rule");
-        let t = args("tray = true\n", &tray_names());
+        // The tray: the watcher only, no item name.
+        assert!(args("").iter().all(|x| !x.contains("StatusNotifier")));
+        let t = args("tray = true\n");
         assert!(t.iter().any(|x| x == "--talk=org.kde.StatusNotifierWatcher"));
-        assert!(t.iter().any(|x| x == "--own=org.freedesktop.StatusNotifierItem-2-1"));
-        assert!(t.iter().any(|x| x == "--own=org.kde.StatusNotifierItem-2-3"));
-        assert_eq!(t.iter().filter(|x| x.starts_with("--own=") && x.contains("StatusNotifierItem")).count(), 6);
-        // A name that is not one of those is dropped, whatever the caller passes.
-        let t = args("tray = true\n", &["org.kde.*".into(), "org.kde.StatusNotifierWatcher".into(), "org.kde.StatusNotifierItem-99-1".into(), "org.freedesktop.Notifications".into()]);
-        assert!(t.iter().all(|x| !x.starts_with("--own=org.kde") && !x.starts_with("--own=org.freedesktop")), "{t:?}");
+        assert!(t.iter().all(|x| !x.starts_with("--own=") || !x.contains("StatusNotifier")), "{t:?}");
+        assert_eq!(t.iter().filter(|x| x.contains("StatusNotifier")).count(), 1);
     }
 
     #[test]
     fn declared_names_are_owned_and_bad_ones_are_dropped() {
-        let a = args("dbus_own = [\"com.example.app.Second\"]\n", &[]);
+        let a = args("dbus_own = [\"com.example.app.Second\"]\n");
         assert!(a.iter().any(|x| x == "--own=com.example.app.Second"));
-        let a = args("dbus_own = [\"org.freedesktop.Notifications\"]\n", &[]);
+        let a = args("dbus_own = [\"org.freedesktop.Notifications\"]\n");
         assert!(a.iter().all(|x| !x.contains("Notifications")), "{a:?}");
     }
 
     #[test]
     fn an_id_in_a_service_family_does_not_own_its_own_id() {
         let p = perms("");
-        let a = proxy_args(&BusNeeds { app_id: "org.freedesktop.Piper", app_name: "Piper", entry: "bin/piper", perms: Some(&p), tray_names: &[] });
+        let a = proxy_args(&BusNeeds { app_id: "org.freedesktop.Piper", app_name: "Piper", entry: "bin/piper", perms: Some(&p) });
         assert!(a.iter().all(|x| !x.starts_with("--own=")), "{a:?}");
     }
 }

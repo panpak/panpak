@@ -22,7 +22,7 @@ fuzz_target!(|data: &[u8]| {
         assert!(check_dbus_own(&names, app, app_name, "bin/app").is_ok());
         let toml = format!("[app]\nid = \"a.b\"\nname = \"x\"\nversion = \"1\"\nentry = \"x\"\n[permissions]\ndbus_own = [{name:?}]\n");
         let man: panpak_core::Manifest = toml::from_str(&toml).unwrap();
-        let args = proxy_args(&BusNeeds { app_id: "a.b", app_name: "x", entry: "x", perms: man.permissions.as_ref(), tray_names: &[] });
+        let args = proxy_args(&BusNeeds { app_id: "a.b", app_name: "x", entry: "x", perms: man.permissions.as_ref() });
         assert!(args.iter().all(|a| !a.contains('*') || a.contains("@/org/freedesktop/portal/desktop") || a.contains(".*=") || a.contains(".*@")), "{args:?}");
         assert!(args.iter().all(|a| !a.starts_with("--talk=org.freedesktop.portal")), "{args:?}");
     }

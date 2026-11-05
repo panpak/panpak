@@ -266,7 +266,7 @@ The portal object path is always `/org/freedesktop/portal/desktop`.
 | Inhibit (stop sleep or idle during playback) | `--call=...=org.freedesktop.portal.Inhibit.*@...`, `Request.*` and `Session.*` broadcasts | That the app is active | Before beta, everyone |
 | Notification portal | `--call=...=org.freedesktop.portal.Notification.*@...` | Text and icons on screen. No permission check for host apps (`notification.c:1076`) | After beta, a permission |
 | `org.freedesktop.Notifications` (older apps) | `--talk=org.freedesktop.Notifications` | The same, plus server information. Actions are signals to all clients | After beta, the same permission |
-| Tray icons (StatusNotifierItem) | `--own=org.kde.StatusNotifierItem-*`, `--talk=org.kde.StatusNotifierWatcher` | An icon and a menu. The watcher sees the app's object | After beta, a permission |
+| Tray icons (StatusNotifierItem) | `--talk=org.kde.StatusNotifierWatcher` only (the icon is registered with the unique name) **[tested]** | An icon and a menu. The watcher sees the app's object | After beta, a permission |
 | Media keys (MPRIS) | `--own=org.mpris.MediaPlayer2.<name>` and `.<name>.*` | Now-playing information to the shell | After beta, a permission listing `<name>` |
 | Single instance (GTK) | `--own=<id>`, `--talk=<id>` (name = application id) | Only to copies of the same app | Before beta, everyone **[tested]** |
 | Single instance (KDE) | `--own=org.kde.<name>` or the reverse-DNS name from the organization domain | Same | After beta, the manifest declares the name |

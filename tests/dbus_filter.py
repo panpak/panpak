@@ -339,13 +339,12 @@ def run_all(lab, sess, work):
     need(rep['inhibit'].startswith('ok') and rep['own_self'].startswith('ok'), 'base rules lost')
     print('without the permissions: notification and declared name refused, base rules kept: ok')
     data = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/data'
-    # --- 3b. the tray: the watcher, and the item names of the view (the app is process 2 there)
+    # --- 3b. the tray: only the watcher; no item name is owned (the icon is registered with the unique name)
     need(lab.install('[permissions]\ntray = true\n').returncode == 0, 'install failed')
     rep = report(lab)
-    need(rep['pid'] == '2', f'the app is process {rep["pid"]} in the view, the tray names assume 2')
-    need(rep['own_tray'].startswith('ok') and rep['talk_tray'].startswith('ok'), f'tray: {rep["own_tray"]} / {rep["talk_tray"]}')
+    need(rep['own_tray'] == 'denied' and rep['talk_tray'].startswith('ok'), f'tray: {rep["own_tray"]} / {rep["talk_tray"]}')
     need(rep['own_other'] == 'denied' and rep['own_notif'] == 'denied', 'tray permission opened other names')
-    print('tray permission: item name of the view and the watcher reachable, other names still refused: ok')
+    print('tray permission: the watcher is reachable, no item name can be owned, other names still refused: ok')
     need(lab.install('').returncode == 0, 'install failed')
     # --- 4. single instance across two starts
     first = subprocess.Popen([str(lab.home / '.local/bin' / app_dirs.ID), '--hold-name'], env=lab.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
