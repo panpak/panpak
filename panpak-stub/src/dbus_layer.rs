@@ -11,7 +11,7 @@ use crate::view::Mount;
 use anyhow::{bail, ensure, Context, Result};
 use panpak_core::dbus::{self, BusNeeds, Connection};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -123,6 +123,14 @@ fn start_proxy(proxy: &Path, bus: &Path, dir: &Path, args: &[String]) -> Result<
     let mut cmd = Command::new(proxy);
     cmd.arg(format!("--fd={wfd}")).arg(format!("unix:path={}", bus.display())).arg(dir.join("bus")).args(args);
     cmd.env_clear().stdin(Stdio::null());
+    // For diagnosis: `PANPAK_DBUS_LOG=/absolute/file` makes the proxy log what it forwards and what it filters.
+    if let Some(log) = std::env::var_os("PANPAK_DBUS_LOG").map(PathBuf::from).filter(|p| p.is_absolute()) {
+        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&log) {
+            if let Ok(g) = f.try_clone() {
+                cmd.arg("--log").stdout(Stdio::from(g)).stderr(Stdio::from(f));
+            }
+        }
+    }
     // SAFETY: only fcntl runs between fork and exec; it clears close-on-exec on the write end.
     unsafe {
         cmd.pre_exec(move || {

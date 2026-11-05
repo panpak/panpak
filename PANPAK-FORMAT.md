@@ -873,7 +873,7 @@ gives it a filtered bus when all of these hold: the isolated view is used; the m
 bus in `sockets_allow` (then the app has the whole bus and nothing is filtered); a systemd user manager is
 reachable on `$XDG_RUNTIME_DIR/bus`; the session bus socket exists; and `xdg-dbus-proxy` 0.1.5 or newer is at
 `/usr/bin/xdg-dbus-proxy` or `/run/current-system/sw/bin/xdg-dbus-proxy` (never from `PATH`, as for bubblewrap).
-When one is missing the app gets no bus and `doctor` says which. A failure of the user's systemd or of the proxy
+When one is missing the app gets no bus and `doctor` says which. For diagnosis, `PANPAK_DBUS_LOG=<absolute file>` in the environment of the outer runtime makes the proxy log what it forwards and filters (the app cannot set it). A failure of the user's systemd or of the proxy
 that is not a missing component MUST be printed at the start.
 
 *Identity.* The outer runtime MUST move itself into a new transient scope named
