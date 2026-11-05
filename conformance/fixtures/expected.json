@@ -414,6 +414,13 @@
   ],
   "ok": false
  },
+ "invalid-wm-class-edge-space.panpak": {
+  "code": "PANPAK-E0007",
+  "err": [
+   "wm_class"
+  ],
+  "ok": false
+ },
  "invalid-wm-class-empty.panpak": {
   "code": "PANPAK-E0007",
   "err": [
@@ -428,7 +435,7 @@
   ],
   "ok": false
  },
- "invalid-wm-class-space.panpak": {
+ "invalid-wm-class-semicolon.panpak": {
   "code": "PANPAK-E0007",
   "err": [
    "wm_class"

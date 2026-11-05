@@ -302,7 +302,8 @@ def main():
         ("dbus-own-short", '[permissions]\ndbus_own = ["org.example"]\n', "dbus_own"),
         ("dbus-own-twice", '[permissions]\ndbus_own = ["org.example.a.B", "org.example.a.B"]\n', "dbus_own"),
         ("dbus-own-many", '[permissions]\ndbus_own = [' + ", ".join(f'"org.example.a.n{i}"' for i in range(9)) + ']\n', "dbus_own"),
-        ("wm-class-space", '[desktop]\nwm_class = "My App"\n', "wm_class"),
+        ("wm-class-edge-space", '[desktop]\nwm_class = " App"\n', "wm_class"),
+        ("wm-class-semicolon", '[desktop]\nwm_class = "App;X"\n', "wm_class"),
         ("wm-class-empty", '[desktop]\nwm_class = ""\n', "wm_class"),
         ("wm-class-long", '[desktop]\nwm_class = "' + "a" * 101 + '"\n', "wm_class"),
     ]:

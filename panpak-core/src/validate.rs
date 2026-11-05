@@ -294,8 +294,8 @@ fn desktop(d: &crate::Desktop) -> Result<()> {
         }
     }
     if let Some(w) = &d.wm_class {
-        if w.is_empty() || w.len() > 100 || !w.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-')) {
-            return Err(bad_field("desktop.wm_class", "1 to 100 characters of letters, digits and . _ + -"));
+        if !crate::valid_wm_class(w) {
+            return Err(bad_field("desktop.wm_class", "1 to 100 characters of letters, digits, space and . _ + -, no space at either end"));
         }
     }
     Ok(())
@@ -536,7 +536,8 @@ mod tests {
         assert_eq!(code(ok("[permissions]\ndbus_own=[\"org.freedesktop.Notifications\"]\n")), ErrorCode::E0007);
         assert_eq!(code(ok("[permissions]\ndbus_own=[\"org.example.*\"]\n")), ErrorCode::E0007);
         assert_eq!(code(ok("[permissions]\ndbus_own=[\"a.b.c1\",\"a.b.c2\",\"a.b.c3\",\"a.b.c4\",\"a.b.c5\",\"a.b.c6\",\"a.b.c7\",\"a.b.c8\",\"a.b.c9\"]\n")), ErrorCode::E0007);
-        for w in ["", "a b", "a;b", "a\\nb", "é"] {
+        ok("[desktop]\nwm_class=\"Audacity 4\"\n").unwrap();
+        for w in ["", " a", "a ", "a;b", "a\\nb", "é", "a\\tb"] {
             assert_eq!(code(ok(&format!("[desktop]\nwm_class={w:?}\n"))), ErrorCode::E0007, "{w:?}");
         }
         assert_eq!(code(ok(&format!("[desktop]\nwm_class=\"{}\"\n", "a".repeat(101)))), ErrorCode::E0007);

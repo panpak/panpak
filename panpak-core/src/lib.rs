@@ -210,6 +210,16 @@ pub struct XdgDir {
     pub access: String,
 }
 
+/// A window class as written into `StartupWMClass=`: 1 to 100 bytes of ASCII letters, digits, `.`, `_`, `+`, `-`
+/// and inner spaces (a real AppImage uses a class such as `Audacity 4`). No control character, no `;`.
+pub fn valid_wm_class(w: &str) -> bool {
+    !w.is_empty()
+        && w.len() <= 100
+        && !w.starts_with(' ')
+        && !w.ends_with(' ')
+        && w.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-' | b' '))
+}
+
 /// `[desktop]`: what the generated `.desktop` file declares.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Desktop {

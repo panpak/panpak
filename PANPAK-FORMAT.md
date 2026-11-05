@@ -369,7 +369,7 @@ letters and digits only and lower case (KDE applications register that name for 
 app's own id: an id below a listed family is not owned on the bus. `install` and `update` MUST show each name and
 count a name that the installed version did not have as a new permission.
 
-**`desktop.wm_class`** (string, 1 to 100 bytes of `A-Z a-z 0-9 . _ + -`). The class the app sets on its windows
+**`desktop.wm_class`** (string, 1 to 100 bytes of `A-Z a-z 0-9 . _ + -` and inner spaces, none at either end). The class the app sets on its windows
 (Wayland `app_id` or X11 `WM_CLASS`). `install` and `update` write it as `StartupWMClass=` in the desktop entry,
 which is how the desktop groups the windows under the entry. Without it the entry has no `StartupWMClass`.
 

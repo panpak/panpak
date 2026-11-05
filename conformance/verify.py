@@ -314,7 +314,7 @@ def check_bus(man):
         if not own_name_ok(n, man["app"]) or n in own[:i]:
             raise Fail(f"invalid manifest field permissions.dbus_own: {str(n)[:60]!r}")
     w = man.get("desktop", {}).get("wm_class")
-    if w is not None and not (isinstance(w, str) and re.fullmatch(r"[A-Za-z0-9._+-]{1,100}", w)):
+    if w is not None and not (isinstance(w, str) and re.fullmatch(r"[A-Za-z0-9._+-]([A-Za-z0-9._+ -]{0,98}[A-Za-z0-9._+-])?", w)):
         raise Fail("invalid manifest field desktop.wm_class")
 
 

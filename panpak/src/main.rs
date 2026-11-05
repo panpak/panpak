@@ -1204,7 +1204,7 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     }
     // The window class the app sets, from the AppImage's own desktop file: the desktop groups windows by it.
     match dwm.as_deref() {
-        Some(w) if !w.is_empty() && w.len() <= 100 && w.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-')) => {
+        Some(w) if panpak_core::valid_wm_class(w) => {
             toml.push_str(&format!("[desktop]\nwm_class = {}\n", q(w)));
         }
         Some(w) => eprintln!("panpak convert: WARNING: StartupWMClass {w:?} in the desktop file is not a plain window class; not used"),
@@ -1369,7 +1369,7 @@ fn desktop_file(app_id: &str, name: &str, launcher: &Path, schemes: &[String], w
     // The window class the app sets, so that the desktop groups its windows under this entry.
     let class = match wm_class {
         Some(w) => {
-            ensure!(!w.is_empty() && w.len() <= 100 && w.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-')), "wm_class {w:?} is not a plain window class");
+            ensure!(panpak_core::valid_wm_class(w), "wm_class {w:?} is not a plain window class");
             format!("StartupWMClass={w}\n")
         }
         None => String::new(),
