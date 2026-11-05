@@ -588,9 +588,17 @@ Status of the project: pre-alpha.
   pid 2 and the first three icons. Two such apps with a tray icon at the same time ask for the same name and the
   second does not get it (inferred, not measured; the second test app did not connect to the bus). Qt 6 registers with its unique name and is not
   affected.
-- **KL-26 Actions of the older notification service are not delivered.** The signals that carry them are broadcasts
-  (KL-5). In practice: notifications of apps that use `org.freedesktop.Notifications` (for example Qt's `showMessage`)
-  are shown, but a click or an action button may not reach the app (which apps lose actions is to be measured with real apps). Apps that use the portal are not affected.
+- **KL-26 Actions of the older notification service are not delivered.** `ActionInvoked` and `NotificationClosed` of
+  `org.freedesktop.Notifications` are broadcasts in every released GNOME Shell (46.0, 48.0, 49.0 and 50.1:
+  `js/ui/notificationDaemon.js` calls `this._dbusImpl.emit_signal('NotificationClosed', ...)` and
+  `emit_signal('ActionInvoked', ...)` without a destination, around lines 296 to 306) and in KDE Plasma
+  (`libnotificationmanager/server.cpp` lines 70, 83 and 94 emit the adaptor signals, which QtDBus sends without a
+  destination). Only the development branch of GNOME Shell (after 50.1) sends them to the caller. A filter that forwarded
+  these signals would forward every client's notification events, so they are not forwarded. In practice: notifications
+  of apps that use `org.freedesktop.Notifications` directly (libnotify, so Electron and most Qt apps through
+  KNotification) are shown, but a click or an action button does not reach the app. Apps that use the portal are not
+  affected, and GTK apps use it because the layer sets `GTK_USE_PORTAL=1`. Which apps lose actions is derived from the
+  toolkit, not measured with each app.
 - **KL-27 The single-instance name is the upstream id.** The app owns its own `app.id` on the session bus, as GTK and KDE
   applications do for single instance. A Flatpak or a distribution package of the same program that runs on the same bus competes for the
   name, and a request from one can reach the other. Other programs cannot own or talk to that name unless the user runs them.
