@@ -888,9 +888,7 @@ fn cmd_install_runtime(src: &Path, release_key: Option<&str>, allow_unsigned: bo
     let abi = stub_abi(&stub)?;
     let dest = store.join("runtimes").join(abi.to_string());
     fs::create_dir_all(&dest)?;
-    fs::copy(&stub, dest.join("panpak-stub"))?;
-    #[cfg(unix)]
-    fs::set_permissions(dest.join("panpak-stub"), fs::Permissions::from_mode(0o755))?;
+    install_file_atomically(&stub, &dest.join("panpak-stub"), 0o755)?;
     let _ = fs::remove_dir_all(&stage);
     println!("runtime {abi} installed from verified release ({})", src.display());
     Ok(())
@@ -911,13 +909,31 @@ fn find_in(dir: &Path, name: &str) -> Result<PathBuf> {
     anyhow::bail!("{name} not found in {}", dir.display())
 }
 
+/// Copy `src` next to `dest` and rename it over `dest`. Writing into a runtime that apps are executing fails with
+/// "Text file busy"; a rename leaves the running processes on the old file and gives new starts the new one.
+fn install_file_atomically(src: &Path, dest: &Path, mode: u32) -> Result<()> {
+    let dir = dest.parent().context("destination without a directory")?;
+    let name = dest.file_name().context("destination without a file name")?.to_string_lossy();
+    let tmp = dir.join(format!(".{name}.panpak-tmp-{}", std::process::id()));
+    let _ = fs::remove_file(&tmp);
+    let res = (|| -> Result<()> {
+        fs::copy(src, &tmp)?;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))?;
+        fs::File::open(&tmp)?.sync_all()?;
+        fs::rename(&tmp, dest)?;
+        Ok(())
+    })();
+    if res.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    res.with_context(|| format!("install {}", dest.display()))
+}
+
 fn install_runtime_stub(stub: &Path, store: &Path) -> Result<()> {
     let abi = stub_abi(stub)?;
     let dest = store.join("runtimes").join(abi.to_string());
     fs::create_dir_all(&dest)?;
-    fs::copy(stub, dest.join("panpak-stub"))?;
-    #[cfg(unix)]
-    fs::set_permissions(dest.join("panpak-stub"), fs::Permissions::from_mode(0o755))?;
+    install_file_atomically(stub, &dest.join("panpak-stub"), 0o755)?;
     println!("runtime {abi} installed from {} (NOT verified)", stub.display());
     Ok(())
 }
@@ -2784,6 +2800,26 @@ mod tests {
         assert!(!desktop_is_ours("[Desktop Entry]\nType=Application\nName=Mine\nExec=/bin/mine\n", "org.x", l));
         let old = "[Desktop Entry]\nType=Application\nName=X\nExec=/home/u/.local/bin/org.x %U\nTerminal=false\nCategories=Utility;\nMimeType=application/x-panpak;\n";
         assert!(desktop_is_ours(old, "org.x", l));
+    }
+
+    #[test]
+    fn a_runtime_in_use_is_replaced_by_a_rename() {
+        let d = scratch("atomic");
+        let dest = d.join("panpak-stub");
+        fs::copy("/bin/sleep", &dest).unwrap();
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut running = std::process::Command::new(&dest).arg("30").spawn().unwrap();
+        // Writing into the file in use fails; the rename does not.
+        assert!(fs::OpenOptions::new().write(true).open(&dest).is_err(), "the test needs a busy file");
+        let new = d.join("new");
+        fs::write(&new, "#!/bin/sh\necho 2\n").unwrap();
+        install_file_atomically(&new, &dest, 0o755).unwrap();
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "#!/bin/sh\necho 2\n");
+        assert_eq!(fs::metadata(&dest).unwrap().permissions().mode() & 0o777, 0o755);
+        assert!(running.try_wait().unwrap().is_none(), "the running copy goes on");
+        assert_eq!(fs::read_dir(&d).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains("panpak-tmp")).count(), 0);
+        running.kill().unwrap();
+        running.wait().unwrap();
     }
 
     #[test]
