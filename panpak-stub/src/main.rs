@@ -679,11 +679,14 @@ fn build_ruleset(
     // across trees and apps: a write would alter them everywhere).
     let rx = AccessFs::from_read(abi) | AccessFs::Execute;
     rs = rs.add_rule(PathBeneath::new(panpak_core::open_o_path(tree).with_context(|| format!("open {}", tree.display()))?, rx))?;
-    // Writable dirs (app roots, rw home paths, tmp, dev): everything EXCEPT Refer. From ABI V2
-    // from_all includes Refer (link/rename across different dirs): granting it
-    // would allow hardlinks to tree files. Without Refer, same-dir
-    // renames stay possible (atomic-save) but no external links.
-    let rw = AccessFs::from_all(abi) & !AccessFs::Refer;
+    // Writable dirs (app roots, rw home paths, tmp, dev): every right except Refer (link and rename between
+    // directories, ABI V2). Refer on a writable dir would let the app hard-link a tree file into it (the tree has no
+    // Refer, but Landlock only asks for the destination to hold the rights of the source), and a write through that
+    // link would change the shared blob. Without Refer, a rename inside one directory still works (atomic save).
+    // In the isolated view the tree and the system are read-only mounts of their own, and the kernel refuses a link
+    // or a move across mounts (EXDEV, tests/app_dirs.py), so there Refer is granted: a program that creates a file in
+    // a private folder and renames it into place, as Qt does for its local sockets, then works.
+    let rw = if access.in_view { AccessFs::from_all(abi) } else { AccessFs::from_all(abi) & !AccessFs::Refer };
     for dir in &access.rw {
         rs = rs.add_rule(PathBeneath::new(panpak_core::open_o_path(dir).with_context(|| format!("open {}", dir.display()))?, rw))?;
     }

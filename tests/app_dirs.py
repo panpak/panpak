@@ -31,6 +31,10 @@ try() { if ( eval "$2" ) 2>/dev/null; then echo "$1=ok"; else echo "$1=deny"; fi
 {
 try write_config 'echo x > "$XDG_CONFIG_HOME/c.txt"'
 try write_data 'echo x > "$XDG_DATA_HOME/d.txt"'
+try rename_across_dirs 'mkdir -p "$XDG_DATA_HOME/r/sub" && : > "$XDG_DATA_HOME/r/sub/f" && mv "$XDG_DATA_HOME/r/sub/f" "$XDG_DATA_HOME/r/f"'
+try link_tree_file 'ln "$(readlink -f "$0")" "$XDG_DATA_HOME/r/stolen"'
+try move_tree_file 'mv "$(readlink -f "$0")" "$XDG_DATA_HOME/r/stolen2"'
+try link_system_file 'ln /usr/bin/true "$XDG_DATA_HOME/r/u"'
 try write_state 'echo x > "$XDG_STATE_HOME/s.txt"'
 try write_cache 'echo x > "$XDG_CACHE_HOME/k.txt"'
 try write_tmpdir 'echo x > "$TMPDIR/t.txt"'
@@ -183,10 +187,10 @@ def main():
     assert rc == 0, err
     userdata = h / f'.local/share/panpak/userdata/{ID}'
     cache = h / f'.cache/panpak/{ID}'
-    expect(rep, write_config='ok', write_data='ok', write_state='ok', write_cache='ok', write_tmpdir='ok',
+    expect(rep, write_config='ok', write_data='ok', rename_across_dirs='ok', link_tree_file='deny', move_tree_file='deny', link_system_file='deny', write_state='ok', write_cache='ok', write_tmpdir='ok',
            write_home_config='deny', write_home_file='deny', read_gtk='ok', write_gtk='deny', read_gh='deny',
-           list_config='deny', read_icons='ok', write_icons='deny', read_old_appdata='deny',
-           read_other_userdata='deny', read_notes='deny', write_notes='deny', read_docs='deny', write_docs='deny',
+           list_config='ok' if VIEW else 'deny', read_icons='ok', write_icons='deny', read_old_appdata='deny',
+           read_other_userdata='ok' if VIEW else 'deny', read_notes='deny', write_notes='deny', read_docs='deny', write_docs='deny',
            write_tmp='ok', args='one two', fonts_found='1')
     assert (userdata / 'config/c.txt').exists() and (userdata / 'data/d.txt').exists()
     assert (userdata / 'state/s.txt').exists() and (cache / 'k.txt').exists() and (userdata / 'tmp/t.txt').exists() != VIEW
