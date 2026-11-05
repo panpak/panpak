@@ -192,3 +192,41 @@ pub fn describe_status(s: &dbus::ProxyStatus) -> String {
         Broken { path, why } => format!("{} does not work: {why}", path.display()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn man(extra: &str) -> panpak_core::Manifest {
+        toml::from_str(&format!("[app]\nid = \"org.example.app\"\nname = \"App\"\nversion = \"1\"\nentry = \"bin/app\"\n{extra}")).unwrap()
+    }
+
+    #[test]
+    fn a_manifest_that_lists_the_session_bus_gets_no_layer_and_no_warning() {
+        let m = man("[permissions]\nsockets_allow = [\"$XDG_RUNTIME_DIR/bus\"]\n");
+        let e = start(&Request { man: &m, runtime_dir: Path::new("/nonexistent") }).err().expect("no layer");
+        assert!(e.downcast_ref::<Quiet>().is_some(), "{e:#}");
+    }
+
+    #[test]
+    fn the_unit_is_the_last_part_of_the_cgroup() {
+        // This test process is in some cgroup; the function returns its last component or nothing, never panics.
+        if let Some(u) = current_unit() {
+            assert!(!u.contains('/') && !u.is_empty());
+        }
+    }
+
+    #[test]
+    fn tokens_are_eight_hex_digits_and_differ() {
+        let (a, b) = (token().unwrap(), token().unwrap());
+        assert!(a.len() == 8 && a.bytes().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn status_texts_name_what_is_missing() {
+        use dbus::ProxyStatus::*;
+        assert!(describe_status(&NotFound).contains("/usr/bin/xdg-dbus-proxy"));
+        assert!(describe_status(&TooOld { path: "/x".into(), version: (0, 1, 4) }).contains("0.1.4"));
+    }
+}

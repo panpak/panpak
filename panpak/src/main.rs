@@ -1080,6 +1080,7 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     let mut dexec: Option<String> = None;
     let mut dexec_args: Vec<String> = Vec::new();
     let mut dver: Option<String> = None;
+    let mut dwm: Option<String> = None;
     if let Some(d) = &desktop {
         let txt = fs::read_to_string(d).unwrap_or_default();
         let mut in_entry = false;
@@ -1106,6 +1107,8 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
                 dexec_args = parts.map(|s| s.to_string()).collect();
             } else if let Some(v) = line.strip_prefix("Version=") {
                 dver = Some(v.to_string());
+            } else if let Some(v) = line.strip_prefix("StartupWMClass=") {
+                dwm = Some(v.trim().to_string());
             }
         }
     }
@@ -1198,6 +1201,14 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
             toml.push_str(&q(g));
         }
         toml.push_str("]\n");
+    }
+    // The window class the app sets, from the AppImage's own desktop file: the desktop groups windows by it.
+    match dwm.as_deref() {
+        Some(w) if !w.is_empty() && w.len() <= 100 && w.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-')) => {
+            toml.push_str(&format!("[desktop]\nwm_class = {}\n", q(w)));
+        }
+        Some(w) => eprintln!("panpak convert: WARNING: StartupWMClass {w:?} in the desktop file is not a plain window class; not used"),
+        None => eprintln!("panpak convert: WARNING: the desktop file has no StartupWMClass; the desktop may not group the app's windows under its entry (set [desktop] wm_class in panpak.toml if you know the class)"),
     }
     toml.push_str(&format!("[origin]\nconverted_from = {}\nversion = {}\nsha256 = {}\nsigned_by_upstream = false\n", q(&src_name), q(&version), q(&src_sha256)));
     toml.push_str(&format!("[update]\nkey = {}\n", q(&key)));
@@ -1608,6 +1619,25 @@ fn confirm(question: &str, yes: bool, cancelled: ErrorCode, what: &str) -> Resul
     Ok(())
 }
 
+/// What the app gets as a session bus on this machine, in one line, for `install` and `update`.
+fn bus_filter_state(view: bool, perms: Option<&panpak_core::Permissions>) -> String {
+    use panpak_core::dbus::ProxyStatus::*;
+    if panpak_core::allows_session_bus(perms) {
+        return "the whole bus (the manifest lists its socket)".to_string();
+    }
+    if !view {
+        return "none (no isolated view)".to_string();
+    }
+    let user_bus = std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|rt| Path::new(&rt).join("bus").exists());
+    match panpak_core::dbus::proxy_status() {
+        Usable { .. } if user_bus => "filtered (xdg-dbus-proxy): appearance and inhibit portals, and what the permissions above ask for".to_string(),
+        Usable { .. } => "none (no systemd user bus at $XDG_RUNTIME_DIR/bus)".to_string(),
+        NotFound => "none (xdg-dbus-proxy is not installed: no portals, notifications or tray icon)".to_string(),
+        TooOld { version, .. } => format!("none (xdg-dbus-proxy {}.{}.{} is older than 0.1.5)", version.0, version.1, version.2),
+        Broken { .. } => "none (xdg-dbus-proxy does not work; see `panpak doctor`)".to_string(),
+    }
+}
+
 /// Print what the package may do: permissions and extra start arguments or variables.
 fn print_permissions(man: &panpak_core::Manifest) {
     let lines = panpak_core::describe_permissions(man);
@@ -1633,6 +1663,7 @@ fn print_permissions(man: &panpak_core::Manifest) {
     if let Some(w) = iso.level.warning() {
         println!("{w}");
     }
+    println!("session bus: {}", bus_filter_state(view.usable(), man.permissions.as_ref()));
     if let Some(l) = &man.launch {
         let args = l.args.as_deref().unwrap_or_default();
         if !args.is_empty() {
