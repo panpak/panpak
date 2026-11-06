@@ -40,6 +40,32 @@ def pct(xs, p):
     return xs[min(len(xs) - 1, int(round(p / 100 * (len(xs) - 1))))]
 
 
+def write_csv(path, label, rel, runs, dbus, view, t_direct, t_launch, t_bare):
+    import datetime
+    import platform
+
+    def sh(*argv):
+        return subprocess.run(argv, capture_output=True, text=True).stdout.strip()
+
+    new = not path.exists()
+    with open(path, 'a') as f:
+        if new:
+            cpu = next((l.split(':', 1)[1].strip() for l in open('/proc/cpuinfo') if l.startswith('model name')), '?')
+            mem = next((int(l.split()[1]) for l in open('/proc/meminfo') if l.startswith('MemTotal')), 0)
+            osr = dict(l.rstrip().split('=', 1) for l in open('/etc/os-release') if '=' in l)
+            meta = [('date_utc', datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')), ('cpu', cpu), ('threads', os.cpu_count()),
+                    ('ram_mib', mem // 1024), ('kernel', platform.release()), ('os', osr.get('PRETTY_NAME', '?').strip('"')),
+                    ('bubblewrap', sh('/usr/bin/bwrap', '--version')), ('script', 'tests/startup_budget.py'),
+                    ('app', 'a shell script that exits at once, started directly and through the installed launcher, in turn'),
+                    ('columns', 'cost_ms is median(launcher) - median(direct); dbus is the filtered session bus layer; view is whether bubblewrap could make the view')]
+            f.writelines(f'# {k}: {v}\n' for k, v in meta)
+            f.write('label,panpak_sha256,stub_sha256,runs,dbus,view,direct_median_ms,direct_p90_ms,launcher_median_ms,launcher_p90_ms,bare_bwrap_median_ms,cost_ms\n')
+        h = lambda name: sh('sha256sum', str(rel / name)).split()[0][:16]
+        md, ml = statistics.median(t_direct), statistics.median(t_launch)
+        mb = f'{statistics.median(t_bare):.1f}' if t_bare else ''
+        f.write(f'{label},{h("panpak")},{h("panpak-stub")},{runs},{"yes" if dbus else "no"},{"yes" if view else "no"},{md:.1f},{pct(t_direct, 90):.1f},{ml:.1f},{pct(t_launch, 90):.1f},{mb},{ml - md:.1f}\n')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--runs', type=int, default=40)
@@ -47,6 +73,8 @@ def main():
     ap.add_argument('--dbus', action='store_true', help='ask for notifications, so that the filtered session bus is started')
     ap.add_argument('--advisory', action='store_true', help='report only; never fail on the budget')
     ap.add_argument('--bin-dir', default=str(REL), help='folder with panpak and panpak-stub')
+    ap.add_argument('--csv', help='append one row to this file (the machine and the versions are written at the top of a new file)')
+    ap.add_argument('--label', default='', help='name of this run in the CSV row (for example the commit or the branch)')
     ap.add_argument('--work', default=str(ROOT / 'target/startup-budget'))
     a = ap.parse_args()
     if a.budget_ms is None:
@@ -131,6 +159,8 @@ def main():
         mb = statistics.median(t_bare)
         print(f'bare bwrap (true):          median {mb:6.1f} ms   p90 {pct(t_bare, 90):6.1f} ms   (bubblewrap alone; panpak adds {ml - mb - md:+.1f} ms to it)')
     print(f'fixed cost of panpak: {cost:.1f} ms (budget {a.budget_ms:.0f} ms)')
+    if a.csv:
+        write_csv(Path(a.csv), a.label, rel, a.runs, a.dbus, view, t_direct, t_launch, t_bare)
     run(rel / 'panpak', 'remove', ID)
     if a.dbus:
         # The runtime folder is the real one: take away only the folder of this test app.

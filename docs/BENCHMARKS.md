@@ -132,6 +132,27 @@ the assumption that it is the same for these commands as for `/bin/true`, which 
 "without" side also runs a failed attempt to use bubblewrap at each start (the result of a failure is not
 cached), which is small and not separated.
 
+## Fixed cost of a start
+
+Method: `tests/startup_budget.py`. The app is a shell script that exits at once. It is started directly (`/bin/sh script`)
+and through the installed launcher, in turn, 40 times each after 3 discarded rounds; the cost is the difference of the
+medians. "D-Bus" means the filtered session bus (a systemd scope and `xdg-dbus-proxy`), which the real desktop session
+gives and a bare test runner does not. The rows are in [`bench-data/startup-budget.csv`](bench-data/startup-budget.csv).
+
+| Build | D-Bus | Direct | Launcher | Fixed cost |
+|---|---|---:|---:|---:|
+| main (5c3b3be) | no | 1.0 ms | 40.9 ms | 39.9 ms |
+| this branch | no | 1.0 ms | 24.8 ms | 23.9 ms |
+| main (5c3b3be) | yes | 1.0 ms | 57.4 ms | 56.4 ms |
+| this branch | yes | 1.0 ms | 39.8 ms | 38.8 ms |
+
+What was done: the two `gsettings` queries start with the process and are read at the end of the preparation; the
+D-Bus layer (scope and proxy) is built on another thread from the moment the package is verified, the proxy starts while
+systemd makes the scope, and the version of the proxy is remembered between starts instead of asking it at every start.
+What is left with D-Bus is mostly systemd's `StartTransientUnit` (10 to 20 ms) and the view itself (about 15 ms, see above).
+`PANPAK_DEBUG=1` prints the time of each stage. The CI runs the script as an advisory step (budget 30 ms, 45 ms with D-Bus);
+the step moves into the gate after a week of numbers from the runners.
+
 ## Library resolution
 
 Method: the same installed app, started alternately with the resolution cache and with it disabled
