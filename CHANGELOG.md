@@ -9,7 +9,11 @@
   PNG gets the generic icon and a warning. New crate `panpak-icon`, fuzz target `fuzz_icon`.
 - **Icons are cleaned by `pack` and `convert`.** Real PNG files carry text, profile, gamma and other chunks that `install` does not accept. `pack` and `convert` now
   keep only `IHDR`, `PLTE`, `tRNS`, `IDAT` and `IEND` (byte for byte; the pixels and the transparency are not touched), print the chunks they removed from each icon, and
-  `install` stays strict. `convert` writes every icon, whatever its source (file, link, `.DirIcon`, `--icon`, a path through a link folder such as `usr -> .`), to `usr/share/icons/panpak/<side>.png`.
+  `install` stays strict. `pack` puts the cleaned icons in the package as generated entries `.panpak/icons/<side>.png` (the signed manifest points there); `convert` reads the icons
+  (links followed only inside the tree) and hands them to `pack` in memory: it writes no icon file. `.panpak/` is the folder that only `pack` writes.
+- **`convert` no longer writes through links of the AppImage.** The unpacked tree is a private `mkdtemp` folder, and every write to it (files, folders, links, the wrapper
+  scripts and `panpak.toml`) goes through folder descriptors that do not follow links. Before, an AppImage with `bin -> /somewhere` or `panpak.toml -> /some/file` could make
+  `convert` write outside its folder.
 - **A stable `panpak` and a stable stub.** The store has `bin/panpak-stub` (a link to the best runtime) and `bin/panpak`. Launchers run the stub
   through the link, so a new runtime reaches every app at its next start, and the menu action "Uninstall" runs `bin/panpak`: no launcher or
   entry names the folder from which `panpak` was run any more. `install-runtime` writes both with a rename; `install` copies `panpak` when there is none and warns when the one in

@@ -373,9 +373,13 @@ count a name that the installed version did not have as a new permission.
 (Wayland `app_id` or X11 `WM_CLASS`). `install` and `update` write it as `StartupWMClass=` in the desktop entry,
 which is how the desktop groups the windows under the entry. Without it the entry has no `StartupWMClass`.
 
-**`desktop.icons`** (array of at most 6 strings, each a relative path to a `.png` file of the tree, same path rules as
-`app.entry`, no duplicates). The icons of the app in the menu. `pack` and `convert` refuse a file that does not pass the rules below;
-`install` and `update` check each file again before anything is written, and refuse the package if one fails.
+**`desktop.icons`** (array of at most 6 strings, each a relative path to a `.png` file, no duplicates). The icons of the app in the
+menu. In the `panpak.toml` that `pack` reads they are the *sources*: regular files of the tree (same path rules as `app.entry`; a path that goes
+through a link is not a regular file of the tree and is refused). `pack` reads them, cleans them (below) and adds the result to the package as
+generated entries `.panpak/icons/<side>.png`, where `<side>` is the side of the image; of two sources with the same side the first one stays, and
+at most 6 sizes are kept, the largest first. The manifest that `pack` signs lists those generated paths, not the sources, so in an installed
+package `desktop.icons` always points below `.panpak/icons/`. `pack` also takes icons from its caller in memory (`panpak convert` does this) and
+never writes them to the tree. `install` and `update` check each file again before anything is written, and refuse the package if one fails.
 A file in a package MUST be a PNG of at most 256 KiB whose chunks are all in this list: `IHDR` (first, 13 bytes), `PLTE`,
 `tRNS` (each at most once, before the image data), `IDAT` (together) and `IEND` (last, nothing after it); every chunk
 checksum MUST be right. Real PNG files carry other chunks (text, colour profile, gamma, resolution, time, background, animation),
@@ -1220,8 +1224,9 @@ allowed but verified one by one; symbol-version comparison
 ordinary regular files under `.panpak/licenses/`, because the runtime stub is
 redistributed inside third-party packages. This uses the normal tree and index
 rules of §4 and changes nothing in the file format, the manifest or the
-verification rules. The top-level name `.panpak` is reserved for this purpose:
-`pack` refuses a tree that already contains it. Readers show the texts with
+verification rules. The top-level name `.panpak` is reserved for what `pack` generates: the license texts in `.panpak/licenses/` and the cleaned
+icons in `.panpak/icons/<side>.png` (§3.1.3). Only `pack` writes there; a tree that already contains `.panpak` is refused, and `convert`
+never writes it either. Readers show the texts with
 `<package> --panpak-licenses` (a stub flag, removed before the application's
 arguments) or `panpak licenses <package>`.
 

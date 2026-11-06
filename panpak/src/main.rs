@@ -10,6 +10,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod icons;
 mod remove;
+mod treewriter;
 use anyhow::{bail, ensure, Context, Result};
 use panpak_core::desktop::{self as dsk, desktop_is_ours, desktop_path, launcher_is_ours, legacy_desktop_path, sh_quote};
 use panpak_core::{bail_code, coded, ensure_code, ErrorCode};
@@ -591,7 +592,7 @@ fn walk_tree(root: &Path) -> Result<Vec<PayloadEntry>> {
     Ok(out)
 }
 
-fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, out: Option<&Path>) -> Result<PathBuf> {
+fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, out: Option<&Path>, extra_icons: Vec<IconInput>) -> Result<PathBuf> {
     let input_toml = fs::read_to_string(dir.join("panpak.toml")).context("read <folder>/panpak.toml")?;
     // Strict schema in pack: future keys must not silently disappear.
     panpak_core::check_panpak_toml_schema(&input_toml)?;
@@ -645,18 +646,37 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
         man.app.entry
     );
 
-    // The icons are normalized here (only IHDR, PLTE, tRNS, IDAT and IEND are kept) so that a package never holds
-    // one that `install` would refuse; the file in the tree is not touched.
+    // The icons. The sources are the files that `desktop.icons` lists (regular files of the tree, read as such) and the
+    // icons that the caller hands over in memory (`convert`). Each is cleaned and checked, and the package gets the
+    // result as generated entries `.panpak/icons/<side>.png`, which is where the signed manifest points. Nothing is written
+    // to the tree, and the files of the tree stay as they are.
+    let mut sources: Vec<IconInput> = extra_icons;
     for icon in man.desktop.as_ref().and_then(|d| d.icons.as_deref()).unwrap_or_default() {
-        let item = payload.iter_mut().find(|p| p.entry.path == Path::new(icon));
+        let item = payload.iter().find(|p| p.entry.path == Path::new(icon));
         let item = item.filter(|p| matches!(p.entry.kind, Kind::File { .. }) && p.source.is_some());
         let item = item.with_context(|| format!("desktop.icons: {icon} is not a regular file of the tree"))?;
         let data = read_icon_input(item.source.as_ref().unwrap()).with_context(|| format!("desktop.icons: {icon}"))?;
-        let n = panpak_icon::normalize(&data).map_err(|why| anyhow::anyhow!("desktop.icons: {icon}: {why}"))?;
-        if !n.dropped.is_empty() {
-            eprintln!("panpak pack: icon {icon}: {}", dropped_note(&n.dropped));
-            item.data = Some(n.data);
+        sources.push(IconInput { label: icon.clone(), data });
+    }
+    let generated = build_icons(sources)?;
+    if generated.is_empty() {
+        if let Some(d) = &mut man.desktop {
+            d.icons = None;
         }
+    } else {
+        let mut paths = Vec::new();
+        payload.push(PayloadEntry { entry: Entry { path: PathBuf::from(panpak_core::ICONS_DIR), mode: 0o755, kind: Kind::Dir }, source: None, embedded: None, data: None });
+        for (side, data) in generated {
+            let path = format!("{}/{side}.png", panpak_core::ICONS_DIR);
+            payload.push(PayloadEntry { entry: Entry { path: PathBuf::from(&path), mode: 0o644, kind: Kind::File { chunks: Vec::new() } }, source: None, embedded: None, data: Some(data) });
+            paths.push(path);
+        }
+        match &mut man.desktop {
+            Some(d) => d.icons = Some(paths),
+            None => man.desktop = Some(panpak_core::Desktop { schemes: None, wm_class: None, icons: Some(paths) }),
+        }
+        // Same deterministic order as walk_tree.
+        payload.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
     }
 
     // Spec §7: prefer_host + included glibc rejected by pack.
@@ -1098,9 +1118,11 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     let fs = backhand::FilesystemReader::from_reader_with_offset(reader, off)
         .map_err(|e| anyhow::anyhow!("unreadable squashfs: {e}"))?;
 
-    let tree = std::env::temp_dir().join(format!("panpak-convert-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&tree);
-    fs::create_dir_all(&tree)?;
+    // The tree is a private folder (mkdtemp, 0700) that goes away with `tmp`, on every way out. Everything written below it goes
+    // through folder descriptors that never follow a link (treewriter.rs): the AppImage is untrusted input.
+    let tmp = treewriter::TempTree::new("panpak-convert")?;
+    let tree = tmp.path().to_path_buf();
+    let mut tw = treewriter::TreeWriter::new(&tree)?;
     let mut desktop: Option<PathBuf> = None;
     for node in fs.files() {
         let rel = node.fullpath.strip_prefix("/").unwrap_or(&node.fullpath);
@@ -1109,25 +1131,12 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
         }
         let dst = tree.join(rel);
         match &node.inner {
-            backhand::InnerNode::Dir(_) => {
-                fs::create_dir_all(&dst)?;
-            }
+            backhand::InnerNode::Dir(_) => tw.make_dir(rel)?,
             backhand::InnerNode::File(h) => {
-                if let Some(d) = dst.parent() {
-                    fs::create_dir_all(d)?;
-                }
                 let mut r = fs.file(h).reader();
-                let mut o = File::create(&dst)?;
-                std::io::copy(&mut r, &mut o)?;
-                #[cfg(unix)]
-                fs::set_permissions(&dst, fs::Permissions::from_mode(node.header.permissions as u32 & 0o7777))?;
+                tw.write_from(rel, &mut r, node.header.permissions as u32 & 0o7777)?;
             }
-            backhand::InnerNode::Symlink(s) => {
-                if let Some(d) = dst.parent() {
-                    fs::create_dir_all(d)?;
-                }
-                std::os::unix::fs::symlink(&s.link, &dst)?;
-            }
+            backhand::InnerNode::Symlink(s) => tw.symlink(rel, &s.link)?,
             _other => eprintln!("convert: skipping special node {}", node.fullpath.display()),
         }
         if desktop.is_none()
@@ -1211,17 +1220,11 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
                 .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
                 .collect();
             let wrap = format!("#!/bin/sh\n# Generated by `panpak convert`: fixed Exec arguments.\nHERE=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nTREE=${{HERE%/bin}}\nexec \"$TREE\"/{} {} \"$@\"\n", sh_quote(&entry), quoted.join(" "));
-            fs::create_dir_all(tree.join("bin"))?;
-            fs::write(tree.join("bin/.panpak-exec"), &wrap)?;
-            #[cfg(unix)]
-            fs::set_permissions(tree.join("bin/.panpak-exec"), fs::Permissions::from_mode(0o755))?;
+            tw.replace_file(Path::new("bin/.panpak-exec"), wrap.as_bytes(), 0o755)?;
             entry = "bin/.panpak-exec".to_string();
         } else if !is_elf {
             let wrap = format!("#!/bin/sh\n# Generated by `panpak convert`: emulates the AppImage runtime environment.\nHERE=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\nTREE=${{HERE%/bin}}\nexport APPDIR=\"$TREE\" APPIMAGE=\"$TREE\" ARGV0=\"$0\"\nif [ -z \"$OWD\" ]; then export OWD=\"$PWD\"; fi\nexec \"$TREE\"/{} \"$@\"\n", sh_quote(&entry));
-            fs::create_dir_all(tree.join("bin"))?;
-            fs::write(tree.join("bin/.panpak-run"), &wrap)?;
-            #[cfg(unix)]
-            fs::set_permissions(tree.join("bin/.panpak-run"), fs::Permissions::from_mode(0o755))?;
+            tw.replace_file(Path::new("bin/.panpak-run"), wrap.as_bytes(), 0o755)?;
             entry = "bin/.panpak-run".to_string();
         }
     }
@@ -1276,10 +1279,9 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
         Some(w) => eprintln!("panpak convert: WARNING: StartupWMClass {w:?} in the desktop file is not a plain window class; not used"),
         None => eprintln!("panpak convert: WARNING: the desktop file has no StartupWMClass; the desktop may not group the app's windows under its entry (set [desktop] wm_class in panpak.toml if you know the class)"),
     }
-    let icons = match icon_ov {
-        Some(f) => {
-            vec![add_override_icon(&tree, f)?]
-        }
+    // The icons are not written to the tree: they are read (links followed only inside the tree) and handed to `pack` in memory.
+    let icons: Vec<IconInput> = match icon_ov {
+        Some(f) => vec![IconInput { label: f.display().to_string(), data: read_icon_input(f).with_context(|| format!("--icon {}", f.display()))? }],
         None => {
             let (found, notes) = find_appimage_icons(&tree, dicon.as_deref());
             if found.is_empty() {
@@ -1292,19 +1294,44 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
             found
         }
     };
-    if !icons.is_empty() {
-        desktop_keys.push_str(&format!("icons = [{}]\n", icons.iter().map(|i| q(i)).collect::<Vec<_>>().join(", ")));
-    }
     if !desktop_keys.is_empty() {
         toml.push_str("[desktop]\n");
         toml.push_str(&desktop_keys);
     }
     toml.push_str(&format!("[origin]\nconverted_from = {}\nversion = {}\nsha256 = {}\nsigned_by_upstream = false\n", q(&src_name), q(&version), q(&src_sha256)));
     toml.push_str(&format!("[update]\nkey = {}\n", q(&key)));
-    fs::write(tree.join("panpak.toml"), &toml)?;
-    let r = cmd_pack(&tree, stub, secret, None, out);
-    let _ = fs::remove_dir_all(&tree);
-    r
+    tw.replace_file(Path::new("panpak.toml"), toml.as_bytes(), 0o644)?;
+    cmd_pack(&tree, stub, secret, None, out, icons)
+}
+
+/// An icon handed to `pack` as bytes: where it came from (for the messages) and the file.
+pub struct IconInput {
+    label: String,
+    data: Vec<u8>,
+}
+
+/// The icons of a package: every source is cleaned (`panpak_icon::normalize`) and checked; of two with the same side the
+/// first one stays, and the note says so; at most 6 remain, the largest first. Returns `(side, file)`.
+fn build_icons(sources: Vec<IconInput>) -> Result<Vec<(u32, Vec<u8>)>> {
+    let mut out: Vec<(u32, Vec<u8>, String)> = Vec::new();
+    for IconInput { label, data } in sources {
+        let n = panpak_icon::normalize(&data).map_err(|why| anyhow::anyhow!("icon {label}: {why}"))?;
+        let side = panpak_icon::check(&n.data).map_err(|why| anyhow::anyhow!("icon {label}: {why}"))?.side;
+        if let Some((_, _, first)) = out.iter().find(|(s, _, _)| *s == side) {
+            eprintln!("panpak pack: icon {label}: same size ({side}x{side}) as {first}, which is used; this one is not");
+            continue;
+        }
+        if !n.dropped.is_empty() {
+            eprintln!("panpak pack: icon {label}: {}", dropped_note(&n.dropped));
+        }
+        out.push((side, n.data, label));
+    }
+    out.sort_by_key(|o| std::cmp::Reverse(o.0));
+    if out.len() > 6 {
+        eprintln!("panpak pack: {} icons of different sizes; the 6 largest are used", out.len());
+        out.truncate(6);
+    }
+    Ok(out.into_iter().map(|(s, d, _)| (s, d)).collect())
 }
 
 /// Read an icon file that is going to be normalized, refusing one that is too large before it is read (a link is
@@ -1335,31 +1362,12 @@ fn dropped_note(dropped: &[(String, usize)]) -> String {
     format!("removed the chunks {} (the pixels are not touched)", list.join(", "))
 }
 
-/// `--icon <file.png>`: clean the file and put it in the tree; this is then the only icon of the package.
-fn add_override_icon(tree: &Path, f: &Path) -> Result<String> {
-    let data = read_icon_input(f).with_context(|| format!("--icon {}", f.display()))?;
-    let n = panpak_icon::normalize(&data).map_err(|why| anyhow::anyhow!("--icon {}: {why}", f.display()))?;
-    if !n.dropped.is_empty() {
-        eprintln!("panpak convert: icon {}: {}", f.display(), dropped_note(&n.dropped));
-    }
-    let side = panpak_icon::check(&n.data).map_err(|why| anyhow::anyhow!("--icon {}: {why}", f.display()))?.side;
-    write_tree_icon(tree, side, &n.data).context("cannot write the icon into the tree")
-}
-
-/// Put an icon in the tree at `usr/share/icons/panpak/<side>.png` and return that path.
-fn write_tree_icon(tree: &Path, side: u32, data: &[u8]) -> Option<String> {
-    let p = format!("usr/share/icons/panpak/{side}.png");
-    fs::create_dir_all(tree.join("usr/share/icons/panpak")).ok()?;
-    let _ = fs::remove_file(tree.join(&p));
-    fs::write(tree.join(&p), data).ok()?;
-    Some(p)
-}
-
-/// The PNG icons of an extracted AppImage: `.DirIcon`, `<icon>.png` at the root and the `hicolor` sizes. Each
-/// candidate is cleaned and checked; a link is followed only inside the tree.
-/// Returns the paths (relative to the tree) of at most 6 icons with different sizes, the largest first, and says
-/// what it could not use.
-fn find_appimage_icons(tree: &Path, icon_name: Option<&str>) -> (Vec<String>, Vec<String>) {
+/// The PNG icons of an extracted AppImage: `.DirIcon`, `<icon>.png` at the root and the `hicolor` sizes, in this fixed
+/// order. Nothing is written. A link is followed only inside the tree (also one in a folder on the way, `usr -> .`); a file
+/// that leaves it is not read. Each candidate is cleaned and checked here only to know whether `pack` can use it; of two with
+/// the same side the first stays. Returns the files as they are (`pack` cleans them) for at most 6 sizes, the largest first,
+/// and the reasons for the ones left out.
+fn find_appimage_icons(tree: &Path, icon_name: Option<&str>) -> (Vec<IconInput>, Vec<String>) {
     let mut cands: Vec<PathBuf> = vec![PathBuf::from(".DirIcon")];
     if let Some(n) = icon_name.filter(|n| !n.is_empty() && !n.contains('/')) {
         cands.push(PathBuf::from(format!("{n}.png")));
@@ -1371,15 +1379,13 @@ fn find_appimage_icons(tree: &Path, icon_name: Option<&str>) -> (Vec<String>, Ve
             cands.push(Path::new(h).join(d).join("apps").join(format!("{n}.png")));
         }
     }
-    let (mut found, mut notes): (Vec<(u32, String)>, Vec<String>) = (Vec::new(), Vec::new());
-    let mut from: Vec<(u32, String)> = Vec::new();
+    let (mut found, mut notes): (Vec<(u32, IconInput)>, Vec<String>) = (Vec::new(), Vec::new());
     let root = fs::canonicalize(tree).ok();
     for rel in cands {
         let full = tree.join(&rel);
         if fs::symlink_metadata(&full).is_err() {
             continue;
         }
-        // A link, also one in a folder on the way (`usr -> .`), is followed only inside the tree.
         let real = match fs::canonicalize(&full) {
             Ok(r) if root.as_ref().is_some_and(|t| r.starts_with(t)) => r,
             _ => {
@@ -1394,37 +1400,22 @@ fn find_appimage_icons(tree: &Path, icon_name: Option<&str>) -> (Vec<String>, Ve
                 continue;
             }
         };
-        // The one cleaning function of `pack`: only IHDR, PLTE, tRNS, IDAT and IEND stay.
-        let n = match panpak_icon::normalize(&data) {
-            Ok(n) => n,
+        let side = match panpak_icon::normalize(&data).map_err(|e| e.to_string()).and_then(|n| panpak_icon::check(&n.data).map(|i| i.side)) {
+            Ok(side) => side,
             Err(why) => {
                 notes.push(format!("{}: {why}", rel.display()));
                 continue;
             }
         };
-        let side = match panpak_icon::check(&n.data) {
-            Ok(i) => i.side,
-            Err(why) => {
-                notes.push(format!("{}: {why}", rel.display()));
-                continue;
-            }
-        };
-        // Two sources of one size: the first in the fixed order stays.
-        if let Some((_, first)) = from.iter().find(|(s, _)| *s == side) {
-            notes.push(format!("{}: same size ({side}x{side}) as {first}, which is used; this one is not", rel.display()));
+        if let Some((_, first)) = found.iter().find(|(s, _)| *s == side) {
+            notes.push(format!("{}: same size ({side}x{side}) as {}, which is used; this one is not", rel.display(), first.label));
             continue;
         }
-        // One rule for every source: the cleaned icon is a file of its own at a fixed place.
-        let Some(path) = write_tree_icon(tree, side, &n.data) else { continue };
-        if !n.dropped.is_empty() {
-            eprintln!("panpak convert: icon {}: {}", rel.display(), dropped_note(&n.dropped));
-        }
-        from.push((side, rel.display().to_string()));
-        found.push((side, path));
+        found.push((side, IconInput { label: rel.display().to_string(), data }));
     }
     found.sort_by_key(|f| std::cmp::Reverse(f.0));
     found.truncate(6);
-    (found.into_iter().map(|(_, p)| p).collect(), notes)
+    (found.into_iter().map(|(_, i)| i).collect(), notes)
 }
 
 /// A TOML basic string, quoted and escaped.
@@ -2365,7 +2356,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             let secret = load_secret(secret_file.as_deref())?;
             let out_p = out.map(PathBuf::from);
             let rotate_secret = rotate_from.as_deref().map(|f| panpak_core::read_secret_file(Path::new(f))).transpose()?;
-            cmd_pack(Path::new(dir), Path::new(stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?), &secret, rotate_secret.as_deref(), out_p.as_deref())?;
+            cmd_pack(Path::new(dir), Path::new(stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?), &secret, rotate_secret.as_deref(), out_p.as_deref(), Vec::new())?;
             Ok(())
         }
         Some("install-runtime") => {
@@ -2813,7 +2804,7 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        cmd_pack(&tree, &stub, &secret, None, Some(&out)).unwrap();
+        cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new()).unwrap();
         let mut f = File::open(&out).unwrap();
         let ft = panpak_core::read_footer(&mut f).unwrap();
         let (_man, raw) = panpak_core::verify(&mut f, &ft).unwrap();
@@ -2826,12 +2817,12 @@ mod tests {
         }
         // Same input -> same package (licenses do not break determinism).
         let out2 = dir.join("b.panpak");
-        cmd_pack(&tree, &stub, &secret, None, Some(&out2)).unwrap();
+        cmd_pack(&tree, &stub, &secret, None, Some(&out2), Vec::new()).unwrap();
         assert_eq!(fs::read(&out).unwrap(), fs::read(&out2).unwrap());
         // The reserved top level cannot come from the user's tree.
         fs::create_dir_all(tree.join(".panpak")).unwrap();
         fs::write(tree.join(".panpak/x"), "x").unwrap();
-        let e = cmd_pack(&tree, &stub, &secret, None, Some(&dir.join("c.panpak"))).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, None, Some(&dir.join("c.panpak")), Vec::new()).unwrap_err();
         assert!(panpak_core::err_text(&e).contains("reserved"), "{e:?}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2859,14 +2850,14 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        let e = cmd_pack(&tree, &stub, &secret, None, Some(&out)).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new()).unwrap_err();
         let text = panpak_core::render(&e, ErrorCode::E0000);
         assert!(text.contains("invalid") && text.contains("abi.needs") && text.contains("nothing was written"), "{text}");
         assert!(!out.exists(), "a file was written for an invalid manifest");
         // The same tree with a valid name is packed.
         elf[241..250].copy_from_slice(b"libc.so.6");
         fs::write(tree.join("bin/app"), &elf).unwrap();
-        cmd_pack(&tree, &stub, &secret, None, Some(&out)).unwrap();
+        cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new()).unwrap();
         assert!(out.exists());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2954,7 +2945,7 @@ mod tests {
     }
 
     #[test]
-    fn convert_writes_every_icon_cleaned_to_one_place() {
+    fn convert_reads_the_icons_of_an_appimage_and_writes_nothing() {
         let data = |n: &str| fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../panpak-icon/tests/data").join(n)).unwrap();
         let t = scratch("appimage-icons");
         // The layout of a real AppImage: the files are in `share/`, `usr` is a link to `.`, `.DirIcon` and the root file are links.
@@ -2967,53 +2958,60 @@ mod tests {
         std::os::unix::fs::symlink("app.png", t.join(".DirIcon")).unwrap();
         fs::write(hi("256x256").join("app.png"), data("ok-256-rgba.png")).unwrap();
         fs::write(hi("48x48").join("app.png"), data("ok-48-rgba.png")).unwrap();
-        // A link that leaves the tree, a file with a text chunk, a file that cannot be used, and a second file of a size that is taken.
         std::os::unix::fs::symlink("/etc/passwd", hi("16x16").join("app.png")).unwrap();
         fs::write(hi("32x32").join("app.png"), data("bad-text.png")).unwrap();
         fs::write(hi("24x24").join("app.png"), data("bad-nonsquare.png")).unwrap();
         fs::write(hi("64x64").join("app.png"), data("ok-48-rgba.png")).unwrap();
+        let listing = |dir: &Path| -> Vec<String> {
+            let mut v = Vec::new();
+            let mut stack = vec![dir.to_path_buf()];
+            while let Some(d) = stack.pop() {
+                for e in fs::read_dir(&d).unwrap().flatten() {
+                    v.push(e.path().strip_prefix(dir).unwrap().display().to_string());
+                    if e.file_type().unwrap().is_dir() {
+                        stack.push(e.path());
+                    }
+                }
+            }
+            v.sort();
+            v
+        };
+        let before = listing(&t);
         let (found, notes) = find_appimage_icons(&t, Some("app"));
-        // Always `usr/share/icons/panpak/<side>.png`, the largest first, whatever the source.
-        assert_eq!(found, ["usr/share/icons/panpak/256.png", "usr/share/icons/panpak/48.png", "usr/share/icons/panpak/32.png"]);
-        assert_eq!(fs::read(t.join("usr/share/icons/panpak/256.png")).unwrap(), data("ok-256-rgba.png"));
-        assert_eq!(fs::read(t.join("usr/share/icons/panpak/48.png")).unwrap(), data("ok-48-rgba.png"));
-        let cleaned = fs::read(t.join("usr/share/icons/panpak/32.png")).unwrap();
-        assert_ne!(cleaned, data("bad-text.png"));
-        assert_eq!(panpak_icon::check(&cleaned), Ok(panpak_icon::Icon { side: 32 }));
-        // The sources are not changed, and nothing goes to the reserved top-level `.panpak`.
-        assert_eq!(fs::read(hi("32x32").join("app.png")).unwrap(), data("bad-text.png"));
-        assert!(!t.join(".panpak").exists());
+        // The largest first; the sources in the fixed order (the root link and `.DirIcon` are the 256 file, found first).
+        let sides: Vec<_> = found.iter().map(|i| panpak_icon::check(&panpak_icon::normalize(&i.data).unwrap().data).unwrap().side).collect();
+        assert_eq!(sides, [256, 48, 32]);
+        assert_eq!(found[0].label, ".DirIcon");
+        assert_eq!(found[0].data, data("ok-256-rgba.png"));
+        assert_eq!(found[2].data, data("bad-text.png"), "the file is handed over as it is: pack cleans it");
+        assert_eq!(listing(&t), before, "nothing is written to the tree");
         assert!(notes.iter().any(|n| n.contains("16x16") && n.contains("outside the tree")), "{notes:?}");
         assert!(notes.iter().any(|n| n.contains("24x24") && n.contains("not square")), "{notes:?}");
-        // The root link and `.DirIcon` are the 256 file (the first in the order): the others of that size are named. Of the two 48 files, the first stays.
-        assert!(notes.iter().any(|n| n.contains("same size (256x256)") && n.contains("which is used")), "{notes:?}");
-        assert!(notes.iter().any(|n| n.contains("64x64") && n.contains("same size (48x48) as") && n.contains("48x48")), "{notes:?}");
-        // The packed tree holds those files as regular files (what `pack` needs).
-        for p in &found {
-            assert!(fs::symlink_metadata(t.join(p)).unwrap().file_type().is_file(), "{p}");
-        }
+        assert!(notes.iter().any(|n| n.contains("same size (256x256) as .DirIcon")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("64x64") && n.contains("same size (48x48) as")), "{notes:?}");
         // No icon name and no .DirIcon: nothing, without an error.
         let empty = scratch("appimage-no-icons");
-        assert_eq!(find_appimage_icons(&empty, None), (vec![], vec![]));
-        assert_eq!(find_appimage_icons(&empty, Some("../x")).0, Vec::<String>::new());
+        assert_eq!(find_appimage_icons(&empty, None).0.len(), 0);
+        assert_eq!(find_appimage_icons(&empty, Some("../x")).0.len(), 0);
         let _ = fs::remove_dir_all(&t);
         let _ = fs::remove_dir_all(&empty);
     }
 
     #[test]
-    fn convert_icon_option_writes_the_cleaned_file_to_the_same_place() {
+    fn pack_icons_come_out_cleaned_deduplicated_and_largest_first() {
         let data = |n: &str| fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../panpak-icon/tests/data").join(n)).unwrap();
-        let t = scratch("icon-option");
-        let outside = scratch("icon-option-src");
-        fs::write(outside.join("mine.png"), data("bad-icc.png")).unwrap();
-        let p = add_override_icon(&t, &outside.join("mine.png")).unwrap();
-        assert_eq!(p, "usr/share/icons/panpak/32.png");
-        assert_eq!(panpak_icon::check(&fs::read(t.join(&p)).unwrap()), Ok(panpak_icon::Icon { side: 32 }));
-        fs::write(outside.join("svg.png"), "<svg/>").unwrap();
-        assert!(add_override_icon(&t, &outside.join("svg.png")).is_err());
-        assert!(add_override_icon(&t, &outside.join("missing.png")).is_err());
-        let _ = fs::remove_dir_all(&t);
-        let _ = fs::remove_dir_all(&outside);
+        let src = |label: &str, n: &str| IconInput { label: label.into(), data: data(n) };
+        let out = build_icons(vec![src("a", "bad-text.png"), src("b", "ok-256-rgba.png"), src("c", "bad-icc.png"), src("d", "ok-16-rgba.png")]).unwrap();
+        let sides: Vec<u32> = out.iter().map(|o| o.0).collect();
+        assert_eq!(sides, [256, 32, 16], "the first of two 32 files stays, the largest comes first");
+        for (side, d) in &out {
+            assert_eq!(panpak_icon::check(d).unwrap().side, *side);
+            assert_eq!(panpak_icon::normalize(d).unwrap().data, *d, "already clean");
+        }
+        assert!(build_icons(vec![src("x", "bad-small.png")]).is_err());
+        assert!(build_icons(vec![]).unwrap().is_empty());
+        let many: Vec<IconInput> = (0..8).map(|_| src("t", "ok-48-rgba.png")).collect();
+        assert_eq!(build_icons(many).unwrap().len(), 1, "one size once");
     }
 
     #[test]

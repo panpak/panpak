@@ -182,6 +182,30 @@ impl Dir {
         Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
     }
 
+    /// Make the new regular file `name` for writing with `mode`. It fails if anything, a link included, is already there.
+    pub fn create_new_file(&self, name: &OsStr, mode: u32) -> io::Result<File> {
+        let c = cname(name)?;
+        // SAFETY: openat(2) relative to a descriptor this value owns; O_EXCL with O_CREAT never opens an existing entry.
+        let fd = cvt(unsafe {
+            libc::openat(self.fd.as_raw_fd(), c.as_ptr(), libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC, (mode & 0o7777) as libc::c_uint)
+        })?;
+        // SAFETY: `fd` was just returned by openat and is owned here.
+        Ok(File::from(unsafe { OwnedFd::from_raw_fd(fd) }))
+    }
+
+    /// Make the link `name` with the text `target`. It fails if anything is already there.
+    pub fn symlink(&self, name: &OsStr, target: &OsStr) -> io::Result<()> {
+        let (c, t) = (cname(name)?, CString::new(target.as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?);
+        // SAFETY: symlinkat(2) relative to a descriptor this value owns.
+        cvt(unsafe { libc::symlinkat(t.as_ptr(), self.fd.as_raw_fd(), c.as_ptr()) }).map(|_| ())
+    }
+
+    /// Set the permission bits of this folder.
+    pub fn set_mode(&self, mode: u32) -> io::Result<()> {
+        // SAFETY: fchmod(2) on a descriptor this value owns.
+        cvt(unsafe { libc::fchmod(self.fd.as_raw_fd(), mode & 0o7777) }).map(|_| ())
+    }
+
     /// What `name` is, without following a link. `None` when it does not exist.
     pub fn lstat(&self, name: &OsStr) -> io::Result<Option<Stat>> {
         let c = cname(name)?;
@@ -450,6 +474,34 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn new_files_and_links_never_go_through_a_link() {
+        use std::os::unix::fs::MetadataExt;
+        let d = scratch("newfile");
+        fs::create_dir_all(d.join("t")).unwrap();
+        fs::create_dir_all(d.join("outside")).unwrap();
+        let t = Dir::open_path(&d.join("t")).unwrap();
+        let f = t.create_new_file(OsStr::new("f"), 0o755).unwrap();
+        assert!(f.metadata().unwrap().file_type().is_file());
+        t.symlink(OsStr::new("l"), OsStr::new("../outside")).unwrap();
+        // A second file or link by the same name, and a file through a link, are errors; nothing is written outside.
+        assert!(t.create_new_file(OsStr::new("f"), 0o600).is_err());
+        assert!(t.create_new_file(OsStr::new("l"), 0o600).is_err());
+        assert!(t.symlink(OsStr::new("f"), OsStr::new("x")).is_err());
+        assert!(t.open_dir(OsStr::new("l")).is_err(), "a link is not entered");
+        assert!(t.create_dir(OsStr::new("l")).is_err(), "nor made into a folder");
+        assert_eq!(fs::read_dir(d.join("outside")).unwrap().count(), 0);
+        // The link is a link, and a folder can be given its mode.
+        assert!(fs::symlink_metadata(d.join("t/l")).unwrap().file_type().is_symlink());
+        let sub = t.create_dir(OsStr::new("sub")).unwrap();
+        sub.set_mode(0o755).unwrap();
+        assert_eq!(fs::metadata(d.join("t/sub")).unwrap().mode() & 0o7777, 0o755);
+        for bad in ["..", "a/b", ""] {
+            assert!(t.create_new_file(OsStr::new(bad), 0o600).is_err(), "{bad:?}");
+        }
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -529,13 +529,30 @@ The first run of the harness with the desktop binaries showed two defects of the
    alone and puts the cleaned file in the package; both tools print the chunks removed, per icon. `install` stays strict: only already clean files.
    Tests: a palette icon with `tRNS` among a dozen other chunks gives the file that has only the kept chunks (byte-identical, `tRNS` unchanged); twice is the same;
    `pack` twice gives the same package; the fuzz target also checks that whatever `normalize` makes passes `check` and is stable.
-2. `convert` copied a link or `.DirIcon` into `.panpak/icons/`, and the top-level `.panpak` is reserved for the licenses (MuseScore failed to convert).
-   Then a path that goes through a folder that is a link (`usr -> .` in the Audacity AppImage) named a file that is not in the package. One rule
-   settles both: **`convert` always writes the cleaned icons to `usr/share/icons/panpak/<side>.png` and `desktop.icons` points only there**, whatever the
-   source (plain file, link, `.DirIcon`, `--icon`, a path through a link). Links are still followed only inside the tree; one that leaves it is refused
-   with a note. Of two sources with the same side the first in a fixed order (`.DirIcon`, `<icon>.png` at the root, the `hicolor` sizes in name order) is used, and
-   a note names the other. The original files stay in the tree; being the same bytes after cleaning, the chunk deduplication makes the copy cost almost nothing
-   (see the package sizes in the report of the step).
+2. `convert` copied a link or `.DirIcon` into `.panpak/icons/` in the unpacked tree, and the top-level `.panpak` is reserved for the licenses (MuseScore failed to
+   convert). Then a path that goes through a folder that is a link (`usr -> .` in the Audacity AppImage) named a file that is not in the package, and a
+   second try that wrote into `usr/share/icons/panpak` had the same problem, plus a worse one: writing through a link of an untrusted AppImage can leave the tree.
+   Decision: **icons are never written to the tree.** `convert` reads them (a link followed only inside the tree, also in a folder on the way) and hands them to `pack`
+   in memory; `pack` cleans them and adds them to the package as generated entries `.panpak/icons/<side>.png`; the signed manifest points there. `.panpak/` is the
+   space that only `pack` writes (licenses and icons); a tree that contains it is refused. `desktop.icons` in the `panpak.toml` given to `pack` lists *source*
+   files, which `pack` reads only as regular files of the tree. `convert` does not write that key at all: all its icons go in memory, in a fixed order
+   (`.DirIcon`, `<icon>.png` at the root, the `hicolor` sizes by name), the first of two with the same side stays and a note names the other.
+
+### 8.8 Audit of what `convert` writes into the unpacked tree
+
+| Write | Before | After |
+|---|---|---|
+| The folder of the tree | `temp_dir()/panpak-convert-<pid>`: a predictable name in the shared `/tmp`, removed and made again (a race), left behind when an error came before the end | `mkdtemp` (0700), removed by a guard on every way out |
+| Folders of the AppImage | `create_dir_all(path)`: follows links | `TreeWriter::make_dir`: `mkdirat`/`openat` with `O_NOFOLLOW`, name by name, mode 0755 |
+| Files of the AppImage | `create_dir_all(parent)`, `File::create(path)` (follows a link, truncates), `set_permissions(path)` | `create_new_file` (`O_EXCL \| O_NOFOLLOW`), mode set on the open file |
+| Links of the AppImage | `create_dir_all(parent)`, `symlink(path)` | `symlinkat` on the folder descriptor |
+| Wrapper scripts `bin/.panpak-run`, `bin/.panpak-exec` | `create_dir_all(bin)`, `fs::write`, `set_permissions` on the path, all through a link `bin` | `replace_file` through folder descriptors; a `bin` that is a link makes `convert` fail |
+| `panpak.toml` | `fs::write(tree/panpak.toml)`: an AppImage with a link of that name made `convert` overwrite the file the link points to | `replace_file`: the link itself is removed, then the file is made with `O_EXCL` |
+| Icons | (first versions) `.panpak/icons/`, then `usr/share/icons/panpak/`, in the tree | none: handed to `pack` in memory |
+| Removal of the tree | `remove_dir_all` at the end of the success path only | the guard, always; it does not follow links |
+
+What `convert` only reads: the existence check of the entry (`is_file`, follows links, no effect), the first 4 bytes of the entry (ELF or not), the walk of `detects_xcb_only`
+(skips links), the `.desktop` file that it just wrote itself, and the icons (read inside the tree only). `pack` reads the tree with `lstat` and opens regular files only.
 
 `install` and `update` also print a non-blocking warning when the manifest of a signed package has keys this panpak does not know
 (`unknown_manifest_keys`), since an older panpak would otherwise just show no icon. The critical fields with a minimum version are for step 9.

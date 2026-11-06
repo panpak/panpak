@@ -687,10 +687,11 @@ pub fn verify_chunk(c: &Chunk, data: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Reserved directory (inside the package tree) for the license texts that
-/// `pack` embeds: NOTICE, LICENSE-*, THIRD-PARTY-LICENSES. Normal entries:
-/// the format is unchanged. User trees must not use the `.panpak` top level.
+/// Reserved directory (inside the package tree) for what `pack` generates: the license texts
+/// (NOTICE, LICENSE-*, THIRD-PARTY-LICENSES) in `.panpak/licenses` and the cleaned icons in `.panpak/icons`.
+/// Normal entries: the format is unchanged. User trees must not use the `.panpak` top level.
 pub const LICENSES_DIR: &str = ".panpak/licenses";
+pub const ICONS_DIR: &str = ".panpak/icons";
 pub const RESERVED_TOP: &str = ".panpak";
 
 /// Read the embedded license files from an already verified package
