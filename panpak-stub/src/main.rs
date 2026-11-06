@@ -18,6 +18,8 @@ mod opener;
 mod probe;
 mod sharedtmp;
 #[cfg(test)]
+mod seccomp_test;
+#[cfg(test)]
 mod testutil;
 mod view;
 
@@ -1196,6 +1198,14 @@ fn real_main() -> Result<()> {
             }
         }
     }
+    exec_filtered(&mut cmd)
+}
+
+/// The last step before the app: the seccomp filter, then the exec. Nothing may come between the two, and every
+/// path that starts an app goes through here, so the filter (and `no_new_privs`) is in place for the app and
+/// for everything it runs. Does not return on success.
+fn exec_filtered(cmd: &mut Command) -> Result<()> {
+    panpak_core::seccomp::install()?;
     let err = cmd.exec(); // Replaces the process.
     bail!("exec failed: {err}")
 }
@@ -1453,8 +1463,7 @@ fn run_inner(fd: i32) -> Result<()> {
     let access = Access { rw: job.rw.clone(), ro: job.ro.clone(), sockets: job.sockets.clone(), in_view: true, home_list: job.home_list.clone() };
     let open = job.open.as_ref().map(|o| (o.path.as_path(), OpenGrant { write: o.write, rename: o.rename }));
     sandbox(&job.tree, &job.manifest, &access, job.allow_unfiltered, open)?;
-    let err = job.to_command().exec();
-    bail!("exec failed: {err}")
+    exec_filtered(&mut job.to_command())
 }
 
 #[cfg(test)]

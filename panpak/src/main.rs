@@ -1901,6 +1901,12 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         Ok(abi) => line(true, &format!("kernel {release}, Landlock {abi:?} ({})", abi_features(abi))),
         Err(e) => line(false, &format!("kernel {release}, Landlock unavailable ({}); kernel >= 5.13 with CONFIG_SECURITY_LANDLOCK=y required", panpak_core::err_text(&e))),
     }
+    // The seccomp filter that the inner stub installs before the app. Without kernel support the app does not start.
+    if panpak_core::seccomp::kernel_supports() {
+        println!("OK   seccomp: filter supported; every app starts with {} system calls refused (io_uring, bpf, ptrace, user namespaces ...)", panpak_core::seccomp::describe().len());
+    } else {
+        line(false, "seccomp: the kernel has no filter support (CONFIG_SECCOMP_FILTER); apps do not start without the filter (PANPAK-E3002)");
+    }
     // Local sockets: D-Bus, ssh-agent, gpg-agent (see THREAT-MODEL.md). Two layers that work apart:
     // the isolated view (bubblewrap) and Landlock V9.
     let view = panpak_core::view_status();

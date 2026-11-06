@@ -11,6 +11,7 @@ mod openchan;
 mod openurl;
 pub mod removal;
 pub mod safefs;
+pub mod seccomp;
 pub mod stalelocks;
 mod userdirs;
 mod validate;
