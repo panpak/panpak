@@ -16,6 +16,9 @@
   there is nothing to do it costs 0.04 ms.
 - **`panpak remove` and `panpak list` say more.** `removed <id> <version>: freed <size>`; a second `remove` (or an unknown id) says "not installed:
   nothing to remove" with `PANPAK-E2004`; `list` of an empty store says how to install.
+- **The menu entry and GNOME Shell.** Tested on GNOME Shell 50: a new or changed entry (and its icon) shows about 5 seconds after the file changes, with nothing but the
+  `rename` panpak already does; an app that was already started from the Shell in the session keeps its old entry until the next login. `install` and `update` say so when
+  they replace an entry with a different one.
 - **The desktop's own unit is recognised for every launcher.** The shortcut that skips the scope of the app follows the portal's rules for scopes and
   services (`app-gnome-panpak.<id>-<n>.scope`, `app-panpak.<id>-<n>.scope`, `app-gnome-panpak.<id>@<n>.service`), with the systemd escape; the unit is the one
   `sd_pid_get_user_unit` finds, so a process in a sub-cgroup counts. `tests/dbus_filter.py` runs the three shapes against the real portal.

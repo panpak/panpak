@@ -328,7 +328,10 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     if desktop.exists() || legacy_desktop_path(app_id)?.exists() || !schemes.is_empty() {
         fs::create_dir_all(desktop.parent().unwrap())?;
         icons::install(app_id, &new_icons)?;
-        write_replacing(&desktop, &entry_text(&store, app_id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), !new_icons.is_empty())?, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
+        let text = entry_text(&store, app_id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), !new_icons.is_empty())?;
+        let before = fs::read_to_string(&desktop).ok();
+        write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
+        note_stale_menu(before.as_deref(), &text);
         let moved = remove_legacy_desktop(app_id, &launcher)?;
         if !schemes.is_empty() || moved {
             refresh_desktop_database(desktop.parent().unwrap());
@@ -1454,6 +1457,14 @@ fn entry_text(store: &Path, app_id: &str, name: &str, launcher: &Path, schemes: 
     dsk::desktop_file(&dsk::Entry { app_id, name, launcher, schemes, wm_class, panpak: panpak.as_deref(), icon })
 }
 
+/// GNOME Shell reloads a changed entry about 5 seconds after the file changes, but keeps the old one for an app that
+/// was started from the Shell in this session until the next login (docs/DESKTOP-INTEGRATION.md, section 4).
+fn note_stale_menu(before: Option<&str>, after: &str) {
+    if before.is_some_and(|b| b != after) {
+        println!("NOTE: the menu entry changed. If the app was already started in this desktop session, the menu may show the old actions or name until you log in again");
+    }
+}
+
 /// Point `<store>/bin/panpak-stub` at the best runtime, with a link that is switched in one rename, and return its
 /// path. Launchers use this path, so a new runtime reaches every app at its next start.
 fn stable_stub_link(store: &Path) -> Result<PathBuf> {
@@ -1937,7 +1948,10 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     fs::create_dir_all(desktop.parent().unwrap())?;
     let schemes = manifest_schemes(&man);
     icons::install(&man.app.id, &new_icons)?;
-    write_replacing(&desktop, &entry_text(&store, &man.app.id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), !new_icons.is_empty())?, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
+    let text = entry_text(&store, &man.app.id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), !new_icons.is_empty())?;
+    let before = fs::read_to_string(&desktop).ok();
+    write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
+    note_stale_menu(before.as_deref(), &text);
     // An entry written under the old name by an earlier version is replaced by this one.
     let moved = remove_legacy_desktop(&man.app.id, &launcher)?;
     if moved {

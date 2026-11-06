@@ -190,6 +190,7 @@ fn icons_are_installed_replaced_and_removed() {
     let toml = "[desktop]\nicons = [\"icons/a.png\", \"icons/b.png\"]\n";
     let o = e.install("1", toml, &[("icons/a.png", i16.clone()), ("icons/b.png", i48.clone())]);
     assert!(o.status.success(), "{}", text(&o));
+    assert!(!text(&o).contains("NOTE: the menu entry changed"), "{}", text(&o));
     assert_eq!(fs::read(e.icon(16)).unwrap(), i16);
     assert_eq!(fs::read(e.icon(48)).unwrap(), i48);
     assert_eq!(fs::metadata(e.icon(48)).unwrap().permissions().mode() & 0o777, 0o644);
@@ -197,10 +198,12 @@ fn icons_are_installed_replaced_and_removed() {
     // A version with one icon: the size it no longer has goes away.
     let o = e.install("2", "[desktop]\nicons = [\"icons/b.png\"]\n", &[("icons/b.png", i48.clone())]);
     assert!(o.status.success(), "{}", text(&o));
+    assert!(!text(&o).contains("NOTE: the menu entry changed"), "same entry: {}", text(&o));
     assert!(!e.icon(16).exists() && e.icon(48).is_file());
     // A version without any: the entry goes back to the generic icon and no file stays.
     let o = e.install("3", "", &[]);
     assert!(o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("NOTE: the menu entry changed") && text(&o).contains("log in again"), "{}", text(&o));
     assert!(!e.icon(48).exists(), "an icon of an older version stays");
     assert!(e.entry().contains("\nIcon=application-x-executable\n"), "{}", e.entry());
     // With icons again, then remove: the files go and the report says so.

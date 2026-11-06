@@ -474,7 +474,33 @@ above 0.3 ms for the first case (advisory in the CI like the rest of the file).
 
 ### 8.4 Not done here
 
-- The menu behaviour of GNOME Shell (section 4) is tested in the virtual machine; the result is added below when it is known.
 - Update of an installed app by `panpak update` (HTTP) uses the same icon functions as `install`; it is covered by the code path and
   by the shared tests, not by an end-to-end update test with icons.
 - A package built for this step cannot be installed by an older panpak (the key `desktop.icons` is unknown to it: "update panpak").
+
+### 8.5 The menu in GNOME Shell (section 4, tested)
+
+Machine: the Fedora-based virtual machine (GNOME Shell 50.6, Wayland). The Shell cannot be asked from outside (`Eval` and the screenshot
+service are refused), so a small Shell extension, used for the test only and removed afterwards, wrote to a file what
+`Shell.AppSystem.lookup_app()` knew of an entry: found or not, the actions, the icon, running or not. The script is `tests/menu_refresh.py`;
+the VM was cleaned (extension, files, favourites, store) at the end.
+
+What was found:
+
+1. **A change of the entry by `rename` is enough. Nothing else is needed**: no `update-desktop-database`, no touch of the folder. The Shell
+   emits `installed-changed` 5.15 s after the file changed (three measurements: 5.15, 5.17, 5.15 s), and the new actions and the new `Icon=`
+   are there. The same with the app in the favourites. Icon files written before the entry were found by the icon theme at the same time (the
+   `Icon=panpak.<id>` name was resolved; no `gtk-update-icon-cache` was run).
+2. **Defect 40 is real and has a cause: once an app has been started in the Shell session, the Shell keeps the entry it had.** Tested with a
+   user copy of the terminal's entry (`Actions=Alpha` changed to `Bravo`, then `Charlie`, `Delta`) while the terminal ran, after it closed,
+   and again after it closed with a different content: the Shell reloaded (`installed-changed` every time) but kept `Alpha` for the app
+   that had run. A new login, or a reload at a time when the entry was not there, shows the new one: after the file was removed (the
+   Shell found the id missing, 5 s) and then written again, `Charlie` appeared 7 s later.
+3. The lazy update at the start of an app therefore changes the file for the next session, not for the one in which the app was started
+   from the menu. This is a limit of the Shell, not of the file: the entry on disk is right.
+
+Decisions: no removal-and-recreation of the entry (it would make the app vanish from the menu for 5 s or more and flicker the dock),
+no extension, no `update-desktop-database` for actions or icons. `install` and `update` print one line when they replace an entry with a
+different one: "the menu entry changed. If the app was already started in this desktop session, the menu may show the old actions or name
+until you log in again". The lazy update at start stays silent (it cannot print to anyone). Not tested: KDE Plasma and other shells; the dash
+extensions of the VM (dash-to-dock) were active and use the Shell's own app objects.
