@@ -6,6 +6,9 @@ Runs ON a machine with a GNOME session, as the logged-in user, with a Shell exte
 entry: `~/panpak-probe.log` gets one JSON line when the state of an id in `~/panpak-probe.watch` changes (found, actions,
 icon, running). The extension is a test tool (see the report); nothing here needs unsafe mode.
 
+The extension is in tests/menu_probe_extension/ (copy it to ~/.local/share/gnome-shell/extensions/panpak-probe@local, add the uuid to
+enabled-extensions, log in again; it does not work while the screen is locked).
+
 Usage: python3 menu_refresh.py <dir with panpak and panpak-stub> <dir with the PNG fixtures>
 It installs a test app into the real HOME of that user (the Shell only looks there), and removes it at the end.
 """
