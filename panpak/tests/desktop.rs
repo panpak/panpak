@@ -154,12 +154,12 @@ fn an_installed_panpak_is_never_replaced_and_an_older_one_is_reported() {
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(fs::read(&mine).unwrap(), before, "the stable panpak was replaced");
     let t = text(&o);
-    assert!(t.contains("WARNING") && t.contains("version 0.0.1") && t.contains("install-runtime"), "{t}");
+    assert!(t.contains("is version 0.0.1, older than this one") && t.contains("install-runtime"), "{t}");
     // The same version: no warning. A newer one: none either.
     for v in [env!("CARGO_PKG_VERSION"), "99.0.0"] {
         say(v);
         let o = e.install("2", "", &[]);
-        assert!(o.status.success() && !text(&o).contains("WARNING"), "{v}: {}", text(&o));
+        assert!(o.status.success() && !text(&o).contains("older than this one"), "{v}: {}", text(&o));
     }
 }
 
