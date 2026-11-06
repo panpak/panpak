@@ -18,6 +18,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,6 +73,9 @@ try:
 except OSError:
     out['fontcache_write'] = False
 open(os.environ['XDG_DATA_HOME'] + '/result.json', 'w').write(json.dumps(out))
+import sys, time
+if '--hold' in sys.argv:
+    time.sleep(8)
 '''
 
 WANT = {
@@ -115,9 +119,36 @@ def main():
     need(p.returncode == 0, p.stderr)
     p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
     need(p.returncode == 0, p.stdout + p.stderr)
+    # The first start holds the app for a few seconds, to look at the receiver of the open channel.
+    result = home / f'.local/share/panpak/userdata/{ID}/data/result.json'
+    held = subprocess.Popen([str(home / '.local/bin' / ID), '--hold'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    for _ in range(200):
+        if result.exists() and result.stat().st_size:
+            break
+        time.sleep(0.05)
+    need(result.exists(), 'the app did not start: ' + (held.poll() is not None and held.communicate()[1] or ''))
+    receiver = None
+    for pid in filter(str.isdigit, os.listdir('/proc')):
+        try:
+            if b'--panpak-receiver' in Path(f'/proc/{pid}/cmdline').read_bytes():
+                receiver = pid
+        except OSError:
+            pass
+    need(receiver, 'no receiver process while the app runs')
+    status = dict(l.split(':\t', 1) for l in Path(f'/proc/{receiver}/status').read_text().splitlines() if ':\t' in l)
+    limits = Path(f'/proc/{receiver}/limits').read_text()
+    need(status['NoNewPrivs'].strip() == '1' and status['Seccomp'].strip() == '2', f'receiver mode: {status["NoNewPrivs"]} {status["Seccomp"]}')
+    need(status['CapEff'].strip() == '0000000000000000', f'receiver has capabilities: {status["CapEff"]}')
+    need(any(l.startswith('Max open files') and l.split()[3] == '32' for l in limits.splitlines()), 'receiver open files limit')
+    print('receiver of the open channel: own process, no_new_privs, seccomp filter, no capabilities, 32 files')
+    held.terminate()
+    held.communicate(timeout=30)
+    time.sleep(0.3)
+    need(not Path(f'/proc/{receiver}').exists(), 'the receiver outlived the app')
+    result.unlink()
     p = run(home / '.local/bin' / ID)
     need(p.returncode == 0, f'the app failed ({p.returncode}): {p.stdout}{p.stderr}')
-    res = json.loads((home / f'.local/share/panpak/userdata/{ID}/data/result.json').read_text())
+    res = json.loads(result.read_text())
 
     need(res['status'] == {'NoNewPrivs': '1', 'Seccomp': '2'}, f'process mode: {res["status"]}')
     import errno

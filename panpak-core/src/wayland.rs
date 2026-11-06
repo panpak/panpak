@@ -34,7 +34,7 @@ pub const MAX_MESSAGE: usize = 4096;
 /// Everything the client reads in one conversation. A compositor with many globals sends a few kilobytes.
 const MAX_TOTAL: usize = 256 * 1024;
 /// The whole conversation, in the worst case.
-const TIMEOUT: Duration = Duration::from_secs(3);
+const TIMEOUT: Duration = Duration::from_secs(1);
 /// Longest string the client sends (a name, an app id, an instance id).
 const MAX_STRING: usize = 255;
 
@@ -678,13 +678,13 @@ mod tests {
             let _ = s.read(&mut b);
             s.write_all(&[0xff; 32]).unwrap();
             let (s2, _) = listener.accept().unwrap();
-            std::thread::sleep(Duration::from_secs(4));
+            std::thread::sleep(Duration::from_secs(3));
             drop(s2);
         });
         assert!(supported(&path).is_err(), "garbage must be an error");
         let t0 = Instant::now();
         let e = supported(&path).unwrap_err();
-        assert!(t0.elapsed() < Duration::from_secs(4), "{:?}", t0.elapsed());
+        assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
         assert!(crate::err_text(&e).contains("in time"), "{e:#}");
         t.join().unwrap();
         let _ = std::fs::remove_dir_all(&d);
