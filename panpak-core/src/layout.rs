@@ -327,7 +327,7 @@ pub fn describe_permissions(man: &Manifest) -> Vec<String> {
         out.push("X11 access: the app can observe other apps' input and screen".to_string());
     }
     if p.audio == Some(true) {
-        out.push("audio: the PipeWire and PulseAudio sockets of your session".to_string());
+        out.push("audio: the PipeWire and PulseAudio sockets of your session; the app can play sounds and record from the microphone".to_string());
     }
     let list = |v: &Option<Vec<u16>>| v.iter().flatten().map(u16::to_string).collect::<Vec<_>>().join(", ");
     if p.network == Some(true) || p.network_allow_tcp.is_some() || p.network_bind_tcp.is_some() {
@@ -373,7 +373,7 @@ pub fn added_permissions(old: &Manifest, new: &Manifest) -> Vec<String> {
         out.push("X11 access".to_string());
     }
     if n.audio == Some(true) && o.and_then(|p| p.audio) != Some(true) {
-        out.push("audio access".to_string());
+        out.push("audio access (sound output and microphone)".to_string());
     }
     if n.notifications == Some(true) && o.and_then(|p| p.notifications) != Some(true) {
         out.push("notifications".to_string());
@@ -484,6 +484,13 @@ mod tests {
     }
 
     #[test]
+    fn audio_permission_says_microphone() {
+        let lines = describe_permissions(&man("[permissions]\naudio=true\n"));
+        let l = lines.iter().find(|l| l.starts_with("audio:")).expect("audio line");
+        assert!(l.contains("play sounds") && l.contains("record from the microphone"), "{l}");
+    }
+
+    #[test]
     fn added_permissions_lists_only_new() {
         let old = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n");
         let same = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n");
@@ -491,7 +498,7 @@ mod tests {
         let more = man("[permissions]\nx11=true\naudio=true\nnetwork=true\nnetwork_allow_tcp=[443, 8080]\nnetwork_bind_tcp=[2658]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n[[permissions.home_paths]]\npath=\"b\"\naccess=\"ro\"\n");
         let added = added_permissions(&old, &more);
         assert_eq!(added.len(), 5, "{added:?}");
-        assert!(added.contains(&"audio access".to_string()));
+        assert!(added.contains(&"audio access (sound output and microphone)".to_string()));
         let raised = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n");
         let from_ro = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n");
         assert_eq!(added_permissions(&from_ro, &raised).len(), 1);
