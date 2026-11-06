@@ -52,6 +52,8 @@ pub struct DbusWait {
     pub socket: PathBuf,
     /// A file the outer stub writes when the proxy cannot be made.
     pub failed: PathBuf,
+    /// The link to the socket (`$XDG_RUNTIME_DIR/bus`); it is removed when the layer fails.
+    pub link: PathBuf,
     /// What the app gets instead in that case: no bus.
     pub on_failure_set: Vec<(String, String)>,
     pub on_failure_remove: Vec<String>,
@@ -76,6 +78,7 @@ impl DbusWait {
         };
         if !ok {
             eprintln!("panpak: the session bus layer is not ready; the app starts without a bus");
+            let _ = std::fs::remove_file(&self.link);
             job_env_set.retain(|(k, _)| !self.on_failure_set.iter().any(|(s, _)| s == k) && !self.on_failure_remove.contains(k));
             job_env_set.extend(self.on_failure_set.iter().cloned());
             job_env_remove.extend(self.on_failure_remove.iter().cloned());
@@ -754,6 +757,7 @@ mod tests {
         let w = DbusWait {
             socket: dir.join("bus"),
             failed: dir.join("failed"),
+            link: dir.join("link"),
             on_failure_set: vec![("DBUS_SESSION_BUS_ADDRESS".into(), "disabled:".into())],
             on_failure_remove: vec!["GTK_USE_PORTAL".into()],
         };

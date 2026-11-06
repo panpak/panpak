@@ -246,10 +246,10 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
     }
     Ok(Layer {
         mounts,
-        symlinks: vec![(PathBuf::from("panpak/dbus/bus"), view_bus)],
+        symlinks: vec![(PathBuf::from("panpak/dbus/bus"), view_bus.clone())],
         env,
         landlock_sockets,
-        wait: crate::view::DbusWait { socket: in_view.join("bus"), failed: in_view.join(FAILED), on_failure_set: set_back, on_failure_remove: remove_back },
+        wait: crate::view::DbusWait { socket: in_view.join("bus"), failed: in_view.join(FAILED), link: view_bus.clone(), on_failure_set: set_back, on_failure_remove: remove_back },
         stop: Some(stop),
         worker: Some(worker),
     })
