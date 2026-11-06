@@ -2,7 +2,7 @@
 
 Reference SHA-256 of the release binaries built with `scripts/repro-build.sh`.
 The script builds twice, in two different directories, and compares the
-results. The same hashes were obtained on three environments:
+results. The hashes of the previous reference were obtained on three environments; the current ones come from a double-build on the host, and the `repro` job of the CI checks them in its own environment:
 
 - the host, Zig installed in one place;
 - the host again, Zig installed in a different path and the build directory
@@ -19,11 +19,11 @@ Toolchain (everything that can change the bytes is pinned):
 - `SOURCE_DATE_EPOCH=1700000000` and path remapping for the sources and the
   cargo registry.
 
-Sizes: `panpak-stub` 2,924,520 bytes, `panpak` 6,410,792 bytes.
+Sizes: `panpak-stub` 3,067,656 bytes, `panpak` 6,460,328 bytes.
 
 ```
-f3afb6aaebaa7a59521707199c5c14a673bb99b2364792a654e53be8e0b2d362  panpak-stub
-e77201f129e943f2b53db8eb67fe9d8871edfdfa455a90ab6de337e30e5f7b5c  panpak
+062741ee944b4e8c24e17c5598bbc94d47773269b602c9c582f0169d4cd138af  panpak-stub
+7dae41d8a11c9ed0206ecb691a4d01a73840a018da0f569f3bfe8411109ef022  panpak
 ```
 
 ## Reproduce
