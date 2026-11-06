@@ -73,3 +73,7 @@ path = "fuzz_targets/fuzz_dbus.rs"
 [[bin]]
 name = "fuzz_dbus_names"
 path = "fuzz_targets/fuzz_dbus_names.rs"
+
+[[bin]]
+name = "fuzz_journal"
+path = "fuzz_targets/fuzz_journal.rs"
