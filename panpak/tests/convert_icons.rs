@@ -59,7 +59,6 @@ fn lab(name: &str) -> Lab {
 }
 
 enum Node<'a> {
-    Dir(&'a str),
     File(&'a str, Vec<u8>),
     Link(&'a str, &'a str),
 }
@@ -71,7 +70,6 @@ fn appimage(nodes: Vec<Node>) -> Vec<u8> {
     let mut w = FilesystemWriter::default();
     for n in nodes {
         match n {
-            Node::Dir(p) => w.push_dir_all(p, h).unwrap(),
             Node::File(p, d) => {
                 if let Some(parent) = Path::new(p).parent().filter(|p| !p.as_os_str().is_empty()) {
                     w.push_dir_all(parent, h).unwrap();
