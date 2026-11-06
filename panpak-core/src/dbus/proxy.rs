@@ -70,6 +70,48 @@ pub fn proxy_status() -> ProxyStatus {
     }
 }
 
+/// What identifies a version of the proxy binary: where it is, how big, when it changed, which inode.
+fn proxy_identity(path: &Path) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let m = path.metadata().ok()?;
+    Some(format!("{} {} {}.{} {}", path.display(), m.len(), m.mtime(), m.mtime_nsec(), m.ino()))
+}
+
+/// `proxy_status`, remembered for the next start: running `--version` costs 5 to 10 ms, and the answer only
+/// changes when the binary does. The answer is kept in a file of the private runtime folder
+/// (`<runtime>/panpak/proxy-version`), with the identity of the binary; a file that does not match is ignored and
+/// rewritten. Only a working, new enough proxy is remembered; every other answer is asked again.
+pub fn proxy_status_cached(runtime: &Path) -> ProxyStatus {
+    let Some(path) = find_proxy() else { return ProxyStatus::NotFound };
+    let cache = runtime.join("panpak").join("proxy-version");
+    let identity = proxy_identity(&path);
+    if let (Some(id), Ok(text)) = (&identity, std::fs::read_to_string(&cache)) {
+        if let Some((cached_id, version)) = text.trim_end().rsplit_once(' ') {
+            let parsed: Vec<_> = version.split('.').map(|p| p.parse::<u32>()).collect();
+            if cached_id == id {
+                if let [Ok(a), Ok(b), Ok(c)] = parsed[..] {
+                    if (a, b, c) >= MIN_PROXY {
+                        return ProxyStatus::Usable { path, version: (a, b, c) };
+                    }
+                }
+            }
+        }
+    }
+    let status = proxy_status();
+    if let (ProxyStatus::Usable { version: (a, b, c), .. }, Some(id)) = (&status, &identity) {
+        // Best effort: a failure to write only means the next start asks again.
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            let _ = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(runtime.join("panpak"));
+        }
+        let tmp = cache.with_extension(format!("tmp{}", std::process::id()));
+        if std::fs::write(&tmp, format!("{id} {a}.{b}.{c}\n")).is_ok() && std::fs::rename(&tmp, &cache).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+    status
+}
+
 /// The user's session bus socket: `DBUS_SESSION_BUS_ADDRESS` if it is a `unix:path=`, else
 /// `$XDG_RUNTIME_DIR/bus`. Only a socket that exists.
 pub fn session_bus_path() -> Option<PathBuf> {
@@ -93,6 +135,20 @@ mod tests {
         for bad in ["", "bwrap 0.1.7", "xdg-dbus-proxy", "xdg-dbus-proxy 0.1", "xdg-dbus-proxy 0.1.7.1", "xdg-dbus-proxy a.b.c", "xdg-dbus-proxy 0.1.-1"] {
             assert!(parse_version(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn identity_changes_with_the_file() {
+        let dir = std::env::temp_dir().join(format!("panpak-proxyid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("p");
+        std::fs::write(&f, "a").unwrap();
+        let one = proxy_identity(&f).unwrap();
+        assert_eq!(proxy_identity(&f).unwrap(), one);
+        std::fs::write(&f, "ab").unwrap();
+        assert_ne!(proxy_identity(&f).unwrap(), one, "a different size is a different identity");
+        assert!(proxy_identity(&dir.join("absent")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

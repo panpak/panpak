@@ -117,7 +117,8 @@ fn wait_ready(fd: RawFd, ms: i32) -> bool {
     unsafe { libc::read(fd, b.as_mut_ptr().cast(), 1) == 1 }
 }
 
-fn start_proxy(proxy: &Path, bus: &Path, dir: &Path, args: &[String]) -> Result<Guard> {
+/// Start the proxy; it is not waited for (see `await_proxy`).
+fn spawn_proxy(proxy: &Path, bus: &Path, dir: &Path, args: &[String]) -> Result<Guard> {
     let (r, w) = pipe()?;
     let wfd = w.as_raw_fd();
     let mut cmd = Command::new(proxy);
@@ -143,13 +144,23 @@ fn start_proxy(proxy: &Path, bus: &Path, dir: &Path, args: &[String]) -> Result<
     }
     let child = cmd.spawn().with_context(|| format!("cannot run {}", proxy.display()))?;
     drop(w);
-    let mut g = Guard { child, dir: dir.to_path_buf(), _sync: r };
+    Ok(Guard { child, dir: dir.to_path_buf(), _sync: r })
+}
+
+/// Wait until the proxy says it listens.
+fn await_proxy(g: &mut Guard) -> Result<()> {
     if !wait_ready(g._sync.as_raw_fd(), 5000) {
         let st = g.child.try_wait().ok().flatten();
         bail!("the proxy did not become ready ({})", st.map_or("still running".to_string(), |s| format!("exited with {s}")));
     }
-    ensure!(dir.join("bus").exists(), "the proxy made no socket");
-    Ok(g)
+    ensure!(g.dir.join("bus").exists(), "the proxy made no socket");
+    Ok(())
+}
+
+/// Build the layer on a thread of its own, so that the systemd scope (10 to 20 ms) and the proxy come up while the
+/// package is verified and the view is planned. `join` the handle where the layer is needed.
+pub fn start_in_background(man: panpak_core::Manifest, runtime_dir: PathBuf) -> std::thread::JoinHandle<Result<Layer>> {
+    std::thread::spawn(move || start(&Request { man: &man, runtime_dir: &runtime_dir }))
 }
 
 /// Build the layer, or say why there is none.
@@ -158,23 +169,36 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
     if panpak_core::allows_session_bus(man.permissions.as_ref()) {
         return Err(Quiet("the manifest lists the session bus socket: the app has the whole bus".into()).into());
     }
-    let status = dbus::proxy_status();
+    // The cheap questions first: with no session bus there is nothing to ask the proxy.
+    let Some(bus) = dbus::session_bus_path() else { return Err(Quiet("no session bus socket".into()).into()) };
+    let status = dbus::proxy_status_cached(req.runtime_dir);
     let dbus::ProxyStatus::Usable { path: proxy, .. } = status else {
         return Err(if matches!(status, dbus::ProxyStatus::NotFound | dbus::ProxyStatus::TooOld { .. }) { Quiet(describe_status(&status)).into() } else { anyhow::anyhow!("{}", describe_status(&status)) });
     };
-    let Some(bus) = dbus::session_bus_path() else { return Err(Quiet("no session bus socket".into()).into()) };
     let n = token()?;
-    enter_scope(req.runtime_dir, &man.app.id, &n)?;
+    crate::stage("dbus: checks done");
+    // No systemd user manager: nothing to wait for and no proxy to start.
+    if !req.runtime_dir.join("bus").exists() {
+        return Err(Quiet("no user bus: this system has no systemd user manager".into()).into());
+    }
     let dir = req.runtime_dir.join("panpak").join(&man.app.id).join(format!("dbus-{n}"));
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let args = dbus::proxy_args(&BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref() });
-    let guard = match start_proxy(&proxy, &bus, &dir, &args) {
+    // The proxy starts while systemd makes the scope (10 to 20 ms): the two do not depend on each other. The
+    // proxy is not in the scope; it ends with the guard when the app does.
+    let mut guard = match spawn_proxy(&proxy, &bus, &dir, &args) {
         Ok(g) => g,
         Err(e) => {
             let _ = std::fs::remove_dir_all(&dir);
             return Err(e);
         }
     };
+    crate::stage("dbus: proxy started");
+    // On an error the guard ends the proxy and removes its folder.
+    enter_scope(req.runtime_dir, &man.app.id, &n)?;
+    crate::stage("dbus: scope made");
+    await_proxy(&mut guard)?;
+    crate::stage("dbus: proxy ready");
     let view_bus = req.runtime_dir.join("bus");
     let mut mounts = vec![Mount::ro(dir.join("bus"), view_bus.clone())];
     let landlock_sockets = vec![view_bus.clone()];

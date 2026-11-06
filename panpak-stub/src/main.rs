@@ -113,14 +113,14 @@ fn materialize(
     entries: &[Entry],
 ) -> Result<PathBuf> {
     use std::collections::HashMap;
-    // One zstd context and one buffer for every chunk of the package.
-    let mut dec = ChunkDecoder::new()?;
-    let mut scratch = Vec::new();
     let tree = store.join("trees").join(hex(root));
     if tree.join(".complete").exists() {
         ensure_tree_readonly(&tree)?;
         return Ok(tree);
     } // Fast startup.
+    // One zstd context and one buffer for every chunk of the package.
+    let mut dec = ChunkDecoder::new()?;
+    let mut scratch = Vec::new();
     // One builder per tree: starts that overlap on a store without the tree wait here, then find it done.
     // The lock goes with the file descriptor, so a builder that dies never leaves the others stuck.
     fs::create_dir_all(store.join("trees"))?;
@@ -860,59 +860,76 @@ fn hide_local_sockets(cmd: &mut Command, allows_session: bool, allows_system: bo
     }
 }
 
-/// Ask `gsettings` for a key of `org.gnome.desktop.interface`; both queries run at once and share
-/// `timeout`. Returns `(color-scheme, gtk-theme)` without the quotes, or None on any failure.
-fn read_interface_settings(gsettings: &Path, timeout: std::time::Duration) -> Option<(String, String)> {
-    use std::io::Read as _;
-    use std::process::Stdio;
-    let spawn = |key: &str| {
-        Command::new(gsettings)
-            .args(["get", "org.gnome.desktop.interface", key])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            // Only the dark-theme hint depends on it: a program that cannot start means "no preference".
-            .ok()
-    };
-    let mut kids = [spawn("color-scheme"), spawn("gtk-theme")];
-    let deadline = std::time::Instant::now() + timeout;
-    let mut out: [Option<String>; 2] = [None, None];
-    while out.iter().any(Option::is_none) {
-        for (i, kid) in kids.iter_mut().enumerate() {
-            let Some(c) = kid else {
-                // Could not start: nothing to wait for.
-                out[i] = Some(String::new());
-                continue;
-            };
-            if out[i].is_some() {
-                continue;
-            }
-            if let Ok(Some(status)) = c.try_wait() {
-                let mut text = String::new();
-                if status.success() {
-                    if let Some(mut so) = c.stdout.take() {
-                        let _ = so.read_to_string(&mut text);
-                    }
+/// The two `gsettings` queries (`color-scheme` and `gtk-theme` of `org.gnome.desktop.interface`), running as
+/// children of this process. They are started early and collected late, so that their 10 ms or so overlap the
+/// work of the start. Dropping the value stops what is still running.
+struct InterfaceQuery {
+    kids: [Option<std::process::Child>; 2],
+    deadline: std::time::Instant,
+}
+
+impl InterfaceQuery {
+    /// Start both queries. The two share `timeout`, counted from now.
+    fn start(gsettings: &Path, timeout: std::time::Duration) -> InterfaceQuery {
+        use std::process::Stdio;
+        let spawn = |key: &str| {
+            Command::new(gsettings)
+                .args(["get", "org.gnome.desktop.interface", key])
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                // Only the dark-theme hint depends on it: a program that cannot start means "no preference".
+                .ok()
+        };
+        InterfaceQuery { kids: [spawn("color-scheme"), spawn("gtk-theme")], deadline: std::time::Instant::now() + timeout }
+    }
+
+    /// Wait for the answers. Returns `(color-scheme, gtk-theme)` without the quotes, or None on any failure.
+    fn finish(mut self) -> Option<(String, String)> {
+        use std::io::Read as _;
+        let mut out: [Option<String>; 2] = [None, None];
+        while out.iter().any(Option::is_none) {
+            for (i, kid) in self.kids.iter_mut().enumerate() {
+                let Some(c) = kid else {
+                    // Could not start: nothing to wait for.
+                    out[i] = Some(String::new());
+                    continue;
+                };
+                if out[i].is_some() {
+                    continue;
                 }
-                out[i] = Some(text);
+                if let Ok(Some(status)) = c.try_wait() {
+                    let mut text = String::new();
+                    if status.success() {
+                        if let Some(mut so) = c.stdout.take() {
+                            let _ = so.read_to_string(&mut text);
+                        }
+                    }
+                    out[i] = Some(text);
+                }
+            }
+            if std::time::Instant::now() >= self.deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let unquote = |s: &str| s.trim().trim_matches('\'').to_string();
+        let [Some(scheme), Some(theme)] = out else { return None };
+        Some((unquote(&scheme), unquote(&theme)))
+    }
+}
+
+impl Drop for InterfaceQuery {
+    /// Whatever is still running (after the deadline, or when the start ends in an error) is stopped and reaped.
+    fn drop(&mut self) {
+        for kid in self.kids.iter_mut().flatten() {
+            if kid.try_wait().ok().flatten().is_none() {
+                let _ = kid.kill();
+                let _ = kid.wait();
             }
         }
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    // Whatever is still running after the deadline is stopped and reaped.
-    for kid in kids.iter_mut().flatten() {
-        if kid.try_wait().ok().flatten().is_none() {
-            let _ = kid.kill();
-            let _ = kid.wait();
-        }
-    }
-    let unquote = |s: &str| s.trim().trim_matches('\'').to_string();
-    let [Some(scheme), Some(theme)] = out else { return None };
-    Some((unquote(&scheme), unquote(&theme)))
 }
 
 /// `GTK_THEME` for a dark desktop. GTK3 reads the dark preference from dconf, which the app
@@ -920,11 +937,8 @@ fn read_interface_settings(gsettings: &Path, timeout: std::time::Duration) -> Op
 /// theme over as `<gtk-theme>:dark` (`Adwaita:dark` when no theme is set). The value is read once
 /// at start: the app does not follow later changes. None when GTK_THEME is already set,
 /// `gsettings` is missing, slow or fails, or the scheme is not `prefer-dark`.
-fn gtk_dark_theme(gsettings: Option<&Path>, timeout: std::time::Duration) -> Option<String> {
-    if std::env::var_os("GTK_THEME").is_some() {
-        return None;
-    }
-    let (scheme, theme) = read_interface_settings(gsettings?, timeout)?;
+fn gtk_dark_theme(query: Option<InterfaceQuery>) -> Option<String> {
+    let (scheme, theme) = query?.finish()?;
     if scheme != "prefer-dark" {
         return None;
     }
@@ -981,7 +995,21 @@ fn split_stub_flags(args: Vec<String>) -> Result<StubFlags> {
     Ok((allow_unfiltered, open_file, app_args))
 }
 
+/// When the stub started, for the timing lines of `PANPAK_DEBUG`.
+static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// With `PANPAK_DEBUG` set: print how long the start has taken up to this point. A tool to see where the
+/// milliseconds of the fixed cost go (`tests/startup_budget.py`).
+fn stage(what: &str) {
+    if panpak_core::debug_enabled() {
+        if let Some(t0) = STARTED.get() {
+            eprintln!("panpak: debug: +{:6.2} ms  {what}", t0.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+}
+
 fn main() {
+    let _ = STARTED.set(std::time::Instant::now());
     if let Err(e) = real_main() {
         if panpak_core::is_storage_full(&e) {
             eprintln!("out of space: free disk space and retry");
@@ -1065,10 +1093,22 @@ fn real_main() -> Result<()> {
     // Stub flags (never the app's), removed before exec:
     // --network-unfiltered, --panpak-open <path> [--panpak-open-write|--panpak-open-rename].
     let (allow_unfiltered, open_file, app_args) = split_stub_flags(app_args)?;
+    // The desktop's dark preference is asked of `gsettings` now and read at the end of the preparation: the
+    // two programs run while this one verifies the package and builds the view. Before Landlock: `gsettings` and
+    // dconf are outside the sandbox.
+    let theme_query = if std::env::var_os("GTK_THEME").is_none() { find_gsettings().map(|g| InterfaceQuery::start(&g, GSETTINGS_TIMEOUT)) } else { None };
+    stage("started");
     let mut f = File::open(&pkg)?;
     let ft = read_footer(&mut f)?;
     let (man, raw_index) = verify(&mut f, &ft)?;
     panpak_core::check_runtime(&man, panpak_core::RUNTIME_ABI)?;
+    // The filtered session bus takes 15 to 25 ms to come up (a systemd scope, the proxy): it is started now, on
+    // another thread, and collected when the view is planned.
+    let view_usable = panpak_core::view_status().usable();
+    let dbus_early = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute() && view_usable)
+        .map(|rt| dbus_layer::start_in_background(man.clone(), rt));
 
     let store = dirs::data_dir().context("no data dir")?.join("panpak");
     // TOFU (spec §3.2): if the app is installed (pinned key), the signature
@@ -1088,12 +1128,16 @@ fn real_main() -> Result<()> {
     } else {
         eprintln!("panpak: {} {} — key fingerprint: {fp}", man.app.id, man.app.version);
     }
+    stage("package checked");
     let (chunks, entries) = parse_index(&raw_index)?;
     // The stub being run (ourselves in direct-mode, never the one in the file in
     // run-mode) must match the signed one: no other stub runs.
     let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
+    stage("index parsed");
     panpak_core::verify_stub_range(&mut f, stub_len, &man)?;
+    stage("stub range verified");
     let tree = materialize(&mut f, &store, &ft.root, &chunks, &entries)?;
+    stage("tree ready");
 
     // On cache hit, no bundle inventory or transitive parsing when warm.
     // Signature/pin/stub/index verified above; Landlock applied below.
@@ -1101,6 +1145,7 @@ fn real_main() -> Result<()> {
     let ld_path =
         std::env::join_paths(plan.ld_path.iter()).context("non-UTF-8 LD_LIBRARY_PATH")?;
 
+    stage("libraries resolved");
     // Private folders (0700), created before the sandbox closes the rest of the disk.
     let app_dirs = panpak_core::app_dirs(&man.app.id)?;
     app_dirs.create()?;
@@ -1129,8 +1174,8 @@ fn real_main() -> Result<()> {
         Some(_) => bail!("PANPAK_SOCKET_PROBE is only available on x86-64"),
         None => None,
     };
-    // Before Landlock: `gsettings` and dconf are outside the sandbox.
-    let dark_theme = gtk_dark_theme(find_gsettings().as_deref(), GSETTINGS_TIMEOUT);
+    let dark_theme = gtk_dark_theme(theme_query);
+    stage("theme answered");
     let launch = man.launch.as_ref();
     let launch_args = launch
         .and_then(|l| l.args.as_deref())
@@ -1192,14 +1237,15 @@ fn real_main() -> Result<()> {
     let _ = probe_log;
     // Outer stub -> bubblewrap -> inner stub (Landlock) -> app. Without a usable bubblewrap the
     // stub applies Landlock itself and starts the app, as it always did.
-    if panpak_core::view_status().usable() {
+    if view_usable {
         // Only with the view: its home folder is an empty tmpfs, so listing it shows nothing else.
         // Only a convenience (the home folder shows the granted folders when listed): without it the listing is empty.
         access.home_list = dirs::home_dir().and_then(|h| fs::canonicalize(h).ok()).filter(|h| h.is_dir() && h != Path::new("/"));
         let mut store_paths = plan.ld_path.clone();
         store_paths.extend(plan.loader.clone());
         store_paths.push(PathBuf::from(cmd.get_program()));
-        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref(), early_lock: early.as_ref(), store_paths };
+        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref(), early_lock: early.as_ref(), store_paths, dbus: std::cell::Cell::new(dbus_early) };
+        stage("entering the view");
         enter_view(&ctx, &mut cmd)?;
     }
     sandbox(&tree, &man, &access, allow_unfiltered, open_arg)?;
@@ -1221,6 +1267,7 @@ fn real_main() -> Result<()> {
 /// for everything it runs. Does not return on success.
 fn exec_filtered(cmd: &mut Command) -> Result<()> {
     panpak_core::seccomp::install()?;
+    stage("seccomp installed, executing the app");
     let err = cmd.exec(); // Replaces the process.
     bail!("exec failed: {err}")
 }
@@ -1237,6 +1284,8 @@ struct ViewStart<'a> {
     early_lock: Option<&'a File>,
     /// What the inner stub and the app read from the store: library folders and the loader.
     store_paths: Vec<PathBuf>,
+    /// The D-Bus layer, being built on another thread since the package was verified (see `dbus_layer`).
+    dbus: std::cell::Cell<Option<std::thread::JoinHandle<Result<dbus_layer::Layer>>>>,
 }
 
 /// Start the app in the isolated view: build the job for the inner stub and replace this
@@ -1256,6 +1305,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     }
     // The Wayland socket of the app: a socket of its own that the compositor knows as sandboxed, when it can.
     let wayland = wayland_context(ctx);
+    stage("Wayland context");
     sockets.extend(ctx.access.sockets.iter().filter(|s| wayland.as_ref().is_none_or(|w| **s != w.display)).cloned());
     let mut ro_run_dirs = Vec::new();
     for d in [Some(PathBuf::from("/run/systemd/resolve")), panpak_core::resolv_conf_run_dir()].into_iter().flatten() {
@@ -1307,7 +1357,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     let (mut mounts, opener_server) = open_channel(ctx, cmd, &stub, runtime_text.as_deref());
     // The filtered session bus, when this system can give it. Before the sockets and the job are
     // fixed: it adds mounts, variables and one path Landlock must allow.
-    let dbus = ctx.runtime_dir.and_then(|rt| match dbus_layer::start(&dbus_layer::Request { man: ctx.man, runtime_dir: rt }) {
+    let dbus = ctx.dbus.take().and_then(|h| match h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("the D-Bus layer stopped unexpectedly"))) {
         Ok(l) => Some(l),
         Err(e) => {
             if e.downcast_ref::<dbus_layer::Quiet>().is_none() {
@@ -1316,6 +1366,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
             None
         }
     });
+    stage("D-Bus layer");
     if let Some(w) = &wayland {
         mounts.push(view::Mount { src: w.listener.path.clone(), dest: w.display.clone(), rw: true });
     }
@@ -1349,6 +1400,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
             eprintln!("panpak: removed a stale lock file: {}", gone.display());
         }
     }
+    stage("shared folders");
     let plan = view::ViewPlan {
         root: view::root_layout(Path::new("/")),
         shared_tmp: shared.as_ref().map(|s| s.tmp.clone()),
@@ -1387,6 +1439,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         env_set: parts.env_set,
         env_remove: parts.env_remove,
     };
+    stage("view planned");
     let fd = view::job_memfd(&job)?;
     let plan = view::ViewPlan { fd, ..plan };
     // The lock of the shared folders must outlive bwrap, so the outer stub stays whenever there is one.
@@ -1527,10 +1580,13 @@ fn write_opener_config(app_id: &str, exec: &str) -> Result<()> {
 
 /// The inner stub: Landlock, then the app. The job comes from the outer stub, which verified the package.
 fn run_inner(fd: i32) -> Result<()> {
+    let _ = STARTED.set(std::time::Instant::now());
     let job = view::read_job(fd)?;
+    stage("inner: job read");
     let access = Access { rw: job.rw.clone(), ro: job.ro.clone(), sockets: job.sockets.clone(), in_view: true, home_list: job.home_list.clone() };
     let open = job.open.as_ref().map(|o| (o.path.as_path(), OpenGrant { write: o.write, rename: o.rename }));
     sandbox(&job.tree, &job.manifest, &access, job.allow_unfiltered, open)?;
+    stage("inner: Landlock applied");
     exec_filtered(&mut job.to_command())
 }
 
@@ -2874,17 +2930,22 @@ mod tests {
         }
         let t = std::time::Duration::from_secs(10);
         let g = fake_gsettings("gs-dark", "'prefer-dark'", "'Yaru'", "0", 0);
-        assert_eq!(gtk_dark_theme(Some(&g), t).as_deref(), Some("Yaru:dark"));
+        assert_eq!(dark_from(Some(&g), t).as_deref(), Some("Yaru:dark"));
         let g = fake_gsettings("gs-empty", "'prefer-dark'", "''", "0", 0);
-        assert_eq!(gtk_dark_theme(Some(&g), t).as_deref(), Some("Adwaita:dark"));
+        assert_eq!(dark_from(Some(&g), t).as_deref(), Some("Adwaita:dark"));
         let g = fake_gsettings("gs-light", "'default'", "'Yaru'", "0", 0);
-        assert_eq!(gtk_dark_theme(Some(&g), t), None);
+        assert_eq!(dark_from(Some(&g), t), None);
         let g = fake_gsettings("gs-odd", "'prefer-dark'", "'a;b'", "0", 0);
-        assert_eq!(gtk_dark_theme(Some(&g), t), None, "theme names with odd characters are not passed on");
+        assert_eq!(dark_from(Some(&g), t), None, "theme names with odd characters are not passed on");
         let g = fake_gsettings("gs-fail", "'prefer-dark'", "'Yaru'", "0", 1);
-        assert_eq!(gtk_dark_theme(Some(&g), t), None);
-        assert_eq!(gtk_dark_theme(None, t), None);
-        assert_eq!(gtk_dark_theme(Some(Path::new("/nonexistent/gsettings")), t), None);
+        assert_eq!(dark_from(Some(&g), t), None);
+        assert_eq!(dark_from(None, t), None);
+        assert_eq!(dark_from(Some(Path::new("/nonexistent/gsettings")), t), None);
+    }
+
+    /// The query as the start makes it: started with the program and the time limit, read at the end.
+    fn dark_from(g: Option<&Path>, t: std::time::Duration) -> Option<String> {
+        gtk_dark_theme(g.map(|g| InterfaceQuery::start(g, t)))
     }
 
     #[test]
@@ -2898,7 +2959,7 @@ mod tests {
         }
         let g = fake_gsettings("gs-slow", "'prefer-dark'", "'Yaru'", "5", 0);
         let t0 = std::time::Instant::now();
-        assert_eq!(gtk_dark_theme(Some(&g), GSETTINGS_TIMEOUT), None);
+        assert_eq!(dark_from(Some(&g), GSETTINGS_TIMEOUT), None);
         let took = t0.elapsed();
         assert!(took < std::time::Duration::from_millis(900), "waited {took:?}");
     }

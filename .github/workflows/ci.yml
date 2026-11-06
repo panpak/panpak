@@ -138,6 +138,20 @@ jobs:
         run: |
           python3 conformance/gen.py
           python3 conformance/run.py --rust
+      - name: Bubblewrap and user namespaces (for the isolated view)
+        # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
+        # tests below run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
+        run: |
+          sudo apt-get install -y -qq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
+      - name: Hardening (seccomp filter and system font cache, through the real launcher)
+        run: python3 tests/hardening.py
+      - name: Startup budget (advisory)
+        # Reports the fixed cost of a start against running the program directly. Advisory until a week of
+        # numbers from these runners shows how steady they are; then it moves into the gate.
+        continue-on-error: true
+        run: python3 tests/startup_budget.py --advisory --runs 30 | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Artifacts (static stub for the distro matrix)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -9,7 +9,7 @@ mod systemd;
 mod wire;
 
 pub use conn::{address_path, Connection, DbusError, Reply};
-pub use proxy::{find_proxy, parse_version, proxy_status, proxy_version, session_bus_path, ProxyStatus, MIN_PROXY, PROXY_PATHS};
+pub use proxy::{find_proxy, parse_version, proxy_status, proxy_status_cached, proxy_version, session_bus_path, ProxyStatus, MIN_PROXY, PROXY_PATHS};
 pub use rules::{check_dbus_own, id_own_problem, own_name_problem, proxy_args, BusNeeds, MAX_OWN, PORTAL, TRAY_WATCHER};
 pub use systemd::{grant_document, portal_id_from_unit, scope_name, start_scope, DocumentGrant};
 pub use wire::{
