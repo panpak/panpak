@@ -277,7 +277,7 @@ fn pack_cleans_an_icon_and_says_which_chunks_it_removed() {
     assert!(err.contains("icon a.png: removed the chunks tEXt") && err.contains("pixels are not touched"), "{err}");
     // Both are 32 pixels: the first stays and the note says so.
     assert!(err.contains("icon b.png: same size (32x32) as a.png, which is used; this one is not"), "{err}");
-    let t2 = e.tree("1", "[desktop]\nicons = [\"b.png\"]\n", &[("b.png", icc_png.clone())]);
+    let t2 = e.tree("9", "[desktop]\nicons = [\"b.png\"]\n", &[("b.png", icc_png.clone())]);
     let (o2, _) = e.pack(&t2, "icc.panpak");
     assert!(o2.status.success() && String::from_utf8_lossy(&o2.stderr).contains("icon b.png: removed the chunks iCCP"), "{}", text(&o2));
     // The file in the tree is not changed; the package holds the cleaned icon and install writes it.
