@@ -26,7 +26,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [-o <out.panpak>]\n  panpak install-runtime <stub> --allow-unsigned      (your own build; the file, not a folder)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -320,7 +320,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     let schemes = manifest_schemes(&man);
     if desktop.exists() || legacy_desktop_path(app_id)?.exists() || !schemes.is_empty() {
         fs::create_dir_all(desktop.parent().unwrap())?;
-        write_replacing(&desktop, &desktop_file(app_id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man))?, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
+        write_replacing(&desktop, &desktop_file(app_id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), installed_panpak().as_deref())?, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
         let moved = remove_legacy_desktop(app_id, &launcher)?;
         if !schemes.is_empty() || moved {
             refresh_desktop_database(desktop.parent().unwrap());
@@ -1376,7 +1376,7 @@ fn desktop_exec_arg(p: &str) -> Result<String> {
 /// The entry declares no MimeType: the manifest has no field for MIME types, and
 /// `application/x-panpak` is the type of the packages themselves, not of the
 /// files an app opens.
-fn desktop_file(app_id: &str, name: &str, launcher: &Path, schemes: &[String], wm_class: Option<&str>) -> Result<String> {
+fn desktop_file(app_id: &str, name: &str, launcher: &Path, schemes: &[String], wm_class: Option<&str>, panpak: Option<&Path>) -> Result<String> {
     // The URL schemes the manifest declares; every name is checked again here, whatever the caller did.
     let mut mime = String::new();
     for sc in schemes {
@@ -1392,12 +1392,32 @@ fn desktop_file(app_id: &str, name: &str, launcher: &Path, schemes: &[String], w
         }
         None => String::new(),
     };
+    // The menu action "Uninstall": it runs the panpak that installed the app, by its absolute path. Without
+    // such a path there is no action.
+    let (actions, action) = match panpak {
+        Some(p) => (
+            "Actions=Uninstall;\n",
+            format!(
+                "\n[Desktop Action Uninstall]\nName=Uninstall\nName[de]=Deinstallieren\nName[es]=Desinstalar\nName[fr]=D\u{e9}sinstaller\nName[it]=Disinstalla\nExec={} remove --ask {}\n",
+                desktop_exec_arg(path_text(p)?)?,
+                desktop_string(app_id)?
+            ),
+        ),
+        None => ("", String::new()),
+    };
     Ok(format!(
-        "[Desktop Entry]\nType=Application\nName={}\nExec={} %U\nTerminal=false\nCategories=Utility;\n{mime}{class}{DESKTOP_MARKER}{}\n",
+        "[Desktop Entry]\nType=Application\nName={}\nExec={} %U\nTerminal=false\nCategories=Utility;\n{mime}{class}{actions}{DESKTOP_MARKER}{}\n{action}",
         desktop_string(name)?,
         desktop_exec_arg(path_text(launcher)?)?,
         desktop_string(app_id)?
     ))
+}
+
+/// The panpak that is running now, by absolute path, for the menu action "Uninstall". `None` when it cannot be found
+/// as a regular file (then the entry gets no action).
+fn installed_panpak() -> Option<PathBuf> {
+    let p = std::env::current_exe().ok()?;
+    (p.is_absolute() && fs::metadata(&p).is_ok_and(|m| m.is_file())).then_some(p)
 }
 
 /// The `.desktop` file of an app: `panpak.<id>.desktop`. The portals know the app as `panpak.<id>` (the
@@ -1850,7 +1870,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     write_replacing(&launcher, &launcher_sh(&man.app.id, &runtime, &current)?, 0o755, "launcher", &|s| launcher_is_ours(s, &man.app.id))?;
     fs::create_dir_all(desktop.parent().unwrap())?;
     let schemes = manifest_schemes(&man);
-    write_replacing(&desktop, &desktop_file(&man.app.id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man))?, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
+    write_replacing(&desktop, &desktop_file(&man.app.id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), installed_panpak().as_deref())?, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
     // An entry written under the old name by an earlier version is replaced by this one.
     let moved = remove_legacy_desktop(&man.app.id, &launcher)?;
     if moved {
@@ -2338,17 +2358,20 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             remove::cmd_list(json)
         }
         Some("remove") => {
-            let (mut yes, mut purge) = (false, false);
+            let (mut yes, mut purge, mut ask) = (false, false, false);
             let mut ids: Vec<&str> = Vec::new();
             for a in &args[2..] {
                 match a.as_str() {
                     "--yes" => yes = true,
                     "--purge-data" => purge = true,
+                    "--ask" => ask = true,
                     x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
                     x => ids.push(x),
                 }
             }
+            ensure_code!(!ask || !(yes || purge), ErrorCode::E5001, "--ask goes alone: it asks in a dialog and never deletes data\n{usage}", usage = usage());
             match ids.as_slice() {
+                [id] if ask => remove::cmd_remove_ask(id),
                 [id] => remove::cmd_remove(id, purge, yes),
                 _ => bail_code!(ErrorCode::E5002, "remove [--purge-data] [--yes] <app-id>\n{usage}", usage = usage()),
             }
@@ -2681,6 +2704,16 @@ mod tests {
     }
 
     #[test]
+    fn the_uninstall_action_needs_a_panpak_path() {
+        let l = Path::new("/home/u/.local/bin/org.x");
+        let none = desktop_file("org.x", "X", l, &[], None, None).unwrap();
+        assert!(!none.contains("Actions=") && !none.contains("[Desktop Action"), "{none}");
+        let some = desktop_file("org.x", "X", l, &[], None, Some(Path::new("/opt/my panpak/panpak"))).unwrap();
+        assert!(some.contains("Actions=Uninstall;\n") && some.contains("Exec=\"/opt/my panpak/panpak\" remove --ask org.x\n"), "{some}");
+        assert!(desktop_file("org.x", "X", l, &[], None, Some(Path::new("/opt/p\nanpak"))).is_err());
+    }
+
+    #[test]
     fn generic_code_per_subcommand() {
         assert_eq!(generic_code(Some("pack")), ErrorCode::E0000);
         assert_eq!(generic_code(Some("release")), ErrorCode::E1000);
@@ -2767,7 +2800,7 @@ mod tests {
         assert!(sh.contains("apps/org.x/current"));
         assert!(sh.contains("\n# X-Panpak-App-Id: org.x\n"));
         assert!(sh.ends_with("\"$@\"\n"));
-        let d = desktop_file("org.x", "X App", Path::new("/home/u/.local/bin/org.x"), &[], None).unwrap();
+        let d = desktop_file("org.x", "X App", Path::new("/home/u/.local/bin/org.x"), &[], None, None).unwrap();
         assert!(d.contains("Name=X App\n"));
         assert!(d.contains("Exec=\"/home/u/.local/bin/org.x\" %U\n"));
         assert!(d.contains("\nX-Panpak-App-Id=org.x\n"));
@@ -2783,16 +2816,16 @@ mod tests {
     #[test]
     fn desktop_entry_values_cannot_start_a_line() {
         let l = Path::new("/home/u/.local/bin/org.x");
-        let d = desktop_file("org.x", "Evil\nExec=/bin/sh\r\nTerminal=true", l, &[], None).unwrap();
+        let d = desktop_file("org.x", "Evil\nExec=/bin/sh\r\nTerminal=true", l, &[], None, None).unwrap();
         assert_eq!(d.lines().count(), 7, "{d}");
         assert_eq!(d.lines().filter(|l| l.starts_with("Exec=")).count(), 1, "{d}");
         assert!(d.contains("Name=Evil\\nExec=/bin/sh\\r\\nTerminal=true\n"), "{d}");
         // Backslash is escaped, other controls are refused.
-        assert!(desktop_file("org.x", "A\\B", l, &[], None).unwrap().contains("Name=A\\\\B\n"));
+        assert!(desktop_file("org.x", "A\\B", l, &[], None, None).unwrap().contains("Name=A\\\\B\n"));
         for bad in ["a\u{1}b", "a\u{7f}b", "a\u{9b}b"] {
-            assert!(desktop_file("org.x", bad, l, &[], None).is_err(), "{bad:?}");
+            assert!(desktop_file("org.x", bad, l, &[], None, None).is_err(), "{bad:?}");
         }
-        assert!(desktop_file("org.x", "N", Path::new("/home/u\n/x"), &[], None).is_err());
+        assert!(desktop_file("org.x", "N", Path::new("/home/u\n/x"), &[], None, None).is_err());
     }
 
     #[test]
@@ -2824,7 +2857,7 @@ mod tests {
         assert!(!launcher_is_ours("#!/bin/sh\necho mine\n", "org.x"));
         // Written before the marker existed.
         assert!(launcher_is_ours("#!/bin/sh\n# Generated by `panpak install`: do not edit.\n# Points to apps/<id>/current; x\n", "org.x"));
-        let d = desktop_file("org.x", "X", l, &[], None).unwrap();
+        let d = desktop_file("org.x", "X", l, &[], None, None).unwrap();
         assert!(desktop_is_ours(&d, "org.x", l));
         assert!(!desktop_is_ours(&d, "org.y", l));
         assert!(!desktop_is_ours("[Desktop Entry]\nType=Application\nName=Mine\nExec=/bin/mine\n", "org.x", l));

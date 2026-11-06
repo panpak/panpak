@@ -188,6 +188,12 @@ entry. A link put in place of a folder must not make the command delete somethin
   does not run the app (tests/remove_race.py). Without bubblewrap the lock goes on to the app itself, so a copy is still seen.
 - A launcher or desktop entry that panpak did not write (no marker), or that is a link, is left alone and listed.
 
+The menu action `remove --ask` runs with the rights of the user from an entry that panpak wrote with the absolute path of
+its own binary; it uses `zenity`, `kdialog`, `notify-send` or `gdbus` only from `/usr/bin`, `/bin` and `/run/current-system/sw/bin`,
+passes the app name (which comes from the package) as one argument without a shell, removes markup characters and control
+characters from it, and never deletes data. Another program that can write the user's `~/.local/share/applications` could
+point an action elsewhere, but it could do the same with the launcher entry itself.
+
 What `remove` does not do: it does not delete entries of the desktop's permission store (`org.freedesktop.impl.portal.PermissionStore`)
 or the document portal for `panpak.<id>`. Measured on a desktop that ran the test apps: the stores had no entry for any
 `panpak.*` app (`documents` empty; `notifications` only for snap apps), and the folders `doc/by-app/panpak.<id>` of the document portal

@@ -97,6 +97,10 @@ panpak remove org.example.hello      # launcher, entry, packages and trees go; y
 panpak remove --purge-data org.example.hello   # also deletes settings, data and cache, after asking (or --yes)
 ```
 
+The entry of an installed app in the menu also has a right-click action "Uninstall" (it asks in a dialog and never deletes your
+data; it needs `zenity` or `kdialog`, otherwise it only shows the command for a terminal). An app installed before this
+version gets the action when you install or update it again.
+
 `remove` refuses while the app is running (`PANPAK-E2002`). It prints where the data stays and how much it weighs. The
 runtime and the shared blobs stay. If `remove` is interrupted, the next `panpak` command finishes it. An app that was
 cleaned by hand, or half installed, is finished without errors. A launcher or an entry that panpak did not write is left alone.

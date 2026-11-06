@@ -696,6 +696,126 @@ pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
     Ok(())
 }
 
+/// Where the dialog and notification tools are looked for: fixed folders, never `PATH`.
+fn tool_dirs() -> Vec<PathBuf> {
+    #[cfg(debug_assertions)]
+    if let Some(d) = std::env::var_os("PANPAK_TEST_TOOLS_DIR") {
+        return vec![PathBuf::from(d)];
+    }
+    ["/usr/bin", "/bin", "/run/current-system/sw/bin"].iter().map(PathBuf::from).collect()
+}
+
+fn find_tool(name: &str) -> Option<PathBuf> {
+    tool_dirs().into_iter().map(|d| d.join(name)).find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file()))
+}
+
+/// Text for a dialog that reads markup: the characters that start markup are written as entities.
+fn markup_safe(s: &str) -> String {
+    clean(s).replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// A string in the text form of GVariant (what `gdbus call` reads): single quotes, with `\` and `'` escaped.
+fn gvariant_str(s: &str) -> String {
+    format!("'{}'", clean(s).replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+/// Show a desktop notification with `notify-send` or `gdbus`, if there is one. Returns whether one was sent.
+fn notify(summary: &str, body: &str) -> bool {
+    use std::process::{Command, Stdio};
+    let quiet = |c: &mut Command| c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    if let Some(t) = find_tool("notify-send") {
+        return quiet(Command::new(t).args(["--app-name=Panpak", "--", &clean(summary), &clean(body)]));
+    }
+    if let Some(t) = find_tool("gdbus") {
+        return quiet(Command::new(t).args([
+            "call",
+            "--session",
+            "--dest",
+            "org.freedesktop.Notifications",
+            "--object-path",
+            "/org/freedesktop/Notifications",
+            "--method",
+            "org.freedesktop.Notifications.Notify",
+            "Panpak",
+            "uint32 0",
+            "",
+            &gvariant_str(summary),
+            &gvariant_str(body),
+            "[]",
+            "{}",
+            "int32 10000",
+        ]));
+    }
+    false
+}
+
+/// `panpak remove --ask <app-id>`: the menu action "Uninstall". Asks in a dialog (zenity or kdialog), removes the app
+/// (not its data) when the answer is yes, and tells the result in a notification. With no dialog tool it removes nothing
+/// and only explains, by notification, the command to run in a terminal.
+pub fn cmd_remove_ask(id: &str) -> Result<()> {
+    use std::process::{Command, Stdio};
+    panpak_core::validate_app_id(id)?;
+    let exe = std::env::current_exe().ok().map(|p| p.display().to_string()).unwrap_or_else(|| "panpak".into());
+    let ctx = Ctx::open()?;
+    let ids = ctx.app_ids();
+    let facts = ctx.facts(id, &ids);
+    let name = facts.name.clone().unwrap_or_else(|| id.to_string());
+    let dirs = panpak_core::app_dirs(id)?;
+    let mut kept = String::new();
+    for (p, b) in [(&dirs.root, facts.data_bytes), (&dirs.cache, facts.cache_bytes)] {
+        if let Some(b) = b {
+            kept.push_str(&format!("{} ({})\n", p.display(), human(b)));
+        }
+    }
+    let how = format!("{exe} remove {id}");
+    let tell_terminal = |why: &str| {
+        let body = format!("{why} To remove {name}, run in a terminal: {how}");
+        if !notify("Panpak: nothing was removed", &body) {
+            eprintln!("panpak: {body}");
+        }
+    };
+    ensure_code!(facts.in_apps || !facts.packages.is_empty(), ErrorCode::E2004, "{id} is not installed");
+    let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_uppercase().contains("KDE"));
+    let order: [&str; 2] = if kde { ["kdialog", "zenity"] } else { ["zenity", "kdialog"] };
+    let Some((tool, path)) = order.iter().find_map(|t| find_tool(t).map(|p| (*t, p))) else {
+        tell_terminal("There is no dialog tool (zenity or kdialog) to ask you.");
+        return Err(coded(ErrorCode::E5004, format!("no dialog tool to ask for a confirmation: nothing was removed; run `{how}` in a terminal")));
+    };
+    let text_with = |esc: &dyn Fn(&str) -> String| {
+        format!(
+            "Remove {}?\n\nThe app and its launcher are removed.\n\n{}If you install the app again it finds your settings and data. To delete them too, run in a terminal:\n{} remove --purge-data {}",
+            esc(&name),
+            if kept.is_empty() { "It has no settings or data.\n\n".to_string() } else { format!("Your settings and data stay in:\n{}\n", esc(&kept)) },
+            esc(&exe),
+            esc(id),
+        )
+    };
+    let title = "Remove an app";
+    let mut cmd = Command::new(&path);
+    if tool == "zenity" {
+        cmd.args(["--question", "--no-markup", "--title", title, "--text", &text_with(&|s| clean(s)), "--ok-label", "Remove", "--cancel-label", "Cancel", "--width", "460"]);
+    } else {
+        cmd.args(["--title", title, "--warningyesno", &text_with(&markup_safe).replace('\n', "<br>"), "--yes-label", "Remove", "--no-label", "Cancel"]);
+    }
+    let answered_yes = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    if !answered_yes {
+        // No: nothing is removed, and nothing more to say.
+        println!("cancelled: nothing was removed");
+        return Ok(());
+    }
+    match cmd_remove(id, false, true) {
+        Ok(()) => {
+            let body = if kept.is_empty() { format!("{name} was removed.") } else { format!("{name} was removed. Your settings and data stay in {}", kept.trim_end().replace('\n', ", ")) };
+            notify("Panpak: app removed", &body);
+            Ok(())
+        }
+        Err(e) => {
+            notify("Panpak: the app was not removed", &format!("{e:#}"));
+            Err(e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -704,6 +824,12 @@ mod tests {
     fn json_strings_are_escaped() {
         assert_eq!(json_str("a\"b\\c\n\u{1}"), "\"a\\\"b\\\\c\\n\\u0001\"");
         assert_eq!(json_str("é"), "\"é\"");
+    }
+
+    #[test]
+    fn dialog_and_notification_text_is_made_safe() {
+        assert_eq!(markup_safe("A <b>&x</b>\u{1b}"), "A &lt;b&gt;&amp;x&lt;/b&gt;?");
+        assert_eq!(gvariant_str("it's \\ ok"), "'it\\'s \\\\ ok'");
     }
 
     #[test]

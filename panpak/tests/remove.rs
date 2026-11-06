@@ -526,3 +526,116 @@ fn a_data_folder_that_is_a_link_is_reported_and_left_for_the_user() {
         intact(&outside);
     }
 }
+
+// --- the menu action "Uninstall" and `remove --ask`
+
+/// A folder with fake tools: each records its arguments in `<name>.args` and exits with the given status.
+fn fake_tools(home: &Path, tools: &[(&str, i32)]) -> PathBuf {
+    let dir = home.join("fake-tools");
+    fs::create_dir_all(&dir).unwrap();
+    for (name, status) in tools {
+        let p = dir.join(name);
+        fs::write(&p, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit {status}\n", dir.join(format!("{name}.args")).display())).unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    dir
+}
+
+fn ask(e: &Env, tools: &Path, id: &str) -> Output {
+    cmd(&e.home, &["remove", "--ask", id]).env("PANPAK_TEST_TOOLS_DIR", tools).env("XDG_CURRENT_DESKTOP", "GNOME").output().unwrap()
+}
+
+#[test]
+fn the_entry_has_an_uninstall_action_that_runs_the_installed_panpak() {
+    let e = env("action");
+    e.install(A, "1", "a");
+    let d = fs::read_to_string(e.desktop(A)).unwrap();
+    let exe = env!("CARGO_BIN_EXE_panpak");
+    assert!(d.contains("\nActions=Uninstall;\n"), "{d}");
+    assert!(d.contains("\n[Desktop Action Uninstall]\nName=Uninstall\n"), "{d}");
+    assert!(d.contains("Name[it]=Disinstalla\n") && d.contains("Name[de]=") && d.contains("Name[fr]=") && d.contains("Name[es]="), "{d}");
+    assert!(d.contains(&format!("Exec=\"{exe}\" remove --ask {A}\n")), "{d}");
+    // The main group still comes first and carries the marker, so the entry is still recognised as ours.
+    assert!(d.starts_with("[Desktop Entry]\n") && d.find("X-Panpak-App-Id=").unwrap() < d.find("[Desktop Action").unwrap(), "{d}");
+    assert!(e.remove(&[A]).status.success() && !e.desktop(A).exists());
+}
+
+#[test]
+fn ask_without_a_dialog_tool_removes_nothing_and_says_the_command() {
+    let e = env("ask-none");
+    e.install(A, "1", "a");
+    e.fake_data(A);
+    let tools = fake_tools(&e.home, &[]);
+    let o = ask(&e, &tools, A);
+    let t = text(&o);
+    assert!(!o.status.success() && t.contains("PANPAK-E5004") && t.contains("remove "), "{t}");
+    assert!(e.launcher(A).exists() && e.desktop(A).exists() && e.userdata(A).join("data/file").exists());
+    // With only a notification tool, the explanation goes there.
+    let tools = fake_tools(&e.home, &[("notify-send", 0)]);
+    let o = ask(&e, &tools, A);
+    assert!(!o.status.success());
+    let n = fs::read_to_string(tools.join("notify-send.args")).unwrap();
+    assert!(n.contains("nothing was removed") && n.contains(&format!("remove {A}")), "{n}");
+    assert!(e.launcher(A).exists());
+}
+
+#[test]
+fn ask_with_the_answer_no_removes_nothing() {
+    let e = env("ask-no");
+    e.install(A, "1", "a");
+    e.fake_data(A);
+    let tools = fake_tools(&e.home, &[("zenity", 1), ("notify-send", 0)]);
+    let o = ask(&e, &tools, A);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(e.launcher(A).exists() && e.desktop(A).exists() && e.store().join("apps").join(A).join("current").exists());
+    assert!(e.userdata(A).join("data/file").exists());
+    // The dialog told what is removed, what stays and where, and the command for the data.
+    let q = fs::read_to_string(tools.join("zenity.args")).unwrap();
+    assert!(q.contains("--question") && q.contains(&format!("App {A}")) && q.contains(e.userdata(A).to_str().unwrap()), "{q}");
+    assert!(q.contains("installs the app again") || q.contains("install the app again"), "{q}");
+    assert!(q.contains(&format!("remove --purge-data {A}")), "{q}");
+    assert!(!tools.join("notify-send.args").exists(), "no notification for a refusal by the user");
+}
+
+#[test]
+fn ask_with_the_answer_yes_removes_the_app_keeps_the_data_and_notifies() {
+    let e = env("ask-yes");
+    e.install(A, "1", "a");
+    e.fake_data(A);
+    let tools = fake_tools(&e.home, &[("zenity", 0), ("notify-send", 0)]);
+    let o = ask(&e, &tools, A);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!e.launcher(A).exists() && !e.desktop(A).exists() && !e.store().join("apps").join(A).exists());
+    assert!(e.userdata(A).join("data/file").exists() && e.cache(A).join("file").exists(), "the data stays");
+    let n = fs::read_to_string(tools.join("notify-send.args")).unwrap();
+    assert!(n.contains("removed") && n.contains(e.userdata(A).to_str().unwrap()), "{n}");
+    // KDE gets kdialog first.
+    let e = env("ask-kde");
+    e.install(A, "1", "a");
+    let tools = fake_tools(&e.home, &[("zenity", 0), ("kdialog", 1)]);
+    let o = cmd(&e.home, &["remove", "--ask", A]).env("PANPAK_TEST_TOOLS_DIR", &tools).env("XDG_CURRENT_DESKTOP", "KDE").output().unwrap();
+    assert!(o.status.success() && e.launcher(A).exists(), "{}", text(&o));
+    assert!(tools.join("kdialog.args").exists() && !tools.join("zenity.args").exists());
+}
+
+#[test]
+fn ask_with_a_running_copy_or_a_wrong_id_removes_nothing_and_says_why() {
+    let e = env("ask-busy");
+    e.install(A, "1", "a");
+    let lock_dir = e.home.join("run/panpak").join(A);
+    fs::create_dir_all(&lock_dir).unwrap();
+    let lock = File::create(lock_dir.join("lock")).unwrap();
+    // SAFETY: flock on a descriptor of this test.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) }, 0);
+    let tools = fake_tools(&e.home, &[("zenity", 0), ("notify-send", 0)]);
+    let o = ask(&e, &tools, A);
+    assert!(!o.status.success() && text(&o).contains("PANPAK-E2002"), "{}", text(&o));
+    let n = fs::read_to_string(tools.join("notify-send.args")).unwrap();
+    assert!(n.contains("is running"), "{n}");
+    assert!(e.launcher(A).exists());
+    drop(lock);
+    let o = ask(&e, &tools, "org.example.unknown");
+    assert!(!o.status.success() && text(&o).contains("PANPAK-E2004"));
+    let o = cli(&e.home, &["remove", "--ask", "--yes", A]);
+    assert!(!o.status.success() && text(&o).contains("PANPAK-E5001"));
+}

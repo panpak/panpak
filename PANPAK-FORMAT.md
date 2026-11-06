@@ -936,6 +936,14 @@ for both.
    `--purge-data` it MUST ask for a yes (or take `--yes`) before any removal. A data or cache folder that is a link or
    a file is not followed and not removed: the exit status is `PANPAK-E2003` and the message names it.
 
+*Menu action.* The desktop entry of an app has the action `Uninstall` (`Actions=Uninstall;` and a group
+`[Desktop Action Uninstall]`, with at least the names in English and Italian) whose `Exec` is the absolute path of the
+`panpak` that wrote the entry, `remove --ask <id>`. If that path cannot be found when the entry is written, the entry has no action.
+`panpak remove --ask <id>` asks in a dialog (`zenity` or `kdialog`, from fixed folders, never from `PATH`) with the name of the
+app, what is removed, where the data stays and what happens on a reinstall; only a yes starts the removal, which never deletes
+data. It ends with a notification (`notify-send` or `gdbus`, if present). Without a dialog tool it removes nothing, explains the
+terminal command by notification and ends with `PANPAK-E5004`. `--ask` takes no other option.
+
 The runtime and the shared blobs and chunks stay. Every step below the store, the data, the cache and the runtime
 folder uses descriptors of folders and `O_NOFOLLOW`; a link met inside is removed itself and its target is never
 entered; a walk does not cross to another file system and stops at 512 levels, leaving the rest and saying so.
