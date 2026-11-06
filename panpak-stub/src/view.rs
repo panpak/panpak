@@ -33,6 +33,9 @@ pub struct Job {
     /// Environment of the app: variables to set, then variables to remove.
     pub env_set: Vec<(String, String)>,
     pub env_remove: Vec<String>,
+    /// Wait for the proxy of the session bus first.
+    #[serde(default)]
+    pub dbus_wait: Option<DbusWait>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -40,6 +43,45 @@ pub struct JobOpen {
     pub path: PathBuf,
     pub write: bool,
     pub rename: bool,
+}
+
+/// The inner stub waits for the proxy of the session bus before it starts the app (see `dbus_layer::start`).
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct DbusWait {
+    /// The socket of the proxy, as the view shows it.
+    pub socket: PathBuf,
+    /// A file the outer stub writes when the proxy cannot be made.
+    pub failed: PathBuf,
+    /// What the app gets instead in that case: no bus.
+    pub on_failure_set: Vec<(String, String)>,
+    pub on_failure_remove: Vec<String>,
+}
+
+/// How long the inner stub waits for the proxy at most. The scope and the proxy take 20 to 30 ms.
+const DBUS_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+impl DbusWait {
+    /// Wait until the socket exists (and answers `connect`), or the outer stub says it failed, or the time is over.
+    /// Returns whether the bus can be used. Without it the job's environment is changed to give the app no bus.
+    pub fn wait(&self, job_env_set: &mut Vec<(String, String)>, job_env_remove: &mut Vec<String>) -> bool {
+        let end = std::time::Instant::now() + DBUS_WAIT;
+        let ok = loop {
+            if std::os::unix::net::UnixStream::connect(&self.socket).is_ok() {
+                break true;
+            }
+            if self.failed.exists() || std::time::Instant::now() >= end {
+                break false;
+            }
+            std::thread::sleep(std::time::Duration::from_micros(500));
+        };
+        if !ok {
+            eprintln!("panpak: the session bus layer is not ready; the app starts without a bus");
+            job_env_set.retain(|(k, _)| !self.on_failure_set.iter().any(|(s, _)| s == k) && !self.on_failure_remove.contains(k));
+            job_env_set.extend(self.on_failure_set.iter().cloned());
+            job_env_remove.extend(self.on_failure_remove.iter().cloned());
+        }
+        ok
+    }
 }
 
 pub const JOB_VERSION: u32 = 1;
@@ -226,6 +268,8 @@ pub struct ViewPlan {
     pub binds: Vec<Bind>,
     /// Files mounted read-only at a place of their own: the opener channel and the stub as `xdg-open`.
     pub mounts: Vec<Mount>,
+    /// Symbolic links made in the view: (target, link).
+    pub symlinks: Vec<(PathBuf, PathBuf)>,
     /// Folders of the host mounted as `/tmp` and `/dev/shm`, shared by the copies of one app.
     /// None: a private tmpfs for `/tmp`, and the host's `/dev/shm`.
     pub shared_tmp: Option<PathBuf>,
@@ -304,6 +348,9 @@ fn view_args(plan: &ViewPlan) -> Vec<OsString> {
     }
     for m in &plan.mounts {
         a.extend([os(if m.rw { "--bind" } else { "--ro-bind" }), m.src.as_os_str().into(), m.dest.as_os_str().into()]);
+    }
+    for (target, link) in &plan.symlinks {
+        a.extend([os("--symlink"), target.as_os_str().into(), link.as_os_str().into()]);
     }
     // Nothing can be created in the home folder any more, outside the binds.
     if let Some(h) = &plan.home {
@@ -396,6 +443,7 @@ mod tests {
                 Bind { path: "/home/u/.config/gtk-3.0".into(), rw: false },
             ]),
             mounts: vec![],
+            symlinks: vec![],
             shared_tmp: None,
             shared_shm: None,
             x11_access: false,
@@ -646,6 +694,7 @@ mod tests {
             args: parts.args,
             env_set: parts.env_set,
             env_remove: parts.env_remove,
+            dbus_wait: None,
         };
         let fd = job_memfd(&job).unwrap();
         // Inherited by a child, so it must not be close-on-exec.
@@ -695,5 +744,41 @@ mod tests {
     fn duplicates_are_dropped() {
         let u = unique(vec!["/a".into(), "/b".into(), "/a".into()]);
         assert_eq!(u, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+    }
+
+    #[test]
+    fn waiting_for_the_bus_layer() {
+        let dir = std::env::temp_dir().join(format!("panpak-dbuswait-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let w = DbusWait {
+            socket: dir.join("bus"),
+            failed: dir.join("failed"),
+            on_failure_set: vec![("DBUS_SESSION_BUS_ADDRESS".into(), "disabled:".into())],
+            on_failure_remove: vec!["GTK_USE_PORTAL".into()],
+        };
+        // The socket comes up a little later: the wait ends as soon as it answers, the environment is untouched.
+        let sock = dir.join("bus");
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            drop(l);
+        });
+        let (mut set, mut rm) = (vec![("DBUS_SESSION_BUS_ADDRESS".to_string(), "unix:path=/x".to_string()), ("A".to_string(), "b".to_string())], vec![]);
+        let t0 = std::time::Instant::now();
+        assert!(w.wait(&mut set, &mut rm));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(set[0].1, "unix:path=/x");
+        t.join().unwrap();
+        // The outer stub reports a failure: no bus, and the variables the layer set are taken away.
+        let _ = std::fs::remove_file(dir.join("bus"));
+        std::fs::write(dir.join("failed"), "no systemd").unwrap();
+        let (mut set, mut rm) = (vec![("DBUS_SESSION_BUS_ADDRESS".to_string(), "unix:path=/x".to_string()), ("A".to_string(), "b".to_string())], vec![]);
+        assert!(!w.wait(&mut set, &mut rm));
+        assert!(set.contains(&("DBUS_SESSION_BUS_ADDRESS".to_string(), "disabled:".to_string())) && set.contains(&("A".to_string(), "b".to_string())));
+        assert!(!set.iter().any(|(_, v)| v == "unix:path=/x"));
+        assert_eq!(rm, ["GTK_USE_PORTAL"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

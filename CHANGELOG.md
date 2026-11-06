@@ -10,7 +10,7 @@
   Electron sandboxes, WebKitGTK, `bwrap`, `flatpak`) cannot run in the view.** The device ioctl right (Landlock V5) is kept only on `/dev/tty` and `/dev/dri`.
   `/var/cache/fontconfig` is read-only in the view: the first start with an empty private font cache went from 446 ms to 48 ms with `fc-match`.
 - **Wayland security context.** With a compositor that offers `wp_security_context_v1` (KWin, Sway and the other wlroots compositors),
-  the app gets a socket of its own that the compositor knows as sandboxed (engine `panpak`, app id `panpak.<id>`). GNOME's compositor does not offer it:
+  the app gets a socket of its own that the compositor knows as sandboxed (engine `io.github.panpak`, app id `panpak.<id>`). GNOME's compositor does not offer it:
   the app keeps the normal socket and `panpak doctor` says so. The client is part of `panpak-core` (no new dependencies) with the fuzz target `fuzz_wayland`.
 - **The open-address channel is read by a receiver with no rights.** The resident stub is now two pieces (PANPAK-FORMAT.md §9.7): a receiver process
   (Landlock with no rule, a seccomp allow list, limits) reads what the app sends and passes validated requests as frames to the actor, which checks them again.

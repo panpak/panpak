@@ -26,8 +26,8 @@ use std::{
 
 /// The interface that carries the protocol.
 pub const MANAGER: &str = "wp_security_context_manager_v1";
-/// The name that panpak gives as the sandbox engine.
-pub const ENGINE: &str = "panpak";
+/// The sandbox engine name, in reverse-domain style as the protocol asks (the project lives at github.com/panpak/panpak).
+pub const ENGINE: &str = "io.github.panpak";
 
 /// Largest message the client accepts from the compositor (the Wayland limit for a message is 4096).
 pub const MAX_MESSAGE: usize = 4096;
@@ -615,7 +615,7 @@ mod tests {
         let out = register(&d.join("wayland-0"), l.socket.as_fd(), l.close_read.as_fd(), &meta).unwrap();
         assert_eq!(out, Outcome::Registered);
         let seen = h.join().unwrap();
-        assert_eq!(seen.engine.as_deref(), Some("panpak"));
+        assert_eq!(seen.engine.as_deref(), Some("io.github.panpak"));
         assert_eq!(seen.app_id.as_deref(), Some("panpak.org.example.app"));
         assert_eq!(seen.instance_id.as_deref(), Some("42-1"));
         assert!(seen.committed);

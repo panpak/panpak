@@ -17,15 +17,32 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-/// Everything the view needs from the layer.
+/// Everything the view needs from the layer. The layer is finished on a thread of its own: the app is started
+/// without waiting for systemd. `wait` tells the inner stub to wait for the proxy's socket before it starts the app.
 pub struct Layer {
-    /// The proxy socket at `$XDG_RUNTIME_DIR/bus`, and the document folder at `$XDG_RUNTIME_DIR/doc`.
+    /// The proxy folder at `$XDG_RUNTIME_DIR/panpak/dbus` (the socket appears in it when the proxy listens) and the
+    /// document folder at `$XDG_RUNTIME_DIR/doc`.
     pub mounts: Vec<Mount>,
+    /// `$XDG_RUNTIME_DIR/bus` in the view is a link to the socket in the proxy folder: (target, link).
+    pub symlinks: Vec<(PathBuf, PathBuf)>,
     /// Variables for the app.
     pub env: Vec<(&'static str, String)>,
     /// Paths in the view that Landlock (ABI 9) must let the app connect to.
     pub landlock_sockets: Vec<PathBuf>,
-    _guard: Guard,
+    /// What the inner stub waits for, as paths in the view.
+    pub wait: crate::view::DbusWait,
+    /// Dropping the sender lets the worker end the proxy; `Drop` waits for it.
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for Layer {
+    fn drop(&mut self) {
+        self.stop.take();
+        if let Some(w) = self.worker.take() {
+            let _ = w.join();
+        }
+    }
 }
 
 /// Ends the proxy and removes its folder when the stub is done with the app.
@@ -157,13 +174,12 @@ fn await_proxy(g: &mut Guard) -> Result<()> {
     Ok(())
 }
 
-/// Build the layer on a thread of its own, so that the systemd scope (10 to 20 ms) and the proxy come up while the
-/// package is verified and the view is planned. `join` the handle where the layer is needed.
-pub fn start_in_background(man: panpak_core::Manifest, runtime_dir: PathBuf) -> std::thread::JoinHandle<Result<Layer>> {
-    std::thread::spawn(move || start(&Request { man: &man, runtime_dir: &runtime_dir }))
-}
-
-/// Build the layer, or say why there is none.
+/// Build the layer. The checks and the folder are done here; the systemd scope and the proxy are made on a thread,
+/// in that order: the proxy MUST start inside the scope, because the portal knows the app by the cgroup of the
+/// connection it sees, which is the proxy's. The app is not kept waiting for any of it; the inner stub waits for the
+/// socket (see `view::DbusWait`) before it starts the app, so the app never connects too early and the portal always sees
+/// `panpak.<id>`. If the thread fails it leaves a file `failed` in the folder, the inner stub stops waiting and starts the
+/// app without a bus, as when there is no layer.
 pub fn start(req: &Request<'_>) -> Result<Layer> {
     let man = req.man;
     if panpak_core::allows_session_bus(man.permissions.as_ref()) {
@@ -175,33 +191,46 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
     let dbus::ProxyStatus::Usable { path: proxy, .. } = status else {
         return Err(if matches!(status, dbus::ProxyStatus::NotFound | dbus::ProxyStatus::TooOld { .. }) { Quiet(describe_status(&status)).into() } else { anyhow::anyhow!("{}", describe_status(&status)) });
     };
-    let n = token()?;
-    crate::stage("dbus: checks done");
-    // No systemd user manager: nothing to wait for and no proxy to start.
+    // No systemd user manager: no scope, so no layer.
     if !req.runtime_dir.join("bus").exists() {
         return Err(Quiet("no user bus: this system has no systemd user manager".into()).into());
     }
+    let n = token()?;
     let dir = req.runtime_dir.join("panpak").join(&man.app.id).join(format!("dbus-{n}"));
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let args = dbus::proxy_args(&BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref() });
-    // The proxy starts while systemd makes the scope (10 to 20 ms): the two do not depend on each other. The
-    // proxy is not in the scope; it ends with the guard when the app does.
-    let mut guard = match spawn_proxy(&proxy, &bus, &dir, &args) {
-        Ok(g) => g,
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&dir);
-            return Err(e);
+    crate::stage("dbus: checks done");
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    let (runtime_dir, app_id, work_dir) = (req.runtime_dir.to_path_buf(), man.app.id.clone(), dir.clone());
+    let worker = std::thread::Builder::new().name("dbus".into()).spawn(move || {
+        let made = (|| -> Result<Guard> {
+            enter_scope(&runtime_dir, &app_id, &n)?;
+            crate::stage("dbus: scope made");
+            let mut guard = spawn_proxy(&proxy, &bus, &work_dir, &args)?;
+            await_proxy(&mut guard)?;
+            crate::stage("dbus: proxy ready");
+            Ok(guard)
+        })();
+        match made {
+            // Held until the app is over (the sender is dropped), then the proxy ends and its folder goes.
+            Ok(guard) => {
+                let _ = stopped.recv();
+                drop(guard);
+            }
+            Err(e) => {
+                if e.downcast_ref::<Quiet>().is_none() {
+                    eprintln!("panpak: WARNING: no D-Bus for the app (portals, notifications): {}", panpak_core::err_text(&e));
+                }
+                let _ = std::fs::write(work_dir.join(FAILED), panpak_core::err_text(&e));
+                let _ = stopped.recv();
+                let _ = std::fs::remove_dir_all(&work_dir);
+            }
         }
-    };
-    crate::stage("dbus: proxy started");
-    // On an error the guard ends the proxy and removes its folder.
-    enter_scope(req.runtime_dir, &man.app.id, &n)?;
-    crate::stage("dbus: scope made");
-    await_proxy(&mut guard)?;
-    crate::stage("dbus: proxy ready");
+    })?;
+    let in_view = req.runtime_dir.join("panpak/dbus");
     let view_bus = req.runtime_dir.join("bus");
-    let mut mounts = vec![Mount::ro(dir.join("bus"), view_bus.clone())];
-    let landlock_sockets = vec![view_bus.clone()];
+    let mut mounts = vec![Mount::ro(dir.clone(), in_view.clone())];
+    let landlock_sockets = vec![in_view.join("bus")];
     // The app's folder of the document portal (empty until the stub grants a document).
     let by_app = req.runtime_dir.join("doc/by-app");
     if by_app.is_dir() {
@@ -209,11 +238,25 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
     }
     let launch_env = |k: &str| man.launch.as_ref().and_then(|l| l.env.as_ref()).is_some_and(|e| e.contains_key(k));
     let mut env = vec![("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", view_bus.display())), ("GTK_USE_PORTAL", "1".to_string())];
+    let set_back = vec![("DBUS_SESSION_BUS_ADDRESS".to_string(), "disabled:".to_string())];
+    let mut remove_back = vec!["GTK_USE_PORTAL".to_string()];
     if !launch_env("QT_QPA_PLATFORMTHEME") {
         env.push(("QT_QPA_PLATFORMTHEME", "xdgdesktopportal".to_string()));
+        remove_back.push("QT_QPA_PLATFORMTHEME".to_string());
     }
-    Ok(Layer { mounts, env, landlock_sockets, _guard: guard })
+    Ok(Layer {
+        mounts,
+        symlinks: vec![(PathBuf::from("panpak/dbus/bus"), view_bus)],
+        env,
+        landlock_sockets,
+        wait: crate::view::DbusWait { socket: in_view.join("bus"), failed: in_view.join(FAILED), on_failure_set: set_back, on_failure_remove: remove_back },
+        stop: Some(stop),
+        worker: Some(worker),
+    })
 }
+
+/// The file the worker leaves in the proxy folder when it could not make the scope or start the proxy.
+const FAILED: &str = "failed";
 
 pub fn describe_status(s: &dbus::ProxyStatus) -> String {
     use dbus::ProxyStatus::*;

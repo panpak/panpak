@@ -218,7 +218,7 @@ then call `PermissionStore.DeletePermission` for the app and revoke its document
   inherited, such as its terminal). `/dev/null`, `/dev/zero`, `/dev/urandom` and the other nodes refuse it with `EACCES`
   (tested per device).
 - **Wayland socket with a security context.** When the compositor supports `wp_security_context_v1` the app is given a
-  socket of its own that the compositor knows is sandboxed (engine `panpak`, app id `panpak.<id>`), instead of the user's own
+  socket of its own that the compositor knows is sandboxed (engine `io.github.panpak`, app id `panpak.<id>`), instead of the user's own
   socket. What a sandboxed client may do is the compositor's choice (screen capture, virtual input and global shortcuts are the usual
   refusals). Tested with a fake compositor, with the real Mutter (which does not offer the protocol: the app keeps the normal
   socket and `doctor` says so), and a parser fuzzed on its own (`fuzz_wayland`).
@@ -281,7 +281,8 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
 - *Identity.* The portal treats a host app as trusted (location is exact, background is
   always allowed, notifications are not asked, file choosers return real paths). The id it
   uses comes from the systemd scope of the caller, so the outer stub always makes its own scope,
-  `app-panpak.<id>-<n>.scope`, even when started from a terminal; otherwise the app would be
+  `app-panpak.<id>-<n>.scope`, even when started from a terminal, and starts the proxy only after the scope exists (the portal sees the
+  cgroup of the proxy; tests/dbus_filter.py fails if the order is wrong); otherwise the app would be
   known by the id of the terminal (`app-gnome-org.gnome.Ptyxis-…`), with its permissions. The id is
   `panpak.<id>`, never the upstream id: an app converted from a Flatpak or an AppImage that has the
   Flathub id does not share the grants, documents or desktop entry of that Flatpak. The app can never call

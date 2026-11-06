@@ -1107,13 +1107,13 @@ fn real_main() -> Result<()> {
     let ft = read_footer(&mut f)?;
     let (man, raw_index) = verify(&mut f, &ft)?;
     panpak_core::check_runtime(&man, panpak_core::RUNTIME_ABI)?;
-    // The filtered session bus takes 15 to 25 ms to come up (a systemd scope, the proxy): it is started now, on
-    // another thread, and collected when the view is planned.
+    // The filtered session bus takes 15 to 25 ms to come up (a systemd scope, the proxy): its checks are made now and
+    // the rest runs on a thread while the package is verified, the view is made and the app is prepared.
     let view_usable = panpak_core::view_status().usable();
     let dbus_early = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute() && view_usable)
-        .map(|rt| dbus_layer::start_in_background(man.clone(), rt));
+        .map(|rt| dbus_layer::start(&dbus_layer::Request { man: &man, runtime_dir: &rt }));
 
     let store = dirs::data_dir().context("no data dir")?.join("panpak");
     // TOFU (spec §3.2): if the app is installed (pinned key), the signature
@@ -1290,7 +1290,7 @@ struct ViewStart<'a> {
     /// What the inner stub and the app read from the store: library folders and the loader.
     store_paths: Vec<PathBuf>,
     /// The D-Bus layer, being built on another thread since the package was verified (see `dbus_layer`).
-    dbus: std::cell::Cell<Option<std::thread::JoinHandle<Result<dbus_layer::Layer>>>>,
+    dbus: std::cell::Cell<Option<Result<dbus_layer::Layer>>>,
 }
 
 /// Start the app in the isolated view: build the job for the inner stub and replace this
@@ -1362,7 +1362,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     let (mut mounts, opener_server) = open_channel(ctx, cmd, &stub, runtime_text.as_deref());
     // The filtered session bus, when this system can give it. Before the sockets and the job are
     // fixed: it adds mounts, variables and one path Landlock must allow.
-    let dbus = ctx.dbus.take().and_then(|h| match h.join().unwrap_or_else(|_| Err(anyhow::anyhow!("the D-Bus layer stopped unexpectedly"))) {
+    let dbus = ctx.dbus.take().and_then(|r| match r {
         Ok(l) => Some(l),
         Err(e) => {
             if e.downcast_ref::<dbus_layer::Quiet>().is_none() {
@@ -1372,11 +1372,13 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         }
     });
     stage("D-Bus layer");
+    let mut symlinks = Vec::new();
     if let Some(w) = &wayland {
         mounts.push(view::Mount { src: w.listener.path.clone(), dest: w.display.clone(), rw: true });
     }
     if let Some(l) = &dbus {
         mounts.extend(l.mounts.iter().cloned());
+        symlinks.extend(l.symlinks.iter().cloned());
         for (k, v) in &l.env {
             cmd.env(k, v);
         }
@@ -1411,6 +1413,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         shared_tmp: shared.as_ref().map(|s| s.tmp.clone()),
         shared_shm: shared.as_ref().map(|s| s.shm.clone()),
         mounts,
+        symlinks,
         runtime_dir: ctx.runtime_dir.map(Path::to_path_buf),
         sockets: view::unique(sockets),
         ro_run_dirs: view::unique(ro_run_dirs),
@@ -1443,6 +1446,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         args: parts.args,
         env_set: parts.env_set,
         env_remove: parts.env_remove,
+        dbus_wait: dbus.as_ref().map(|l| l.wait.clone()),
     };
     stage("view planned");
     let fd = view::job_memfd(&job)?;
@@ -1586,8 +1590,13 @@ fn write_opener_config(app_id: &str, exec: &str) -> Result<()> {
 /// The inner stub: Landlock, then the app. The job comes from the outer stub, which verified the package.
 fn run_inner(fd: i32) -> Result<()> {
     let _ = STARTED.set(std::time::Instant::now());
-    let job = view::read_job(fd)?;
+    let mut job = view::read_job(fd)?;
     stage("inner: job read");
+    // Before Landlock, which needs the socket of the proxy to be there to allow it.
+    if let Some(w) = job.dbus_wait.clone() {
+        w.wait(&mut job.env_set, &mut job.env_remove);
+        stage("inner: bus layer ready");
+    }
     let access = Access { rw: job.rw.clone(), ro: job.ro.clone(), sockets: job.sockets.clone(), in_view: true, home_list: job.home_list.clone() };
     let open = job.open.as_ref().map(|o| (o.path.as_path(), OpenGrant { write: o.write, rename: o.rename }));
     sandbox(&job.tree, &job.manifest, &access, job.allow_unfiltered, open)?;

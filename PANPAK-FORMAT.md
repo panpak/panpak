@@ -894,6 +894,14 @@ from a terminal that has its own scope. The portal reads the scope of the caller
 `panpak.<id>.desktop` exists (§3.1.5); the runtime MUST NOT let the app call `org.freedesktop.host.portal.Registry`.
 The id never equals the id of a Flatpak or of the distribution entry of the same upstream app.
 
+*Order.* The portal sees the connection of the proxy, not the app's, so the scope MUST exist, and the outer runtime be in it,
+before the proxy is started (a proxy outside the scope makes the app known by the id of the terminal). The app itself
+need not be in the scope, and the runtime MUST NOT make the start wait for systemd: the view is made while the scope and the proxy
+come up. The folder of the proxy is mounted in the view, `$XDG_RUNTIME_DIR/bus` there is a link into it, and the inner runtime MUST wait
+(up to 10 s, before Landlock) until a connection to the proxy's socket succeeds, so an app never connects too early. If the scope
+or the proxy fails the outer runtime leaves a file `failed` in the folder, the inner runtime stops waiting and the app gets no bus
+(`DBUS_SESSION_BUS_ADDRESS=disabled:`), as when there is no layer.
+
 *Proxy.* One `xdg-dbus-proxy` per start, started by the outer runtime in the same scope with a clean environment, filtering
 (`--filter`). Its socket is in a private folder (0700) of the runtime folder and is mounted in the view as
 `$XDG_RUNTIME_DIR/bus`; `DBUS_SESSION_BUS_ADDRESS` points there. With Landlock V9 the socket has a `ResolveUnix` rule. The proxy ends when the
@@ -1069,7 +1077,7 @@ Without kernel support for seccomp filters, or on an architecture the filter doe
 - **Wayland security context.** If the app has a Wayland display (`WAYLAND_DISPLAY`) and the compositor offers
   `wp_security_context_manager_v1`, the outer runtime MUST register a context before the view is made: it binds a Unix socket
   `$XDG_RUNTIME_DIR/panpak/<id>/wayland-<pid>-<nanoseconds>` (the folder is 0700, the file 0600) and listens on it, makes a
-  pipe, and sends `create_listener` with the socket and the read end of the pipe, `set_sandbox_engine("panpak")`,
+  pipe, and sends `create_listener` with the socket and the read end of the pipe, `set_sandbox_engine("io.github.panpak")`,
   `set_app_id("panpak.<id>")`, `set_instance_id("<pid>-<nanoseconds>")` and `commit`, then waits for a round trip to learn of a
   protocol error. The new socket is mounted in the view at the path of the compositor's own socket, which is not mounted.
   The write end of the pipe is held by the outer runtime, which stays until the app ends; the socket file is removed then.
