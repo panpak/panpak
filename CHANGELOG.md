@@ -9,7 +9,7 @@
   PNG gets the generic icon and a warning. New crate `panpak-icon`, fuzz target `fuzz_icon`.
 - **Icons are cleaned by `pack` and `convert`.** Real PNG files carry text, profile, gamma and other chunks that `install` does not accept. `pack` and `convert` now
   keep only `IHDR`, `PLTE`, `tRNS`, `IDAT` and `IEND` (byte for byte; the pixels and the transparency are not touched), print the chunks they removed from each icon, and
-  `install` stays strict. Icons that `convert` copies out of a link or `.DirIcon` go to `usr/share/icons/panpak/<side>.png`.
+  `install` stays strict. `convert` writes every icon, whatever its source (file, link, `.DirIcon`, `--icon`, a path through a link folder such as `usr -> .`), to `usr/share/icons/panpak/<side>.png`.
 - **A stable `panpak` and a stable stub.** The store has `bin/panpak-stub` (a link to the best runtime) and `bin/panpak`. Launchers run the stub
   through the link, so a new runtime reaches every app at its next start, and the menu action "Uninstall" runs `bin/panpak`: no launcher or
   entry names the folder from which `panpak` was run any more. `install-runtime` writes both with a rename; `install` copies `panpak` when there is none and warns when the one in

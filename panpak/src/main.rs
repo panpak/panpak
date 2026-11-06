@@ -1278,13 +1278,7 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     }
     let icons = match icon_ov {
         Some(f) => {
-            let data = read_icon_input(f).with_context(|| format!("--icon {}", f.display()))?;
-            let n = panpak_icon::normalize(&data).map_err(|why| anyhow::anyhow!("--icon {}: {why}", f.display()))?;
-            if !n.dropped.is_empty() {
-                eprintln!("panpak convert: icon {}: {}", f.display(), dropped_note(&n.dropped));
-            }
-            let side = panpak_icon::check(&n.data).map_err(|why| anyhow::anyhow!("--icon {}: {why}", f.display()))?.side;
-            vec![write_tree_icon(&tree, side, &n.data).context("cannot write the icon into the tree")?]
+            vec![add_override_icon(&tree, f)?]
         }
         None => {
             let (found, notes) = find_appimage_icons(&tree, dicon.as_deref());
@@ -1341,6 +1335,17 @@ fn dropped_note(dropped: &[(String, usize)]) -> String {
     format!("removed the chunks {} (the pixels are not touched)", list.join(", "))
 }
 
+/// `--icon <file.png>`: clean the file and put it in the tree; this is then the only icon of the package.
+fn add_override_icon(tree: &Path, f: &Path) -> Result<String> {
+    let data = read_icon_input(f).with_context(|| format!("--icon {}", f.display()))?;
+    let n = panpak_icon::normalize(&data).map_err(|why| anyhow::anyhow!("--icon {}: {why}", f.display()))?;
+    if !n.dropped.is_empty() {
+        eprintln!("panpak convert: icon {}: {}", f.display(), dropped_note(&n.dropped));
+    }
+    let side = panpak_icon::check(&n.data).map_err(|why| anyhow::anyhow!("--icon {}: {why}", f.display()))?.side;
+    write_tree_icon(tree, side, &n.data).context("cannot write the icon into the tree")
+}
+
 /// Put an icon in the tree at `usr/share/icons/panpak/<side>.png` and return that path.
 fn write_tree_icon(tree: &Path, side: u32, data: &[u8]) -> Option<String> {
     let p = format!("usr/share/icons/panpak/{side}.png");
@@ -1351,7 +1356,7 @@ fn write_tree_icon(tree: &Path, side: u32, data: &[u8]) -> Option<String> {
 }
 
 /// The PNG icons of an extracted AppImage: `.DirIcon`, `<icon>.png` at the root and the `hicolor` sizes. Each
-/// candidate is checked; a link is followed only inside the tree and its content is copied to a file of its own.
+/// candidate is cleaned and checked; a link is followed only inside the tree.
 /// Returns the paths (relative to the tree) of at most 6 icons with different sizes, the largest first, and says
 /// what it could not use.
 fn find_appimage_icons(tree: &Path, icon_name: Option<&str>) -> (Vec<String>, Vec<String>) {
@@ -1359,21 +1364,22 @@ fn find_appimage_icons(tree: &Path, icon_name: Option<&str>) -> (Vec<String>, Ve
     if let Some(n) = icon_name.filter(|n| !n.is_empty() && !n.contains('/')) {
         cands.push(PathBuf::from(format!("{n}.png")));
         // In name order, so that the same AppImage always gives the same package.
-        let mut sizes: Vec<_> = fs::read_dir(tree.join("usr/share/icons/hicolor")).into_iter().flatten().flatten().map(|d| d.file_name()).collect();
+        let hicolor = ["usr/share/icons/hicolor", "share/icons/hicolor"].into_iter().find(|h| tree.join(h).is_dir());
+        let mut sizes: Vec<_> = hicolor.into_iter().flat_map(|h| fs::read_dir(tree.join(h)).into_iter().flatten().flatten().map(move |d| (h, d.file_name()))).collect();
         sizes.sort();
-        for d in sizes {
-            cands.push(Path::new("usr/share/icons/hicolor").join(d).join("apps").join(format!("{n}.png")));
+        for (h, d) in sizes {
+            cands.push(Path::new(h).join(d).join("apps").join(format!("{n}.png")));
         }
     }
     let (mut found, mut notes): (Vec<(u32, String)>, Vec<String>) = (Vec::new(), Vec::new());
+    let mut from: Vec<(u32, String)> = Vec::new();
     let root = fs::canonicalize(tree).ok();
     for rel in cands {
         let full = tree.join(&rel);
         if fs::symlink_metadata(&full).is_err() {
             continue;
         }
-        let is_link = fs::symlink_metadata(&full).is_ok_and(|m| m.file_type().is_symlink());
-        // A link must stay inside the tree.
+        // A link, also one in a folder on the way (`usr -> .`), is followed only inside the tree.
         let real = match fs::canonicalize(&full) {
             Ok(r) if root.as_ref().is_some_and(|t| r.starts_with(t)) => r,
             _ => {
@@ -1403,25 +1409,17 @@ fn find_appimage_icons(tree: &Path, icon_name: Option<&str>) -> (Vec<String>, Ve
                 continue;
             }
         };
-        if found.iter().any(|(s, _)| *s == side) {
+        // Two sources of one size: the first in the fixed order stays.
+        if let Some((_, first)) = from.iter().find(|(s, _)| *s == side) {
+            notes.push(format!("{}: same size ({side}x{side}) as {first}, which is used; this one is not", rel.display()));
             continue;
         }
-        // A link, or the root `.DirIcon`, is copied to a file of its own (`.panpak` at the top is reserved).
-        let path = if is_link || rel.starts_with(".DirIcon") {
-            match write_tree_icon(tree, side, &n.data) {
-                Some(p) => p,
-                None => continue,
-            }
-        } else {
-            let p = rel.to_string_lossy().into_owned();
-            if !n.dropped.is_empty() && fs::write(tree.join(&rel), &n.data).is_err() {
-                continue;
-            }
-            p
-        };
+        // One rule for every source: the cleaned icon is a file of its own at a fixed place.
+        let Some(path) = write_tree_icon(tree, side, &n.data) else { continue };
         if !n.dropped.is_empty() {
             eprintln!("panpak convert: icon {}: {}", rel.display(), dropped_note(&n.dropped));
         }
+        from.push((side, rel.display().to_string()));
         found.push((side, path));
     }
     found.sort_by_key(|f| std::cmp::Reverse(f.0));
@@ -2956,38 +2954,66 @@ mod tests {
     }
 
     #[test]
-    fn convert_finds_the_png_icons_of_an_appimage() {
+    fn convert_writes_every_icon_cleaned_to_one_place() {
         let data = |n: &str| fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../panpak-icon/tests/data").join(n)).unwrap();
         let t = scratch("appimage-icons");
-        let hi = |s: &str| t.join(format!("usr/share/icons/hicolor/{s}/apps"));
-        for d in ["48x48", "16x16", "32x32", "64x64", "24x24"] {
+        // The layout of a real AppImage: the files are in `share/`, `usr` is a link to `.`, `.DirIcon` and the root file are links.
+        let hi = |s: &str| t.join(format!("share/icons/hicolor/{s}/apps"));
+        for d in ["48x48", "16x16", "32x32", "64x64", "24x24", "256x256"] {
             fs::create_dir_all(hi(d)).unwrap();
         }
-        fs::write(t.join("app.png"), data("ok-256-rgba.png")).unwrap();
+        std::os::unix::fs::symlink(".", t.join("usr")).unwrap();
+        std::os::unix::fs::symlink("share/icons/hicolor/256x256/apps/app.png", t.join("app.png")).unwrap();
         std::os::unix::fs::symlink("app.png", t.join(".DirIcon")).unwrap();
+        fs::write(hi("256x256").join("app.png"), data("ok-256-rgba.png")).unwrap();
         fs::write(hi("48x48").join("app.png"), data("ok-48-rgba.png")).unwrap();
-        // A link that leaves the tree, a bad file, and a file of a size that is also elsewhere.
+        // A link that leaves the tree, a file with a text chunk, a file that cannot be used, and a second file of a size that is taken.
         std::os::unix::fs::symlink("/etc/passwd", hi("16x16").join("app.png")).unwrap();
         fs::write(hi("32x32").join("app.png"), data("bad-text.png")).unwrap();
         fs::write(hi("24x24").join("app.png"), data("bad-nonsquare.png")).unwrap();
         fs::write(hi("64x64").join("app.png"), data("ok-48-rgba.png")).unwrap();
         let (found, notes) = find_appimage_icons(&t, Some("app"));
-        // The root link is copied under `usr/share/icons/panpak` (the top-level `.panpak` is reserved), the file with a text chunk is
-        // cleaned in place, and the others are left out with the reason.
-        assert_eq!(found, ["usr/share/icons/panpak/256.png", "usr/share/icons/hicolor/48x48/apps/app.png", "usr/share/icons/hicolor/32x32/apps/app.png"]);
+        // Always `usr/share/icons/panpak/<side>.png`, the largest first, whatever the source.
+        assert_eq!(found, ["usr/share/icons/panpak/256.png", "usr/share/icons/panpak/48.png", "usr/share/icons/panpak/32.png"]);
         assert_eq!(fs::read(t.join("usr/share/icons/panpak/256.png")).unwrap(), data("ok-256-rgba.png"));
-        let cleaned = fs::read(hi("32x32").join("app.png")).unwrap();
+        assert_eq!(fs::read(t.join("usr/share/icons/panpak/48.png")).unwrap(), data("ok-48-rgba.png"));
+        let cleaned = fs::read(t.join("usr/share/icons/panpak/32.png")).unwrap();
         assert_ne!(cleaned, data("bad-text.png"));
         assert_eq!(panpak_icon::check(&cleaned), Ok(panpak_icon::Icon { side: 32 }));
+        // The sources are not changed, and nothing goes to the reserved top-level `.panpak`.
+        assert_eq!(fs::read(hi("32x32").join("app.png")).unwrap(), data("bad-text.png"));
         assert!(!t.join(".panpak").exists());
         assert!(notes.iter().any(|n| n.contains("16x16") && n.contains("outside the tree")), "{notes:?}");
         assert!(notes.iter().any(|n| n.contains("24x24") && n.contains("not square")), "{notes:?}");
+        // The root link and `.DirIcon` are the 256 file (the first in the order): the others of that size are named. Of the two 48 files, the first stays.
+        assert!(notes.iter().any(|n| n.contains("same size (256x256)") && n.contains("which is used")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("64x64") && n.contains("same size (48x48) as") && n.contains("48x48")), "{notes:?}");
+        // The packed tree holds those files as regular files (what `pack` needs).
+        for p in &found {
+            assert!(fs::symlink_metadata(t.join(p)).unwrap().file_type().is_file(), "{p}");
+        }
         // No icon name and no .DirIcon: nothing, without an error.
         let empty = scratch("appimage-no-icons");
         assert_eq!(find_appimage_icons(&empty, None), (vec![], vec![]));
         assert_eq!(find_appimage_icons(&empty, Some("../x")).0, Vec::<String>::new());
         let _ = fs::remove_dir_all(&t);
         let _ = fs::remove_dir_all(&empty);
+    }
+
+    #[test]
+    fn convert_icon_option_writes_the_cleaned_file_to_the_same_place() {
+        let data = |n: &str| fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../panpak-icon/tests/data").join(n)).unwrap();
+        let t = scratch("icon-option");
+        let outside = scratch("icon-option-src");
+        fs::write(outside.join("mine.png"), data("bad-icc.png")).unwrap();
+        let p = add_override_icon(&t, &outside.join("mine.png")).unwrap();
+        assert_eq!(p, "usr/share/icons/panpak/32.png");
+        assert_eq!(panpak_icon::check(&fs::read(t.join(&p)).unwrap()), Ok(panpak_icon::Icon { side: 32 }));
+        fs::write(outside.join("svg.png"), "<svg/>").unwrap();
+        assert!(add_override_icon(&t, &outside.join("svg.png")).is_err());
+        assert!(add_override_icon(&t, &outside.join("missing.png")).is_err());
+        let _ = fs::remove_dir_all(&t);
+        let _ = fs::remove_dir_all(&outside);
     }
 
     #[test]

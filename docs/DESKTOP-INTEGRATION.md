@@ -530,7 +530,12 @@ The first run of the harness with the desktop binaries showed two defects of the
    Tests: a palette icon with `tRNS` among a dozen other chunks gives the file that has only the kept chunks (byte-identical, `tRNS` unchanged); twice is the same;
    `pack` twice gives the same package; the fuzz target also checks that whatever `normalize` makes passes `check` and is stable.
 2. `convert` copied a link or `.DirIcon` into `.panpak/icons/`, and the top-level `.panpak` is reserved for the licenses (MuseScore failed to convert).
-   The copies go to `usr/share/icons/panpak/<side>.png`.
+   Then a path that goes through a folder that is a link (`usr -> .` in the Audacity AppImage) named a file that is not in the package. One rule
+   settles both: **`convert` always writes the cleaned icons to `usr/share/icons/panpak/<side>.png` and `desktop.icons` points only there**, whatever the
+   source (plain file, link, `.DirIcon`, `--icon`, a path through a link). Links are still followed only inside the tree; one that leaves it is refused
+   with a note. Of two sources with the same side the first in a fixed order (`.DirIcon`, `<icon>.png` at the root, the `hicolor` sizes in name order) is used, and
+   a note names the other. The original files stay in the tree; being the same bytes after cleaning, the chunk deduplication makes the copy cost almost nothing
+   (see the package sizes in the report of the step).
 
 `install` and `update` also print a non-blocking warning when the manifest of a signed package has keys this panpak does not know
 (`unknown_manifest_keys`), since an older panpak would otherwise just show no icon. The critical fields with a minimum version are for step 9.
