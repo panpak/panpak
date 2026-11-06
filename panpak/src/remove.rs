@@ -534,6 +534,16 @@ fn test_kill(point: &str) {
 #[cfg(not(debug_assertions))]
 fn test_kill(_point: &str) {}
 
+/// Test builds only: make the removal slow by waiting `PANPAK_TEST_PAUSE_MS` milliseconds once the lock is held.
+#[cfg(debug_assertions)]
+fn test_pause() {
+    if let Some(ms) = std::env::var("PANPAK_TEST_PAUSE_MS").ok().and_then(|v| v.parse::<u64>().ok()) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+#[cfg(not(debug_assertions))]
+fn test_pause() {}
+
 /// `panpak remove [--purge-data] [--yes] <app-id>`.
 pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
     panpak_core::validate_app_id(id)?;
@@ -553,6 +563,7 @@ pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
         Err(e) => return Err(coded(ErrorCode::E2002, format!("cannot take the lock of {id}: {e}"))),
     };
 
+    test_pause();
     let ids = ctx.app_ids();
     let facts = ctx.facts(id, &ids);
     ensure_code!(facts.found_anything(), ErrorCode::E2004, "nothing is installed or left over under the id {id}");

@@ -918,7 +918,9 @@ for both.
 
 `panpak remove [--purge-data] [--yes] <app-id>` removes an installed app. The runtime MUST:
 
-1. refuse while a copy of the app is alive (the lock of §9.4 is held), with `PANPAK-E2002` and no option to force it;
+1. refuse while a copy of the app is alive (the lock of §9.4 is held), with `PANPAK-E2002` and no option to force it.
+   It holds the exclusive lock until it ends. A start of an installed app MUST take the shared lock before it opens
+   anything of `apps/<id>` and, once it has it, check that the app is still installed; if not it ends with `PANPAK-E2004`;
 2. remove the launcher and the desktop entries `panpak.<id>.desktop` and `<id>.desktop` only when they carry the
    marker of §3.1.5 for this app, and leave anything else (a file of the user, a link) alone and say so; then refresh the
    desktop database;
@@ -938,7 +940,8 @@ The runtime and the shared blobs and chunks stay. Every step below the store, th
 folder uses descriptors of folders and `O_NOFOLLOW`; a link met inside is removed itself and its target is never
 entered; a walk does not cross to another file system and stops at 512 levels, leaving the rest and saying so.
 `panpak remove` of an id that was half removed by hand (no launcher, no entry, no package) finishes the work without
-error; an id with nothing at all is `PANPAK-E2004`. `panpak remove` does not touch the permission store or the
+error; an id with nothing at all is `PANPAK-E2004`. Not done yet (step 8): the removal of unused entries of the resolution cache and of blobs and chunks that no tree
+uses (garbage collection of the store). `panpak remove` does not touch the permission store or the
 document portal of the desktop (see THREAT-MODEL.md, "Removal").
 
 ## Appendix A — test vectors [NORMATIVE]

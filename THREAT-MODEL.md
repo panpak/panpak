@@ -183,7 +183,9 @@ entry. A link put in place of a folder must not make the command delete somethin
   roots are 64 hex digits) so that a damaged or planted journal cannot name a path outside the store. A fuzz target
   (`fuzz_journal`) covers the parser. An install of the same id first finishes any interrupted removal.
 - A removal cannot run while a copy of the app is alive (the lock of the copies); the lock is held for the whole removal.
-  A copy that starts in the moment between the check and the rename of `apps/<id>` is not stopped and finds its files gone.
+  A start takes the shared lock of the copies before it reads anything of `apps/<id>` and checks again, once it has the
+  lock, that the app is still installed: a start that comes in during a removal waits, then ends with `PANPAK-E2004` and
+  does not run the app (tests/remove_race.py). Without bubblewrap the lock goes on to the app itself, so a copy is still seen.
 - A launcher or desktop entry that panpak did not write (no marker), or that is a link, is left alone and listed.
 
 What `remove` does not do: it does not delete entries of the desktop's permission store (`org.freedesktop.impl.portal.PermissionStore`)

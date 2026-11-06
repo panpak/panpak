@@ -52,10 +52,33 @@ fn reset(p: &Path) -> Result<()> {
     private_dir(p)
 }
 
-/// Prepare `<base>/tmp` and `<base>/shm`, take the lock and, when no other copy holds it, empty them.
-pub fn prepare(base: &Path, marker: &Path) -> Result<Shared> {
-    private_dir(base)?;
+/// The shared lock of an installed app, taken before anything of the app is read from the store. `panpak remove`
+/// holds the exclusive lock while it takes the app away: a start that comes in that moment waits here, and then
+/// finds (the caller checks) that the app is gone. The lock goes with the returned file and with the copies of its
+/// descriptor; `prepare` takes it over.
+pub fn early_lock(runtime_dir: &Path, app_id: &str) -> Result<File> {
+    let base = runtime_dir.join("panpak").join(app_id);
+    private_dir(&base)?;
     let lock = OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(base.join("lock")).context("open the lock file")?;
+    loop {
+        if flock(&lock, libc::LOCK_SH) {
+            return Ok(lock);
+        }
+        let e = std::io::Error::last_os_error();
+        if e.kind() != std::io::ErrorKind::Interrupted {
+            return Err(e).context("take the shared lock of the app");
+        }
+    }
+}
+
+/// Prepare `<base>/tmp` and `<base>/shm`, take the lock and, when no other copy holds it, empty them. `early` is the
+/// lock from `early_lock` if there is one.
+pub fn prepare(base: &Path, marker: &Path, early: Option<File>) -> Result<Shared> {
+    private_dir(base)?;
+    let lock = match early {
+        Some(f) => f,
+        None => OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(base.join("lock")).context("open the lock file")?,
+    };
     let (tmp, shm) = (base.join("tmp"), base.join("shm"));
     // Alone: the exclusive lock is ours, nobody else is in the folders, so empty them. The others
     // wait on the shared lock below until this is done.
@@ -114,23 +137,23 @@ mod tests {
         fs::write(base.join("shm/old"), b"x").unwrap();
         std::os::unix::fs::symlink("/etc", base.join("tmp/link")).unwrap();
         let mark = base.with_extension("in-use");
-        let a = prepare(&base, &mark).unwrap();
+        let a = prepare(&base, &mark, None).unwrap();
         assert!(!a.stale, "no mark: the last run ended normally");
         assert!(!a.tmp.join("qipc_stale").exists() && !a.tmp.join("sub").exists() && !a.shm.join("old").exists());
         assert!(Path::new("/etc/passwd").exists(), "a link in the folder is removed, not followed");
         fs::write(a.tmp.join("qipc_live"), b"x").unwrap();
         // A second copy (another open file description, so a real second holder) keeps the files.
-        let b = prepare(&base, &mark).unwrap();
+        let b = prepare(&base, &mark, None).unwrap();
         assert!(b.tmp.join("qipc_live").exists());
         assert!(!b.stale);
         assert_eq!(a.tmp, b.tmp);
         drop(a);
         // One copy is still alive: nothing is emptied.
-        let c = prepare(&base, &mark).unwrap();
+        let c = prepare(&base, &mark, None).unwrap();
         assert!(c.tmp.join("qipc_live").exists());
         drop((b, c));
         // Nobody is alive any more: the next start empties the folders.
-        let d = prepare(&base, &mark).unwrap();
+        let d = prepare(&base, &mark, None).unwrap();
         assert!(!d.tmp.join("qipc_live").exists());
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(fs::metadata(&d.tmp).unwrap().permissions().mode() & 0o777, 0o700);
@@ -140,21 +163,21 @@ mod tests {
         // The mark: made at every start; a normal end removes it only for the last copy; a start with none alive
         // that finds it reports a stale run, and one that does not find it does not.
         let _ = fs::remove_file(&mark);
-        let x = prepare(&base, &mark).unwrap();
+        let x = prepare(&base, &mark, None).unwrap();
         assert!(mark.exists() && !x.stale);
-        let y = prepare(&base, &mark).unwrap();
+        let y = prepare(&base, &mark, None).unwrap();
         x.ended_normally();
         assert!(mark.exists(), "another copy is alive: the mark stays");
         y.ended_normally();
         assert!(!mark.exists(), "the last copy ended normally: no mark");
         drop((x, y));
-        let z = prepare(&base, &mark).unwrap();
+        let z = prepare(&base, &mark, None).unwrap();
         assert!(!z.stale);
         drop(z); // killed: nothing removed the mark
-        let w = prepare(&base, &mark).unwrap();
+        let w = prepare(&base, &mark, None).unwrap();
         assert!(w.stale, "the mark was left: the run did not end normally");
         drop(w);
-        let v = prepare(&base, &mark).unwrap();
+        let v = prepare(&base, &mark, None).unwrap();
         assert!(v.stale);
         drop(v);
         let _ = fs::remove_file(&mark);

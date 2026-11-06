@@ -7,7 +7,7 @@ use panpak_core::{hex, ChunkDecoder, parse_index, read_at, read_footer, verify, 
 use std::{
     fs::{self, File, OpenOptions},
     io::Write,
-    os::unix::{fs::{OpenOptionsExt, PermissionsExt}, process::CommandExt},
+    os::unix::{fs::{OpenOptionsExt, PermissionsExt}, io::AsRawFd, process::CommandExt},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -974,6 +974,31 @@ fn main() {
     }
 }
 
+/// The id of an installed app from the path of its package (`<store>/apps/<id>/current`), when the path has that shape.
+fn installed_app_id(pkg: &Path) -> Option<(String, PathBuf)> {
+    let dir = pkg.parent()?;
+    let id = dir.file_name()?.to_str()?;
+    let apps = dir.parent()?;
+    if apps.file_name()? != "apps" || panpak_core::validate_app_id(id).is_err() {
+        return None;
+    }
+    Some((id.to_string(), apps.to_path_buf()))
+}
+
+/// Take the shared lock of the copies of an installed app, then check that the app is still installed.
+/// `None` when the path is not that of an installed app or there is no runtime folder.
+fn start_lock(pkg: &Path) -> Result<Option<File>> {
+    let Some((id, apps)) = installed_app_id(pkg) else { return Ok(None) };
+    let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute()) else { return Ok(None) };
+    let lock = sharedtmp::early_lock(&rt, &id)?;
+    // `panpak remove` may have taken the app away while this start waited for the lock.
+    match fs::symlink_metadata(apps.join(&id)) {
+        Ok(m) if m.is_dir() => {}
+        _ => bail_code!(ErrorCode::E2004, "{id} was removed (or is being removed): nothing to start"),
+    }
+    Ok(Some(lock))
+}
+
 fn real_main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     // In the isolated view this stub is also `xdg-open` (see opener.rs): hand the address to the outer stub.
@@ -1003,6 +1028,9 @@ fn real_main() -> Result<()> {
     } else {
         (std::env::current_exe()?, args.into_iter().skip(1).collect())
     };
+    // Before anything of the app is read from the store: the shared lock of the copies. `panpak remove` holds the
+    // exclusive one while it takes the app away, so a start in that moment waits and then finds the app gone.
+    let early = if installed_mode { start_lock(&pkg)? } else { None };
     // `--panpak-licenses` (a stub flag, like --panpak-open): print the
     // embedded license texts of the verified package and exit.
     if app_args.iter().any(|a| a == "--panpak-licenses") {
@@ -1154,10 +1182,20 @@ fn real_main() -> Result<()> {
         let mut store_paths = plan.ld_path.clone();
         store_paths.extend(plan.loader.clone());
         store_paths.push(PathBuf::from(cmd.get_program()));
-        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref(), store_paths };
+        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref(), early_lock: early.as_ref(), store_paths };
         enter_view(&ctx, &mut cmd)?;
     }
     sandbox(&tree, &man, &access, allow_unfiltered, open_arg)?;
+    // Without the view this process becomes the app: the lock must go on to hold while the app runs.
+    if let Some(f) = &early {
+        // SAFETY: fcntl on a descriptor owned by `f`; the descriptor stays open across the exec.
+        unsafe {
+            let fl = libc::fcntl(f.as_raw_fd(), libc::F_GETFD);
+            if fl >= 0 {
+                libc::fcntl(f.as_raw_fd(), libc::F_SETFD, fl & !libc::FD_CLOEXEC);
+            }
+        }
+    }
     let err = cmd.exec(); // Replaces the process.
     bail!("exec failed: {err}")
 }
@@ -1170,6 +1208,8 @@ struct ViewStart<'a> {
     allow_unfiltered: bool,
     open: Option<&'a (PathBuf, OpenGrant)>,
     runtime_dir: Option<&'a Path>,
+    /// The shared lock taken at the start of an installed app (see `start_lock`).
+    early_lock: Option<&'a File>,
     /// What the inner stub and the app read from the store: library folders and the loader.
     store_paths: Vec<PathBuf>,
 }
@@ -1263,7 +1303,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
             None
         }
     };
-    let shared = ctx.runtime_dir.zip(app_dirs.as_ref()).and_then(|(rt, dirs)| match sharedtmp::prepare(&rt.join("panpak").join(&ctx.man.app.id), &panpak_core::stalelocks::in_use_marker(dirs)) {
+    let shared = ctx.runtime_dir.zip(app_dirs.as_ref()).and_then(|(rt, dirs)| match sharedtmp::prepare(&rt.join("panpak").join(&ctx.man.app.id), &panpak_core::stalelocks::in_use_marker(dirs), ctx.early_lock.as_ref().and_then(|f| f.try_clone().ok())) {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!("panpak: shared /tmp off, using a private one: {}", panpak_core::err_text(&e));
