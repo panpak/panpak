@@ -5,7 +5,8 @@
 //! it can be replaced by the OpenURI portal without touching the channel or the rules.
 //! Rules: PANPAK-FORMAT.md §9.3, THREAT-MODEL.md §3.
 use anyhow::{bail, ensure, Context, Result};
-use panpak_core::{handle_open_request, OpenTarget as Target, RateLimit, MAX_REQUEST};
+use crate::receiver;
+use panpak_core::{frames, OpenTarget as Target, RateLimit};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     os::unix::{fs::DirBuilderExt, net::{UnixListener, UnixStream}, process::CommandExt},
@@ -106,32 +107,106 @@ impl Target for SystemXdgOpen {
     }
 }
 
-/// The outer side: the socket and the thread that serves it. The socket file goes away with `drop`.
+/// How the receiver is started. `Exec` is the real one; the tests use `Fork`, which runs the same code in a
+/// child of the test process (the test binary cannot be started as the stub).
+pub enum Launch {
+    Exec(PathBuf),
+    #[cfg(test)]
+    Fork,
+}
+
+/// The outer side (the actor): the socket, the receiver process that reads it, and the thread that acts on what the
+/// receiver passes on. The socket file goes away and the receiver ends with `drop`.
 pub struct Server {
     path: PathBuf,
+    receiver: Receiver,
+}
+
+/// The receiver process.
+struct Receiver {
+    pid: i32,
+    child: Option<std::process::Child>,
+}
+
+impl Receiver {
+    fn end(&mut self) {
+        // SAFETY: SIGKILL to the process this value started, which has not been waited for yet.
+        unsafe { libc::kill(self.pid, libc::SIGKILL) };
+        match self.child.as_mut() {
+            Some(c) => {
+                let _ = c.wait();
+            }
+            None => {
+                let mut st = 0;
+                // SAFETY: waitpid on the child this process forked.
+                unsafe { libc::waitpid(self.pid, &mut st, 0) };
+            }
+        }
+    }
+}
+
+/// Close every descriptor from `first` up (at the `exec`). Async-signal-safe, like `close_from_3`.
+fn close_from(first: u32) {
+    const CLOSE_RANGE_CLOEXEC: u32 = 4;
+    // SAFETY: close_range is async-signal-safe; the descriptors are this process's own.
+    unsafe {
+        if libc::syscall(libc::SYS_close_range, first, u32::MAX, CLOSE_RANGE_CLOEXEC) != 0 {
+            for fd in first as i32..1024 {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+            }
+        }
+    }
+}
+
+/// In the child, before the exec: put the two sockets on the descriptors the receiver expects and close the rest.
+/// Async-signal-safe calls only. The sockets are first moved out of the way, since either may already be 3 or 4.
+fn place_fds(listener: i32, actor: i32) -> std::io::Result<()> {
+    // SAFETY: fcntl and dup2 on this process's own descriptors.
+    unsafe {
+        let l = libc::fcntl(listener, libc::F_DUPFD, 10);
+        let a = libc::fcntl(actor, libc::F_DUPFD, 10);
+        if l < 0 || a < 0 || libc::dup2(l, receiver::LISTEN_FD) < 0 || libc::dup2(a, receiver::ACTOR_FD) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    close_from(5);
+    Ok(())
 }
 
 impl Server {
     /// Create `<dir>/open.<pid>.sock` (one socket per start, so that several copies of an app each have
-    /// their own and none depends on another one staying alive) and serve it. Sockets of stubs that
-    /// no longer exist are removed.
+    /// their own and none depends on another one staying alive), start the receiver on it and act on what the
+    /// receiver passes on. Sockets of stubs that no longer exist are removed.
     pub fn start(dir: &Path, target: impl Target) -> Result<Self> {
+        Self::start_with(dir, target, Launch::Exec(std::env::current_exe().context("path of the stub")?))
+    }
+
+    pub fn start_with(dir: &Path, target: impl Target, launch: Launch) -> Result<Self> {
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).with_context(|| format!("create {}", dir.display()))?;
         clean_stale(dir);
         let path = dir.join(format!("open.{}.sock", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path).with_context(|| format!("bind {}", path.display()))?;
         std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-        let mut target = target;
-        std::thread::Builder::new().name("opener".into()).spawn(move || {
-            let mut limit = RateLimit::new(Instant::now());
-            // One connection at a time: a client that is slow or silent holds the others up for at
-            // most `IO_TIMEOUT`, and nothing else.
-            for conn in listener.incoming().flatten() {
-                serve(conn, &mut limit, &mut target);
+        let (mine, theirs) = UnixStream::pair().context("socket pair")?;
+        let receiver = match spawn_receiver(launch, &listener, &theirs) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = std::fs::remove_file(&path);
+                return Err(e);
             }
-        })?;
-        Ok(Self { path })
+        };
+        // The receiver has its copies. With ours closed, a receiver that ends leaves nobody listening and a
+        // client is refused at once instead of waiting.
+        drop(listener);
+        drop(theirs);
+        let mut server = Server { path, receiver };
+        let spawned = std::thread::Builder::new().name("opener".into()).spawn(move || act_loop(mine, target));
+        if let Err(e) = spawned {
+            server.receiver.end();
+            return Err(e).context("start the opener thread");
+        }
+        Ok(server)
     }
 
     pub fn socket(&self) -> &Path {
@@ -139,23 +214,79 @@ impl Server {
     }
 }
 
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+fn spawn_receiver(launch: Launch, listener: &UnixListener, theirs: &UnixStream) -> Result<Receiver> {
+    use std::os::fd::AsRawFd;
+    let (l, a) = (listener.as_raw_fd(), theirs.as_raw_fd());
+    match launch {
+        Launch::Exec(exe) => {
+            let mut cmd = Command::new(exe);
+            cmd.arg(receiver::FLAG).stdin(Stdio::null()).stdout(Stdio::null());
+            // SAFETY: the closure calls only fcntl, dup2 and close_range (async-signal-safe).
+            unsafe { cmd.pre_exec(move || place_fds(l, a)) };
+            let child = cmd.spawn().context("start the receiver")?;
+            Ok(Receiver { pid: child.id() as i32, child: Some(child) })
+        }
+        #[cfg(test)]
+        Launch::Fork => {
+            // SAFETY: the test runs alone (`testutil::alone`); the child makes system calls and ends with `_exit`.
+            unsafe {
+                let pid = libc::fork();
+                ensure!(pid >= 0, "fork: {}", std::io::Error::last_os_error());
+                if pid == 0 {
+                    let code = match place_fds(l, a).map_err(anyhow::Error::from).and_then(|()| {
+                        libc::fcntl(receiver::LISTEN_FD, libc::F_SETFD, 0);
+                        libc::fcntl(receiver::ACTOR_FD, libc::F_SETFD, 0);
+                        receiver::main_receiver()
+                    }) {
+                        Ok(()) => 0,
+                        Err(e) => {
+                            eprintln!("receiver: {e:#}");
+                            1
+                        }
+                    };
+                    libc::_exit(code);
+                }
+                Ok(Receiver { pid, child: None })
+            }
+        }
     }
 }
 
-fn serve(conn: UnixStream, limit: &mut RateLimit, target: &mut dyn Target) {
-    let _ = conn.set_read_timeout(Some(IO_TIMEOUT));
-    let _ = conn.set_write_timeout(Some(IO_TIMEOUT));
-    // One line, read up to the longest request plus one byte: a longer one is not a request.
-    let mut line = Vec::new();
-    let mut r = BufReader::new((&conn).take(MAX_REQUEST as u64 + 1));
-    let reply = match r.read_until(b'\n', &mut line) {
-        Ok(n) if n > 0 => handle_open_request(&line, limit, Instant::now(), target),
-        _ => "ERR bad request".into(),
-    };
-    let _ = (&conn).write_all(format!("{reply}\n").as_bytes());
+/// The actor: read frames from the receiver, check each one again, act on it, answer. Ends when the receiver closes
+/// its side or sends something that is not a frame (the receiver is then not trusted any more).
+fn act_loop(mut sock: UnixStream, mut target: impl Target) {
+    let mut limit = RateLimit::new(Instant::now());
+    let mut pending: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        loop {
+            match frames::parse_request(&pending) {
+                Ok(Some((req, used))) => {
+                    pending.drain(..used);
+                    let resp = frames::act(&req, &mut limit, Instant::now(), &mut target);
+                    if sock.write_all(&frames::encode_response(resp.status, &resp.text)).is_err() {
+                        return;
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("panpak: the receiver sent a bad frame ({e}); the open channel is closed");
+                    return;
+                }
+            }
+        }
+        match sock.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => pending.extend_from_slice(&chunk[..n]),
+        }
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        self.receiver.end();
+    }
 }
 
 /// Remove `open.<pid>.sock` files whose process is gone.
@@ -221,6 +352,10 @@ mod tests {
 
     #[test]
     fn the_channel_end_to_end_and_a_flood() {
+        // The receiver is a process (here a child of the test process): the test runs alone, in a process of its own.
+        if !crate::testutil::alone() {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("panpak-opener-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -231,7 +366,7 @@ mod tests {
                 Ok(())
             }
         }
-        let server = Server::start(&dir.join("s"), Rec(sent.clone())).unwrap();
+        let server = Server::start_with(&dir.join("s"), Rec(sent.clone()), Launch::Fork).unwrap();
         let ask = |text: &[u8]| -> String {
             let mut s = UnixStream::connect(server.socket()).unwrap();
             let _ = s.write_all(text); // the server may answer and close before a huge request is sent
@@ -254,6 +389,94 @@ mod tests {
         drop(server);
         assert!(!path.exists(), "the socket goes away with the server");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The actor against a receiver that has been taken over: it sends what it likes over the socket.
+    #[test]
+    fn the_actor_does_not_trust_the_receiver() {
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        struct Rec(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+        impl Target for Rec {
+            fn open(&mut self, url: &str) -> Result<(), String> {
+                self.0.lock().unwrap().push(url.to_string());
+                Ok(())
+            }
+        }
+        let ask = |bytes: &[u8]| -> Vec<frames::Response> {
+            let (mine, theirs) = UnixStream::pair().unwrap();
+            let t = sent.clone();
+            let h = std::thread::spawn(move || act_loop(theirs, Rec(t)));
+            let mut mine = mine;
+            mine.write_all(bytes).unwrap();
+            mine.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut all = Vec::new();
+            mine.read_to_end(&mut all).unwrap();
+            h.join().unwrap();
+            let mut out = Vec::new();
+            let mut rest = all.as_slice();
+            while let Ok(Some((r, used))) = frames::parse_response(rest) {
+                out.push(r);
+                rest = &rest[used..];
+            }
+            out
+        };
+        let req = |kind, payload: &[u8]| frames::encode_request(kind, payload).unwrap();
+        // A good one passes; one that the receiver should have refused is refused again; other kinds are not done.
+        let r = ask(&[req(1, b"https://example.org/x"), req(1, b"file:///etc/passwd"), req(1, b"\xff\xfe"), req(2, b""), req(3, b""), req(77, b"x")].concat());
+        let st: Vec<_> = r.iter().map(|r| r.status).collect();
+        use frames::Status::*;
+        assert_eq!(st, [Done, Refused, Refused, Unsupported, Unsupported, Unsupported]);
+        assert_eq!(*sent.lock().unwrap(), vec!["https://example.org/x".to_string()]);
+        // Garbage ends the conversation without an answer; so does a frame cut short; a frame after garbage is not read.
+        assert!(ask(b"hello hello hello").is_empty());
+        assert!(ask(&req(1, b"https://example.org/")[..12]).is_empty());
+        assert!(ask(&[b"PKRQ\x09\x01\x00\x00".to_vec(), req(1, b"https://example.org/after")].concat()).is_empty());
+        assert!(ask(&[b"PKRQ\x01\x01\xff\xff".to_vec(), req(1, b"https://example.org/after")].concat()).is_empty(), "a length over the limit");
+        // A flood is limited by the actor itself.
+        let flood: Vec<u8> = (0..40).flat_map(|_| req(1, b"https://example.org/f")).collect();
+        let done = ask(&flood).iter().filter(|r| r.status == Done).count();
+        assert!(done <= 3, "{done}");
+        assert!(!sent.lock().unwrap().iter().any(|u| u.contains("after") || u.contains("passwd")));
+    }
+
+    /// The receiver is confined: it runs, serves requests, and shows the marks of its confinement.
+    #[test]
+    fn the_receiver_is_confined() {
+        if !crate::testutil::alone() {
+            return;
+        }
+        struct Null;
+        impl Target for Null {
+            fn open(&mut self, _: &str) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("panpak-receiver-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let server = Server::start_with(&dir.join("s"), Null, Launch::Fork).unwrap();
+        let pid = server.receiver.pid;
+        // Ask once, so that the receiver is past `confine`.
+        let mut s = UnixStream::connect(server.socket()).unwrap();
+        s.write_all(b"OPEN https://example.org/\n").unwrap();
+        let mut r = String::new();
+        BufReader::new(s).read_line(&mut r).unwrap();
+        assert_eq!(r.trim_end(), "OK", "the receiver does not serve");
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap();
+        let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).map(|v| v.trim().to_string()).unwrap_or_default();
+        assert_eq!(field("NoNewPrivs:"), "1");
+        assert_eq!(field("Seccomp:"), "2");
+        // The limits.
+        let limits = std::fs::read_to_string(format!("/proc/{pid}/limits")).unwrap();
+        let line = |k: &str| limits.lines().find(|l| l.starts_with(k)).unwrap_or_default().to_string();
+        assert!(line("Max open files").contains("32"), "{}", line("Max open files"));
+        assert!(line("Max processes").split_whitespace().rev().nth(1) == Some("0"), "{}", line("Max processes"));
+        // Nothing but the two sockets and the standard descriptors.
+        let fds = std::fs::read_dir(format!("/proc/{pid}/fd")).map(|d| d.count()).unwrap_or(0);
+        assert!(fds <= 8, "{fds} descriptors open in the receiver");
+        drop(server);
+        // The receiver is gone with the server.
+        assert!(!Path::new(&format!("/proc/{pid}")).exists() || std::fs::read_to_string(format!("/proc/{pid}/status")).map(|s| s.contains("Z (zombie)")).unwrap_or(true));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Other threads allocate all the time while the opener forks: the child between `fork` and `exec` must

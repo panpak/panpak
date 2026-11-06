@@ -4,6 +4,7 @@
 //! All numbers in the format are little-endian. See PANPAK-FORMAT.md.
 
 pub mod dbus;
+pub mod frames;
 mod elfsym;
 mod errors;
 mod layout;

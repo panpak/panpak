@@ -16,6 +16,7 @@ use std::{
 mod dbus_layer;
 mod opener;
 mod probe;
+mod receiver;
 mod sharedtmp;
 #[cfg(test)]
 mod seccomp_test;
@@ -1055,6 +1056,10 @@ fn real_main() -> Result<()> {
     if args.get(1).map(|s| s.as_str()) == Some("--abi-version") {
         println!("{}", panpak_core::RUNTIME_ABI);
         return Ok(());
+    }
+    // The receiver of the open channel (see receiver.rs): started by the outer stub with its two sockets.
+    if args.get(1).map(|s| s.as_str()) == Some(receiver::FLAG) {
+        return receiver::main_receiver();
     }
     // Inside the isolated view: the outer stub already verified the package (see view.rs).
     if args.get(1).map(|s| s.as_str()) == Some("--panpak-inner") {

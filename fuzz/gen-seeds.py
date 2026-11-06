@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Generate the fuzz seed corpus for fuzz_elf, fuzz_squash, fuzz_dbus, fuzz_dbus_names, fuzz_journal and fuzz_wayland.
+"""Generate the fuzz seed corpus for fuzz_elf, fuzz_squash, fuzz_dbus, fuzz_dbus_names, fuzz_journal, fuzz_wayland and fuzz_receiver.
 
 Every seed is written by this script from scratch (hand-built ELF headers) or
 built from small text files created here (squashfs, via mksquashfs). No
@@ -257,6 +257,32 @@ def wayland_seeds():
     return seeds
 
 
+def receiver_seeds():
+    import struct
+
+    def req(kind, payload, ver=1, magic=b"PKRQ"):
+        return magic + bytes([ver, kind]) + struct.pack(">H", len(payload)) + payload
+
+    def resp(status, text, ver=1):
+        return b"PKRS" + bytes([ver, status]) + struct.pack(">H", len(text)) + text
+
+    seeds = {
+        "open": req(1, b"https://example.org/"),
+        "open-bad": req(1, b"file:///etc/passwd"),
+        "mailto-attach": req(1, b"mailto:a@b.org?attach=/etc/passwd"),
+        "chooser": req(2, b""),
+        "unknown-kind": req(9, b"x"),
+        "two": req(1, b"https://a.org/") + req(1, b"https://b.org/"),
+        "version": req(1, b"https://a.org/", ver=2),
+        "cut": req(1, b"https://example.org/")[:12],
+        "done": resp(0, b""),
+        "refused": resp(1, b"too many requests"),
+        "bad-text": resp(1, b"a\x01b"),
+        "bad-status": resp(9, b""),
+    }
+    return seeds
+
+
 def write(target, seeds, prefix):
     d = CORPUS / target
     d.mkdir(parents=True, exist_ok=True)
@@ -272,6 +298,7 @@ def main():
     write("fuzz_dbus_names", dbus_names_seeds(), "seed")
     write("fuzz_journal", journal_seeds(), "seed")
     write("fuzz_wayland", wayland_seeds(), "seed")
+    write("fuzz_receiver", receiver_seeds(), "seed")
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ const BPF_RET_K: u16 = 0x06;
 
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
+const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 
 /// `struct seccomp_data`: `nr` at 0, `arch` at 4, the arguments (64 bits each) from 16.
 const OFF_NR: u32 = 0;
@@ -270,10 +271,44 @@ pub fn describe() -> Vec<String> {
         .collect()
 }
 
+/// An allow list instead of a deny list, for the helper processes that do one small thing (the receiver): the
+/// calls in `allowed` pass, anything else (and any other architecture, and x32) kills the process. A
+/// helper that makes a call it should not is not trusted any more, and ends.
+pub fn build_allowlist(allowed: &[i64]) -> Result<Vec<Insn>> {
+    if NATIVE_ARCH == 0 {
+        return Err(coded(ErrorCode::E3002, "the seccomp filter does not cover this architecture"));
+    }
+    let kill = stmt(BPF_RET_K, SECCOMP_RET_KILL_PROCESS);
+    let mut p = vec![stmt(BPF_LD_W_ABS, OFF_ARCH), jump(BPF_JEQ_K, NATIVE_ARCH, 1, 0), kill, stmt(BPF_LD_W_ABS, OFF_NR)];
+    #[cfg(target_arch = "x86_64")]
+    {
+        p.push(jump(BPF_JSET_K, X32_BIT, 0, 1));
+        p.push(kill);
+    }
+    for nr in allowed {
+        let nr = u32::try_from(*nr).map_err(|_| coded(ErrorCode::E3002, "bad system call number in the allow list"))?;
+        p.push(jump(BPF_JEQ_K, nr, 0, 1));
+        p.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
+    }
+    p.push(kill);
+    if p.len() > 4096 {
+        return Err(coded(ErrorCode::E3002, "seccomp program too long"));
+    }
+    Ok(p)
+}
+
+/// Install an allow list on this process (see `build_allowlist`).
+pub fn install_allowlist(allowed: &[i64]) -> Result<()> {
+    install_program(&build_allowlist(allowed)?)
+}
+
 /// Install the filter on this process (all its threads). `no_new_privs` is set first: it is what lets a
 /// process without privileges install a filter, and it stays for the app and every program it runs.
 pub fn install() -> Result<()> {
-    let prog = build()?;
+    install_program(&build()?)
+}
+
+fn install_program(prog: &[Insn]) -> Result<()> {
     #[repr(C)]
     struct Fprog {
         len: u16,
@@ -457,6 +492,25 @@ mod tests {
         // CLONE_FS|CLONE_FILES: not a namespace.
         assert_eq!(judge(libc::SYS_unshare, a(0x0000_0200 | 0x0000_0400)), SECCOMP_RET_ALLOW);
         // Only the low 32 bits count: the kernel takes `unsigned long` flags, but the namespace bits are all in them.
+    }
+
+    #[test]
+    fn allowlist_passes_only_what_it_names() {
+        let p = build_allowlist(&[libc::SYS_read, libc::SYS_write, libc::SYS_accept4]).unwrap();
+        let kill = SECCOMP_RET_KILL_PROCESS;
+        let at = |nr: i64| run(&p, NATIVE_ARCH, nr as u32, [0; 6]);
+        for ok in [libc::SYS_read, libc::SYS_write, libc::SYS_accept4] {
+            assert_eq!(at(ok), SECCOMP_RET_ALLOW);
+        }
+        for bad in [libc::SYS_openat, libc::SYS_socket, libc::SYS_connect, libc::SYS_execve, libc::SYS_clone, libc::SYS_ptrace, libc::SYS_getpid] {
+            assert_eq!(at(bad), kill, "{bad}");
+        }
+        for arch in [0x4000_0003u32, 0, 0xc000_00b7 ^ 1] {
+            assert_eq!(run(&p, arch, libc::SYS_read as u32, [0; 6]), kill, "{arch:#x}");
+        }
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(run(&p, NATIVE_ARCH, libc::SYS_read as u32 | X32_BIT, [0; 6]), kill);
+        assert_eq!(build_allowlist(&[]).unwrap().last().unwrap().k, kill, "an empty list allows nothing");
     }
 
     #[test]
