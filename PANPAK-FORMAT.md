@@ -512,6 +512,7 @@ Reference-implementation layout (paths under
   apps/<id>/pinned-key      # TOFU pin of the update key
   apps/<id>/update.url      # update URL (if declared)
   apps/<id>/xdg-dirs        # user folders fixed at install (§3.1.4)
+  removing/<id>.<n>/        # a removal in progress or interrupted (§9.6)
 ```
 
 Several starts can overlap on a store that does not have the tree yet. The runtime therefore takes an
@@ -907,6 +908,38 @@ documents added later. The app never gets the document portal on the bus and nev
 grants a file with `Documents.AddFull` for the app id `panpak.<id>`.
 
 The runtime reports the state of this layer in `doctor`.
+
+### 9.6 Listing and removing apps [NORMATIVE for the policy; the mechanism is INFORMATIVE]
+
+`panpak list [--json]` shows every app of the store: id, name and version of the installed package, the disk space of
+its packages and unpacked trees, the space of its settings, data and cache, and a status (`ok`, `incomplete` with the
+missing parts, or `data-only` for an id that has data and no installation). A tree shared with another app is counted
+for both.
+
+`panpak remove [--purge-data] [--yes] <app-id>` removes an installed app. The runtime MUST:
+
+1. refuse while a copy of the app is alive (the lock of §9.4 is held), with `PANPAK-E2002` and no option to force it;
+2. remove the launcher and the desktop entries `panpak.<id>.desktop` and `<id>.desktop` only when they carry the
+   marker of §3.1.5 for this app, and leave anything else (a file of the user, a link) alone and say so; then refresh the
+   desktop database;
+3. move `apps/<id>` into `removing/<id>.<n>/app` with one rename, after writing a journal (`panpak-removal 1`, the
+   app id, the package file names of the app and the tree roots it used) beside it. From the rename on, an interrupted
+   removal is finished by the next `panpak` command that uses the store, from the journal alone. A journal is checked
+   name by name before anything is deleted: package names are plain file names ending in `.panpak`, roots are 64
+   lower-case hex digits;
+4. delete the packages of the app (those whose manifest has the id) and the trees and farms of its roots, except the
+   roots that a package left in the store still uses;
+5. delete the shared `/tmp` and `/dev/shm` of the app (§9.4) and the mark "in use";
+6. keep the settings, data and cache unless `--purge-data` is given, and print where they are and what they weigh. With
+   `--purge-data` it MUST ask for a yes (or take `--yes`) before any removal. A data or cache folder that is a link or
+   a file is not followed and not removed: the exit status is `PANPAK-E2003` and the message names it.
+
+The runtime and the shared blobs and chunks stay. Every step below the store, the data, the cache and the runtime
+folder uses descriptors of folders and `O_NOFOLLOW`; a link met inside is removed itself and its target is never
+entered; a walk does not cross to another file system and stops at 512 levels, leaving the rest and saying so.
+`panpak remove` of an id that was half removed by hand (no launcher, no entry, no package) finishes the work without
+error; an id with nothing at all is `PANPAK-E2004`. `panpak remove` does not touch the permission store or the
+document portal of the desktop (see THREAT-MODEL.md, "Removal").
 
 ## Appendix A — test vectors [NORMATIVE]
 

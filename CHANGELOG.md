@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`panpak list` and `panpak remove`.** `list [--json]` shows the installed apps (id, name, version, disk space of the
+  app and of its data, status, including incomplete installs). `remove [--purge-data] [--yes] <id>` takes away the launcher,
+  the desktop entries panpak wrote, the packages, the trees and the shared `/tmp` of the app; the settings and data stay
+  unless `--purge-data` is given and confirmed. It refuses while a copy is running (`PANPAK-E2002`), never follows a link,
+  moves the app folder aside with one rename and is finished by the next command if it is interrupted
+  (PANPAK-FORMAT.md §9.6, THREAT-MODEL.md §2.4). New error codes `PANPAK-E2002` to `E2004`; the fuzz targets `fuzz_dbus`,
+  `fuzz_dbus_names` and the new `fuzz_journal` run in the CI smoke job.
+
 - **A filtered session bus for apps in the isolated view.** With `xdg-dbus-proxy` (0.1.5 or newer), a systemd user
   manager and the view, an app gets a session bus that reaches only: the appearance and inhibit portals, its
   own `app.id` (single instance across copies), and, if the manifest asks, notifications, a tray icon and up to 8

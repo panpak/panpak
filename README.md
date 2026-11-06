@@ -199,6 +199,8 @@ panpak install-runtime target/x86_64-unknown-linux-musl/release/panpak-stub --al
 panpak install app.panpak                                  # shows the key fingerprint to pin
 ~/.local/bin/org.example.app
 panpak doctor                                              # kernel, Landlock, bubblewrap, runtime
+panpak list                                                # what is installed and what it weighs
+panpak remove org.example.app                              # take it away; your data stays (--purge-data deletes it too)
 ```
 
 `convert` signs with your key: the package says it was converted by you, not by the app's authors.

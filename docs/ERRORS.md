@@ -40,6 +40,9 @@ after the code always describes the actual problem.
 | PANPAK-E1004 | key differs from TOFU pin / release key differs from pin | The signing key is not the one pinned at first install: author changed key or possible attack | Verify with the author; a legitimate change must use a signed rotation or a manual reinstall (see RELEASE.md) |
 | PANPAK-E1005 | rotation refused / invalid succession / rotation_sig ... | Key changed without a valid signed succession from the pinned key | Ask the author for a package with a correct `rotation_old` / `rotation_sig` |
 | PANPAK-E2001 | refusing to replace launcher / refusing to replace desktop entry | The launcher in `~/.local/bin` or the `.desktop` file is a symbolic link, is not a regular file, or is a file that panpak did not create (it lacks the `X-Panpak-App-Id` marker for this app) | Check the file; move or remove it yourself if it is yours, then run the command again |
+| PANPAK-E2002 | a copy of the app is running / cannot tell whether one is | `panpak remove` found the lock that the copies of an app hold (or another `remove` of the same app is working), or `XDG_RUNTIME_DIR` is not set | Close the app (all its windows and background processes) and run the command again; there is no option to force it |
+| PANPAK-E2003 | removal incomplete / store folder cannot be used / unreadable removal journal | Part of a removal could not be done: a data or cache folder is a link or a file (not followed, not removed), a file could not be deleted, a store folder is a link, or the journal of an interrupted removal is damaged | Read the message: it names the paths. Remove a link yourself if it is yours; run `panpak remove` again to finish the rest |
+| PANPAK-E2004 | nothing is installed or left over under the id | `panpak remove <id>` found no store folder, package, launcher, entry, data or cache for the id | Check the id with `panpak list` |
 | PANPAK-E3001 | kernel without Landlock / Landlock unavailable | Kernel older than 5.13 or Landlock disabled; the app is never run unsandboxed | Run `panpak doctor`; use a kernel with `CONFIG_SECURITY_LANDLOCK=y` |
 | PANPAK-E4001 | remote version older than installed | Update would downgrade the app | Use `--allow-downgrade` only if you intend it |
 | PANPAK-E4002 | HTTPS only | Update URL is plain http (or not allowed) | Use an https URL; `--allow-insecure-http` is for localhost tests only |
@@ -61,3 +64,9 @@ after the code always describes the actual problem.
 
 When an error carries a specific code, that code is printed even if the
 command's generic group is different.
+
+## Exit status
+
+Every `panpak` command ends with status 0 when it did what was asked and 1 when it printed an error with a code
+from this table. `panpak remove` exits 1 when it could not complete the removal (`PANPAK-E2003`), but everything
+it could remove is removed first; a second run finishes the rest. `panpak list` exits 0 whatever it lists.

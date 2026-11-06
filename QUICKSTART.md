@@ -88,6 +88,19 @@ panpak install hello.panpak               # TOFU: confirm with y/yes to pin the 
 ~/.local/bin/org.example.hello       # launcher on the installed runtime
 ```
 
+### See what is installed, and remove an app
+
+```sh
+panpak list                          # id, name, version, disk space of the app and of its data, status
+panpak list --json                   # the same for scripts
+panpak remove org.example.hello      # launcher, entry, packages and trees go; your settings and data stay
+panpak remove --purge-data org.example.hello   # also deletes settings, data and cache, after asking (or --yes)
+```
+
+`remove` refuses while the app is running (`PANPAK-E2002`). It prints where the data stays and how much it weighs. The
+runtime and the shared blobs stay. If `remove` is interrupted, the next `panpak` command finishes it. An app that was
+cleaned by hand, or half installed, is finished without errors. A launcher or an entry that panpak did not write is left alone.
+
 ### Trust on first use (TOFU) prompt
 
 At the first install `panpak install` prints the key fingerprint (first 16

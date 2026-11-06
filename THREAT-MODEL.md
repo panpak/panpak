@@ -165,6 +165,33 @@ installed app follows the same rule.
   app: they are the same app with the same rights. Without `x11 = true` two copies each have their own IPC
   namespace and a single-instance guard based on System V IPC does not see the other copy (known limit).
 
+### 2.4 Removal (tested in panpak/tests/remove.rs)
+
+The folders that `panpak remove` deletes in (the store, `userdata`, the cache, the runtime folder) can be written
+by the user and by any program that runs as the user, including another app whose permissions give it a `home_paths`
+entry. A link put in place of a folder must not make the command delete something else.
+
+- Below the first folder every step is `openat`, `fstatat`, `unlinkat` or `renameat2` on a descriptor of the folder
+  that was opened before, with `O_NOFOLLOW`; no path is built from strings. The folder a walk enters is the one that
+  was looked at (same device and inode), a link met inside is removed itself, and a walk does not cross to another file
+  system and stops at 512 levels (leaving the rest in place and saying so).
+- A data or cache folder that is a link is not followed and not removed; the command ends with `PANPAK-E2003` naming it.
+  A link in place of `apps/<id>`, a tree or a farm is moved or unlinked as a link, never entered. Tested for each place the
+  command touches (`a_link_in_place_of_any_folder_never_deletes_outside`).
+- The folder of the app is moved to `removing/` by one rename before anything shared is deleted, with a journal. If the
+  process is killed, the next command finishes from the journal, which is parsed strictly (package names are plain file names,
+  roots are 64 hex digits) so that a damaged or planted journal cannot name a path outside the store. A fuzz target
+  (`fuzz_journal`) covers the parser. An install of the same id first finishes any interrupted removal.
+- A removal cannot run while a copy of the app is alive (the lock of the copies); the lock is held for the whole removal.
+  A copy that starts in the moment between the check and the rename of `apps/<id>` is not stopped and finds its files gone.
+- A launcher or desktop entry that panpak did not write (no marker), or that is a link, is left alone and listed.
+
+What `remove` does not do: it does not delete entries of the desktop's permission store (`org.freedesktop.impl.portal.PermissionStore`)
+or the document portal for `panpak.<id>`. Measured on a desktop that ran the test apps: the stores had no entry for any
+`panpak.*` app (`documents` empty; `notifications` only for snap apps), and the folders `doc/by-app/panpak.<id>` of the document portal
+are virtual (they exist for any name). Entries will exist once an app is granted a document (step 5b); `remove` should
+then call `PermissionStore.DeletePermission` for the app and revoke its documents. Until then there is nothing to delete.
+
 ## 3. What the sandbox does NOT guarantee
 
 **X11 opt-in (`[permissions] x11 = true`)**: default false. The opt-in
