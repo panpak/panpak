@@ -1,0 +1,12 @@
+# date_utc: 2026-11-06T21:29:21Z
+# cpu: AMD Ryzen 7 7735HS with Radeon Graphics
+# threads: 16
+# ram_mib: 14652
+# kernel: 7.0.0-38-generic
+# os: Ubuntu 26.04.1 LTS
+# bubblewrap: bubblewrap 0.11.1
+# script: tests/startup_budget.py
+# app: the same script app, started through the installed launcher with PANPAK_DEBUG=1; the time is read from the stages "package checked" and "menu entry checked"
+# columns: nothing_* is the check when the entry is current; rewrite_* is the check when the entry has no version and entry and launcher are rewritten
+label,nothing_runs,nothing_median_ms,nothing_p90_ms,rewrite_runs,rewrite_median_ms,rewrite_p90_ms
+desktop-7b,200,0.04,0.05,50,7.78,8.60

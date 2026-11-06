@@ -8,7 +8,8 @@ live in `docs/BENCHMARKS.md`, `PILOT.md`, `INCREMENTAL-RESULTS.md`,
 
 ## 1. Architecture in one page
 
-Three crates, one file, two phases:
+Four crates, one file, two phases (`panpak-icon` is the small check that an icon file passes before it is installed;
+it is used by the CLI only, never by the stub):
 
 - `panpak` (CLI, `panpak/src/main.rs`, ~1900 lines): `pack` (signs),
   `install` (verify + TOFU/pin + launcher), `update`/`rollback`,

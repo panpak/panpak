@@ -373,10 +373,39 @@ count a name that the installed version did not have as a new permission.
 (Wayland `app_id` or X11 `WM_CLASS`). `install` and `update` write it as `StartupWMClass=` in the desktop entry,
 which is how the desktop groups the windows under the entry. Without it the entry has no `StartupWMClass`.
 
+**`desktop.icons`** (array of at most 6 strings, each a relative path to a `.png` file of the tree, same path rules as
+`app.entry`, no duplicates). The icons of the app in the menu. `pack` and `convert` refuse a file that does not pass the rules below;
+`install` and `update` check each file again before anything is written, and refuse the package if one fails.
+A file MUST be a PNG of at most 256 KiB whose chunks are all in this list: `IHDR` (first, 13 bytes), `PLTE`, `tRNS`, `gAMA`,
+`sRGB`, `pHYs` (each at most once, before the image data), `IDAT` (together) and `IEND` (last, nothing after it); every chunk
+checksum MUST be right. The image is square, 16 to 1024 pixels on a side, 8 bits per channel, colour type 0, 2, 3, 4 or 6, not interlaced,
+and the inflated image data is exactly `height * (1 + width * channels)` bytes, each row starting with a filter type from 0 to 4,
+with nothing after the end of the zlib stream. SVG and every other format are refused. The file is installed as it is (never
+re-encoded) as `~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<app.id>.png`, where `<S>` is the side taken from the image
+header; of two files with the same side the first one is used. `install` and `update` remove the sizes of the app that the new
+version no longer has; `remove` deletes exactly these files. A destination that is a link or not a regular file stops the command
+with `PANPAK-E2001`. The entry says `Icon=panpak.<app.id>` when at least one icon is installed and `Icon=application-x-executable`
+otherwise.
+
 The desktop entry is `panpak.<app.id>.desktop` (not `<app.id>.desktop`): the portals know the app as `panpak.<app.id>` (§9.5)
 and look for the entry of that name, and the prefix keeps the entry apart from the Flatpak or distribution entry of an
 app that has the same upstream id. `install` and `update` MUST remove `<app.id>.desktop` when panpak wrote it
 (it has the `X-Panpak-App-Id` marker or the `Exec` line panpak writes) and MUST leave it when it did not.
+
+*Content of the entry.* The entry is made from a fixed template, never from a `.desktop` file of the package. The package
+contributes `Name` (`app.name`, escaped as a Desktop Entry string), `StartupWMClass` (`desktop.wm_class`) and the
+`x-scheme-handler/<scheme>` items of `MimeType` (`desktop.schemes`); everything else is fixed or derived from the store:
+`Type`, `Exec` (the launcher, with `%U`), `Icon`, `Terminal`, `Categories`, `Actions` and the group `Uninstall`
+(`Exec` is `<store>/bin/panpak remove --ask <app.id>`, §9.6), and the two keys `X-Panpak-Desktop-Version` and
+`X-Panpak-App-Id`. No other key is ever written (`TryExec`, `Path`, `DBusActivatable`, `X-GNOME-Autostart-*`, `Hidden`,
+`NoDisplay`, `OnlyShowIn`, extra actions or any other `MimeType`).
+
+*Version of the entry.* `X-Panpak-Desktop-Version=<n>` is the second line of the entry; the launcher carries the same number in
+`# X-Panpak-Desktop-Version: <n>`. A runtime that starts an installed app reads the first 128 bytes of its entry. If the version
+is there and is not lower than its own, it does nothing. Otherwise (lower, or not inside the 128 bytes) it reads the whole file,
+and only if the file is a regular file that panpak wrote for this app (same marker as above) it rewrites the launcher and then the
+entry, each through a temporary file, `fsync` and `rename`. It never creates a missing entry, never touches a link or a file that
+is not its own, and a failure never stops the start.
 
 ### 3.2 Public key and TOFU [NORMATIVE]
 
@@ -414,7 +443,7 @@ A client updating a package MUST:
   present copied from the local package), verify it fully as in §5,
   and only then move `current` (the previous version stays in
   `previous`; `panpak rollback` swaps them). Installed launchers use
-  the runtime in `runtimes/` and the stub verifies its pin at every
+  the runtime through `bin/panpak-stub` (§6) and the stub verifies its pin at every
   start; direct execution of a `.panpak` only shows the fingerprint.
 
 A client MUST NOT publish a new version that asks for permissions the
@@ -506,6 +535,8 @@ Reference-implementation layout (paths under
   trees/<root_hash>/     # materialized tree (hardlinks from identical blobs)
   farms/<root_hash>/     # ABI symlink farm: one link per SONAME (host or bundle, §7)
   runtimes/<abi>/panpak-stub  # installed runtimes (`panpak install-runtime`)
+  bin/panpak-stub -> ../runtimes/<abi>/panpak-stub  # the best installed ABI; launchers use this path
+  bin/panpak              # the CLI, for the menu action "Uninstall"; written by `install-runtime`
   packages/<id>-<ver>.panpak  # installed packages (signed, verified)
   apps/<id>/current -> ../../trees/<root_hash>
   apps/<id>/previous -> ...   # for rollback
@@ -522,8 +553,16 @@ complete once it has the lock (a start that waited then just uses it), builds in
 with the process, so a builder that dies never blocks the others. Temporary blob files carry the process
 number, since two trees can write the same blob at the same time.
 
-Outside the store: launcher `~/.local/bin/<id>` (`exec <runtime> run
-<package> "$@"`) and `~/.local/share/applications/<id>.desktop`.
+Outside the store: launcher `~/.local/bin/<id>` (`exec <store>/bin/panpak-stub run
+<store>/apps/<id>/current "$@"`), `~/.local/share/applications/panpak.<id>.desktop` and the icons
+`~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<id>.png` (§3.1.3).
+
+`install-runtime` installs the stub of the runtime, switches `bin/panpak-stub` to the best ABI with one `rename` of a new link, and,
+from a release tarball, replaces `bin/panpak` with the `panpak` of the release; every file is written through a temporary file and
+`rename`, so an app that is running keeps its old file and the next start uses the new one. From a single stub it only moves the
+link. `install` and `update` copy the running `panpak` to `bin/panpak` when there is none; they never replace one that is there, and
+print a warning when it is older than the running one. Nothing in a launcher or an entry names the folder from which `panpak` was
+run. The folders `runtimes/<abi>` stay: launchers written before the link existed point into them.
 
 ### 6.1 Launcher/runtime contract [NORMATIVE]
 
@@ -897,8 +936,14 @@ The id never equals the id of a Flatpak or of the distribution entry of the same
 *Order.* The portal sees the connection of the proxy, not the app's, so the outer runtime MUST be in a scope that gives the app
 its identity before the proxy is started (a proxy outside such a scope makes the app known by the id of the terminal), and
 bubblewrap, the app and everything it starts MUST start in the same scope, so that systemd-oomd and the user see one unit for
-the whole app. Two cases. If the outer runtime is already in a scope whose name the portal's expression reads as `panpak.<id>`
-(the desktop starts apps in `app-gnome-panpak.<id>-<n>.scope`), no scope is made. Otherwise the scope above is made and the start
+the whole app. Two cases. If the user unit of the outer runtime (the one `sd_pid_get_user_unit` returns: after `user@<uid>.service`,
+the first component of the cgroup that is not a slice) has a name that the portal reads as `panpak.<id>`, no scope is made. The portal
+reads a unit name with two expressions, the first for `.scope` and `.slice` (above) and, when it does not match, the second for services,
+`^app-(?:[[:alnum:]]+\-)?(.+?)(?:@[[:alnum:]]*|\-autostart)?\.service$` (xdg-desktop-portal, `shared/xdp-app-info-host.c`,
+`_xdp_app_info_host_parse_app_id_from_unit_name`, called from `get_app_from_pid`), and unescapes `\xHH` in the id; the runtime applies the
+same rules by hand (`panpak-core/src/unitname.rs`) and takes the shortcut only when the id it gets is exactly `panpak.<id>`. So the
+names `app-gnome-panpak.<id>-<n>.scope` (GNOME), `app-panpak.<id>-<n>.scope` and `app-gnome-panpak.<id>@<n>.service` all qualify;
+anything else, or a name the portal would read differently, gets the scope of the paragraph above, with no error. Otherwise the scope above is made and the start
 waits for systemd before bubblewrap is started (the proxy is started at once and the view is built while systemd works).
 The proxy's folder is mounted in the view, `$XDG_RUNTIME_DIR/bus` there is a link into it, and the inner runtime MUST wait
 (up to 10 s, before Landlock) until a connection to the proxy's socket succeeds, so an app never connects too early.
@@ -941,8 +986,8 @@ for both.
 1. refuse while a copy of the app is alive (the lock of §9.4 is held), with `PANPAK-E2002` and no option to force it.
    It holds the exclusive lock until it ends. A start of an installed app MUST take the shared lock before it opens
    anything of `apps/<id>` and, once it has it, check that the app is still installed; if not it ends with `PANPAK-E2004`;
-2. remove the launcher and the desktop entries `panpak.<id>.desktop` and `<id>.desktop` only when they carry the
-   marker of §3.1.5 for this app, and leave anything else (a file of the user, a link) alone and say so; then refresh the
+2. remove the launcher, the desktop entries `panpak.<id>.desktop` and `<id>.desktop` only when they carry the
+   marker of §3.1.5 for this app, and the icon files `panpak.<id>.png` of the app (regular files only), and leave anything else (a file of the user, a link) alone and say so; then refresh the
    desktop database;
 3. move `apps/<id>` into `removing/<id>.<n>/app` with one rename, after writing a journal (`panpak-removal 1`, the
    app id, the package file names of the app and the tree roots it used) beside it. From the rename on, an interrupted
@@ -957,8 +1002,8 @@ for both.
    a file is not followed and not removed: the exit status is `PANPAK-E2003` and the message names it.
 
 *Menu action.* The desktop entry of an app has the action `Uninstall` (`Actions=Uninstall;` and a group
-`[Desktop Action Uninstall]`, with at least the names in English and Italian) whose `Exec` is the absolute path of the
-`panpak` that wrote the entry, `remove --ask <id>`. If that path cannot be found when the entry is written, the entry has no action.
+`[Desktop Action Uninstall]`, with at least the names in English and Italian) whose `Exec` is `<store>/bin/panpak remove --ask <id>` (the stable copy of §6, never the path of the `panpak` that
+happened to run `install`). If that file does not exist when the entry is written, the entry has no action.
 `panpak remove --ask <id>` asks in a dialog (`zenity` or `kdialog`, from fixed folders, never from `PATH`) with the name of the
 app, what is removed, where the data stays and what happens on a reinstall; only a yes starts the removal, which never deletes
 data. It ends with a notification (`notify-send` or `gdbus`, if present). Without a dialog tool it removes nothing, explains the
@@ -968,7 +1013,11 @@ The runtime and the shared blobs and chunks stay. Every step below the store, th
 folder uses descriptors of folders and `O_NOFOLLOW`; a link met inside is removed itself and its target is never
 entered; a walk does not cross to another file system and stops at 512 levels, leaving the rest and saying so.
 `panpak remove` of an id that was half removed by hand (no launcher, no entry, no package) finishes the work without
-error; an id with nothing at all is `PANPAK-E2004`. Not done yet (step 8): the removal of unused entries of the resolution cache and of blobs and chunks that no tree
+error; an id with nothing at all is `PANPAK-E2004` ("not installed: nothing to remove"), and so is an id with only data left when
+`--purge-data` is not given (the message names the data and the command that deletes it). A removal that succeeds prints
+`removed <id> <version>: freed <size>`, where the size is the packages, the trees that no other app's package uses and, with
+`--purge-data`, the data and cache; the shared blobs are not counted. It then lists what went (launcher, entry, icons, store
+folder), what was kept and where the data is. Not done yet (step 8): the removal of unused entries of the resolution cache and of blobs and chunks that no tree
 uses (garbage collection of the store). `panpak remove` does not touch the permission store or the
 document portal of the desktop (see THREAT-MODEL.md, "Removal").
 

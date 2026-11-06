@@ -1,6 +1,7 @@
 # Desktop integration (step 7b): design
 
-Status: design only, no code. Branch `desktop`, from main 0deab15.
+Status: designed, then implemented on branch `desktop` (from main 0deab15). The sections below are the design; the last section,
+"As built", lists what changed on the way, what was measured and what is left.
 
 Goal: an app installed with Panpak behaves in the menu like a native app. The right icon, actions that
 show up at once, no reference to a path that can disappear, clear messages. The `.desktop` file stays thin
@@ -405,11 +406,75 @@ section 4, which decides the last line of `install`.
 Costs at start, together: one 128-byte read of the entry (target below 0.1 ms) and the name parse (below
 5 microseconds). Nothing else runs at start.
 
-Open questions:
+Decisions on the three open questions (taken before the implementation):
 
-1. The launcher follows the `bin/panpak-stub` link (best ABI) instead of the ABI it was written with. I
-   recommend the link. The other choice keeps the old pin and makes every new ABI reach an app only at its
-   next `update`.
-2. The stable `panpak` is copied by `install` when missing. I recommend that. The other choice is to require
-   `install-runtime` from a release first, which is stricter and makes the dev flow longer.
-3. SVG-only apps get the generic icon. I recommend it for this step; `--render-svg` stays a later option.
+1. The launcher follows the `bin/panpak-stub` link (best ABI). A runtime update switches the link with one rename.
+2. `install` copies `panpak` into the store when there is none and never replaces one that is there; if the stored one is
+   older than the running one it prints a warning that suggests `panpak install-runtime`.
+3. An app with only an SVG gets the generic icon (`convert` warns). For step 13 (build from source) there is a constraint:
+   **the build converts an SVG icon to PNG, in the usual `hicolor` sizes, inside the build image, so that only checked PNG files
+   reach the user's host.** The rasteriser then runs where the source is already built and trusted to the same degree as
+   the build itself, and the host never decodes an SVG that came with a package.
+
+## 8. As built
+
+### 8.1 What differs from the design
+
+- The entry and the launcher share one version (`DESKTOP_VERSION`, in `panpak-core/src/desktop.rs`): the check reads the entry; when it
+  is older, the launcher is rewritten first and the entry second. The launcher carries the number in `# X-Panpak-Desktop-Version: <n>`.
+- The check does not depend on the second line: it reads 128 bytes and looks for a complete `X-Panpak-Desktop-Version=<n>` line in them. A
+  version that is not inside the window (or no version at all, as in the entries of the first version) is taken as old and the file is rewritten
+  (if it is a regular file that panpak wrote for the app). The generator puts the key second only so that it is always inside.
+- The icon check is in a new crate, `panpak-icon` (it needs `flate2`, which the static stub must not carry). Fuzz target `fuzz_icon`.
+- `panpak --version` was added: the check that the stored `panpak` is older runs `bin/panpak --version`.
+- If the stable stub link is missing (a store from before this step that was not touched by `install`, `update` or `install-runtime`), the lazy
+  update writes nothing; the entry then stays as it was. Any of those three commands makes the link.
+- The icon of a rewritten entry is taken from the old entry (`Icon=panpak.<id>` stays), so the stub never has to look at the icon folder.
+- `remove` of an id with only data left and no `--purge-data` is `PANPAK-E2004` with a message that names the data and the command that
+  deletes it; with `--purge-data` it deletes them as before.
+
+### 8.2 Scope names: what the portal reads (the first task of the step)
+
+Read in xdg-desktop-portal, branch `main` at commit `987607a8e5be0ee8a54462b068985fa99e522abc`, file `shared/xdp-app-info-host.c`:
+
+- `get_app_from_pid`: asks `sd_pid_get_user_unit(pid, &unit)`; returns "not a desktop app" if that fails or if the unit does not start with
+  `app-`; passes the unit to the parser; builds `<app_id>.desktop` and asks `g_desktop_app_info_new`. **If that entry does not exist,
+  the app is not known** (so the lazy update must never remove an entry, and a missing entry makes the portal treat the app as a plain host
+  process).
+- `_xdp_app_info_host_parse_app_id_from_unit_name`: two expressions, the first for `.scope` and `.slice`
+  (`^app-(?:[[:alnum:]]+\-)?(.+?)(?:\-[[:alnum:]]*)(?:\.scope|\.slice)$`), the second tried only when the first does not match, for services
+  (`^app-(?:[[:alnum:]]+\-)?(.+?)(?:@[[:alnum:]]*|\-autostart)?\.service$`); the id found is unescaped with `cunescape` in relaxed mode.
+- So the portal does read `.service` units, with an optional `@<random>` or the old `-autostart`. The version installed on this machine
+  (1.21.1) gives the same answer: `tests/dbus_filter.py` starts the app in `app-gnome-panpak.<id>-<n>.scope`, `app-panpak.<id>-<n>.scope` and
+  `app-gnome-panpak.<id>@<n>.service` with `systemd-run --user` and the portal logs `app_id=panpak.<id>` each time. Older portal versions
+  may not read services; they do not know the app and the runtime would have made its own scope anyway only if the name did not match
+  *its* rules, which are the rules of the newest portal. That is the one place where the shortcut can be wrong for an old portal; for the
+  portals in use (1.18 and later) the first expression is the same, and the second is only ever an addition.
+- `panpak-core/src/unitname.rs` is the same two rules by hand, plus `user_unit_of_cgroup`, which is what `sd_pid_get_user_unit` does with the
+  cgroup path (after `user@<uid>.service`, the first component that is not a slice, so a process in a sub-cgroup belongs to its service).
+
+KDE and others were checked by name only (the tests use `app-org.kde.konsole@1a2b.service` and `app-plasma-...` as other apps); no KDE session
+was available.
+
+### 8.3 Measured
+
+Machine and build: the one used for the earlier steps, release musl binaries, `tests/startup_budget.py --runs 200`, no D-Bus.
+
+| What | Median | p90 |
+|---|---:|---:|
+| Check of the entry when there is nothing to do (`package checked` to `menu entry checked`) | 0.04 ms | 0.05 ms |
+| Entry and launcher older: both rewritten (two files, `fsync` each) | 7.8 ms | 8.6 ms |
+| Fixed cost of a start, the same kind of run (budget 30 ms) | 23.9 ms | |
+
+The figures are in [`bench-data/menu-entry-check.csv`](bench-data/menu-entry-check.csv).
+
+The check costs a fraction of the run-to-run noise of the fixed cost (the step-7 figure was 24.5 ms). The rewrite happens once per
+version change of the template and per app, the first time the app starts after a runtime update. `tests/startup_budget.py` fails
+above 0.3 ms for the first case (advisory in the CI like the rest of the file).
+
+### 8.4 Not done here
+
+- The menu behaviour of GNOME Shell (section 4) is tested in the virtual machine; the result is added below when it is known.
+- Update of an installed app by `panpak update` (HTTP) uses the same icon functions as `install`; it is covered by the code path and
+  by the shared tests, not by an end-to-end update test with icons.
+- A package built for this step cannot be installed by an older panpak (the key `desktop.icons` is unknown to it: "update panpak").

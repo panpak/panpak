@@ -154,6 +154,21 @@ What is left with D-Bus in the slow case is systemd's `StartTransientUnit` (10 t
 `PANPAK_DEBUG=1` prints the time of each stage. The CI runs the script as an advisory step (budget 30 ms, 45 ms with D-Bus);
 the step moves into the gate after a week of numbers from the runners.
 
+### The check of the menu entry
+
+At every start of an installed app the runtime reads the first 128 bytes of its menu entry and compares the version
+(PANPAK-FORMAT.md §3.1.5). `tests/startup_budget.py --entry-csv` reads the time from two `PANPAK_DEBUG` stages ("package
+checked" and "menu entry checked"), 200 starts when the entry is current and 50 when it is older (the entry has no version
+line, so the entry and the launcher are both rewritten with a temporary file and `fsync`). The rows are in
+[`menu-entry-check.csv`](bench-data/menu-entry-check.csv).
+
+| Case | Median | p90 |
+|---|---:|---:|
+| Nothing to do | 0.04 ms | 0.05 ms |
+| Entry and launcher older, rewritten | 7.78 ms | 8.60 ms |
+
+The script fails when the first case is above 0.3 ms (it does not fail in the advisory CI step).
+
 ## System font cache
 
 The view has an empty `/var`; `/var/cache/fontconfig` is mounted into it read-only. Audacity (converted AppImage, Xvfb), the private font cache

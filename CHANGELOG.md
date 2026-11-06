@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Desktop integration (step 7b).** Apps get their icon in the menu: `[desktop] icons` lists up to 6 PNG files of the package; `install`
+  and `update` check them (PNG only, a short list of chunks, 16 to 1024 pixels, at most 256 KiB, image data of exactly the promised size;
+  SVG is not accepted) and write them as `~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<id>.png`; `remove` deletes them. `panpak
+  convert` takes the icons from the AppImage (`.DirIcon`, the root file, the `hicolor` sizes) and has `--icon <file.png>`; an app with no usable
+  PNG gets the generic icon and a warning. New crate `panpak-icon`, fuzz target `fuzz_icon`.
+- **A stable `panpak` and a stable stub.** The store has `bin/panpak-stub` (a link to the best runtime) and `bin/panpak`. Launchers run the stub
+  through the link, so a new runtime reaches every app at its next start, and the menu action "Uninstall" runs `bin/panpak`: no launcher or
+  entry names the folder from which `panpak` was run any more. `install-runtime` writes both with a rename; `install` copies `panpak` when there is none and warns when the one in
+  the store is older. `panpak --version` prints the version.
+- **The menu entry is thin and versioned.** The entry is made from a fixed template (the keys it may have are tested) and carries
+  `X-Panpak-Desktop-Version`. When an app starts and its entry or launcher is older, the runtime rewrites both (temporary file, `fsync`, `rename`); when
+  there is nothing to do it costs 0.04 ms.
+- **`panpak remove` and `panpak list` say more.** `removed <id> <version>: freed <size>`; a second `remove` (or an unknown id) says "not installed:
+  nothing to remove" with `PANPAK-E2004`; `list` of an empty store says how to install.
+- **The desktop's own unit is recognised for every launcher.** The shortcut that skips the scope of the app follows the portal's rules for scopes and
+  services (`app-gnome-panpak.<id>-<n>.scope`, `app-panpak.<id>-<n>.scope`, `app-gnome-panpak.<id>@<n>.service`), with the systemd escape; the unit is the one
+  `sd_pid_get_user_unit` finds, so a process in a sub-cgroup counts. `tests/dbus_filter.py` runs the three shapes against the real portal.
+
 - **Hardening of the app process.** Every app now starts under a seccomp filter (a deny list, installed last, with
   `no_new_privs`; it returns errors, it does not kill): `io_uring`, `bpf`, `userfaultfd`, `perf_event_open`, the key ring,
   `ptrace` and `process_vm_*`, the mount calls, `setns`, new namespaces through `clone` and `unshare` (user namespaces too), `clone3` (`ENOSYS`),
