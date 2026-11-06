@@ -94,6 +94,7 @@ fn set_limit(resource: u32, value: u64) -> Result<()> {
 
 /// Take every right away, then check that it is so, then limit the calls. Called once, before the first request.
 /// Landlock is required: a receiver that cannot confine itself does not run (the channel is off).
+#[allow(clippy::unnecessary_cast)] // the RLIMIT_* constants are c_uint with glibc and c_int with musl
 pub fn confine() -> Result<()> {
     // No core file, no ptrace from the same user, and nothing reads this process through /proc.
     // SAFETY: prctl with integer arguments.
