@@ -157,6 +157,15 @@ pub fn readonly_user_paths() -> Vec<PathBuf> {
     all
 }
 
+/// System caches outside `/usr` that the app reads at start, read-only. The view has an empty `/var`, and
+/// Landlock lets an app read only a few system folders, so each of these is mounted into the view and given one
+/// read rule. `/var/cache/fontconfig` holds the font index of the system fonts: without it the first start of
+/// every app (the private cache folder is empty) scans every font file again. Only entries that exist.
+pub fn system_cache_paths() -> Vec<PathBuf> {
+    const CACHES: &[&str] = &["/var/cache/fontconfig"];
+    CACHES.iter().map(PathBuf::from).filter(|p| p.is_dir()).collect()
+}
+
 /// `XDG_CONFIG_DIRS` and `XDG_DATA_DIRS` for the app: the existing value, or the default of the
 /// XDG Base Directory Specification, then the user's real config and data folder at the end.
 /// Landlock lets the app read only part of those two (`readonly_user_paths`).

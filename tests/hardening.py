@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""The seccomp filter of an app that runs through the real launcher, stub and view.
+"""The hardening of an app that runs through the real launcher, stub and view: the seccomp filter and the
+system font cache.
 
-Usage: python3 tests/seccomp.py [work-directory]
+Usage: python3 tests/hardening.py [work-directory]
 Build first: `cargo build --release --target x86_64-unknown-linux-musl`. Everything runs in an isolated HOME
 inside the work directory (tests/isolation.py).
 
@@ -24,7 +25,7 @@ REL = ROOT / 'target/x86_64-unknown-linux-musl/release'
 sys.path.insert(0, str(ROOT / 'tests'))
 import isolation  # noqa: E402
 
-ID = 'org.example.seccomp'
+ID = 'org.example.hardening'
 APP = r'''#!/usr/bin/python3
 import ctypes, errno, json, os, subprocess, threading
 libc = ctypes.CDLL(None, use_errno=True)
@@ -63,6 +64,13 @@ out['memfd'] = libc.syscall(319, b'a', 0) >= 0
 out['getpid'] = sc(N['getpid'])[0] == 0
 out['ioctl_ok'] = sc(N['ioctl'], 0, 0x5401, 0)[1] != errno.EPERM  # TCGETS: ENOTTY or 0, never EPERM from the filter
 out['personality_query'] = sc(N['personality'], 0xffffffff)[0] == 0
+# The system font cache: readable, not writable.
+fc = '/var/cache/fontconfig'
+out['fontcache_read'] = len(os.listdir(fc)) > 0 if os.path.isdir(fc) else None
+try:
+    open(fc + '/x', 'w'); out['fontcache_write'] = True
+except OSError:
+    out['fontcache_write'] = False
 open(os.environ['XDG_DATA_HOME'] + '/result.json', 'w').write(json.dumps(out))
 '''
 
@@ -83,12 +91,12 @@ def need(cond, msg):
 def main():
     for b in (REL / 'panpak', REL / 'panpak-stub'):
         need(b.exists(), f'{b} is missing: build first (see the top of this file)')
-    work = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / 'target/seccomp-test'
+    work = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / 'target/hardening-test'
     isolation.safe_rmtree(work, work.parent)
     home = work / 'home'
     isolation.require_isolated_home(home, work)
     home.mkdir(parents=True)
-    runtime = Path(isolation.owned_mkdtemp('seccomp-rt-'))
+    runtime = Path(isolation.owned_mkdtemp('hardening-rt-'))
     env = {'PATH': os.environ['PATH'], 'HOME': str(home), 'XDG_RUNTIME_DIR': str(runtime)}
 
     def run(binary, *args):
@@ -101,8 +109,8 @@ def main():
     (tree / 'bin').mkdir(parents=True)
     (tree / 'bin/app').write_text(APP)
     (tree / 'bin/app').chmod(0o755)
-    (tree / 'panpak.toml').write_text(f'[app]\nid = "{ID}"\nname = "Seccomp"\nversion = "1"\nentry = "bin/app"\n[update]\nkey = "{pub}"\n')
-    pkg = work / 'seccomp.panpak'
+    (tree / 'panpak.toml').write_text(f'[app]\nid = "{ID}"\nname = "Hardening"\nversion = "1"\nentry = "bin/app"\n[update]\nkey = "{pub}"\n')
+    pkg = work / 'hardening.panpak'
     p = run(REL / 'panpak', 'pack', tree, '--stub', REL / 'panpak-stub', '--secret-file', key, '-o', pkg)
     need(p.returncode == 0, p.stderr)
     p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
@@ -118,13 +126,17 @@ def main():
         need(got == want, f'{k}: expected {want}, got {got}')
     for k in ('thread', 'fork_exec', 'pipe', 'memfd', 'getpid', 'ioctl_ok', 'personality_query'):
         need(res[k] is True, f'{k} no longer works under the filter')
+    host_has_cache = Path('/var/cache/fontconfig').is_dir()
+    need(res['fontcache_read'] == (True if host_has_cache else None), f'font cache: read {res["fontcache_read"]}, host has one: {host_has_cache}')
+    need(res['fontcache_write'] is False, 'the system font cache is writable')
+    print('system font cache:', 'readable, not writable' if host_has_cache else 'absent on this host (not checked)')
     print('seccomp in the real launcher: filter mode with no_new_privs; ENOSYS for', ', '.join(k for k, v in WANT.items() if v == 'ENOSYS'))
     print('  EPERM for', ', '.join(k for k, v in WANT.items() if v == 'EPERM'))
     print('  threads, fork+exec, pipes, memfd_create, ordinary ioctl and personality query keep working: ok')
     run(REL / 'panpak', 'remove', ID)  # the trees are read-only: remove takes them away properly
     isolation.remove_owned(runtime, work)
     isolation.safe_rmtree(work, work.parent)
-    print('all seccomp tests passed')
+    print('all hardening tests passed')
 
 
 if __name__ == '__main__':

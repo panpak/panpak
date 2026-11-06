@@ -387,6 +387,7 @@ fn access_for(man: &panpak_core::Manifest, dirs: &panpak_core::AppDirs) -> Resul
     let mut access = Access::default();
     access.rw.extend(dirs.roots().iter().map(|p| p.to_path_buf()));
     access.ro.extend(panpak_core::readonly_user_paths());
+    access.ro.extend(panpak_core::system_cache_paths());
     let paths = man.permissions.as_ref().and_then(|p| p.home_paths.as_deref()).unwrap_or_default();
     if paths.is_empty() {
         return Ok(access);
