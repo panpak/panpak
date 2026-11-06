@@ -1253,7 +1253,9 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
             sockets.push(path);
         }
     }
-    sockets.extend(ctx.access.sockets.iter().cloned());
+    // The Wayland socket of the app: a socket of its own that the compositor knows as sandboxed, when it can.
+    let wayland = wayland_context(ctx);
+    sockets.extend(ctx.access.sockets.iter().filter(|s| wayland.as_ref().is_none_or(|w| **s != w.display)).cloned());
     let mut ro_run_dirs = Vec::new();
     for d in [Some(PathBuf::from("/run/systemd/resolve")), panpak_core::resolv_conf_run_dir()].into_iter().flatten() {
         if d.is_dir() {
@@ -1313,6 +1315,9 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
             None
         }
     });
+    if let Some(w) = &wayland {
+        mounts.push(view::Mount { src: w.listener.path.clone(), dest: w.display.clone(), rw: true });
+    }
     if let Some(l) = &dbus {
         mounts.extend(l.mounts.iter().cloned());
         for (k, v) in &l.env {
@@ -1384,13 +1389,61 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     let fd = view::job_memfd(&job)?;
     let plan = view::ViewPlan { fd, ..plan };
     // The lock of the shared folders must outlive bwrap, so the outer stub stays whenever there is one.
-    match (opener_server, shared, dbus) {
-        (None, None, None) => match view::exec_bwrap(&plan)? {},
-        (server, shared, dbus) => match view::run_bwrap(&plan, (server, shared, dbus), |(_, shared, _), clean| {
+    match (opener_server, shared, dbus, wayland) {
+        (None, None, None, None) => match view::exec_bwrap(&plan)? {},
+        (server, shared, dbus, wayland) => match view::run_bwrap(&plan, (server, shared, dbus, wayland), |(_, shared, _, _), clean| {
             if let (true, Some(s)) = (clean, shared) {
                 s.ended_normally();
             }
         })? {},
+    }
+}
+
+/// The security context of the app's Wayland socket (see `panpak_core::wayland`).
+struct WaylandContext {
+    /// Where the host's socket is, and where the app finds its own in the view.
+    display: PathBuf,
+    /// Kept to the end: dropping it removes the socket and tells the compositor to stop listening.
+    listener: panpak_core::wayland::Listener,
+}
+
+/// Register a security context with the compositor and return the socket the app is to use instead of the
+/// compositor's own. `None` leaves the normal socket in place: no compositor, no support (GNOME's Mutter has
+/// none: `panpak doctor` says so), or a failure, which is reported (the app then has the full socket).
+fn wayland_context(ctx: &ViewStart) -> Option<WaylandContext> {
+    use panpak_core::wayland::{register, Listener, Meta, Outcome};
+    use std::os::fd::AsFd;
+    let rt = ctx.runtime_dir?;
+    let host = panpak_core::implied_sockets(None, Some(rt), std::env::var("WAYLAND_DISPLAY").ok().as_deref()).into_iter().next()?;
+    // The first implied socket is the compositor's only when WAYLAND_DISPLAY is set.
+    std::env::var("WAYLAND_DISPLAY").ok().filter(|w| !w.is_empty())?;
+    if !fs::symlink_metadata(&host).is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type())) {
+        return None;
+    }
+    let id = &ctx.man.app.id;
+    let dir = rt.join("panpak").join(id);
+    let made = (|| -> Result<(Listener, Outcome)> {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).with_context(|| format!("create {}", dir.display()))?;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+        let instance = format!("{}-{}", std::process::id(), nanos);
+        let listener = Listener::create(&dir.join(format!("wayland-{instance}")))?;
+        let app_id = format!("panpak.{id}");
+        let out = register(&host, listener.socket.as_fd(), listener.close_read.as_fd(), &Meta { app_id: &app_id, instance_id: &instance })?;
+        Ok((listener, out))
+    })();
+    match made {
+        Ok((listener, panpak_core::wayland::Outcome::Registered)) => Some(WaylandContext { display: host, listener }),
+        Ok((_, panpak_core::wayland::Outcome::Unsupported)) => {
+            if panpak_core::debug_enabled() {
+                eprintln!("panpak: the compositor has no security context protocol; the app gets the normal Wayland socket");
+            }
+            None
+        }
+        Err(e) => {
+            eprintln!("panpak: WARNING: no Wayland security context ({}); the app gets the normal socket", panpak_core::err_text(&e));
+            None
+        }
     }
 }
 

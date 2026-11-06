@@ -1912,6 +1912,18 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
     } else {
         line(false, "seccomp: the kernel has no filter support (CONFIG_SECCOMP_FILTER); apps do not start without the filter (PANPAK-E3002)");
     }
+    // The Wayland compositor: with the security context protocol the app gets a socket the compositor knows as sandboxed.
+    match (std::env::var_os("XDG_RUNTIME_DIR"), std::env::var("WAYLAND_DISPLAY").ok().filter(|w| !w.is_empty())) {
+        (Some(rt), Some(w)) => {
+            let sock = if Path::new(&w).is_absolute() { PathBuf::from(&w) } else { Path::new(&rt).join(&w) };
+            match panpak_core::wayland::supported(&sock) {
+                Ok(true) => println!("OK   Wayland: the compositor supports security contexts (wp_security_context_v1); each app gets a socket that the compositor knows as sandboxed"),
+                Ok(false) => println!("NOTE Wayland: the compositor does not support security contexts (GNOME's Mutter does not yet); apps get the normal socket, so they have the same powers over the desktop as any other Wayland client"),
+                Err(e) => println!("NOTE Wayland: cannot ask the compositor at {} ({}); apps get the normal socket", sock.display(), panpak_core::err_text(&e)),
+            }
+        }
+        _ => println!("NOTE Wayland: no WAYLAND_DISPLAY in this session; the check was skipped"),
+    }
     // Local sockets: D-Bus, ssh-agent, gpg-agent (see THREAT-MODEL.md). Two layers that work apart:
     // the isolated view (bubblewrap) and Landlock V9.
     let view = panpak_core::view_status();

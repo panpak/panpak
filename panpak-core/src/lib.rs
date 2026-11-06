@@ -13,6 +13,7 @@ pub mod removal;
 pub mod safefs;
 pub mod seccomp;
 pub mod stalelocks;
+pub mod wayland;
 mod userdirs;
 mod validate;
 mod view;

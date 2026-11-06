@@ -419,6 +419,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unnecessary_cast)] // the request constants are c_ulong with glibc and c_int with musl
     fn ioctl_only_the_injection_requests() {
         let a = |cmd: u64| [3, cmd, 0, 0, 0, 0];
         assert_eq!(judge(libc::SYS_ioctl, a(TIOCSTI as u64)), errno(EPERM));

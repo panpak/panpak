@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Generate the fuzz seed corpus for fuzz_elf, fuzz_squash, fuzz_dbus, fuzz_dbus_names and fuzz_journal.
+"""Generate the fuzz seed corpus for fuzz_elf, fuzz_squash, fuzz_dbus, fuzz_dbus_names, fuzz_journal and fuzz_wayland.
 
 Every seed is written by this script from scratch (hand-built ELF headers) or
 built from small text files created here (squashfs, via mksquashfs). No
@@ -231,6 +231,32 @@ def journal_seeds():
     return {f"{i}": s.encode() for i, s in enumerate(seeds)}
 
 
+def wayland_seeds():
+    import struct
+
+    def msg(obj, op, body):
+        return struct.pack("=II", obj, ((8 + len(body)) << 16) | op) + body
+
+    def string(t):
+        b = t.encode() + b"\0"
+        return struct.pack("=I", len(b)) + b + b"\0" * (-len(b) % 4)
+
+    glob = lambda n, i, v: msg(2, 0, struct.pack("=I", n) + string(i) + struct.pack("=I", v))
+    done = msg(3, 0, struct.pack("=I", 0))
+    err = msg(1, 0, struct.pack("=II", 5, 3) + string("invalid metadata"))
+    seeds = {
+        "globals": glob(1, "wl_compositor", 6) + glob(2, "wp_security_context_manager_v1", 1) + done,
+        "error": err,
+        "delete-id": msg(1, 1, struct.pack("=I", 4)),
+        "remove": msg(2, 1, struct.pack("=I", 2)),
+        "unknown": msg(9, 7, b"abcd"),
+        "no-nul": msg(2, 0, struct.pack("=II", 1, 4) + b"abcd" + struct.pack("=I", 1)),
+        "size-over": struct.pack("=II", 2, 0xfffc << 16),
+        "cut": glob(1, "wl_shm", 1)[:15],
+    }
+    return seeds
+
+
 def write(target, seeds, prefix):
     d = CORPUS / target
     d.mkdir(parents=True, exist_ok=True)
@@ -245,6 +271,7 @@ def main():
     write("fuzz_dbus", dbus_seeds(), "seed")
     write("fuzz_dbus_names", dbus_names_seeds(), "seed")
     write("fuzz_journal", journal_seeds(), "seed")
+    write("fuzz_wayland", wayland_seeds(), "seed")
 
 
 if __name__ == "__main__":
