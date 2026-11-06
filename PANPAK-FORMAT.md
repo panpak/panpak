@@ -937,12 +937,14 @@ The id never equals the id of a Flatpak or of the distribution entry of the same
 its identity before the proxy is started (a proxy outside such a scope makes the app known by the id of the terminal), and
 bubblewrap, the app and everything it starts MUST start in the same scope, so that systemd-oomd and the user see one unit for
 the whole app. Two cases. If the user unit of the outer runtime (the one `sd_pid_get_user_unit` returns: after `user@<uid>.service`,
-the first component of the cgroup that is not a slice) has a name that the portal reads as `panpak.<id>`, no scope is made. The portal
+the first component of the cgroup that is not a slice) is a **scope** (`.scope`) whose name the portal reads as `panpak.<id>`, no scope is made. A service or a slice never qualifies, even when
+the portal of the machine would read it: a portal older than 1.21 may not read services and would see the app under the identity of
+the unit's launcher, so the runtime makes its scope as it does from a terminal. The portal
 reads a unit name with two expressions, the first for `.scope` and `.slice` (above) and, when it does not match, the second for services,
 `^app-(?:[[:alnum:]]+\-)?(.+?)(?:@[[:alnum:]]*|\-autostart)?\.service$` (xdg-desktop-portal, `shared/xdp-app-info-host.c`,
 `_xdp_app_info_host_parse_app_id_from_unit_name`, called from `get_app_from_pid`), and unescapes `\xHH` in the id; the runtime applies the
-same rules by hand (`panpak-core/src/unitname.rs`) and takes the shortcut only when the id it gets is exactly `panpak.<id>`. So the
-names `app-gnome-panpak.<id>-<n>.scope` (GNOME), `app-panpak.<id>-<n>.scope` and `app-gnome-panpak.<id>@<n>.service` all qualify;
+same rules by hand (`panpak-core/src/unitname.rs`) and takes the shortcut only for a scope whose id it reads as exactly `panpak.<id>`. So
+the names `app-gnome-panpak.<id>-<n>.scope` (GNOME) and `app-panpak.<id>-<n>.scope` qualify; `app-gnome-panpak.<id>@<n>.service`, a slice,
 anything else, or a name the portal would read differently, gets the scope of the paragraph above, with no error. Otherwise the scope above is made and the start
 waits for systemd before bubblewrap is started (the proxy is started at once and the view is built while systemd works).
 The proxy's folder is mounted in the view, `$XDG_RUNTIME_DIR/bus` there is a link into it, and the inner runtime MUST wait

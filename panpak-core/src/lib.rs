@@ -376,6 +376,20 @@ pub fn verify_rotation(pinned: &str, new_key: &str, rot_old: Option<&str>, rot_s
     Ok(())
 }
 
+/// A key or section that this panpak does not know (`PANPAK-E0008`). It is a misspelling, or the file was written for a
+/// newer panpak; the message says both and how to get a newer one.
+fn unknown_key(place: &str, key: &str) -> anyhow::Error {
+    let what = if key.starts_with('[') { format!("the section {key}") } else { format!("the key `{key}`") };
+    let at = if place.is_empty() { String::new() } else { format!(" in {place}") };
+    coded(
+        ErrorCode::E0008,
+        format!(
+            "panpak.toml: {what}{at} is not known to this panpak ({}). Either it is misspelled, or the file needs a newer panpak: get a newer release and install it with `panpak install-runtime <release.tar.gz> --release-key <key>`; the new panpak is then `bin/panpak` in the panpak store (~/.local/share/panpak)",
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+}
+
 /// Validate the KEYS of an input panpak.toml (pack): unknown keys =
 /// error, not silent-drop. Without this, an old pack would silently drop
 /// future fields, producing packages different from the intended ones
@@ -400,62 +414,86 @@ pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
         Ok(v.as_table().with_context(|| format!("{path} must be a table"))?.keys().map(|s| s.as_str()).collect())
     }
     for k in t.keys() {
-        ensure!(TOP.contains(&k.as_str()), "panpak.toml: unknown section [{k}] (update panpak)");
+        if !TOP.contains(&k.as_str()) {
+            return Err(unknown_key("", &format!("[{k}]")));
+        }
     }
     let get = |name: &str| t.get(name);
     if let Some(v) = get("app") {
         for k in keys(v, "[app]")? {
-            ensure!(APP.contains(&k), "panpak.toml [app]: unknown key `{k}` (future field? update panpak)");
+            if !APP.contains(&k) {
+                return Err(unknown_key("[app]", k));
+            }
         }
     }
     if let Some(v) = get("abi") {
         for k in keys(v, "[abi]")? {
-            ensure!(ABI.contains(&k), "panpak.toml [abi]: unknown key `{k}` (future field? update panpak)");
+            if !ABI.contains(&k) {
+                return Err(unknown_key("[abi]", k));
+            }
         }
     }
     if let Some(v) = get("desktop") {
         for k in keys(v, "[desktop]")? {
-            ensure!(DESKTOP.contains(&k), "panpak.toml [desktop]: unknown key `{k}` (future field? update panpak)");
+            if !DESKTOP.contains(&k) {
+                return Err(unknown_key("[desktop]", k));
+            }
         }
     }
     if let Some(v) = get("permissions") {
         for k in keys(v, "[permissions]")? {
-            ensure!(PERM.contains(&k), "panpak.toml [permissions]: unknown key `{k}` (future field? update panpak)");
+            if !PERM.contains(&k) {
+                return Err(unknown_key("[permissions]", k));
+            }
         }
         for h in v.get("xdg_dirs").and_then(|h| h.as_array()).into_iter().flatten() {
             for k in keys(h, "[[permissions.xdg_dirs]]")? {
-                ensure!(XDG_DIR.contains(&k), "panpak.toml [[permissions.xdg_dirs]]: unknown key `{k}` (future field? update panpak)");
+                if !XDG_DIR.contains(&k) {
+                return Err(unknown_key("[[permissions.xdg_dirs]]", k));
+            }
             }
         }
         for h in v.get("home_paths").and_then(|h| h.as_array()).into_iter().flatten() {
             for k in keys(h, "[[permissions.home_paths]]")? {
-                ensure!(HOME_PATH.contains(&k), "panpak.toml [[permissions.home_paths]]: unknown key `{k}` (future field? update panpak)");
+                if !HOME_PATH.contains(&k) {
+                return Err(unknown_key("[[permissions.home_paths]]", k));
+            }
             }
         }
         if let Some(p) = v.get("portal") {
             for k in keys(p, "[permissions.portal]")? {
-                ensure!(PORTAL.contains(&k), "panpak.toml [permissions.portal]: unknown key `{k}` (future field? update panpak)");
+                if !PORTAL.contains(&k) {
+                return Err(unknown_key("[permissions.portal]", k));
+            }
             }
         }
     }
     if let Some(v) = get("launch") {
         for k in keys(v, "[launch]")? {
-            ensure!(LAUNCH.contains(&k), "panpak.toml [launch]: unknown key `{k}` (future field? update panpak)");
+            if !LAUNCH.contains(&k) {
+                return Err(unknown_key("[launch]", k));
+            }
         }
     }
     if let Some(v) = get("runtime") {
         for k in keys(v, "[runtime]")? {
-            ensure!(RUNTIME.contains(&k), "panpak.toml [runtime]: unknown key `{k}` (future field? update panpak)");
+            if !RUNTIME.contains(&k) {
+                return Err(unknown_key("[runtime]", k));
+            }
         }
     }
     if let Some(v) = get("origin") {
         for k in keys(v, "[origin]")? {
-            ensure!(ORIGIN.contains(&k), "panpak.toml [origin]: unknown key `{k}` (future field? update panpak)");
+            if !ORIGIN.contains(&k) {
+                return Err(unknown_key("[origin]", k));
+            }
         }
     }
     if let Some(v) = get("update") {
         for k in keys(v, "[update]")? {
-            ensure!(UPDATE.contains(&k), "panpak.toml [update]: unknown key `{k}` (future field? update panpak)");
+            if !UPDATE.contains(&k) {
+                return Err(unknown_key("[update]", k));
+            }
         }
     }
     Ok(())
@@ -1300,7 +1338,12 @@ mod tests {
         bad.man_off = 5;
         assert_eq!(code(check_layout(200, &bad).map(|_| ())), ErrorCode::E0003, "layout");
         // Unknown key in pack: untyped, generic.
-        assert_eq!(code(check_panpak_toml_schema("[app]\nid=\"a.b\"\nfuture = 1\n")), ErrorCode::E0000, "schema");
+        assert_eq!(code(check_panpak_toml_schema("[app]\nid=\"a.b\"\nfuture = 1\n")), ErrorCode::E0008, "schema");
+        // The message tells what to do, not only that a key is unknown.
+        let e = format!("{:#}", check_panpak_toml_schema("[desktop]\nfuture = 1\n").unwrap_err());
+        assert!(e.contains("the key `future` in [desktop] is not known to this panpak") && e.contains("needs a newer panpak") && e.contains("panpak install-runtime"), "{e}");
+        let e = format!("{:#}", check_panpak_toml_schema("[future-section]\nx = 1\n").unwrap_err());
+        assert!(e.contains("the section [future-section] is not known"), "{e}");
         // Rotation with a non-pin key.
         let zero = "ed25519:0000000000000000000000000000000000000000000000000000000000000000";
         let one = "ed25519:1111111111111111111111111111111111111111111111111111111111111111";

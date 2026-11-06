@@ -446,10 +446,11 @@ Read in xdg-desktop-portal, branch `main` at commit `987607a8e5be0ee8a54462b0689
   (`^app-(?:[[:alnum:]]+\-)?(.+?)(?:@[[:alnum:]]*|\-autostart)?\.service$`); the id found is unescaped with `cunescape` in relaxed mode.
 - So the portal does read `.service` units, with an optional `@<random>` or the old `-autostart`. The version installed on this machine
   (1.21.1) gives the same answer: `tests/dbus_filter.py` starts the app in `app-gnome-panpak.<id>-<n>.scope`, `app-panpak.<id>-<n>.scope` and
-  `app-gnome-panpak.<id>@<n>.service` with `systemd-run --user` and the portal logs `app_id=panpak.<id>` each time. Older portal versions
-  may not read services; they do not know the app and the runtime would have made its own scope anyway only if the name did not match
-  *its* rules, which are the rules of the newest portal. That is the one place where the shortcut can be wrong for an old portal; for the
-  portals in use (1.18 and later) the first expression is the same, and the second is only ever an addition.
+  `app-gnome-panpak.<id>@<n>.service` with `systemd-run --user` and the portal logs `app_id=panpak.<id>` each time. **Decision after review: the
+  shortcut is for `.scope` units only.** Portals older than 1.21 may not have the second expression; one of those would see an app that runs in a
+  service under the identity of the unit's launcher (the error of step 7). So for a service the runtime makes its own scope, as from a terminal
+  (`tests/dbus_filter.py` checks that the app is then in `app-panpak.<id>-<8 hex digits>.scope`). The parser still reads services
+  (`portal_reads_id`), so that the rule is written out in full and tested; only `unit_gives_id` (may the scope be skipped) is limited to scopes.
 - `panpak-core/src/unitname.rs` is the same two rules by hand, plus `user_unit_of_cgroup`, which is what `sd_pid_get_user_unit` does with the
   cgroup path (after `user@<uid>.service`, the first component that is not a slice, so a process in a sub-cgroup belongs to its service).
 
@@ -476,7 +477,7 @@ above 0.3 ms for the first case (advisory in the CI like the rest of the file).
 
 - Update of an installed app by `panpak update` (HTTP) uses the same icon functions as `install`; it is covered by the code path and
   by the shared tests, not by an end-to-end update test with icons.
-- A package built for this step cannot be installed by an older panpak (the key `desktop.icons` is unknown to it: "update panpak").
+- An older panpak installs a package with `desktop.icons` and ignores the key: the app has the generic icon (see 8.6).
 
 ### 8.5 The menu in GNOME Shell (section 4, tested)
 
@@ -504,3 +505,14 @@ no extension, no `update-desktop-database` for actions or icons. `install` and `
 different one: "the menu entry changed. If the app was already started in this desktop session, the menu may show the old actions or name
 until you log in again". The lazy update at start stays silent (it cannot print to anyone). Not tested: KDE Plasma and other shells; the dash
 extensions of the VM (dash-to-dock) were active and use the Shell's own app objects.
+
+### 8.6 Changes after the first review
+
+- The shortcut for the desktop's own unit is limited to scopes (section 8.2). The path from the GNOME menu was measured again after the
+  change: fixed cost 25.3 ms (median launcher 26.2 ms, direct 0.9 ms) against 25.8 ms before, so it is unchanged; from a terminal 40.3 ms in the same session
+  (37.9 ms in the earlier run; the difference is the run-to-run spread of the systemd call, see the CSV).
+- A key or section that this panpak does not know in a `panpak.toml` is `PANPAK-E0008` with a message that says what to do. The refusal exists only in
+  `pack` and `convert`: an installed package is read by an older panpak with the unknown fields ignored (`check_panpak_toml_schema` is not called by `verify`).
+  The earlier statement in 8.4 that an older panpak "cannot install" a package with `desktop.icons` was wrong: it installs it and shows no icon.
+- `tests/update_icons.py` tests `panpak update` with a changed icon, a removed size, a new size and no icons at all, and that the icons of another
+  app and the old sizes are handled; it runs in the CI.

@@ -146,6 +146,8 @@ gives and a bare test runner does not. The rows are in [`bench-data/startup-budg
 | main (5c3b3be) | yes, the stub makes its own scope | 0.8 ms | 57.0 ms | 56.2 ms |
 | this branch | yes, the stub makes its own scope (terminal, other launchers) | 1.0 ms | 38.9 ms | 37.9 ms |
 | this branch | yes, started in the desktop's scope (`app-gnome-panpak.<id>-<n>.scope`) | 0.9 ms | 26.7 ms | 25.8 ms |
+| step 7b (desktop integration) | yes, the stub makes its own scope | 1.0 ms | 41.3 ms | 40.3 ms |
+| step 7b (desktop integration) | yes, started in the desktop's scope | 0.9 ms | 26.2 ms | 25.3 ms |
 
 What was done: the two `gsettings` queries start with the process and are read at the end of the preparation; the
 D-Bus layer (scope and proxy) is built on another thread from the moment the package is verified, the proxy starts while

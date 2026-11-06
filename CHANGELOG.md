@@ -19,9 +19,12 @@
 - **The menu entry and GNOME Shell.** Tested on GNOME Shell 50: a new or changed entry (and its icon) shows about 5 seconds after the file changes, with nothing but the
   `rename` panpak already does; an app that was already started from the Shell in the session keeps its old entry until the next login. `install` and `update` say so when
   they replace an entry with a different one.
-- **The desktop's own unit is recognised for every launcher.** The shortcut that skips the scope of the app follows the portal's rules for scopes and
-  services (`app-gnome-panpak.<id>-<n>.scope`, `app-panpak.<id>-<n>.scope`, `app-gnome-panpak.<id>@<n>.service`), with the systemd escape; the unit is the one
-  `sd_pid_get_user_unit` finds, so a process in a sub-cgroup counts. `tests/dbus_filter.py` runs the three shapes against the real portal.
+- **The desktop's own scope is recognised for every launcher.** The shortcut that skips the scope of the app follows the portal's rule for scopes
+  (`app-gnome-panpak.<id>-<n>.scope`, `app-panpak.<id>-<n>.scope`), with the systemd escape; the unit is the one `sd_pid_get_user_unit` finds, so a process in a sub-cgroup counts.
+  A service (`app-...@<n>.service`) does not get the shortcut: a portal older than 1.21 may not read services, so the runtime makes its own scope, as from a terminal.
+  `tests/dbus_filter.py` runs the three shapes against the real portal.
+- **A key that this panpak does not know** in a `panpak.toml` given to `pack` or `convert` is still refused, now with `PANPAK-E0008` and a message that says it is a
+  misspelling or a field of a newer format, and how to get a newer panpak (`panpak install-runtime`).
 
 - **Hardening of the app process.** Every app now starts under a seccomp filter (a deny list, installed last, with
   `no_new_privs`; it returns errors, it does not kill): `io_uring`, `bpf`, `userfaultfd`, `perf_event_open`, the key ring,

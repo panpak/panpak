@@ -13,7 +13,9 @@
 //! The first is tried first. The id it finds is unescaped (`\x2d` is a dash) and `.desktop` is added to find the
 //! entry. This module is the same two rules written by hand, so that the stub can tell, without asking the portal,
 //! whether the unit it runs in already gives the app the identity `panpak.<id>`. The rule here MUST NOT accept a
-//! name the portal reads differently: that would give the app the identity of its launcher.
+//! name the portal reads differently: that would give the app the identity of its launcher. The portal's rules are
+//! written out in full (`app_id_from_unit`, `portal_reads_id`), but only a `.scope` unit lets the runtime skip its own scope
+//! (`unit_gives_id`): see there.
 
 /// The user unit that `sd_pid_get_user_unit` returns for a cgroup path (the `0::` line of `/proc/<pid>/cgroup`):
 /// after `user@<uid>.service`, the first component that is not a slice. A process in a sub-cgroup of a service
@@ -87,9 +89,18 @@ pub fn app_id_from_unit(unit: &str) -> Option<Vec<u8>> {
     raw_id(unit).map(unescape)
 }
 
-/// Does the portal take `unit` for the app `panpak.<app_id>`?
-pub fn unit_gives_id(unit: &str, app_id: &str) -> bool {
+/// Does the portal take `unit` for the app `panpak.<app_id>`? This is the portal's rule alone, for any kind of unit.
+pub fn portal_reads_id(unit: &str, app_id: &str) -> bool {
     app_id_from_unit(unit).is_some_and(|id| id == format!("panpak.{app_id}").as_bytes())
+}
+
+/// May the runtime skip the scope of its own because it already runs in `unit`? Only a scope that the portal reads as
+/// `panpak.<app_id>` qualifies. The portal of the version tested (1.21.1) reads services as well, but portals older than
+/// 1.21 may have only the expression for scopes; one of those would see an app in a service under the identity of the
+/// unit's launcher, which is the error the scope of the runtime exists to prevent. So a service, a slice or anything else
+/// gets a scope of the runtime's own, as a start from a terminal does.
+pub fn unit_gives_id(unit: &str, app_id: &str) -> bool {
+    unit.ends_with(".scope") && portal_reads_id(unit, app_id)
 }
 
 #[cfg(test)]
@@ -117,7 +128,7 @@ mod tests {
         assert!(unit_gives_id("app-KDE-panpak.org.example.app-99.scope", ID));
         assert!(unit_gives_id("app-panpak.org.example.app-1a2b3c4d.scope", ID));
         assert!(unit_gives_id("app-gnome-panpak.org.example.app-.scope", ID), "an empty tail is allowed by the expression");
-        assert!(unit_gives_id("app-gnome-panpak.org.example.app-4242.slice", ID));
+        assert!(portal_reads_id("app-gnome-panpak.org.example.app-4242.slice", ID));
         // Other apps.
         assert!(!unit_gives_id("app-ghostty-surface-transient-3121607.scope", ID));
         assert!(!unit_gives_id("app-gnome-org.gnome.Ptyxis-1234.scope", ID));
@@ -134,7 +145,8 @@ mod tests {
 
     #[test]
     fn service_names_of_each_launcher() {
-        // app[-<launcher>]-<id>[@<random>].service, and the old -autostart form.
+        // app[-<launcher>]-<id>[@<random>].service, and the old -autostart form: the portal reads them (portal_reads_id)...
+        let unit_gives_id = portal_reads_id;
         assert!(unit_gives_id("app-gnome-panpak.org.example.app@1a2b.service", ID));
         assert!(unit_gives_id("app-panpak.org.example.app@1a2b.service", ID));
         assert!(unit_gives_id("app-panpak.org.example.app.service", ID));
@@ -154,11 +166,32 @@ mod tests {
     }
 
     #[test]
+    fn only_a_scope_lets_the_runtime_skip_its_own() {
+        let id = "org.example.app";
+        // ... but a service, a slice or anything that is not a scope does not: the runtime makes its scope.
+        for unit in [
+            "app-gnome-panpak.org.example.app@1a2b.service",
+            "app-panpak.org.example.app@1a2b.service",
+            "app-panpak.org.example.app.service",
+            "app-gnome-panpak.org.example.app-autostart.service",
+            "app-gnome-panpak.org.example.app-4242.slice",
+        ] {
+            assert!(!unit_gives_id(unit, id), "{unit}");
+        }
+        assert!(portal_reads_id("app-panpak.org.example.app@1a2b.service", id) && portal_reads_id("app-gnome-panpak.org.example.app-4242.slice", id));
+        for unit in ["app-gnome-panpak.org.example.app-4242.scope", "app-panpak.org.example.app-7.scope", "app-KDE-panpak.org.example.app-99.scope"] {
+            assert!(unit_gives_id(unit, id), "{unit}");
+        }
+        assert!(unit_gives_id("app-gnome-panpak.org.my\\x2dapp-1.scope", "org.my-app"));
+        assert!(!unit_gives_id("app-gnome-org.gnome.Ptyxis-1234.scope", id));
+    }
+
+    #[test]
     fn escapes_and_the_launcher_word() {
         // A dash in the id is written \x2d; the portal reads a plain dash in a scope name the same way.
         assert!(unit_gives_id("app-gnome-panpak.org.my\\x2dapp-1.scope", "org.my-app"));
         assert!(unit_gives_id("app-gnome-panpak.org.my-app-1.scope", "org.my-app"));
-        assert!(unit_gives_id("app-panpak.org.my\\x2dapp@7.service", "org.my-app"));
+        assert!(portal_reads_id("app-panpak.org.my\\x2dapp@7.service", "org.my-app"));
         // Other characters can be escaped too.
         assert!(unit_gives_id("app-gnome-panpak\\x2eorg.example.app-1.scope", ID));
         // The reverse: ours has a dash, the name has none; or another character takes its place.
