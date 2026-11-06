@@ -1,0 +1,22 @@
+# date_utc: 2026-11-06T08:14:07Z
+# cpu: AMD Ryzen 7 7735HS with Radeon Graphics
+# kernel: 7.0.0-38-generic
+# os: Ubuntu 26.04.1 LTS
+# app: Audacity AppImage converted with panpak convert, under Xvfb (apps harness)
+# method: private font cache folder removed before each start; seconds from the start to a viewable window; 7 starts per variant; first row of each variant includes a cold page cache
+# variants: with = /var/cache/fontconfig read-only in the view; without = same build with that one mount left out
+variant,run,window_s
+without,1,2.61
+without,2,1.24
+without,3,1.24
+without,4,1.26
+without,5,1.25
+without,6,1.19
+without,7,1.21
+with,1,1.17
+with,2,0.69
+with,3,0.7
+with,4,0.7
+with,5,0.7
+with,6,0.7
+with,7,0.7

@@ -154,6 +154,13 @@ What is left with D-Bus in the slow case is systemd's `StartTransientUnit` (10 t
 `PANPAK_DEBUG=1` prints the time of each stage. The CI runs the script as an advisory step (budget 30 ms, 45 ms with D-Bus);
 the step moves into the gate after a week of numbers from the runners.
 
+## System font cache
+
+The view has an empty `/var`; `/var/cache/fontconfig` is mounted into it read-only. Audacity (converted AppImage, Xvfb), the private font cache
+folder removed before each start, seconds to a viewable window, 7 starts per variant ([`audacity-font-cache.csv`](bench-data/audacity-font-cache.csv)):
+with the system cache the median is 0.70 s, without it 1.24 s (the very first start of each variant, with a cold page cache, was 1.17 s and 2.61 s).
+With `fc-match` alone the same effect is 446 ms against 48 ms.
+
 ## Library resolution
 
 Method: the same installed app, started alternately with the resolution cache and with it disabled

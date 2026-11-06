@@ -159,6 +159,8 @@ scripts download pinned official inputs and can be run again.
 | First start after install | 0.3 to 0.7 s | median of 5, new HOME each ([start time](docs/BENCHMARKS.md#start-time)) |
 | Later start, warm | 42 to 87 ms (3 apps) | median of 10, command that exits |
 | Cost of the isolated view | about 15 to 18 ms per start | with and without, alternating ([view](docs/BENCHMARKS.md#cost-of-the-isolated-view)) |
+| Fixed cost of a start | about 25 ms (26 ms with the filtered session bus when the desktop started the app, 38 ms from a terminal) | against running the program directly ([start](docs/BENCHMARKS.md#fixed-cost-of-a-start)) |
+| First start of Audacity, empty private font cache | 0.70 s with the system font cache in the view, 1.24 s without (median of 7) | time to a window under Xvfb ([data](docs/bench-data/audacity-font-cache.csv)) |
 | Library resolution, symbol check included | 13 to 33 ms per start when not cached | cache on and off ([resolution](docs/BENCHMARKS.md#library-resolution)) |
 
 Where Panpak does worse, in the same measurements:
