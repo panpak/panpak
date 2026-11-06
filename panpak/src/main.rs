@@ -1901,6 +1901,11 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         Ok(abi) => line(true, &format!("kernel {release}, Landlock {abi:?} ({})", abi_features(abi))),
         Err(e) => line(false, &format!("kernel {release}, Landlock unavailable ({}); kernel >= 5.13 with CONFIG_SECURITY_LANDLOCK=y required", panpak_core::err_text(&e))),
     }
+    if panpak_core::detect_abi().is_ok_and(|a| a < landlock::ABI::V5) {
+        println!("NOTE device ioctl: Landlock V5 (Linux 6.10) is needed to refuse ioctl on devices; on this kernel an app may use the ioctl of any device it can open (/dev/null, /dev/zero, /dev/tty and /dev/dri only are reachable)");
+    } else {
+        println!("OK   device ioctl: refused on every device except the terminal (/dev/tty) and the GPU (/dev/dri)");
+    }
     // The seccomp filter that the inner stub installs before the app. Without kernel support the app does not start.
     if panpak_core::seccomp::kernel_supports() {
         println!("OK   seccomp: filter supported; every app starts with {} system calls refused (io_uring, bpf, ptrace, user namespaces ...)", panpak_core::seccomp::describe().len());

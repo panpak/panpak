@@ -323,7 +323,7 @@ mod tests {
             match off {
                 0 => nr,
                 4 => arch,
-                16..=63 if (off - 16) % 8 == 0 => args[((off - 16) / 8) as usize] as u32,
+                16..=63 if (off - 16).is_multiple_of(8) => args[((off - 16) / 8) as usize] as u32,
                 _ => panic!("unexpected load at {off}"),
             }
         };
@@ -357,7 +357,7 @@ mod tests {
         // Every jump stays inside the program, and the last instruction is a return.
         for (i, ins) in p.iter().enumerate() {
             if ins.code == BPF_JEQ_K || ins.code == BPF_JSET_K {
-                assert!(i + 1 + ins.jt.max(ins.jf) as usize <= p.len() - 1, "jump out of the program at {i}");
+                assert!((ins.jt.max(ins.jf) as usize) < p.len() - i - 1, "jump out of the program at {i}");
             }
         }
         assert_eq!(p.last().unwrap().code, BPF_RET_K);
@@ -423,8 +423,8 @@ mod tests {
         let a = |cmd: u64| [3, cmd, 0, 0, 0, 0];
         assert_eq!(judge(libc::SYS_ioctl, a(TIOCSTI as u64)), errno(EPERM));
         assert_eq!(judge(libc::SYS_ioctl, a(TIOCLINUX as u64)), errno(EPERM));
-        for ok in [libc::TCGETS, libc::TIOCGWINSZ, libc::FIONREAD, libc::TIOCSWINSZ] {
-            assert_eq!(judge(libc::SYS_ioctl, a(ok as u64)), SECCOMP_RET_ALLOW, "{ok:#x}");
+        for ok in [libc::TCGETS as u64, libc::TIOCGWINSZ as u64, libc::FIONREAD as u64, libc::TIOCSWINSZ as u64] {
+            assert_eq!(judge(libc::SYS_ioctl, a(ok)), SECCOMP_RET_ALLOW, "{ok:#x}");
         }
     }
 

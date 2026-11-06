@@ -645,6 +645,11 @@ fn build_ruleset(
             rs = rs.add_rule(PathBeneath::new(fd, AccessFs::from_read(abi)))?;
         }
     }
+    // Rights on /dev: every right but `Refer`, and the device ioctl right (Landlock V5) only where it is named.
+    // Without the ioctl right on a device node, an ioctl on a file opened after the sandbox is refused with EACCES;
+    // a descriptor that the app inherited (its terminal) is not affected.
+    let dev_ioctl = if abi >= landlock::ABI::V5 { AccessFs::IoctlDev.into() } else { landlock::BitFlags::<AccessFs>::empty() };
+    let dev_rw = AccessFs::from_all(abi) & !AccessFs::Refer & !AccessFs::IoctlDev;
     if fine_dev {
         // Minimum legitimate rights for files (no Make*/Remove* from directories).
         // Missing or unopenable nodes (e.g. /dev/tty with no controlling
@@ -659,23 +664,32 @@ fn build_ruleset(
             ("/dev/tty", true),
         ] {
             if let Some(fd) = rule_fd(Path::new(node)) {
-                let access = if write {
+                let mut access = if write {
                     AccessFs::ReadFile | AccessFs::WriteFile
                 } else {
                     AccessFs::ReadFile.into()
                 };
+                // The terminal of the session keeps its ioctls (termios, window size): programs that open
+                // /dev/tty need them. TIOCSTI and TIOCLINUX, which inject input, are refused by seccomp.
+                if node == "/dev/tty" {
+                    access |= dev_ioctl;
+                }
                 rs = rs.add_rule(PathBeneath::new(fd, access))?;
             }
         }
-        for d in ["/dev/dri", "/dev/shm"] {
-            if let Some(fd) = rule_fd(Path::new(d)) {
-                let rw = AccessFs::from_all(abi) & !AccessFs::Refer;
-                rs = rs.add_rule(PathBeneath::new(fd, rw))?;
-            }
+        // The GPU needs its ioctls (DRM); /dev/shm holds plain files, to which the ioctl right does not apply.
+        if let Some(fd) = rule_fd(Path::new("/dev/dri")) {
+            rs = rs.add_rule(PathBeneath::new(fd, dev_rw | dev_ioctl))?;
+        }
+        if let Some(fd) = rule_fd(Path::new("/dev/shm")) {
+            rs = rs.add_rule(PathBeneath::new(fd, dev_rw))?;
         }
     } else if let Some(fd) = rule_fd(Path::new("/dev")) {
-        let rw = AccessFs::from_all(abi) & !AccessFs::Refer;
-        rs = rs.add_rule(PathBeneath::new(fd, rw))?;
+        // Whole /dev (the kernel refused the single nodes): no device ioctls, except the GPU below.
+        rs = rs.add_rule(PathBeneath::new(fd, dev_rw))?;
+        if let Some(fd) = rule_fd(Path::new("/dev/dri")) {
+            rs = rs.add_rule(PathBeneath::new(fd, dev_rw | dev_ioctl))?;
+        }
     }
     // Tree: read + execute, NEVER write (blobs are shared
     // across trees and apps: a write would alter them everywhere).
@@ -2623,6 +2637,53 @@ mod tests {
         });
         assert!(res.contains("privatetmp=ok"), "private tmp not writable:\n{res}");
         assert!(res.contains("vartmp=deny"), "/var/tmp writable in sandbox:\n{res}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The ioctl right on devices (Landlock V5): refused on the plain nodes, kept on the terminal and the GPU.
+    #[test]
+    fn sandbox_device_ioctl_only_where_named() {
+        if !crate::testutil::alone() {
+            return;
+        }
+        if !require_abi(landlock::ABI::V5, "device ioctl") {
+            return;
+        }
+        let (dir, panpak, tree, appdata) = fixture_tree("dev-ioctl", "");
+        let results = appdata.join("results.txt");
+        let res = fork_lines(&results, |res| {
+            let _man = child_sandboxed(res, &panpak, &tree, &appdata, None)?;
+            // TCGETS: a device that allows the ioctl answers ENOTTY (or 0); Landlock refuses with EACCES.
+            let ioctl_errno = |path: &str| -> Option<i32> {
+                let f = fs::OpenOptions::new().read(true).open(path).ok()?;
+                let mut buf = [0u8; 64];
+                // SAFETY: TCGETS writes at most a `struct termios` (60 bytes) into the buffer.
+                let r = unsafe { libc::ioctl(f.as_raw_fd(), libc::TCGETS as _, buf.as_mut_ptr()) };
+                Some(if r == 0 { 0 } else { std::io::Error::last_os_error().raw_os_error().unwrap_or(-1) })
+            };
+            for node in ["/dev/null", "/dev/zero", "/dev/urandom"] {
+                match ioctl_errno(node) {
+                    Some(e) => res.push(format!("{node}={}\n", if e == libc::EACCES { "deny" } else { "ALLOW" })),
+                    None => res.push(format!("{node}=missing\n")),
+                }
+            }
+            // The terminal: only when the test has one.
+            if let Some(e) = ioctl_errno("/dev/tty") {
+                res.push(format!("tty={}\n", if e == libc::EACCES { "DENY" } else { "ok" }));
+            }
+            // The GPU: only when there is a render node the user may open.
+            if let Some(node) = fs::read_dir("/dev/dri").ok().and_then(|d| d.flatten().map(|e| e.path()).find(|p| p.to_string_lossy().contains("renderD"))) {
+                if let Some(e) = ioctl_errno(&node.to_string_lossy()) {
+                    res.push(format!("dri={}\n", if e == libc::EACCES { "DENY" } else { "ok" }));
+                }
+            }
+            Ok(())
+        });
+        for node in ["/dev/null", "/dev/zero", "/dev/urandom"] {
+            assert!(res.contains(&format!("{node}=deny")), "ioctl on {node} not refused:\n{res}");
+        }
+        assert!(!res.contains("tty=DENY"), "ioctl on /dev/tty refused:\n{res}");
+        assert!(!res.contains("dri=DENY"), "ioctl on the render node refused:\n{res}");
         let _ = fs::remove_dir_all(&dir);
     }
 
