@@ -8,6 +8,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod remove;
 use anyhow::{bail, ensure, Context, Result};
 use panpak_core::{bail_code, coded, ensure_code, ErrorCode};
 use panpak_core::{
@@ -25,7 +26,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [-o <out.panpak>]\n  panpak install-runtime <stub> --allow-unsigned      (your own build; the file, not a folder)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -135,6 +136,7 @@ fn coalesce_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, allow_insecure: bool, timeout_secs: u64) -> Result<PathBuf> {
     use std::collections::HashMap;
     panpak_core::validate_app_id(app_id)?;
+    remove::recover();
     let store = store_dir()?;
     let appdir = store.join("apps").join(app_id);
     // Refuse before downloading if the launcher cannot be replaced.
@@ -1744,6 +1746,8 @@ fn cmd_data(action: &str, app_id: &str, yes: bool) -> Result<()> {
 }
 
 fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Path>) -> Result<PathBuf> {
+    // A removal that was interrupted is finished first: it must not delete what this install writes.
+    remove::recover();
     let store = store_dir()?;
     if let Some(rt) = runtime_opt {
         // --runtime points at a local build: like --allow-unsigned (warning included).
@@ -2122,7 +2126,7 @@ fn generic_code(sub: Option<&str>) -> ErrorCode {
     match sub {
         Some("pack" | "convert" | "dump-index" | "dump-manifest" | "dbus-rules") => ErrorCode::E0000,
         Some("keygen" | "release" | "install-runtime") => ErrorCode::E1000,
-        Some("install" | "rollback" | "open" | "doctor" | "desktop-integration" | "data") => ErrorCode::E2000,
+        Some("install" | "rollback" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove") => ErrorCode::E2000,
         Some("update") => ErrorCode::E4000,
         _ => ErrorCode::E5000,
     }
@@ -2322,6 +2326,32 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                 std::process::exit(1);
             }
             Ok(())
+        }
+        Some("list") => {
+            let mut json = false;
+            for a in &args[2..] {
+                match a.as_str() {
+                    "--json" => json = true,
+                    x => bail_code!(ErrorCode::E5001, "unknown argument {x}\n{usage}", usage = usage()),
+                }
+            }
+            remove::cmd_list(json)
+        }
+        Some("remove") => {
+            let (mut yes, mut purge) = (false, false);
+            let mut ids: Vec<&str> = Vec::new();
+            for a in &args[2..] {
+                match a.as_str() {
+                    "--yes" => yes = true,
+                    "--purge-data" => purge = true,
+                    x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    x => ids.push(x),
+                }
+            }
+            match ids.as_slice() {
+                [id] => remove::cmd_remove(id, purge, yes),
+                _ => bail_code!(ErrorCode::E5002, "remove [--purge-data] [--yes] <app-id>\n{usage}", usage = usage()),
+            }
         }
         Some("data") => {
             let mut yes = false;
