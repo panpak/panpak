@@ -376,9 +376,14 @@ which is how the desktop groups the windows under the entry. Without it the entr
 **`desktop.icons`** (array of at most 6 strings, each a relative path to a `.png` file of the tree, same path rules as
 `app.entry`, no duplicates). The icons of the app in the menu. `pack` and `convert` refuse a file that does not pass the rules below;
 `install` and `update` check each file again before anything is written, and refuse the package if one fails.
-A file MUST be a PNG of at most 256 KiB whose chunks are all in this list: `IHDR` (first, 13 bytes), `PLTE`, `tRNS`, `gAMA`,
-`sRGB`, `pHYs` (each at most once, before the image data), `IDAT` (together) and `IEND` (last, nothing after it); every chunk
-checksum MUST be right. The image is square, 16 to 1024 pixels on a side, 8 bits per channel, colour type 0, 2, 3, 4 or 6, not interlaced,
+A file in a package MUST be a PNG of at most 256 KiB whose chunks are all in this list: `IHDR` (first, 13 bytes), `PLTE`,
+`tRNS` (each at most once, before the image data), `IDAT` (together) and `IEND` (last, nothing after it); every chunk
+checksum MUST be right. Real PNG files carry other chunks (text, colour profile, gamma, resolution, time, background, animation),
+so `pack` and `convert` clean the icons first with one deterministic function: the signature, then `IHDR`, `PLTE`, `tRNS`, every
+`IDAT` and `IEND` copied byte for byte in the order of the file, and no other chunk; the image data and the pixels are not
+touched, and `tRNS` is kept so that the transparency stays. Each chunk of the input, also a dropped one, MUST have a right
+checksum. The tool prints which chunks it removed from which icon. The file in the tree is not changed by `pack`; the package holds
+the cleaned file. A reader (`install`) does not clean: it accepts only a file that is already in this form. The image is square, 16 to 1024 pixels on a side, 8 bits per channel, colour type 0, 2, 3, 4 or 6, not interlaced,
 and the inflated image data is exactly `height * (1 + width * channels)` bytes, each row starting with a filter type from 0 to 4,
 with nothing after the end of the zlib stream. SVG and every other format are refused. The file is installed as it is (never
 re-encoded) as `~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<app.id>.png`, where `<S>` is the side taken from the image

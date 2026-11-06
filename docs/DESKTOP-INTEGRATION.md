@@ -70,8 +70,8 @@ and in file dialogs, Qt in KDE). Rules, applied by `install` and `update` before
 
 - Format: PNG only. The 8-byte signature must be exact.
 - Chunks are walked with their CRC. Allowed: `IHDR` (first, once), `PLTE`, `tRNS`, `IDAT`, `IEND` (last, once,
-  nothing after it), `gAMA`, `sRGB`, `pHYs`. Any other chunk makes the file be refused: this drops text,
-  profile (`iCCP`), time and private chunks, which are where parser bugs and tracking data live.
+  nothing after it). Any other chunk makes the file be refused by `install`. (The first version also allowed `gAMA`, `sRGB`
+  and `pHYs`; see 8.7: the cleaning step drops them now.)
 - Size: file at most 256 KiB. Width and height each from 16 to 1024 (so at most 1 Mpx and 4 MiB decoded),
   square, 8-bit depth, colour types 0, 2, 3, 4, 6, not interlaced. The interlaced mode is refused because it
   is a second decoder path that no icon needs.
@@ -516,3 +516,21 @@ extensions of the VM (dash-to-dock) were active and use the Shell's own app obje
   The earlier statement in 8.4 that an older panpak "cannot install" a package with `desktop.icons` was wrong: it installs it and shows no icon.
 - `tests/update_icons.py` tests `panpak update` with a changed icon, a removed size, a new size and no icons at all, and that the icons of another
   app and the old sizes are handled; it runs in the CI.
+
+### 8.7 Icons of real applications (found by the harness) and the cleaning step
+
+The first run of the harness with the desktop binaries showed two defects of the first version:
+
+1. Real PNG icons carry other chunks (Audacity: `tEXt` and `cHRM` in all six sizes), so the strict list refused every one of them and the app got the generic
+   icon. Decision: **one deterministic function, `panpak_icon::normalize`, used by `pack` and by `convert`**, keeps `IHDR`, `PLTE`, `tRNS`, `IDAT` and
+   `IEND` byte for byte and drops every other chunk (text, colour profile, gamma, colour primaries, resolution, time, background, animation, unknown
+   ones); pixels and image data are untouched and `tRNS` stays, so a palette icon keeps its transparency. The input must have right checksums in every chunk and
+   end with `IEND`; data after `IEND` is dropped. The result goes through `check`. Normalizing twice gives the same bytes. `pack` leaves the tree
+   alone and puts the cleaned file in the package; both tools print the chunks removed, per icon. `install` stays strict: only already clean files.
+   Tests: a palette icon with `tRNS` among a dozen other chunks gives the file that has only the kept chunks (byte-identical, `tRNS` unchanged); twice is the same;
+   `pack` twice gives the same package; the fuzz target also checks that whatever `normalize` makes passes `check` and is stable.
+2. `convert` copied a link or `.DirIcon` into `.panpak/icons/`, and the top-level `.panpak` is reserved for the licenses (MuseScore failed to convert).
+   The copies go to `usr/share/icons/panpak/<side>.png`.
+
+`install` and `update` also print a non-blocking warning when the manifest of a signed package has keys this panpak does not know
+(`unknown_manifest_keys`), since an older panpak would otherwise just show no icon. The critical fields with a minimum version are for step 9.

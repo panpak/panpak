@@ -390,12 +390,9 @@ fn unknown_key(place: &str, key: &str) -> anyhow::Error {
     )
 }
 
-/// Validate the KEYS of an input panpak.toml (pack): unknown keys =
-/// error, not silent-drop. Without this, an old pack would silently drop
-/// future fields, producing packages different from the intended ones
-/// (silent incompatibility). The manifest in .panpak files stays
-/// read-tolerant instead (unknown fields ignored).
-pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
+/// Every key or section of a `panpak.toml` text that this panpak does not know, as `(place, key)`.
+fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
+    let mut out: Vec<(String, String)> = Vec::new();
     let v: toml::Value = toml::from_str(input).context("panpak.toml is not TOML")?;
     let t = v.as_table().context("panpak.toml: table required")?;
     const TOP: &[&str] = &["app", "abi", "permissions", "launch", "desktop", "runtime", "origin", "update"];
@@ -415,88 +412,114 @@ pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
     }
     for k in t.keys() {
         if !TOP.contains(&k.as_str()) {
-            return Err(unknown_key("", &format!("[{k}]")));
+            out.push((String::new(), format!("[{k}]")));
         }
     }
     let get = |name: &str| t.get(name);
     if let Some(v) = get("app") {
         for k in keys(v, "[app]")? {
             if !APP.contains(&k) {
-                return Err(unknown_key("[app]", k));
+                out.push(("[app]".to_string(), k.to_string()));
             }
         }
     }
     if let Some(v) = get("abi") {
         for k in keys(v, "[abi]")? {
             if !ABI.contains(&k) {
-                return Err(unknown_key("[abi]", k));
+                out.push(("[abi]".to_string(), k.to_string()));
             }
         }
     }
     if let Some(v) = get("desktop") {
         for k in keys(v, "[desktop]")? {
             if !DESKTOP.contains(&k) {
-                return Err(unknown_key("[desktop]", k));
+                out.push(("[desktop]".to_string(), k.to_string()));
             }
         }
     }
     if let Some(v) = get("permissions") {
         for k in keys(v, "[permissions]")? {
             if !PERM.contains(&k) {
-                return Err(unknown_key("[permissions]", k));
+                out.push(("[permissions]".to_string(), k.to_string()));
             }
         }
         for h in v.get("xdg_dirs").and_then(|h| h.as_array()).into_iter().flatten() {
             for k in keys(h, "[[permissions.xdg_dirs]]")? {
                 if !XDG_DIR.contains(&k) {
-                return Err(unknown_key("[[permissions.xdg_dirs]]", k));
-            }
+                    out.push(("[[permissions.xdg_dirs]]".to_string(), k.to_string()));
+                }
             }
         }
         for h in v.get("home_paths").and_then(|h| h.as_array()).into_iter().flatten() {
             for k in keys(h, "[[permissions.home_paths]]")? {
                 if !HOME_PATH.contains(&k) {
-                return Err(unknown_key("[[permissions.home_paths]]", k));
-            }
+                    out.push(("[[permissions.home_paths]]".to_string(), k.to_string()));
+                }
             }
         }
         if let Some(p) = v.get("portal") {
             for k in keys(p, "[permissions.portal]")? {
                 if !PORTAL.contains(&k) {
-                return Err(unknown_key("[permissions.portal]", k));
-            }
+                    out.push(("[permissions.portal]".to_string(), k.to_string()));
+                }
             }
         }
     }
     if let Some(v) = get("launch") {
         for k in keys(v, "[launch]")? {
             if !LAUNCH.contains(&k) {
-                return Err(unknown_key("[launch]", k));
+                out.push(("[launch]".to_string(), k.to_string()));
             }
         }
     }
     if let Some(v) = get("runtime") {
         for k in keys(v, "[runtime]")? {
             if !RUNTIME.contains(&k) {
-                return Err(unknown_key("[runtime]", k));
+                out.push(("[runtime]".to_string(), k.to_string()));
             }
         }
     }
     if let Some(v) = get("origin") {
         for k in keys(v, "[origin]")? {
             if !ORIGIN.contains(&k) {
-                return Err(unknown_key("[origin]", k));
+                out.push(("[origin]".to_string(), k.to_string()));
             }
         }
     }
     if let Some(v) = get("update") {
         for k in keys(v, "[update]")? {
             if !UPDATE.contains(&k) {
-                return Err(unknown_key("[update]", k));
+                out.push(("[update]".to_string(), k.to_string()));
             }
         }
     }
-    Ok(())
+    Ok(out)
+}
+
+/// Validate the KEYS of an input panpak.toml (`pack`, `convert`): an unknown key is an error (`PANPAK-E0008`), not a silent
+/// drop. Without this, an old pack would silently drop future fields, producing packages different from the intended
+/// ones (silent incompatibility). The manifest in .panpak files stays read-tolerant instead (unknown fields ignored);
+/// `install` and `update` only warn about them (`unknown_manifest_keys`).
+pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
+    match unknown_keys_of(input)?.into_iter().next() {
+        Some((place, key)) => Err(unknown_key(&place, &key)),
+        None => Ok(()),
+    }
+}
+
+/// The keys of the manifest inside a package that this panpak does not know, as `place key` texts (`desktop.icons`).
+/// A signed package is read tolerantly, so this only informs: `install` and `update` print a warning.
+pub fn unknown_manifest_keys(f: &mut File, ft: &Footer) -> Vec<String> {
+    let Ok(bytes) = read_at(f, ft.man_off, ft.man_len.min(1 << 20)) else { return Vec::new() };
+    let Ok(text) = std::str::from_utf8(&bytes) else { return Vec::new() };
+    let Ok(found) = unknown_keys_of(text) else { return Vec::new() };
+    found
+        .into_iter()
+        .map(|(place, key)| {
+            let sect = place.trim_matches(|c| c == '[' || c == ']');
+            if sect.is_empty() { key.trim_matches(|c| c == '[' || c == ']').to_string() } else { format!("{sect}.{key}") }
+        })
+        .collect()
 }
 pub fn fingerprint(vk: &ed25519_dalek::VerifyingKey) -> String {
     hex(vk.as_bytes())[..16].to_string()

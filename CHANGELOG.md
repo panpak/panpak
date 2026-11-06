@@ -7,6 +7,9 @@
   SVG is not accepted) and write them as `~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<id>.png`; `remove` deletes them. `panpak
   convert` takes the icons from the AppImage (`.DirIcon`, the root file, the `hicolor` sizes) and has `--icon <file.png>`; an app with no usable
   PNG gets the generic icon and a warning. New crate `panpak-icon`, fuzz target `fuzz_icon`.
+- **Icons are cleaned by `pack` and `convert`.** Real PNG files carry text, profile, gamma and other chunks that `install` does not accept. `pack` and `convert` now
+  keep only `IHDR`, `PLTE`, `tRNS`, `IDAT` and `IEND` (byte for byte; the pixels and the transparency are not touched), print the chunks they removed from each icon, and
+  `install` stays strict. Icons that `convert` copies out of a link or `.DirIcon` go to `usr/share/icons/panpak/<side>.png`.
 - **A stable `panpak` and a stable stub.** The store has `bin/panpak-stub` (a link to the best runtime) and `bin/panpak`. Launchers run the stub
   through the link, so a new runtime reaches every app at its next start, and the menu action "Uninstall" runs `bin/panpak`: no launcher or
   entry names the folder from which `panpak` was run any more. `install-runtime` writes both with a rename; `install` copies `panpak` when there is none and warns when the one in
@@ -23,6 +26,8 @@
   (`app-gnome-panpak.<id>-<n>.scope`, `app-panpak.<id>-<n>.scope`), with the systemd escape; the unit is the one `sd_pid_get_user_unit` finds, so a process in a sub-cgroup counts.
   A service (`app-...@<n>.service`) does not get the shortcut: a portal older than 1.21 may not read services, so the runtime makes its own scope, as from a terminal.
   `tests/dbus_filter.py` runs the three shapes against the real portal.
+- **`install` and `update` warn about unknown fields.** A signed package that has manifest keys this panpak does not know is still installed (they are ignored), with a
+  warning that says to update panpak (`panpak install-runtime`).
 - **A key that this panpak does not know** in a `panpak.toml` given to `pack` or `convert` is still refused, now with `PANPAK-E0008` and a message that says it is a
   misspelling or a field of a newer format, and how to get a newer panpak (`panpak install-runtime`).
 

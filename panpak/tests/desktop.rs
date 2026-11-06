@@ -252,8 +252,6 @@ fn pack_refuses_icons_that_would_not_be_installed() {
         assert!(!o.status.success() && text(&o).contains(why), "{toml}: {}", text(&o));
     };
     let ok = fixture("ok-48-rgba.png");
-    refused("[desktop]\nicons = [\"a.png\"]\n", &[("a.png", fixture("bad-text.png"))], "not accepted");
-    refused("[desktop]\nicons = [\"a.png\"]\n", &[("a.png", fixture("bad-icc.png"))], "not accepted");
     refused("[desktop]\nicons = [\"a.png\"]\n", &[("a.png", fixture("bad-nonsquare.png"))], "not square");
     refused("[desktop]\nicons = [\"a.png\"]\n", &[("a.png", fixture("bad-small.png"))], "side must be");
     refused("[desktop]\nicons = [\"a.png\"]\n", &[("a.png", b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec())], "SVG");
@@ -263,5 +261,83 @@ fn pack_refuses_icons_that_would_not_be_installed() {
     refused("[desktop]\nicons = [\"/a.png\"]\n", &[("a.png", ok.clone())], "relative path to a .png");
     refused("[desktop]\nicons = [\"a.png\", \"a.png\"]\n", &[("a.png", ok.clone())], "listed twice");
     refused("[desktop]\nicons = [\"1.png\",\"2.png\",\"3.png\",\"4.png\",\"5.png\",\"6.png\",\"7.png\"]\n", &[], "more than 6");
-    refused("[desktop]\nicons = [\"a.png\"]\n", &[("a.png", vec![0; 300 * 1024])], "larger than");
+    refused("[desktop]\nicons = [\"a.png\"]\n", &[("a.png", vec![0; 5 * 1024 * 1024])], "larger than");
+}
+
+#[test]
+fn pack_cleans_an_icon_and_says_which_chunks_it_removed() {
+    let e = env("packclean");
+    let (text_png, icc_png) = (fixture("bad-text.png"), fixture("bad-icc.png"));
+    let toml = "[desktop]\nicons = [\"a.png\", \"b.png\"]\n";
+    let files = [("a.png", text_png.clone()), ("b.png", icc_png.clone())];
+    let t = e.tree("1", toml, &files);
+    let (o, pkg) = e.pack(&t, "1.panpak");
+    assert!(o.status.success(), "{}", text(&o));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("icon a.png: removed the chunks tEXt") && err.contains("icon b.png: removed the chunks iCCP") && err.contains("pixels are not touched"), "{err}");
+    // The file in the tree is not changed; the package holds the cleaned icon and install writes it.
+    assert_eq!(fs::read(t.join("a.png")).unwrap(), text_png);
+    let o = cli(&e.home, &["install", "--yes", pkg.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    let a = fs::read(e.icon(32)).unwrap();
+    assert_ne!(a, text_png);
+    assert!(!a.windows(4).any(|w| w == b"tEXt" || w == b"iCCP"));
+    // Packing again gives the same package: the cleaning is deterministic.
+    let (o2, pkg2) = e.pack(&t, "2.panpak");
+    assert!(o2.status.success());
+    assert_eq!(fs::read(&pkg).unwrap(), fs::read(&pkg2).unwrap());
+    // A tree whose icons are clean says nothing.
+    let t = e.tree("1", "[desktop]\nicons = [\"a.png\"]\n", &[("a.png", fixture("ok-48-rgba.png"))]);
+    let (o, _) = e.pack(&t, "3.panpak");
+    assert!(o.status.success() && !String::from_utf8_lossy(&o.stderr).contains("removed the chunks"), "{}", text(&o));
+}
+
+/// Rewrite the manifest of a package and sign it again with the key of the test (the layout is in PANPAK-FORMAT.md §2).
+fn resign(pkg: &Path, key_file: &Path, edit: impl Fn(String) -> String, out: &Path) {
+    use ed25519_dalek::Signer;
+    let d = fs::read(pkg).unwrap();
+    let f = &d[d.len() - 80..];
+    let (u32le, u64le) = (|b: &[u8]| u32::from_le_bytes(b.try_into().unwrap()), |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap()));
+    let (ver, flags, ioff, ilen, moff) = (u32le(&f[8..12]), u32le(&f[12..16]), u64le(&f[16..24]), u64le(&f[24..32]), u64le(&f[32..40]) as usize);
+    let mlen = u64le(&f[40..48]) as usize;
+    let root = &f[48..80];
+    let man = edit(String::from_utf8(d[moff..moff + mlen].to_vec()).unwrap()).into_bytes();
+    let sk = panpak_core::parse_secret(fs::read_to_string(key_file).unwrap().trim()).unwrap();
+    let mut signed = man.clone();
+    signed.extend_from_slice(root);
+    let mut o = d[..moff].to_vec();
+    o.extend_from_slice(&man);
+    o.extend_from_slice(&sk.sign(&signed).to_bytes());
+    o.extend_from_slice(&f[..8]);
+    o.extend_from_slice(&ver.to_le_bytes());
+    o.extend_from_slice(&flags.to_le_bytes());
+    o.extend_from_slice(&ioff.to_le_bytes());
+    o.extend_from_slice(&ilen.to_le_bytes());
+    o.extend_from_slice(&(moff as u64).to_le_bytes());
+    o.extend_from_slice(&(man.len() as u64).to_le_bytes());
+    o.extend_from_slice(root);
+    fs::write(out, o).unwrap();
+}
+
+#[test]
+fn install_warns_about_fields_this_panpak_does_not_know_and_goes_on() {
+    let e = env("unknown");
+    let t = e.tree("1", "", &[]);
+    let (o, pkg) = e.pack(&t, "1.panpak");
+    assert!(o.status.success(), "{}", text(&o));
+    // A package of a newer format: an unknown key in a known section and an unknown section.
+    let newer = e.home.join("newer.panpak");
+    resign(&pkg, &e.key, |m| format!("{m}\n[future]\nthing = 1\n").replace("[app]\n", "[app]\nsurprise = \"x\"\n"), &newer);
+    let o = cli(&e.home, &["install", "--yes", newer.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("WARNING: this package uses fields that this version of panpak does not know (") && err.contains("app.surprise") && err.contains("future") && err.contains("panpak install-runtime"), "{err}");
+    // A package that only has known fields says nothing of the kind.
+    let o = cli(&e.home, &["install", "--yes", pkg.to_str().unwrap()]);
+    assert!(o.status.success() && !text(&o).contains("fields that this version"), "{}", text(&o));
+    // The refusal in `pack` stays, with its own code.
+    let t = e.tree("2", "[desktop]\nfuture = 1\n", &[]);
+    let (o, _) = e.pack(&t, "2.panpak");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && err.contains("PANPAK-E0008") && err.contains("needs a newer panpak") && err.contains("panpak install-runtime"), "{err}");
 }

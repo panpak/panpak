@@ -303,6 +303,7 @@ def icon_seeds():
         "gray-alpha16": _png(16, 4, 2),
         "palette16": _png(16, 3, 1, extra=plte),
         "meta": _png(16, 6, 4, extra=_png_chunk(b"gAMA", b"\0\0\xb1\x8f") + _png_chunk(b"sRGB", b"\0") + _png_chunk(b"pHYs", b"\0" * 9)),
+        "palette-busy": _png(16, 3, 1, extra=plte + _png_chunk(b"tRNS", b"\0\xff") + _png_chunk(b"gAMA", b"\0\0\xb1\x8f") + _png_chunk(b"tEXt", b"k\0v") + _png_chunk(b"cHRM", b"\0" * 32)),
         "text": _png(16, 6, 4, extra=_png_chunk(b"tEXt", b"Comment\0hello")),
         "interlaced": _png(16, 6, 4, interlace=1),
         "deep": _png(16, 6, 8, depth=16),
