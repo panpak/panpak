@@ -281,7 +281,7 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
 - *Identity.* The portal treats a host app as trusted (location is exact, background is
   always allowed, notifications are not asked, file choosers return real paths). The id it
   uses comes from the systemd scope of the caller, so the outer stub always makes its own scope,
-  `app-panpak.<id>-<n>.scope`, even when started from a terminal, and starts the proxy only after the scope exists (the portal sees the
+  `app-panpak.<id>-<n>.scope`, even when started from a terminal (or reuses the scope the desktop gave the app, when its name already gives `panpak.<id>`), and starts the proxy only after the scope exists (the portal sees the
   cgroup of the proxy; tests/dbus_filter.py fails if the order is wrong); otherwise the app would be
   known by the id of the terminal (`app-gnome-org.gnome.Ptyxis-…`), with its permissions. The id is
   `panpak.<id>`, never the upstream id: an app converted from a Flatpak or an AppImage that has the

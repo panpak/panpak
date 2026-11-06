@@ -894,13 +894,16 @@ from a terminal that has its own scope. The portal reads the scope of the caller
 `panpak.<id>.desktop` exists (§3.1.5); the runtime MUST NOT let the app call `org.freedesktop.host.portal.Registry`.
 The id never equals the id of a Flatpak or of the distribution entry of the same upstream app.
 
-*Order.* The portal sees the connection of the proxy, not the app's, so the scope MUST exist, and the outer runtime be in it,
-before the proxy is started (a proxy outside the scope makes the app known by the id of the terminal). The app itself
-need not be in the scope, and the runtime MUST NOT make the start wait for systemd: the view is made while the scope and the proxy
-come up. The folder of the proxy is mounted in the view, `$XDG_RUNTIME_DIR/bus` there is a link into it, and the inner runtime MUST wait
-(up to 10 s, before Landlock) until a connection to the proxy's socket succeeds, so an app never connects too early. If the scope
-or the proxy fails the outer runtime leaves a file `failed` in the folder, the inner runtime stops waiting and the app gets no bus
-(`DBUS_SESSION_BUS_ADDRESS=disabled:`), as when there is no layer.
+*Order.* The portal sees the connection of the proxy, not the app's, so the outer runtime MUST be in a scope that gives the app
+its identity before the proxy is started (a proxy outside such a scope makes the app known by the id of the terminal), and
+bubblewrap, the app and everything it starts MUST start in the same scope, so that systemd-oomd and the user see one unit for
+the whole app. Two cases. If the outer runtime is already in a scope whose name the portal's expression reads as `panpak.<id>`
+(the desktop starts apps in `app-gnome-panpak.<id>-<n>.scope`), no scope is made. Otherwise the scope above is made and the start
+waits for systemd before bubblewrap is started (the proxy is started at once and the view is built while systemd works).
+The proxy's folder is mounted in the view, `$XDG_RUNTIME_DIR/bus` there is a link into it, and the inner runtime MUST wait
+(up to 10 s, before Landlock) until a connection to the proxy's socket succeeds, so an app never connects too early.
+If the scope or the proxy fails the outer runtime leaves a file `failed` in the folder, the inner runtime stops waiting, removes
+the link and the app gets no bus (`DBUS_SESSION_BUS_ADDRESS=disabled:`), as when there is no layer.
 
 *Proxy.* One `xdg-dbus-proxy` per start, started by the outer runtime in the same scope with a clean environment, filtering
 (`--filter`). Its socket is in a private folder (0700) of the runtime folder and is mounted in the view as

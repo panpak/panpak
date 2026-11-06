@@ -31,9 +31,20 @@ pub struct Layer {
     pub landlock_sockets: Vec<PathBuf>,
     /// What the inner stub waits for, as paths in the view.
     pub wait: crate::view::DbusWait,
+    /// The worker says here whether the stub is in a scope that gives the app its identity (see `wait_scope`).
+    scope: Option<std::sync::mpsc::Receiver<bool>>,
     /// Dropping the sender lets the worker end the proxy; `Drop` waits for it.
     stop: Option<std::sync::mpsc::Sender<()>>,
     worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Layer {
+    /// Wait until the stub is in the scope of the app. MUST be called before bubblewrap is started, so that bubblewrap, the
+    /// app and everything it starts are in the scope: systemd-oomd and the user then see one unit for the whole app.
+    /// Returns false if the scope could not be made (the layer then gives the app no bus).
+    pub fn wait_scope(&mut self) -> bool {
+        self.scope.take().is_none_or(|r| r.recv().unwrap_or(false))
+    }
 }
 
 impl Drop for Layer {
@@ -92,6 +103,23 @@ fn current_unit() -> Option<String> {
     let s = std::fs::read_to_string("/proc/self/cgroup").ok()?;
     let line = s.lines().find(|l| l.starts_with("0::"))?;
     Some(line.trim_start_matches("0::").rsplit('/').next()?.to_string())
+}
+
+/// Does the portal take this unit for the app `panpak.<id>`? It parses the unit name with
+/// `^app-(?:[[:alnum:]]+\-)?(.+?)(?:\-[[:alnum:]]*)(?:\.scope|\.slice)$` and unescapes `\x2d`. The same rule, by hand: with the
+/// optional first word dropped if it is there and the rest still matches, the identifier is what comes before the last `-` and
+/// a tail of letters and digits. This is the case of an app that the desktop started itself (`app-gnome-panpak.<id>-<n>.scope`).
+pub fn unit_gives_id(unit: &str, app_id: &str) -> bool {
+    let Some(rest) = unit.strip_prefix("app-") else { return false };
+    let Some(rest) = rest.strip_suffix(".scope").or_else(|| rest.strip_suffix(".slice")) else { return false };
+    // The identifier is what is left after the last `-`, which is followed by letters and digits only (or nothing).
+    let id_of = |r: &str| -> Option<String> {
+        let (id, tail) = r.rsplit_once('-')?;
+        (!id.is_empty() && tail.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| id.replace("\\x2d", "-"))
+    };
+    let word = rest.split_once('-').filter(|(w, _)| !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric()));
+    let want = format!("panpak.{app_id}");
+    word.and_then(|(_, r)| id_of(r)).is_some_and(|id| id == want) || (word.and_then(|(_, r)| id_of(r)).is_none() && id_of(rest).is_some_and(|id| id == want))
 }
 
 /// Move this process into a new scope named for the app. The scope is asked of the user's systemd,
@@ -201,16 +229,21 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
     let args = dbus::proxy_args(&BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref() });
     crate::stage("dbus: checks done");
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    let (scope_tx, scope_rx) = std::sync::mpsc::channel::<bool>();
     let (runtime_dir, app_id, work_dir) = (req.runtime_dir.to_path_buf(), man.app.id.clone(), dir.clone());
+    // When the desktop started the app in a scope that already gives it its identity, the stub stays in that scope: no
+    // scope is made, the proxy and the app are in it.
+    let own_scope = current_unit().is_some_and(|u| unit_gives_id(&u, &app_id));
     let worker = std::thread::Builder::new().name("dbus".into()).spawn(move || {
-        let made = (|| -> Result<Guard> {
-            enter_scope(&runtime_dir, &app_id, &n)?;
-            crate::stage("dbus: scope made");
+        let scope = if own_scope { Ok(()) } else { enter_scope(&runtime_dir, &app_id, &n).map(|_| ()) };
+        let _ = scope_tx.send(scope.is_ok());
+        crate::stage(if own_scope { "dbus: already in the scope of the app" } else { "dbus: scope made" });
+        let made = scope.and_then(|()| {
             let mut guard = spawn_proxy(&proxy, &bus, &work_dir, &args)?;
             await_proxy(&mut guard)?;
             crate::stage("dbus: proxy ready");
             Ok(guard)
-        })();
+        });
         match made {
             // Held until the app is over (the sender is dropped), then the proxy ends and its folder goes.
             Ok(guard) => {
@@ -250,6 +283,7 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
         env,
         landlock_sockets,
         wait: crate::view::DbusWait { socket: in_view.join("bus"), failed: in_view.join(FAILED), link: view_bus.clone(), on_failure_set: set_back, on_failure_remove: remove_back },
+        scope: Some(scope_rx),
         stop: Some(stop),
         worker: Some(worker),
     })
@@ -274,6 +308,25 @@ mod tests {
 
     fn man(extra: &str) -> panpak_core::Manifest {
         toml::from_str(&format!("[app]\nid = \"org.example.app\"\nname = \"App\"\nversion = \"1\"\nentry = \"bin/app\"\n{extra}")).unwrap()
+    }
+
+    #[test]
+    fn units_that_give_the_app_its_identity() {
+        let id = "org.example.app";
+        // Started by the desktop, by us, or by a terminal.
+        assert!(unit_gives_id("app-gnome-panpak.org.example.app-4242.scope", id));
+        assert!(unit_gives_id("app-panpak.org.example.app-1a2b3c4d.scope", id));
+        assert!(unit_gives_id("app-KDE-panpak.org.example.app-99.scope", id));
+        assert!(!unit_gives_id("app-ghostty-surface-transient-3121607.scope", id));
+        assert!(!unit_gives_id("app-gnome-org.gnome.Ptyxis-1234.scope", id));
+        assert!(!unit_gives_id("app-gnome-panpak.org.example.other-4242.scope", id));
+        assert!(!unit_gives_id("panpak.org.example.app.scope", id));
+        assert!(!unit_gives_id("session-3.scope", id));
+        assert!(!unit_gives_id("app-gnome-panpak.org.example.app.service", id));
+        assert!(unit_gives_id("app-gnome-panpak.org.example.app-.scope", id), "an empty tail is allowed by the portal's expression");
+        // An id with a dash is written with \x2d in the unit name.
+        assert!(unit_gives_id("app-gnome-panpak.org.my\\x2dapp-1.scope", "org.my-app"));
+        assert!(unit_gives_id("app-gnome-panpak.org.my-app-1.scope", "org.my-app"), "the portal reads a plain dash the same way");
     }
 
     #[test]

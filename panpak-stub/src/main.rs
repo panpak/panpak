@@ -1449,6 +1449,14 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         dbus_wait: dbus.as_ref().map(|l| l.wait.clone()),
     };
     stage("view planned");
+    // Bubblewrap, the app and the proxy MUST start in the scope of the app, so this is where the start waits for systemd (if the
+    // desktop did not already start the app in one). If the scope fails there is no bus: the inner stub sees the file that
+    // the layer leaves and says so to the app.
+    let mut dbus = dbus;
+    if let Some(l) = dbus.as_mut() {
+        l.wait_scope();
+        stage("scope ready");
+    }
     let fd = view::job_memfd(&job)?;
     let plan = view::ViewPlan { fd, ..plan };
     // The lock of the shared folders must outlive bwrap, so the outer stub stays whenever there is one.

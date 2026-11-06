@@ -141,15 +141,16 @@ gives and a bare test runner does not. The rows are in [`bench-data/startup-budg
 
 | Build | D-Bus | Direct | Launcher | Fixed cost |
 |---|---|---:|---:|---:|
-| main (5c3b3be) | no | 1.0 ms | 40.9 ms | 39.9 ms |
-| this branch | no | 1.0 ms | 24.8 ms | 23.9 ms |
-| main (5c3b3be) | yes | 1.0 ms | 57.4 ms | 56.4 ms |
-| this branch | yes | 1.0 ms | 39.8 ms | 38.8 ms |
+| main (5c3b3be) | no | 1.1 ms | 41.4 ms | 40.3 ms |
+| this branch | no | 1.0 ms | 25.5 ms | 24.5 ms |
+| main (5c3b3be) | yes, the stub makes its own scope | 0.8 ms | 57.0 ms | 56.2 ms |
+| this branch | yes, the stub makes its own scope (terminal, other launchers) | 1.0 ms | 38.9 ms | 37.9 ms |
+| this branch | yes, started in the desktop's scope (`app-gnome-panpak.<id>-<n>.scope`) | 0.9 ms | 26.7 ms | 25.8 ms |
 
 What was done: the two `gsettings` queries start with the process and are read at the end of the preparation; the
 D-Bus layer (scope and proxy) is built on another thread from the moment the package is verified, the proxy starts while
 systemd makes the scope, and the version of the proxy is remembered between starts instead of asking it at every start.
-What is left with D-Bus is mostly systemd's `StartTransientUnit` (10 to 20 ms) and the view itself (about 15 ms, see above).
+What is left with D-Bus in the slow case is systemd's `StartTransientUnit` (10 to 20 ms), which must finish before bubblewrap starts so that the app is in the scope; the view itself costs about 15 ms (see above).
 `PANPAK_DEBUG=1` prints the time of each stage. The CI runs the script as an advisory step (budget 30 ms, 45 ms with D-Bus);
 the step moves into the gate after a week of numbers from the runners.
 

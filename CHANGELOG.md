@@ -16,8 +16,8 @@
   (Landlock with no rule, a seccomp allow list, limits) reads what the app sends and passes validated requests as frames to the actor, which checks them again.
   Fuzz target `fuzz_receiver`.
 - **The `audio` permission says that it includes the microphone** in the text of `install` and `update`; it was already so, and it is a known limit (KL-30).
-- **Faster start.** The fixed cost of a start (measured against running the program directly) fell from 40 ms to 24 ms without the filtered session bus and from 56 ms
-  to 39 ms with it: the `gsettings` queries, the systemd scope and the proxy now overlap the work of the start, and the version of the proxy is remembered between starts.
+- **Faster start.** The fixed cost of a start (measured against running the program directly) fell from 40 ms to 25 ms without the filtered session bus and from 56 ms
+  to 38 ms with it (26 ms when the desktop started the app in a scope that already names it, as the GNOME menu does: then no scope is made): the `gsettings` queries, the systemd scope and the proxy overlap the work of the start, the inner stub waits for the proxy's socket, and the version of the proxy is remembered between starts. The app and the proxy are always in a scope that gives the app its identity.
   `PANPAK_DEBUG` prints where the milliseconds go. `tests/startup_budget.py` measures it and runs in the CI as an advisory step.
 
 - **`panpak list` and `panpak remove`.** `list [--json]` shows the installed apps (id, name, version, disk space of the

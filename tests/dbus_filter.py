@@ -292,6 +292,24 @@ def main():
         shutil.rmtree(lab.runtime, ignore_errors=True)
 
 
+def fast_path(lab, sess):
+    """Started the way the GNOME menu does (inside `app-gnome-panpak.<id>-<n>.scope`), the stub makes no scope of its
+    own: the app, the proxy and the stub are all in the scope of the desktop, and the portal still knows `panpak.<id>`."""
+    unit = f'app-gnome-panpak.{app_dirs.ID}-{os.getpid()}.scope'
+    report_file = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/data/report.txt'
+    report_file.unlink(missing_ok=True)
+    sess.log.write_text('')
+    # systemd-run talks to the real user manager (the environment of this script); the launcher gets the lab's environment.
+    p = subprocess.run(['systemd-run', '--user', '--scope', '--quiet', f'--unit={unit}', 'env', '-i', *[f'{k}={v}' for k, v in lab.env.items()], str(lab.home / '.local/bin' / app_dirs.ID)],
+                       capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+    need(p.returncode == 0, f'fast path start failed: {p.stderr}')
+    rep = dict(l.partition('=')[::2] for l in report_file.read_text().splitlines())
+    need(rep.get('cgroup') == unit, f'fast path: the app is in {rep.get("cgroup")}, not in {unit}')
+    log = sess.log.read_text()
+    need(f'Inhibit app_id=panpak.{app_dirs.ID}' in log, f'fast path: the portal does not know the app: {log!r}')
+    print('  desktop scope reused: the app is in', unit, 'and the portal knows panpak.' + app_dirs.ID)
+
+
 def report(lab, args=()):
     rc, rep, err = lab.run(*args)
     need(rc == 0, f'the app failed: {err}')
@@ -313,9 +331,8 @@ def run_all(lab, sess, work):
     env_bus = f'unix:path={sess.rt}/bus'
     for k, want in {'env_bus': env_bus, 'env_gtk_portal': '1', 'env_qt_theme': 'xdgdesktopportal', 'bus_socket': 'yes'}.items():
         need(rep.get(k) == want, f'{k}: {rep.get(k)!r}, wanted {want!r}')
-    # The app is started without waiting for systemd, so it is not in the scope; the proxy is (it starts after the scope
-    # exists), and the portal knows an app by the cgroup of the connection it sees, which is the proxy's. The identity
-    # checks below are the proof.
+    # Slow path: started from here (not in a scope that names the app), the stub makes its own scope and the app is in it.
+    need(re.fullmatch(r'app-panpak\.org\.example\.dirs-[0-9a-f]{8}\.scope', rep.get('cgroup', '')), f'the app is not in its own scope: {rep.get("cgroup")}')
     need('uint32 1' in rep['settings'], f'portal settings: {rep["settings"]}')
     names = rep['names']
     for bad in ('secrets', 'systemd1', 'gnome', 'kde', 'dconf', 'Documents'):
@@ -331,7 +348,8 @@ def run_all(lab, sess, work):
     need(f'AddNotification app_id={pid} id=n1' in log, f'the portal did not know the app as {pid}: {log!r}')
     need(f'Inhibit app_id={pid}' in log, f'inhibit identity: {log!r}')
     need(rep['doc_dir'] == 'empty', f'document folder: {rep["doc_dir"]}')
-    print('app in the view: identity', pid, ', settings, refusals, own names: ok')
+    fast_path(lab, sess)
+    print('app in the view: scope, identity', pid, ', settings, refusals, own names: ok')
     # --- 3. without the permission: no notification, no declared name
     need(lab.install('').returncode == 0, 'install failed')
     rep = report(lab)
