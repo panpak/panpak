@@ -90,7 +90,7 @@ The two limits of the first point:
   ("NOT verified"): use a stub you built. A release archive is checked against a signature and a release
   key with `panpak install-runtime <archive> --release-key ...`, but no release has been published yet.
 
-What is not guaranteed includes: X11 gives no isolation between windows; there is no seccomp filter;
+What is not guaranteed includes: X11 gives no isolation between windows; the seccomp filter is a deny list of about fifty calls, not a full policy; GNOME's compositor does not yet offer a Wayland security context, so there the app has the normal Wayland socket; `audio` includes the microphone;
 without bubblewrap, Landlock does not stop UDP (an app with no network permission can still send
 datagrams, DNS included), and below Landlock 9 the session bus is reachable; the filtered session bus
 needs the isolated view, a systemd user manager and `xdg-dbus-proxy`, and there is no file chooser portal,

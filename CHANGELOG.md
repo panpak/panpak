@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **Hardening of the app process.** Every app now starts under a seccomp filter (a deny list, installed last, with
+  `no_new_privs`; it returns errors, it does not kill): `io_uring`, `bpf`, `userfaultfd`, `perf_event_open`, the key ring,
+  `ptrace` and `process_vm_*`, the mount calls, `setns`, new namespaces through `clone` and `unshare` (user namespaces too), `clone3` (`ENOSYS`),
+  terminal input injection, odd `personality` values and the non-native ABIs are refused; the table with the reasons is
+  PANPAK-FORMAT.md §9.8. New error code `PANPAK-E3002` (no seccomp). **Programs that need a user namespace of their own (Chromium and
+  Electron sandboxes, WebKitGTK, `bwrap`, `flatpak`) cannot run in the view.** The device ioctl right (Landlock V5) is kept only on `/dev/tty` and `/dev/dri`.
+  `/var/cache/fontconfig` is read-only in the view: the first start with an empty private font cache went from 446 ms to 48 ms with `fc-match`.
+- **Wayland security context.** With a compositor that offers `wp_security_context_v1` (KWin, Sway and the other wlroots compositors),
+  the app gets a socket of its own that the compositor knows as sandboxed (engine `panpak`, app id `panpak.<id>`). GNOME's compositor does not offer it:
+  the app keeps the normal socket and `panpak doctor` says so. The client is part of `panpak-core` (no new dependencies) with the fuzz target `fuzz_wayland`.
+- **The open-address channel is read by a receiver with no rights.** The resident stub is now two pieces (PANPAK-FORMAT.md §9.7): a receiver process
+  (Landlock with no rule, a seccomp allow list, limits) reads what the app sends and passes validated requests as frames to the actor, which checks them again.
+  Fuzz target `fuzz_receiver`.
+- **The `audio` permission says that it includes the microphone** in the text of `install` and `update`; it was already so, and it is a known limit (KL-30).
+- **Faster start.** The fixed cost of a start (measured against running the program directly) fell from 43 ms to 23 ms without the filtered session bus and from 63 ms
+  to 38 ms with it: the `gsettings` queries, the systemd scope and the proxy now overlap the work of the start, and the version of the proxy is remembered between starts.
+  `PANPAK_DEBUG` prints where the milliseconds go. `tests/startup_budget.py` measures it and runs in the CI as an advisory step.
+
 - **`panpak list` and `panpak remove`.** `list [--json]` shows the installed apps (id, name, version, disk space of the
   app and of its data, status, including incomplete installs). `remove [--purge-data] [--yes] <id>` takes away the launcher,
   the desktop entries panpak wrote, the packages, the trees and the shared `/tmp` of the app; the settings and data stay

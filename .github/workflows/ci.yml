@@ -147,6 +147,13 @@ jobs:
           bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
       - name: Hardening (seccomp filter and system font cache, through the real launcher)
         run: python3 tests/hardening.py
+      - name: Wayland security context against Sway (headless, advisory)
+        # Sway 1.9 on this image has the protocol. The test prints SKIP and succeeds when Sway cannot start here.
+        # Advisory until it has run on the runners a few times.
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y -qq sway
+          python3 tests/wayland_sway.py
       - name: Startup budget (advisory)
         # Reports the fixed cost of a start against running the program directly. Advisory until a week of
         # numbers from these runners shows how steady they are; then it moves into the gate.

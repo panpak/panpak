@@ -138,7 +138,7 @@ prefer_host = ["libGL*", "libvulkan*", "libEGL*"]
 
 [permissions]                  # static, applied by Landlock
 x11 = false                    # opt-in: X11 access, default false
-audio = false                  # opt-in: the PipeWire and PulseAudio sockets of the session, default false
+audio = false                  # opt-in: the PipeWire and PulseAudio sockets of the session (playing and recording), default false
 network = false                # master switch; false+ABI>=4 => TCP denied
 network_allow_tcp = [80, 443]  # outbound ports (connect); only with network=true
 network_bind_tcp = []          # listen ports (bind); only with network=true
@@ -684,7 +684,12 @@ before distributing the converted package.
 - `/dev`: only nodes `null`, `zero`, `full`, `urandom`, `random`, `tty`
   + dirs `dri`, `shm`. Explicit fallback (with warning) to whole
   `/dev` if the kernel rejects per-file rules; privileged nodes stay
-  protected by DAC/capabilities.
+  protected by DAC/capabilities. From Landlock V5 the device ioctl right
+  (`IoctlDev`) is granted only on `tty` (termios, window size) and on `dri` (the GPU);
+  an ioctl on any other device the app opens is refused with `EACCES`, whole-`/dev` fallback
+  included. Descriptors the app inherited (its standard streams) are not affected.
+- Read-only: the system caches of §9.9 (`/var/cache/fontconfig`), mounted into the view and given
+  one Landlock rule each.
 - TCP networking: denied by default (`network = false`); with
   `network = true` only manifest-allowlisted ports (`network_allow_tcp`
   for connect, `network_bind_tcp` for listen). Landlock filters the TCP
@@ -700,6 +705,8 @@ before distributing the converted package.
 - Fail-closed self-test after `restrict`: `/dev/null` MUST open and
   creating a file in the tree MUST fail, otherwise hard error.
 - If Landlock is not applicable: hard error, NEVER silent fallback.
+- A seccomp filter is installed as the last step before the app is executed (§9.8); if the kernel cannot
+  install it the start fails with `PANPAK-E3002`.
 
 ### 9.1 Private folders and environment [NORMATIVE]
 
@@ -816,10 +823,12 @@ MUST make these go to one channel, and MUST NOT start a browser inside the sandb
   `$XDG_RUNTIME_DIR/panpak/<id>/open.<pid>.sock` (folder 0700, file 0600; one socket per start, so
   that copies of an app do not depend on each other), mounted in the view as
   `$XDG_RUNTIME_DIR/panpak/open.sock`, and removes it at the end. Sockets of runtimes that are gone are removed.
-- The outer runtime serves one connection at a time with 2 s of read and write time; the request is
+- The socket is served by a process of its own, the receiver (§9.7, "The resident stub in two pieces"),
+  which serves one connection at a time with 2 s of read and write time; the request is
   the line `OPEN <address>` of at most 2056 bytes and the reply is `OK` or `ERR <reason>`.
   The request rate is at most 5 per second with a burst of 3 (a refused request counts); the rest is refused.
-- The outer runtime MUST accept only an address that passes all of these, whatever the client checked:
+- The receiver checks the address and the outer runtime (the actor) MUST accept only an address that passes all of
+  these, whatever the receiver checked:
   at most 2048 bytes of printable ASCII %x21-7E without `"`, `\`, `<`, `>`, `` ` ``; the scheme
   (compared in lowercase) is `http`, `https` or `mailto`, never `file`; an `http` or `https`
   address has `//` and a host; a `mailto` address has an address part or fields, and the fields (after `?`,
@@ -951,6 +960,126 @@ entered; a walk does not cross to another file system and stops at 512 levels, l
 error; an id with nothing at all is `PANPAK-E2004`. Not done yet (step 8): the removal of unused entries of the resolution cache and of blobs and chunks that no tree
 uses (garbage collection of the store). `panpak remove` does not touch the permission store or the
 document portal of the desktop (see THREAT-MODEL.md, "Removal").
+
+### 9.7 The resident stub in two pieces [NORMATIVE for the policy and the frames; the mechanism is INFORMATIVE]
+
+The outer runtime is the one part of a start that stays alive and can run programs as the user, and it
+used to read the bytes of the app itself. It is now two pieces:
+
+- The **receiver** is a process of its own: the stub executed again with `--panpak-receiver`, with the
+  listening socket on descriptor 3 and a socket to the actor on descriptor 4 and nothing else (every other
+  descriptor is closed at the `exec`). Before it reads anything it MUST: set `PR_SET_DUMPABLE` to 0 and the
+  parent-death signal to `SIGKILL`; set `RLIMIT_NOFILE` to 32, `RLIMIT_AS` to 128 MiB, `RLIMIT_CPU` to 600 s,
+  `RLIMIT_CORE` and `RLIMIT_NPROC` to 0; apply a Landlock ruleset that handles every file system right, every
+  network right and every scope the kernel has, with **no rule** (no path, no port); check that a file cannot be
+  opened, a folder cannot be listed and (V4 and later) a TCP connection is refused; set `no_new_privs`; install a
+  seccomp **allow list** (`accept4`, `poll`, `recvfrom`, `sendto`, `close`, `setsockopt`, `clock_gettime`,
+  `mmap`, `munmap`, `mremap`, `brk`, `madvise`, `rt_sigprocmask`, `read`, `write`, `exit`, `exit_group`) under
+  which any other call, any other architecture and x32 end the process. If any of this fails the receiver ends and the
+  channel is off. It ends when the actor closes its side. It reads the request line, applies the shape check, the address check
+  and the rate limit of §9.3, and passes a valid address on as a frame.
+- The **actor** is the outer runtime. It reads frames from the receiver, checks each one again as if the
+  receiver could not be trusted (the address check and its own rate limit), and acts. It never sees the app's bytes.
+  A frame that is not a frame (bad magic or version, a length over the limit) ends the conversation.
+
+A request frame is `"PKRQ"`, a version byte (1), a kind byte, a 16-bit length in big-endian order (at most 4096) and
+that many bytes. Kind 1 is "open an address" (the payload is the address); kinds 2 (file chooser) and 3 (browser for a sign-in)
+are reserved and answered `unsupported` until they are defined; every other kind is `unsupported`. A response frame
+is `"PKRS"`, the version, a status byte (0 done, 1 refused, 2 failed, 3 unsupported), a 16-bit length (at most 256) and
+printable ASCII text. The actor answers each request with one response, in order. No frame carries a descriptor.
+
+### 9.8 System calls (seccomp) [NORMATIVE for the policy; the program is INFORMATIVE]
+
+The inner runtime (and the runtime itself without the view) MUST install a seccomp filter in the last step before it
+executes the app, after Landlock, with `no_new_privs` set, on all threads. Nothing runs between the filter and the `exec`.
+The filter is a deny list: every system call passes except the ones below, which return an error number; the app is not killed.
+
+- A call with an architecture other than the native one (the 32-bit ABIs) returns `EPERM`, and on x86-64 so does a number
+  with the x32 bit (`0x40000000`).
+- `clone`, `unshare` and `clone3`: a user namespace, or any other new namespace, cannot be created. `clone` and `unshare`
+  return `EPERM` when the flags ask for one. `clone3` returns `ENOSYS` without condition (its flags are in memory that a
+  filter cannot read); glibc and musl fall back to `clone` only on `ENOSYS`, so threads and `fork` keep working.
+- `ENOSYS` is also the answer for `io_uring` and for the new mount API, so that a program that probes for them goes on
+  without them.
+- `ioctl` returns `EPERM` for `TIOCSTI` and `TIOCLINUX` (input injection into a terminal); `personality` returns `EPERM`
+  unless the value is 0, 8, `0x20000`, `0x20008` or `0xffffffff` (the query).
+- Calls that are left open on purpose: `seccomp` (Chromium and Firefox add their own filters), `landlock_*`,
+  `memfd_create`, `modify_ldt` (Wine).
+
+| Call | Returns | Why |
+|---|---|---|
+| `io_uring_setup` | ENOSYS | io_uring: a large, fast-changing kernel surface that bypasses the other filters of file and network calls |
+| `io_uring_enter` | ENOSYS | io_uring |
+| `io_uring_register` | ENOSYS | io_uring |
+| `bpf` | EPERM | loads programs into the kernel |
+| `userfaultfd` | EPERM | lets an attacker stop the kernel in the middle of a copy; a tool of race exploits |
+| `perf_event_open` | EPERM | a large surface and a source of side-channel data |
+| `keyctl` | EPERM | the kernel key ring is shared by processes of the user, outside the file system |
+| `add_key` | EPERM | kernel key ring |
+| `request_key` | EPERM | kernel key ring |
+| `ptrace` | EPERM | reads and writes the memory of other processes of the user |
+| `process_vm_readv` | EPERM | reads the memory of another process |
+| `process_vm_writev` | EPERM | writes the memory of another process |
+| `pidfd_getfd` | EPERM | takes a file descriptor out of another process |
+| `kcmp` | EPERM | compares the descriptors of other processes (an information leak between processes) |
+| `kexec_load` | EPERM | replaces the kernel |
+| `kexec_file_load` | EPERM | replaces the kernel |
+| `init_module` | EPERM | loads kernel code |
+| `finit_module` | EPERM | loads kernel code |
+| `delete_module` | EPERM | unloads kernel code |
+| `syslog` | EPERM | reads the kernel log (addresses and hardware data) |
+| `acct` | EPERM | process accounting writes a file as root |
+| `swapon` | EPERM | machine-wide |
+| `swapoff` | EPERM | machine-wide |
+| `reboot` | EPERM | machine-wide |
+| `mount` | EPERM | the view of the app is fixed before it starts |
+| `umount2` | EPERM | mounts |
+| `pivot_root` | EPERM | mounts |
+| `chroot` | EPERM | a way to leave the paths that the view sets |
+| `fsopen` | ENOSYS | new mount API |
+| `fsconfig` | ENOSYS | new mount API |
+| `fsmount` | ENOSYS | new mount API |
+| `fspick` | ENOSYS | new mount API |
+| `move_mount` | ENOSYS | new mount API |
+| `open_tree` | ENOSYS | new mount API (also clones a mount tree) |
+| `mount_setattr` | ENOSYS | new mount API |
+| `setns` | EPERM | enters the namespaces of another process |
+| `unshare` | EPERM when a new namespace is asked | a new user namespace gives a program the capabilities of its own that open the rest of the kernel |
+| `clone` | EPERM when a new namespace is asked | the same, through clone |
+| `clone3` | ENOSYS | its flags are in memory that a filter cannot read; ENOSYS makes the C library use clone, which is filtered |
+| `open_by_handle_at` | EPERM | opens a file by a handle, outside every path rule |
+| `ioctl` | EPERM for `TIOCSTI`, `TIOCLINUX` | TIOCSTI and TIOCLINUX put keystrokes into the terminal of the user |
+| `personality` | EPERM unless the value is a plain Linux one | READ_IMPLIES_EXEC, no randomisation, page zero: they weaken the memory protections |
+| `iopl` | EPERM | direct access to the hardware ports |
+| `ioperm` | EPERM | direct access to the hardware ports |
+| `uselib` | EPERM | obsolete: loads a library by a path, outside the loader |
+| `ustat` | EPERM | obsolete |
+| `sysfs` | EPERM | obsolete |
+| `_sysctl` | EPERM | obsolete and removed from the kernel |
+| `nfsservctl` | EPERM | obsolete and removed from the kernel |
+
+Without kernel support for seccomp filters, or on an architecture the filter does not cover, the start MUST fail
+(`PANPAK-E3002`). A runtime MUST NOT offer a way to turn the filter off.
+
+### 9.9 System caches and the Wayland socket [NORMATIVE for the policy; the mechanism is INFORMATIVE]
+
+- `/var/cache/fontconfig`, if the host has it, is mounted read-only into the view and readable by Landlock. The view
+  has an empty `/var`, and without the system font cache the first start of an app (whose private cache is empty)
+  scans every font file.
+- **Wayland security context.** If the app has a Wayland display (`WAYLAND_DISPLAY`) and the compositor offers
+  `wp_security_context_manager_v1`, the outer runtime MUST register a context before the view is made: it binds a Unix socket
+  `$XDG_RUNTIME_DIR/panpak/<id>/wayland-<pid>-<nanoseconds>` (the folder is 0700, the file 0600) and listens on it, makes a
+  pipe, and sends `create_listener` with the socket and the read end of the pipe, `set_sandbox_engine("panpak")`,
+  `set_app_id("panpak.<id>")`, `set_instance_id("<pid>-<nanoseconds>")` and `commit`, then waits for a round trip to learn of a
+  protocol error. The new socket is mounted in the view at the path of the compositor's own socket, which is not mounted.
+  The write end of the pipe is held by the outer runtime, which stays until the app ends; the socket file is removed then.
+  Everything read from the compositor has a limit: 4096 bytes a message, 256 KiB in total, 1 s for the whole exchange.
+- If the compositor does not offer the protocol (GNOME's Mutter does not, in the versions checked), the app gets the
+  compositor's own socket as before, and `panpak doctor` says so. If it offers the protocol and the exchange fails,
+  the app gets the normal socket and the runtime prints a warning.
+- The audio permission gives the PipeWire and PulseAudio sockets of the session. Both servers
+  treat playing and recording as the same client, so an app with `audio = true` can record from the microphone.
+  `install` says so.
 
 ## Appendix A — test vectors [NORMATIVE]
 

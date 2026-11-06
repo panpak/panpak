@@ -104,7 +104,7 @@ before trusting beyond the smoke.
   filters ports, not addresses). Warnings at install and start.
 - Up to and including V8, `connect()` to filesystem sockets NOT
   mediated (session D-Bus reachable); abstract scopes denied by default.
-- No seccomp; `/proc` `/sys` `/run` readable; shared `/tmp`.
+- Seccomp is a deny list (the calls of PANPAK-FORMAT §9.8); `/proc` `/sys` `/run` readable; shared `/tmp`.
 - Minimum kernel 5.13; degradation on old kernels (explicit refusal).
 - NEVER verified: real GPU beyond the shared render node, kernels
   beyond 7.0.0-38, HTTPS on the internet, FUSE vs extraction beyond
@@ -141,5 +141,5 @@ before trusting beyond the smoke.
 
 ## 6. Explicitly out of scope
 
-D-Bus broker, seccomp, mediated portal/file-picker, legal name
+D-Bus broker, an allow-list seccomp policy, mediated portal/file-picker, legal name
 clearance, publication. None of this is decided here.

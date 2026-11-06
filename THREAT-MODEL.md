@@ -15,8 +15,9 @@ its practical consequence and where it is described.
   zones, reading other apps' data, privilege escalation.
 - **A3 — hostile update**: package or key replacement. Goal: make the
   victim run code unauthorized by the original author.
-- **A4 — network and kernel**: out of model (no network filtering, no
-  seccomp, see §3 and §5).
+- **A4 — network and kernel**: out of model (no network filtering; the kernel
+  is trusted except for the system calls that the seccomp filter of §2.5 refuses,
+  see §3 and §5).
 
 The local store (`~/.local/share/panpak`) is considered **trusted**
 (same uid, non-hostile fs). Same-uid competitors are out of model.
@@ -199,6 +200,35 @@ or the document portal for `panpak.<id>`. Measured on a desktop that ran the tes
 `panpak.*` app (`documents` empty; `notifications` only for snap apps), and the folders `doc/by-app/panpak.<id>` of the document portal
 are virtual (they exist for any name). Entries will exist once an app is granted a document (step 5b); `remove` should
 then call `PermissionStore.DeletePermission` for the app and revoke its documents. Until then there is nothing to delete.
+
+### 2.5 Hardening of the app process (tested in tests/hardening.py and the unit tests)
+
+- **Seccomp deny list.** The inner stub installs a filter as the last step before the exec, after Landlock, with
+  `no_new_privs`, on all threads; nothing runs between the filter and the exec (every start goes through one function,
+  `exec_filtered`). It returns an error number, it does not kill. It refuses `io_uring_*` (`ENOSYS`), `bpf`,
+  `userfaultfd`, `perf_event_open`, the kernel key ring, `ptrace`, `process_vm_*`, `pidfd_getfd`, `kcmp`, kernel modules and
+  `kexec`, the mount calls old and new (`ENOSYS` for the new ones), `chroot`, `setns`, `open_by_handle_at`,
+  `syslog`, `reboot` and the like; `unshare` and `clone` with any new namespace (user namespaces first of all); `clone3`
+  (`ENOSYS`, so that the C library goes back to `clone`); `ioctl` `TIOCSTI` and `TIOCLINUX`; `personality` other than plain Linux;
+  every non-native architecture and x32. The full table with the reason of each entry is `PANPAK-FORMAT.md` §9.8. Tested:
+  the program against an interpreter for every entry; the filter loaded in a child process of the real kernel; the same calls from an app
+  started by the real launcher (ENOSYS or EPERM as documented, threads, fork and exec still work). Costs about 0.1 ms
+  at start and tens of nanoseconds a call. `panpak doctor` reports kernel support; without it the app does not start.
+- **Device ioctl.** From Landlock V5 the app can do an ioctl only on `/dev/tty` and `/dev/dri` (and on descriptors it
+  inherited, such as its terminal). `/dev/null`, `/dev/zero`, `/dev/urandom` and the other nodes refuse it with `EACCES`
+  (tested per device).
+- **Wayland socket with a security context.** When the compositor supports `wp_security_context_v1` the app is given a
+  socket of its own that the compositor knows is sandboxed (engine `panpak`, app id `panpak.<id>`), instead of the user's own
+  socket. What a sandboxed client may do is the compositor's choice (screen capture, virtual input and global shortcuts are the usual
+  refusals). Tested with a fake compositor, with the real Mutter (which does not offer the protocol: the app keeps the normal
+  socket and `doctor` says so), and a parser fuzzed on its own (`fuzz_wayland`).
+- **The resident stub in two pieces.** What reads the bytes of the app (the open-address channel) is a receiver process with no rights:
+  Landlock with no rule, a seccomp allow list of 17 calls, `no_new_privs`, 32 files, 128 MiB, no new process. It passes
+  validated requests to the actor (the outer stub) as frames, which the actor checks again and answers; a frame
+  that is not a frame ends the conversation. Taking over the receiver gives an attacker two sockets it already had. Fuzz target
+  `fuzz_receiver`; tests: the receiver runs, serves, and shows its confinement in `/proc`; the actor against a hostile receiver.
+- **System font cache.** `/var/cache/fontconfig` is read-only in the view, which makes the first start with an empty private
+  font cache 9 times faster (446 ms to 48 ms with `fc-match`); read-only, so an app cannot poison the cache of other apps.
 
 ## 3. What the sandbox does NOT guarantee
 
@@ -440,10 +470,10 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   On ABI < V4 the sandbox starts ONLY with explicit
   `--network-unfiltered` (warning at every start): the network stays
   unfiltered. Without the flag, refusal.
-- **No seccomp**: syscalls that are dangerous but legal for DAC (e.g.
-  `ptrace` on same-uid processes outside the sandbox? No: Yama scope 1
-  blocks non-children; `process_vm_readv` toward same-uid processes,
-  keyrings, etc. remain).
+- **The seccomp filter is a deny list.** It refuses the calls of §2.5 and lets everything else through, so a
+  call that is not on the list and is dangerous (a new one, or one that nobody listed) stays open; a kernel
+  bug in a call that remains is not stopped. The filter removes the large surfaces that exploits start from
+  (`io_uring`, `bpf`, `userfaultfd`, user namespaces); it is not a complete system call policy. See KL-10.
 - **`/proc`, `/sys`, `/run` readable**: process/host enumeration,
   readable system D-Bus. In the isolated view `/run` is a tmpfs with only the
   resolver folder, the journal sockets and the allowed sockets, and `/proc` shows
@@ -543,11 +573,23 @@ Status of the project: pre-alpha.
   user namespaces or a setuid helper for its own sandbox, and a user namespace cannot be
   nested in the view. In practice: Electron apps run in Panpak's sandbox only. Most start
   (Jitsi, Obsidian, Zulip and others, see the compatibility table), and balenaEtcher aborts
-  on its SUID helper. See `docs/COMPATIBILITY.md` (Defects).
-- **KL-10 No seccomp.** System calls that are legal for the user stay available, for example
-  `process_vm_readv` toward processes of the same user outside the view and keyrings. The
-  view hides other processes with its own PID namespace; without the view, Yama (ptrace scope 1)
-  limits `ptrace` and nothing else stops these calls. See §3 ("No seccomp").
+  on its SUID helper. The seccomp filter now refuses `unshare` and `clone` with `CLONE_NEWUSER` too, so no program
+  in the view can make a user namespace, with or without the view (WebKitGTK's own bubblewrap, `flatpak` and
+  `bwrap` run by an app fail the same way). See `docs/COMPATIBILITY.md` (Defects).
+- **KL-10 Seccomp is a deny list.** System calls that are not on the list of `PANPAK-FORMAT.md` §9.8 stay
+  available, and a kernel bug in one of them is not stopped. In particular `memfd_create`, `seccomp` and `landlock_*`
+  are open on purpose, and `modify_ldt` (Wine) on x86-64. The view hides other processes with its own PID
+  namespace; without the view Yama (ptrace scope 1) and the filter (`ptrace`, `process_vm_*`, `pidfd_getfd` refused)
+  keep the app from other processes of the user. A runtime or a manifest cannot turn the filter off.
+- **KL-29 The Wayland security context needs the compositor.** GNOME's Mutter does not offer
+  `wp_security_context_v1` (checked in its source and on a running session); there the app gets the user's own
+  Wayland socket, with the powers of any Wayland client of the session. KWin 6.7 and the wlroots family (Sway, Hyprland,
+  labwc, river, niri) offer it. The protocol names the application but the compositor chooses what to refuse.
+  `panpak doctor` says which case the session is.
+- **KL-30 `audio` includes the microphone.** The PipeWire and PulseAudio sockets give an app both playback and
+  capture; their permission models do not split the two for a client that connects to the socket (only the camera has a
+  portal), and a split would need a second socket and rules in the user's own configuration. The permission text of
+  `install` says "play sounds and record from the microphone".
 - **KL-11 `/proc`, `/sys` and `/run` are readable without the view.** The app can list
   processes and read the system bus socket directory. With the view `/proc` shows only the
   app, and `/run` holds only the allowed sockets. Render nodes of the GPU are shared with
