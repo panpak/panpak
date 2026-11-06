@@ -997,6 +997,23 @@ fn split_stub_flags(args: Vec<String>) -> Result<StubFlags> {
 }
 
 /// When the stub started, for the timing lines of `PANPAK_DEBUG`.
+/// The lazy update of the menu entry and the launcher (docs/DESKTOP-INTEGRATION.md, section 3): when the entry is older
+/// than the template of this runtime, it is rewritten. Usually this reads 128 bytes and goes on. A failure is only
+/// reported with `PANPAK_DEBUG`; it never stops the start.
+fn refresh_menu_entry(store: &Path, man: &panpak_core::Manifest) {
+    use panpak_core::desktop::{refresh_entry, Refresh};
+    let Some(dir) = dirs::data_dir().map(|d| d.join("applications")) else { return };
+    let schemes = man.desktop.as_ref().and_then(|d| d.schemes.clone()).unwrap_or_default();
+    let class = man.desktop.as_ref().and_then(|d| d.wm_class.as_deref());
+    let Ok(launcher) = panpak_core::desktop::launcher_path(&man.app.id) else { return };
+    match refresh_entry(store, &dir, &launcher, &man.app.id, &man.app.name, &schemes, class) {
+        Ok(Refresh::Rewritten) if panpak_core::debug_enabled() => eprintln!("panpak: debug: the menu entry of {} was older and is rewritten", man.app.id),
+        Ok(_) => {}
+        Err(e) if panpak_core::debug_enabled() => eprintln!("panpak: debug: menu entry not refreshed: {e:#}"),
+        Err(_) => {}
+    }
+}
+
 static STARTED: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 /// With `PANPAK_DEBUG` set: print how long the start has taken up to this point. A tool to see where the
@@ -1134,6 +1151,10 @@ fn real_main() -> Result<()> {
         eprintln!("panpak: {} {} — key fingerprint: {fp}", man.app.id, man.app.version);
     }
     stage("package checked");
+    if installed_mode {
+        refresh_menu_entry(&store, &man);
+        stage("menu entry checked");
+    }
     let (chunks, entries) = parse_index(&raw_index)?;
     // The stub being run (ourselves in direct-mode, never the one in the file in
     // run-mode) must match the signed one: no other stub runs.

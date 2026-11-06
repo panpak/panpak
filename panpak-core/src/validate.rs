@@ -293,6 +293,18 @@ fn desktop(d: &crate::Desktop) -> Result<()> {
             return Err(bad_field(F, &format!("{sc} listed twice")));
         }
     }
+    let icons = d.icons.as_deref().unwrap_or_default();
+    if icons.len() > 6 {
+        return Err(bad_field("desktop.icons", "more than 6 icons"));
+    }
+    for (i, f) in icons.iter().enumerate() {
+        if f.len() > MAX_PATH_LEN || safe_path(f).is_err() || !f.to_ascii_lowercase().ends_with(".png") {
+            return Err(bad_field("desktop.icons", &format!("{}: must be a relative path to a .png file, without '.', '..' or empty segments", shown(f))));
+        }
+        if icons[..i].contains(f) {
+            return Err(bad_field("desktop.icons", &format!("{} listed twice", shown(f))));
+        }
+    }
     if let Some(w) = &d.wm_class {
         if !crate::valid_wm_class(w) {
             return Err(bad_field("desktop.wm_class", "1 to 100 characters of letters, digits, space and . _ + -, no space at either end"));

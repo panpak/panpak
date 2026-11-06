@@ -4,6 +4,7 @@
 //! All numbers in the format are little-endian. See PANPAK-FORMAT.md.
 
 pub mod dbus;
+pub mod desktop;
 pub mod frames;
 mod elfsym;
 mod errors;
@@ -14,6 +15,7 @@ pub mod removal;
 pub mod safefs;
 pub mod seccomp;
 pub mod stalelocks;
+pub mod unitname;
 pub mod wayland;
 mod userdirs;
 mod validate;
@@ -240,6 +242,8 @@ pub struct Desktop {
     /// The window class the app sets (Wayland `app_id` or X11 `WM_CLASS`), written as `StartupWMClass`
     /// so that the desktop groups its windows under the entry (PANPAK-FORMAT.md §3.1.3).
     pub wm_class: Option<String>,
+    /// PNG files of the tree that are the icon of the app (PANPAK-FORMAT.md §3.1.3). At most 6.
+    pub icons: Option<Vec<String>>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Portal {
@@ -381,7 +385,7 @@ pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
     let v: toml::Value = toml::from_str(input).context("panpak.toml is not TOML")?;
     let t = v.as_table().context("panpak.toml: table required")?;
     const TOP: &[&str] = &["app", "abi", "permissions", "launch", "desktop", "runtime", "origin", "update"];
-    const DESKTOP: &[&str] = &["schemes", "wm_class"];
+    const DESKTOP: &[&str] = &["schemes", "wm_class", "icons"];
     const XDG_DIR: &[&str] = &["name", "access"];
     const LAUNCH: &[&str] = &["args", "env"];
     const APP: &[&str] = &["id", "name", "version", "entry"];
@@ -653,6 +657,26 @@ pub fn read_package_licenses(f: &mut File, raw_index: &[u8]) -> Result<Vec<(Stri
         out.push((rest.to_string_lossy().into_owned(), data));
     }
     Ok(out)
+}
+
+/// Read one file of an already verified package by its path in the tree, at most `max` bytes. A path that is not
+/// a regular file of the package (a link, a folder, nothing) is an error. Every chunk is checked against its hash.
+pub fn read_package_file(f: &mut File, raw_index: &[u8], path: &str, max: usize) -> Result<Vec<u8>> {
+    let (chunks, entries) = parse_index(raw_index)?;
+    let want = std::path::Path::new(path);
+    let e = entries.iter().find(|e| e.path == want).with_context(|| format!("{path}: not in the package"))?;
+    let Kind::File { chunks: ids } = &e.kind else { bail!("{path}: not a regular file") };
+    let total: u64 = ids.iter().map(|&id| chunks.get(id as usize).map_or(u64::MAX, |c| c.raw as u64)).fold(0, u64::saturating_add);
+    ensure!(total <= max as u64, "{path}: larger than {max} bytes");
+    let mut dec = ChunkDecoder::new()?;
+    let (mut data, mut raw) = (Vec::new(), Vec::new());
+    for &id in ids {
+        let c = chunks.get(id as usize).context("bad chunk id")?;
+        dec.decode(&read_at(f, c.off, c.comp as u64)?, c.raw as u64, &mut raw)?;
+        verify_chunk(c, &raw)?;
+        data.extend_from_slice(&raw);
+    }
+    Ok(data)
 }
 
 pub fn decode_capped(comp: &[u8], limit: u64) -> Result<Vec<u8>> {

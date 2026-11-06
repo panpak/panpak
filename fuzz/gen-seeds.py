@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Generate the fuzz seed corpus for fuzz_elf, fuzz_squash, fuzz_dbus, fuzz_dbus_names, fuzz_journal, fuzz_wayland and fuzz_receiver.
+"""Generate the fuzz seed corpus for fuzz_elf, fuzz_squash, fuzz_dbus, fuzz_dbus_names, fuzz_journal, fuzz_wayland, fuzz_receiver and fuzz_icon.
 
 Every seed is written by this script from scratch (hand-built ELF headers) or
 built from small text files created here (squashfs, via mksquashfs). No
@@ -11,6 +11,7 @@ The squashfs seeds need mksquashfs (squashfs-tools); without it they are
 skipped. Output is deterministic for a given mksquashfs version.
 """
 import shutil
+import zlib
 import struct
 import subprocess
 import sys
@@ -283,6 +284,34 @@ def receiver_seeds():
     return seeds
 
 
+def _png_chunk(kind, body):
+    return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+
+
+def _png(side, color, channels, extra=b"", interlace=0, depth=8, rows=None):
+    raw = rows if rows is not None else b"".join(b"\0" + bytes((x * 7 + y) & 255 for x in range(side * channels)) for y in range(side))
+    ihdr = _png_chunk(b"IHDR", struct.pack(">IIBBBBB", side, side, depth, color, 0, 0, interlace))
+    return b"\x89PNG\r\n\x1a\n" + ihdr + extra + _png_chunk(b"IDAT", zlib.compress(raw)) + _png_chunk(b"IEND", b"")
+
+
+def icon_seeds():
+    plte = _png_chunk(b"PLTE", bytes(range(0, 48)))
+    return {
+        "rgba16": _png(16, 6, 4),
+        "rgb32": _png(32, 2, 3),
+        "gray16": _png(16, 0, 1),
+        "gray-alpha16": _png(16, 4, 2),
+        "palette16": _png(16, 3, 1, extra=plte),
+        "meta": _png(16, 6, 4, extra=_png_chunk(b"gAMA", b"\0\0\xb1\x8f") + _png_chunk(b"sRGB", b"\0") + _png_chunk(b"pHYs", b"\0" * 9)),
+        "text": _png(16, 6, 4, extra=_png_chunk(b"tEXt", b"Comment\0hello")),
+        "interlaced": _png(16, 6, 4, interlace=1),
+        "deep": _png(16, 6, 8, depth=16),
+        "short": _png(16, 6, 4, rows=b"\0" * 100),
+        "filter9": _png(16, 6, 4, rows=(b"\x09" + b"\0" * 64) * 16),
+        "svg": b"<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'/>",
+    }
+
+
 def write(target, seeds, prefix):
     d = CORPUS / target
     d.mkdir(parents=True, exist_ok=True)
@@ -299,6 +328,7 @@ def main():
     write("fuzz_journal", journal_seeds(), "seed")
     write("fuzz_wayland", wayland_seeds(), "seed")
     write("fuzz_receiver", receiver_seeds(), "seed")
+    write("fuzz_icon", icon_seeds(), "seed")
 
 
 if __name__ == "__main__":

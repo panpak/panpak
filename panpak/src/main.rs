@@ -8,8 +8,10 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod icons;
 mod remove;
 use anyhow::{bail, ensure, Context, Result};
+use panpak_core::desktop::{self as dsk, desktop_is_ours, desktop_path, launcher_is_ours, legacy_desktop_path, sh_quote};
 use panpak_core::{bail_code, coded, ensure_code, ErrorCode};
 use panpak_core::{
     encode_footer, encode_index, parse_secret, CDC_AVG, CDC_MAX, CDC_MIN, Chunk, Entry, Footer,
@@ -24,7 +26,7 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [-o <out.panpak>]\n  panpak install-runtime <stub> --allow-unsigned      (your own build; the file, not a folder)
+    "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak install-runtime <stub> --allow-unsigned      (your own build; the file, not a folder)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
@@ -281,7 +283,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     // Includes the assembled stub: never publish mismatching stubs.
     let mut vf = File::open(&tmp)?;
     let vft = panpak_core::read_footer(&mut vf)?;
-    let (vman, _vraw) = panpak_core::verify(&mut vf, &vft)?;
+    let (vman, vraw) = panpak_core::verify(&mut vf, &vft)?;
     let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
     panpak_core::verify_stub_range(&mut vf, stub_len, &vman)?;
     // Reused chunks too: the local store could be damaged.
@@ -291,6 +293,9 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
         dec.decode(&comp, c.raw as u64, &mut raw)?;
         panpak_core::verify_chunk(c, &raw)?;
     }
+    // The icons of the new version are checked before anything is published.
+    let new_icons = icons::read_from_package(&mut vf, &vraw, &vman)?;
+    icons::check_destinations(app_id, &new_icons)?;
     // New permissions need a yes before the update is published (current stays on a no).
     print_permissions(&vman);
     let added = panpak_core::added_permissions(&old_man, &vman);
@@ -310,8 +315,10 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
         symlink_atomic(&prev_target, &appdir.join("previous"))?;
     }
     symlink_atomic(&dest, &current_link)?;
-    let (best_abi, runtime) = best_runtime(&store)?;
-    write_replacing(&launcher, &launcher_sh(app_id, &runtime, &current_link)?, 0o755, "launcher", &|s| launcher_is_ours(s, app_id))?;
+    let (best_abi, _) = best_runtime(&store)?;
+    let stub = stable_stub_link(&store)?;
+    ensure_stable_panpak(&store)?;
+    write_replacing(&launcher, &dsk::launcher_sh(app_id, &stub, &current_link)?, 0o755, "launcher", &|s| launcher_is_ours(s, app_id))?;
     // The user folders and the URL schemes of the new version.
     let (xdg_found, xdg_problems) = resolve_xdg_dirs(&man);
     print_xdg_dirs(&xdg_found, &xdg_problems);
@@ -320,7 +327,8 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     let schemes = manifest_schemes(&man);
     if desktop.exists() || legacy_desktop_path(app_id)?.exists() || !schemes.is_empty() {
         fs::create_dir_all(desktop.parent().unwrap())?;
-        write_replacing(&desktop, &desktop_file(app_id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), installed_panpak().as_deref())?, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
+        icons::install(app_id, &new_icons)?;
+        write_replacing(&desktop, &entry_text(&store, app_id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), !new_icons.is_empty())?, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
         let moved = remove_legacy_desktop(app_id, &launcher)?;
         if !schemes.is_empty() || moved {
             refresh_desktop_database(desktop.parent().unwrap());
@@ -627,6 +635,15 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
         man.app.entry
     );
 
+    // The icons are checked here so that a bad icon never gets into a package.
+    for icon in man.desktop.as_ref().and_then(|d| d.icons.as_deref()).unwrap_or_default() {
+        let item = payload.iter().find(|p| p.entry.path == Path::new(icon));
+        let src = item.filter(|p| matches!(p.entry.kind, Kind::File { .. })).and_then(|p| p.source.as_ref());
+        let src = src.with_context(|| format!("desktop.icons: {icon} is not a regular file of the tree"))?;
+        let data = read_icon_file(src).with_context(|| format!("desktop.icons: {icon}"))?;
+        panpak_icon::check(&data).map_err(|why| anyhow::anyhow!("desktop.icons: {icon}: {why}"))?;
+    }
+
     // Spec §7: prefer_host + included glibc rejected by pack.
     if man.abi.as_ref().is_some_and(|a| a.prefer_host.as_ref().is_some_and(|v| !v.is_empty())) {
         let has_libc = payload.iter().any(|p| {
@@ -891,6 +908,15 @@ fn cmd_install_runtime(src: &Path, release_key: Option<&str>, allow_unsigned: bo
     let dest = store.join("runtimes").join(abi.to_string());
     fs::create_dir_all(&dest)?;
     install_file_atomically(&stub, &dest.join("panpak-stub"), 0o755)?;
+    // The stable stub link, then the stable `panpak` (the release has both binaries): launchers and the menu action use these.
+    stable_stub_link(&store)?;
+    match find_in(&stage, "panpak") {
+        Ok(cli) => {
+            fs::create_dir_all(dsk::stable_panpak(&store).parent().unwrap())?;
+            install_file_atomically(&cli, &dsk::stable_panpak(&store), 0o755)?;
+        }
+        Err(_) => eprintln!("NOTE: the release has no panpak binary; {} stays as it is", dsk::stable_panpak(&store).display()),
+    }
     let _ = fs::remove_dir_all(&stage);
     println!("runtime {abi} installed from verified release ({})", src.display());
     Ok(())
@@ -936,6 +962,7 @@ fn install_runtime_stub(stub: &Path, store: &Path) -> Result<()> {
     let dest = store.join("runtimes").join(abi.to_string());
     fs::create_dir_all(&dest)?;
     install_file_atomically(stub, &dest.join("panpak-stub"), 0o755)?;
+    stable_stub_link(store)?;
     println!("runtime {abi} installed from {} (NOT verified)", stub.display());
     Ok(())
 }
@@ -1013,6 +1040,7 @@ struct ConvertArgs<'a> {
     version_ov: Option<&'a str>,
     entry_ov: Option<&'a str>,
     allow_missing: Vec<String>,
+    icon_ov: Option<&'a Path>,
     out: Option<&'a Path>,
 }
 
@@ -1031,7 +1059,7 @@ fn valid_squashfs_sb(b: &[u8]) -> bool {
 
 fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     use std::io::Read;
-    let ConvertArgs { src, id, stub, secret, name_ov, version_ov, entry_ov, allow_missing, out } = a;
+    let ConvertArgs { src, id, stub, secret, name_ov, version_ov, entry_ov, allow_missing, icon_ov, out } = a;
     panpak_core::validate_app_id(id)?;
     let mut f = File::open(src)?;
     // Look for the squashfs v4 magic ("hsqs") in the first 64 MiB, validating the
@@ -1099,6 +1127,7 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     let mut dexec_args: Vec<String> = Vec::new();
     let mut dver: Option<String> = None;
     let mut dwm: Option<String> = None;
+    let mut dicon: Option<String> = None;
     if let Some(d) = &desktop {
         let txt = fs::read_to_string(d).unwrap_or_default();
         let mut in_entry = false;
@@ -1127,6 +1156,8 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
                 dver = Some(v.to_string());
             } else if let Some(v) = line.strip_prefix("StartupWMClass=") {
                 dwm = Some(v.trim().to_string());
+            } else if let Some(v) = line.strip_prefix("Icon=") {
+                dicon = Some(v.trim().to_string());
             }
         }
     }
@@ -1220,13 +1251,42 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
         }
         toml.push_str("]\n");
     }
-    // The window class the app sets, from the AppImage's own desktop file: the desktop groups windows by it.
+    // The window class and the icons: the desktop groups windows by the class and shows the icon in the menu.
+    let mut desktop_keys = String::new();
     match dwm.as_deref() {
         Some(w) if panpak_core::valid_wm_class(w) => {
-            toml.push_str(&format!("[desktop]\nwm_class = {}\n", q(w)));
+            desktop_keys.push_str(&format!("wm_class = {}\n", q(w)));
         }
         Some(w) => eprintln!("panpak convert: WARNING: StartupWMClass {w:?} in the desktop file is not a plain window class; not used"),
         None => eprintln!("panpak convert: WARNING: the desktop file has no StartupWMClass; the desktop may not group the app's windows under its entry (set [desktop] wm_class in panpak.toml if you know the class)"),
+    }
+    let icons = match icon_ov {
+        Some(f) => {
+            let data = read_icon_file(f).with_context(|| format!("--icon {}", f.display()))?;
+            let side = panpak_icon::check(&data).map_err(|why| anyhow::anyhow!("--icon {}: {why}", f.display()))?.side;
+            fs::create_dir_all(tree.join(".panpak/icons"))?;
+            let p = format!(".panpak/icons/{side}.png");
+            fs::write(tree.join(&p), &data)?;
+            vec![p]
+        }
+        None => {
+            let (found, notes) = find_appimage_icons(&tree, dicon.as_deref());
+            if found.is_empty() {
+                let svg_only = dicon.as_deref().is_some_and(|n| tree.join(format!("{n}.svg")).exists() || tree.join(format!("usr/share/icons/hicolor/scalable/apps/{n}.svg")).exists());
+                eprintln!("panpak convert: WARNING: no usable PNG icon in the AppImage{}; the app will show the generic icon (give a PNG with --icon <file.png>)", if svg_only { " (it has an SVG only: SVG icons are not accepted)" } else { "" });
+            }
+            for n in notes {
+                eprintln!("panpak convert: note: icon not used: {n}");
+            }
+            found
+        }
+    };
+    if !icons.is_empty() {
+        desktop_keys.push_str(&format!("icons = [{}]\n", icons.iter().map(|i| q(i)).collect::<Vec<_>>().join(", ")));
+    }
+    if !desktop_keys.is_empty() {
+        toml.push_str("[desktop]\n");
+        toml.push_str(&desktop_keys);
     }
     toml.push_str(&format!("[origin]\nconverted_from = {}\nversion = {}\nsha256 = {}\nsigned_by_upstream = false\n", q(&src_name), q(&version), q(&src_sha256)));
     toml.push_str(&format!("[update]\nkey = {}\n", q(&key)));
@@ -1234,6 +1294,78 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     let r = cmd_pack(&tree, stub, secret, None, out);
     let _ = fs::remove_dir_all(&tree);
     r
+}
+
+/// Read an icon file, refusing one that is too large before it is read (and a link, which the callers resolve).
+fn read_icon_file(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let f = File::open(path)?;
+    ensure!(f.metadata()?.is_file(), "not a regular file");
+    let mut data = Vec::new();
+    f.take(panpak_icon::MAX_FILE as u64 + 1).read_to_end(&mut data)?;
+    ensure!(data.len() <= panpak_icon::MAX_FILE, "larger than {} KiB", panpak_icon::MAX_FILE / 1024);
+    Ok(data)
+}
+
+/// The PNG icons of an extracted AppImage: `.DirIcon`, `<icon>.png` at the root and the `hicolor` sizes. Each
+/// candidate is checked; a link is followed only inside the tree and its content is copied to a file of its own.
+/// Returns the paths (relative to the tree) of at most 6 icons with different sizes, the largest first, and says
+/// what it could not use.
+fn find_appimage_icons(tree: &Path, icon_name: Option<&str>) -> (Vec<String>, Vec<String>) {
+    let mut cands: Vec<PathBuf> = vec![PathBuf::from(".DirIcon")];
+    if let Some(n) = icon_name.filter(|n| !n.is_empty() && !n.contains('/')) {
+        cands.push(PathBuf::from(format!("{n}.png")));
+        // In name order, so that the same AppImage always gives the same package.
+        let mut sizes: Vec<_> = fs::read_dir(tree.join("usr/share/icons/hicolor")).into_iter().flatten().flatten().map(|d| d.file_name()).collect();
+        sizes.sort();
+        for d in sizes {
+            cands.push(Path::new("usr/share/icons/hicolor").join(d).join("apps").join(format!("{n}.png")));
+        }
+    }
+    let (mut found, mut notes): (Vec<(u32, String)>, Vec<String>) = (Vec::new(), Vec::new());
+    let root = fs::canonicalize(tree).ok();
+    for rel in cands {
+        let full = tree.join(&rel);
+        if fs::symlink_metadata(&full).is_err() {
+            continue;
+        }
+        let is_link = fs::symlink_metadata(&full).is_ok_and(|m| m.file_type().is_symlink());
+        // A link must stay inside the tree.
+        let real = match fs::canonicalize(&full) {
+            Ok(r) if root.as_ref().is_some_and(|t| r.starts_with(t)) => r,
+            _ => {
+                notes.push(format!("{}: points outside the tree", rel.display()));
+                continue;
+            }
+        };
+        let data = match read_icon_file(&real) {
+            Ok(d) => d,
+            Err(e) => {
+                notes.push(format!("{}: {e:#}", rel.display()));
+                continue;
+            }
+        };
+        match panpak_icon::check(&data) {
+            Ok(i) if !found.iter().any(|(s, _)| *s == i.side) => {
+                let path = if is_link || rel.starts_with(".DirIcon") {
+                    let p = format!(".panpak/icons/{}.png", i.side);
+                    let _ = fs::create_dir_all(tree.join(".panpak/icons"));
+                    if fs::write(tree.join(&p), &data).is_err() {
+                        continue;
+                    }
+                    p
+                } else {
+                    rel.to_string_lossy().into_owned()
+                };
+                found.push((i.side, path));
+            }
+            Ok(_) => {}
+            Err(why) => notes.push(format!("{}: {why}", rel.display())),
+        }
+    }
+    found.sort_by_key(|f| std::cmp::Reverse(f.0));
+    found.truncate(6);
+    (found.into_iter().map(|(_, p)| p).collect(), notes)
 }
 
 /// A TOML basic string, quoted and escaped.
@@ -1305,131 +1437,67 @@ fn split_num(s: &str) -> (u64, &str) {
     (s[..n].parse().unwrap_or(0), &s[n..])
 }
 
-/// Marker that tells `install` and `update` that panpak wrote a launcher or a
-/// `.desktop` file for this app (and may therefore replace it).
-const LAUNCHER_MARKER: &str = "# X-Panpak-App-Id: ";
-const DESKTOP_MARKER: &str = "X-Panpak-App-Id=";
 
-/// POSIX shell single quoting.
-fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+
+
+
+
+
+
+
+
+
+/// The text of the entry of an app: the stable `panpak` of the store gives the menu action, when it is there.
+fn entry_text(store: &Path, app_id: &str, name: &str, launcher: &Path, schemes: &[String], wm_class: Option<&str>, icon: bool) -> Result<String> {
+    let panpak = dsk::stable_panpak(store);
+    let panpak = panpak.is_file().then_some(panpak);
+    dsk::desktop_file(&dsk::Entry { app_id, name, launcher, schemes, wm_class, panpak: panpak.as_deref(), icon })
 }
 
-fn path_text(p: &Path) -> Result<&str> {
-    let s = p.to_str().context("path is not valid UTF-8")?;
-    ensure!(!s.chars().any(char::is_control), "control character in path {s:?}");
-    Ok(s)
-}
-
-fn launcher_sh(app_id: &str, runtime: &Path, current_link: &Path) -> Result<String> {
-    let (rt, cur) = (sh_quote(path_text(runtime)?), sh_quote(path_text(current_link)?));
-    Ok(format!(
-        "#!/bin/sh\n# Generated by `panpak install`: do not edit.\n{LAUNCHER_MARKER}{app_id}\n# Points to apps/<id>/current; `panpak update`/`rollback` move it.\n# With one existing file (double click): opens ONLY that file\n# (--panpak-open, read-only): use `panpak open --write` for writes.\nif [ \"$#\" -eq 1 ] && [ -f \"$1\" ]; then\n  case \"$1\" in /*) _f=\"$1\";; *) _f=\"$PWD/$1\";; esac\n  exec {rt} run {cur} --panpak-open \"$_f\" \"$_f\"\nfi\nexec {rt} run {cur} \"$@\"\n"
-    ))
-}
-
-/// A launcher written by panpak for `app_id`: it carries the marker, or it is
-/// one written before the marker existed (same two first lines).
-fn launcher_is_ours(content: &str, app_id: &str) -> bool {
-    content.lines().any(|l| l.strip_prefix(LAUNCHER_MARKER) == Some(app_id))
-        || content.starts_with("#!/bin/sh\n# Generated by `panpak install`: do not edit.\n# Points to apps/<id>/current")
-}
-
-/// Value of a Desktop Entry `string` key (Desktop Entry Specification, "Value
-/// types"): backslash, newline, carriage return and tab are escaped, other
-/// control characters are refused, so a value can never start a new line.
-fn desktop_string(s: &str) -> Result<String> {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => bail!("control character in a desktop entry value"),
-            c => out.push(c),
-        }
+/// Point `<store>/bin/panpak-stub` at the best runtime, with a link that is switched in one rename, and return its
+/// path. Launchers use this path, so a new runtime reaches every app at its next start.
+fn stable_stub_link(store: &Path) -> Result<PathBuf> {
+    let (_, stub) = best_runtime(store)?;
+    let link = dsk::stable_stub(store);
+    let target = Path::new("..").join(stub.strip_prefix(store).context("the runtime is outside the store")?);
+    if fs::read_link(&link).ok().as_deref() != Some(target.as_path()) {
+        fs::create_dir_all(link.parent().unwrap())?;
+        symlink_atomic(&target, &link)?;
     }
-    Ok(out)
+    Ok(link)
 }
 
-/// One `Exec` argument (Desktop Entry Specification, "The Exec key"): always
-/// double-quoted, with `"`, `` ` ``, `$` and `\` escaped and `%` doubled, then
-/// string-escaped like any other value.
-fn desktop_exec_arg(p: &str) -> Result<String> {
-    ensure!(!p.chars().any(char::is_control), "control character in the launcher path");
-    let mut q = String::from("\"");
-    for c in p.chars() {
-        match c {
-            '"' | '`' | '$' | '\\' => {
-                q.push('\\');
-                q.push(c);
+/// The version a `panpak` binary reports with `--version`.
+fn reported_version(bin: &Path) -> Option<String> {
+    let out = std::process::Command::new(bin).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
+    out.status.success().then(|| String::from_utf8(out.stdout).ok()).flatten()?.trim().strip_prefix("panpak ").map(str::to_string)
+}
+
+/// Make sure `<store>/bin/panpak` exists, for the menu action "Uninstall": copy the running `panpak` when there is
+/// none. One that is there is never replaced (a build from a test folder must not overwrite the installed one);
+/// `install-runtime` is what replaces it. An older one gets a warning.
+fn ensure_stable_panpak(store: &Path) -> Result<()> {
+    let dest = dsk::stable_panpak(store);
+    let me = std::env::current_exe().ok().filter(|p| p.is_absolute() && fs::metadata(p).is_ok_and(|m| m.is_file()));
+    match fs::symlink_metadata(&dest) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(me) = me {
+                fs::create_dir_all(dest.parent().unwrap())?;
+                install_file_atomically(&me, &dest, 0o755)?;
+                println!("note: copied panpak to {} (the menu action \"Uninstall\" runs it)", dest.display());
             }
-            '%' => q.push_str("%%"),
-            c => q.push(c),
+        }
+        Err(e) => return Err(e).with_context(|| format!("inspect {}", dest.display())),
+        Ok(_) => {
+            let same = me.as_ref().is_some_and(|m| fs::canonicalize(m).ok() == fs::canonicalize(&dest).ok());
+            if let (false, Some(have)) = (same, reported_version(&dest)) {
+                if cmp_versions(&have, env!("CARGO_PKG_VERSION")) == std::cmp::Ordering::Less {
+                    eprintln!("WARNING: the panpak in {} is version {have}, older than this one ({}); the menu action \"Uninstall\" runs it. Update it with `panpak install-runtime <release.tar.gz> --release-key <key>`", dest.display(), env!("CARGO_PKG_VERSION"));
+                }
+            }
         }
     }
-    q.push('"');
-    desktop_string(&q)
-}
-
-/// The entry declares no MimeType: the manifest has no field for MIME types, and
-/// `application/x-panpak` is the type of the packages themselves, not of the
-/// files an app opens.
-fn desktop_file(app_id: &str, name: &str, launcher: &Path, schemes: &[String], wm_class: Option<&str>, panpak: Option<&Path>) -> Result<String> {
-    // The URL schemes the manifest declares; every name is checked again here, whatever the caller did.
-    let mut mime = String::new();
-    for sc in schemes {
-        panpak_core::check_scheme_name(sc).map_err(|why| anyhow::anyhow!("scheme {sc}: {why}"))?;
-        mime += &format!("x-scheme-handler/{sc};");
-    }
-    let mime = if mime.is_empty() { String::new() } else { format!("MimeType={mime}\n") };
-    // The window class the app sets, so that the desktop groups its windows under this entry.
-    let class = match wm_class {
-        Some(w) => {
-            ensure!(panpak_core::valid_wm_class(w), "wm_class {w:?} is not a plain window class");
-            format!("StartupWMClass={w}\n")
-        }
-        None => String::new(),
-    };
-    // The menu action "Uninstall": it runs the panpak that installed the app, by its absolute path. Without
-    // such a path there is no action.
-    let (actions, action) = match panpak {
-        Some(p) => (
-            "Actions=Uninstall;\n",
-            format!(
-                "\n[Desktop Action Uninstall]\nName=Uninstall\nName[de]=Deinstallieren\nName[es]=Desinstalar\nName[fr]=D\u{e9}sinstaller\nName[it]=Disinstalla\nExec={} remove --ask {}\n",
-                desktop_exec_arg(path_text(p)?)?,
-                desktop_string(app_id)?
-            ),
-        ),
-        None => ("", String::new()),
-    };
-    Ok(format!(
-        "[Desktop Entry]\nType=Application\nName={}\nExec={} %U\nTerminal=false\nCategories=Utility;\n{mime}{class}{actions}{DESKTOP_MARKER}{}\n{action}",
-        desktop_string(name)?,
-        desktop_exec_arg(path_text(launcher)?)?,
-        desktop_string(app_id)?
-    ))
-}
-
-/// The panpak that is running now, by absolute path, for the menu action "Uninstall". `None` when it cannot be found
-/// as a regular file (then the entry gets no action).
-fn installed_panpak() -> Option<PathBuf> {
-    let p = std::env::current_exe().ok()?;
-    (p.is_absolute() && fs::metadata(&p).is_ok_and(|m| m.is_file())).then_some(p)
-}
-
-/// The `.desktop` file of an app: `panpak.<id>.desktop`. The portals know the app as `panpak.<id>` (the
-/// name of its systemd scope), and look for the file of that name; the prefix also keeps the entry
-/// apart from the Flatpak or distribution entry of an app with the same upstream id.
-fn desktop_path(app_id: &str) -> Result<PathBuf> {
-    Ok(dirs::data_dir().context("no data dir")?.join("applications").join(format!("panpak.{app_id}.desktop")))
-}
-
-/// The name this entry had before the prefix: `<id>.desktop`.
-fn legacy_desktop_path(app_id: &str) -> Result<PathBuf> {
-    Ok(dirs::data_dir().context("no data dir")?.join("applications").join(format!("{app_id}.desktop")))
+    Ok(())
 }
 
 /// Remove the entry of the old name if panpak wrote it. One that is not ours stays. Returns whether one was removed.
@@ -1527,13 +1595,6 @@ fn refresh_desktop_database(dir: &Path) {
     }
 }
 
-/// A `.desktop` file written by panpak for `app_id`: it has the marker key, or
-/// it is one written before the marker existed (panpak's own `Exec` line).
-fn desktop_is_ours(content: &str, app_id: &str, launcher: &Path) -> bool {
-    content.lines().any(|l| l.strip_prefix(DESKTOP_MARKER) == Some(app_id))
-        || (content.starts_with("[Desktop Entry]\nType=Application\n")
-            && content.lines().any(|l| l == format!("Exec={} %U", launcher.display())))
-}
 
 /// Refuse a destination that is a symbolic link, is not a regular file, or is a
 /// file panpak did not write. A missing destination is fine.
@@ -1789,10 +1850,13 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     let desktop = desktop_path(&man.app.id)?;
     check_replaceable(&launcher, "launcher", &|s| launcher_is_ours(s, &man.app.id))?;
     check_replaceable(&desktop, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
+    // The icons are read and checked now, before the store is touched.
+    let new_icons = icons::read_from_package(&mut f, &raw_index, &man)?;
+    icons::check_destinations(&man.app.id, &new_icons)?;
     let key = &man.update.as_ref().context("manifest without [update].key")?.key;
     let fp = panpak_core::fingerprint(&panpak_core::parse_pubkey(key)?);
 
-    let (best_abi, runtime) = best_runtime(&store)?;
+    let (best_abi, _) = best_runtime(&store)?;
     let need = man.runtime.as_ref().and_then(|r| r.min_runtime).unwrap_or(1);
     ensure!(
         need <= best_abi,
@@ -1867,10 +1931,13 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     symlink_atomic(&dest, &current)?;
 
     fs::create_dir_all(launcher.parent().unwrap())?;
-    write_replacing(&launcher, &launcher_sh(&man.app.id, &runtime, &current)?, 0o755, "launcher", &|s| launcher_is_ours(s, &man.app.id))?;
+    let stub = stable_stub_link(&store)?;
+    ensure_stable_panpak(&store)?;
+    write_replacing(&launcher, &dsk::launcher_sh(&man.app.id, &stub, &current)?, 0o755, "launcher", &|s| launcher_is_ours(s, &man.app.id))?;
     fs::create_dir_all(desktop.parent().unwrap())?;
     let schemes = manifest_schemes(&man);
-    write_replacing(&desktop, &desktop_file(&man.app.id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), installed_panpak().as_deref())?, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
+    icons::install(&man.app.id, &new_icons)?;
+    write_replacing(&desktop, &entry_text(&store, &man.app.id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), !new_icons.is_empty())?, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
     // An entry written under the old name by an earlier version is replaced by this one.
     let moved = remove_legacy_desktop(&man.app.id, &launcher)?;
     if moved {
@@ -2188,6 +2255,10 @@ fn main() {
 
 fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(|s| s.as_str()) {
+        Some("--version") if args.len() == 2 => {
+            println!("panpak {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some("keygen") => match (args.get(2).map(|s| s.as_str()), args.get(3), args.len()) {
             (Some("-o"), Some(f), 4) => cmd_keygen(Path::new(f)),
             _ => bail_code!(ErrorCode::E5002, "keygen -o <secret-file> (the secret is never printed)\n{usage}", usage = usage()),
@@ -2326,6 +2397,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             let mut version = None;
             let mut entry = None;
             let mut allow_missing: Vec<&str> = Vec::new();
+            let mut icon = None;
             let mut out = None;
             let mut i = 3;
             while i < args.len() {
@@ -2337,6 +2409,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                     "--version" => { version = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--version <v>"))?.as_str()); i += 2; }
                     "--entry" => { entry = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--entry <e>"))?.as_str()); i += 2; }
                     "--allow-missing" => { allow_missing.push(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--allow-missing <glob>"))?.as_str()); i += 2; }
+                    "--icon" => { icon = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--icon <file.png>"))?.as_str()); i += 2; }
                     "-o" => { out = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "-o <out>"))?.as_str()); i += 2; }
                     x => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
                 }
@@ -2351,6 +2424,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                 version_ov: version,
                 entry_ov: entry,
                 allow_missing: allow_missing.into_iter().map(|s| s.to_string()).collect(),
+                icon_ov: icon.map(Path::new),
                 out: out.map(PathBuf::from).as_deref(),
             })?;
             Ok(())
@@ -2727,16 +2801,6 @@ mod tests {
     }
 
     #[test]
-    fn the_uninstall_action_needs_a_panpak_path() {
-        let l = Path::new("/home/u/.local/bin/org.x");
-        let none = desktop_file("org.x", "X", l, &[], None, None).unwrap();
-        assert!(!none.contains("Actions=") && !none.contains("[Desktop Action"), "{none}");
-        let some = desktop_file("org.x", "X", l, &[], None, Some(Path::new("/opt/my panpak/panpak"))).unwrap();
-        assert!(some.contains("Actions=Uninstall;\n") && some.contains("Exec=\"/opt/my panpak/panpak\" remove --ask org.x\n"), "{some}");
-        assert!(desktop_file("org.x", "X", l, &[], None, Some(Path::new("/opt/p\nanpak"))).is_err());
-    }
-
-    #[test]
     fn generic_code_per_subcommand() {
         assert_eq!(generic_code(Some("pack")), ErrorCode::E0000);
         assert_eq!(generic_code(Some("release")), ErrorCode::E1000);
@@ -2811,24 +2875,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn launcher_and_desktop() {
-        let rt = Path::new("/home/u/.local/share/panpak/runtimes/1/panpak-stub");
-        let cur = Path::new("/home/u/.local/share/panpak/apps/org.x/current");
-        let sh = launcher_sh("org.x", rt, cur).unwrap();
-        assert!(sh.starts_with("#!/bin/sh\n"));
-        assert!(sh.contains(" run "));
-        assert!(sh.contains("--panpak-open"));
-        assert!(sh.contains("[ -f \"$1\" ]"));
-        assert!(sh.contains("apps/org.x/current"));
-        assert!(sh.contains("\n# X-Panpak-App-Id: org.x\n"));
-        assert!(sh.ends_with("\"$@\"\n"));
-        let d = desktop_file("org.x", "X App", Path::new("/home/u/.local/bin/org.x"), &[], None, None).unwrap();
-        assert!(d.contains("Name=X App\n"));
-        assert!(d.contains("Exec=\"/home/u/.local/bin/org.x\" %U\n"));
-        assert!(d.contains("\nX-Panpak-App-Id=org.x\n"));
-        assert!(!d.contains("MimeType"), "an app must not claim the package type: {d}");
-    }
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("panpak-unit-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
@@ -2837,50 +2883,43 @@ mod tests {
     }
 
     #[test]
-    fn desktop_entry_values_cannot_start_a_line() {
-        let l = Path::new("/home/u/.local/bin/org.x");
-        let d = desktop_file("org.x", "Evil\nExec=/bin/sh\r\nTerminal=true", l, &[], None, None).unwrap();
-        assert_eq!(d.lines().count(), 7, "{d}");
-        assert_eq!(d.lines().filter(|l| l.starts_with("Exec=")).count(), 1, "{d}");
-        assert!(d.contains("Name=Evil\\nExec=/bin/sh\\r\\nTerminal=true\n"), "{d}");
-        // Backslash is escaped, other controls are refused.
-        assert!(desktop_file("org.x", "A\\B", l, &[], None, None).unwrap().contains("Name=A\\\\B\n"));
-        for bad in ["a\u{1}b", "a\u{7f}b", "a\u{9b}b"] {
-            assert!(desktop_file("org.x", bad, l, &[], None, None).is_err(), "{bad:?}");
+    fn convert_finds_the_png_icons_of_an_appimage() {
+        let data = |n: &str| fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../panpak-icon/tests/data").join(n)).unwrap();
+        let t = scratch("appimage-icons");
+        let hi = |s: &str| t.join(format!("usr/share/icons/hicolor/{s}/apps"));
+        for d in ["48x48", "16x16", "32x32", "64x64"] {
+            fs::create_dir_all(hi(d)).unwrap();
         }
-        assert!(desktop_file("org.x", "N", Path::new("/home/u\n/x"), &[], None, None).is_err());
-    }
-
-    #[test]
-    fn desktop_exec_quotes_reserved_characters() {
-        let q = |p: &str| desktop_exec_arg(p).unwrap();
-        assert_eq!(q("/home/a b/x"), "\"/home/a b/x\"");
-        assert_eq!(q("/h/100%/x"), "\"/h/100%%/x\"");
-        // `"`, backtick, `$` and backslash get a backslash, which is doubled by string escaping.
-        assert_eq!(q("/h/a\"b"), "\"/h/a\\\\\"b\"");
-        assert_eq!(q("/h/$x"), "\"/h/\\\\$x\"");
-        assert_eq!(q("/h/`x`"), "\"/h/\\\\`x\\\\`\"");
-        assert_eq!(q("/h/a\\b"), "\"/h/a\\\\\\\\b\"");
-    }
-
-    #[test]
-    fn launcher_quotes_paths_for_the_shell() {
-        let sh = launcher_sh("org.x", Path::new("/h/it's $(id)/rt"), Path::new("/h/`x`/cur")).unwrap();
-        assert!(sh.contains("exec '/h/it'\\''s $(id)/rt' run '/h/`x`/cur' \"$@\""), "{sh}");
-        assert!(launcher_sh("org.x", Path::new("/h/a\nb"), Path::new("/c")).is_err());
-        assert_eq!(sh_quote("a'b"), "'a'\\''b'");
+        fs::write(t.join("app.png"), data("ok-256-rgba.png")).unwrap();
+        std::os::unix::fs::symlink("app.png", t.join(".DirIcon")).unwrap();
+        fs::write(hi("48x48").join("app.png"), data("ok-48-rgba.png")).unwrap();
+        // A link that leaves the tree, a bad file, and a file of a size that is also elsewhere.
+        std::os::unix::fs::symlink("/etc/passwd", hi("16x16").join("app.png")).unwrap();
+        fs::write(hi("32x32").join("app.png"), data("bad-text.png")).unwrap();
+        fs::write(hi("64x64").join("app.png"), data("ok-48-rgba.png")).unwrap();
+        let (found, notes) = find_appimage_icons(&t, Some("app"));
+        assert_eq!(found, [".panpak/icons/256.png", "usr/share/icons/hicolor/48x48/apps/app.png"]);
+        assert_eq!(fs::read(t.join(".panpak/icons/256.png")).unwrap(), data("ok-256-rgba.png"));
+        assert!(notes.iter().any(|n| n.contains("16x16") && n.contains("outside the tree")), "{notes:?}");
+        assert!(notes.iter().any(|n| n.contains("32x32") && n.contains("not accepted")), "{notes:?}");
+        // No icon name and no .DirIcon: nothing, without an error.
+        let empty = scratch("appimage-no-icons");
+        assert_eq!(find_appimage_icons(&empty, None), (vec![], vec![]));
+        assert_eq!(find_appimage_icons(&empty, Some("../x")).0, Vec::<String>::new());
+        let _ = fs::remove_dir_all(&t);
+        let _ = fs::remove_dir_all(&empty);
     }
 
     #[test]
     fn ownership_markers() {
         let l = Path::new("/home/u/.local/bin/org.x");
-        let sh = launcher_sh("org.x", Path::new("/rt"), Path::new("/cur")).unwrap();
+        let sh = dsk::launcher_sh("org.x", Path::new("/rt"), Path::new("/cur")).unwrap();
         assert!(launcher_is_ours(&sh, "org.x"));
         assert!(!launcher_is_ours(&sh, "org.y"));
         assert!(!launcher_is_ours("#!/bin/sh\necho mine\n", "org.x"));
         // Written before the marker existed.
         assert!(launcher_is_ours("#!/bin/sh\n# Generated by `panpak install`: do not edit.\n# Points to apps/<id>/current; x\n", "org.x"));
-        let d = desktop_file("org.x", "X", l, &[], None, None).unwrap();
+        let d = dsk::desktop_file(&dsk::Entry { app_id: "org.x", name: "X", launcher: l, schemes: &[], wm_class: None, panpak: None, icon: false }).unwrap();
         assert!(desktop_is_ours(&d, "org.x", l));
         assert!(!desktop_is_ours(&d, "org.y", l));
         assert!(!desktop_is_ours("[Desktop Entry]\nType=Application\nName=Mine\nExec=/bin/mine\n", "org.x", l));

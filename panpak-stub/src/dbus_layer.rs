@@ -98,29 +98,15 @@ fn token() -> Result<String> {
     Ok(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
-/// The last component of the cgroup of this process, from `/proc/self/cgroup`.
+/// The user unit of this process, the way `sd_pid_get_user_unit` finds it (the one the portal asks for): from the
+/// cgroup in `/proc/self/cgroup`, the first component after `user@<uid>.service` that is not a slice.
 fn current_unit() -> Option<String> {
     let s = std::fs::read_to_string("/proc/self/cgroup").ok()?;
     let line = s.lines().find(|l| l.starts_with("0::"))?;
-    Some(line.trim_start_matches("0::").rsplit('/').next()?.to_string())
+    panpak_core::unitname::user_unit_of_cgroup(line.trim_start_matches("0::")).map(str::to_string)
 }
 
-/// Does the portal take this unit for the app `panpak.<id>`? It parses the unit name with
-/// `^app-(?:[[:alnum:]]+\-)?(.+?)(?:\-[[:alnum:]]*)(?:\.scope|\.slice)$` and unescapes `\x2d`. The same rule, by hand: with the
-/// optional first word dropped if it is there and the rest still matches, the identifier is what comes before the last `-` and
-/// a tail of letters and digits. This is the case of an app that the desktop started itself (`app-gnome-panpak.<id>-<n>.scope`).
-pub fn unit_gives_id(unit: &str, app_id: &str) -> bool {
-    let Some(rest) = unit.strip_prefix("app-") else { return false };
-    let Some(rest) = rest.strip_suffix(".scope").or_else(|| rest.strip_suffix(".slice")) else { return false };
-    // The identifier is what is left after the last `-`, which is followed by letters and digits only (or nothing).
-    let id_of = |r: &str| -> Option<String> {
-        let (id, tail) = r.rsplit_once('-')?;
-        (!id.is_empty() && tail.bytes().all(|b| b.is_ascii_alphanumeric())).then(|| id.replace("\\x2d", "-"))
-    };
-    let word = rest.split_once('-').filter(|(w, _)| !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric()));
-    let want = format!("panpak.{app_id}");
-    word.and_then(|(_, r)| id_of(r)).is_some_and(|id| id == want) || (word.and_then(|(_, r)| id_of(r)).is_none() && id_of(rest).is_some_and(|id| id == want))
-}
+pub use panpak_core::unitname::unit_gives_id;
 
 /// Move this process into a new scope named for the app. The scope is asked of the user's systemd,
 /// which is on `$XDG_RUNTIME_DIR/bus` (the session bus the proxy forwards to is another thing in a
@@ -308,25 +294,6 @@ mod tests {
 
     fn man(extra: &str) -> panpak_core::Manifest {
         toml::from_str(&format!("[app]\nid = \"org.example.app\"\nname = \"App\"\nversion = \"1\"\nentry = \"bin/app\"\n{extra}")).unwrap()
-    }
-
-    #[test]
-    fn units_that_give_the_app_its_identity() {
-        let id = "org.example.app";
-        // Started by the desktop, by us, or by a terminal.
-        assert!(unit_gives_id("app-gnome-panpak.org.example.app-4242.scope", id));
-        assert!(unit_gives_id("app-panpak.org.example.app-1a2b3c4d.scope", id));
-        assert!(unit_gives_id("app-KDE-panpak.org.example.app-99.scope", id));
-        assert!(!unit_gives_id("app-ghostty-surface-transient-3121607.scope", id));
-        assert!(!unit_gives_id("app-gnome-org.gnome.Ptyxis-1234.scope", id));
-        assert!(!unit_gives_id("app-gnome-panpak.org.example.other-4242.scope", id));
-        assert!(!unit_gives_id("panpak.org.example.app.scope", id));
-        assert!(!unit_gives_id("session-3.scope", id));
-        assert!(!unit_gives_id("app-gnome-panpak.org.example.app.service", id));
-        assert!(unit_gives_id("app-gnome-panpak.org.example.app-.scope", id), "an empty tail is allowed by the portal's expression");
-        // An id with a dash is written with \x2d in the unit name.
-        assert!(unit_gives_id("app-gnome-panpak.org.my\\x2dapp-1.scope", "org.my-app"));
-        assert!(unit_gives_id("app-gnome-panpak.org.my-app-1.scope", "org.my-app"), "the portal reads a plain dash the same way");
     }
 
     #[test]

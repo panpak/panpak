@@ -127,6 +127,7 @@ struct Facts {
     cache_bytes: Option<u64>,
     has_launcher: bool,
     has_desktop: bool,
+    has_icon: bool,
 }
 
 impl Facts {
@@ -140,7 +141,7 @@ impl Facts {
         }
     }
     fn found_anything(&self) -> bool {
-        self.in_apps || !self.packages.is_empty() || self.data_bytes.is_some() || self.cache_bytes.is_some() || self.has_launcher || self.has_desktop
+        self.in_apps || !self.packages.is_empty() || self.data_bytes.is_some() || self.cache_bytes.is_some() || self.has_launcher || self.has_desktop || self.has_icon
     }
 }
 
@@ -196,6 +197,7 @@ impl Ctx {
             cache_bytes: None,
             has_launcher: false,
             has_desktop: false,
+            has_icon: false,
         };
         let appdir = self.apps.as_ref().and_then(|a| match a.lstat(OsStr::new(id)) {
             Ok(Some(st)) => Some((a, st)),
@@ -273,6 +275,7 @@ impl Ctx {
         if let Some(apps_dir) = dirs::data_dir().map(|d| d.join("applications")).and_then(|p| Dir::open_path(&p).ok()) {
             f.has_desktop = matches!(apps_dir.lstat(&os(&format!("panpak.{id}.desktop"))), Ok(Some(_)));
         }
+        f.has_icon = !crate::icons::present(id).is_empty();
         if f.in_apps || !f.packages.is_empty() {
             if !f.has_launcher {
                 f.problems.push("no launcher".into());
@@ -318,7 +321,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
         return Ok(());
     }
     if facts.is_empty() {
-        println!("no apps installed");
+        println!("no apps installed. Install one with `panpak install <file.panpak>`.");
         return Ok(());
     }
     let rows: Vec<[String; 6]> = facts
@@ -351,6 +354,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
     for r in &rows {
         line(r);
     }
+    println!();
     println!("APP is the packages and the unpacked trees on disk (a tree shared by two apps is counted in both); DATA is the settings, data and cache of the app.");
     Ok(())
 }
@@ -374,6 +378,15 @@ fn remove_integration(id: &str, removed: &mut Vec<String>, kept: &mut Vec<String
             } else {
                 kept.push(format!("{} (not a launcher written by panpak, or a link: not touched)", launcher_path.display()));
             }
+        }
+    }
+    let gone = crate::icons::remove(id, &[])?;
+    if !gone.is_empty() {
+        let bytes: u64 = gone.iter().map(|(_, b)| b).sum();
+        if let [(p, _)] = gone.as_slice() {
+            removed.push(format!("icon {}", p.display()));
+        } else {
+            removed.push(format!("icons: {} files ({}), for example {}", gone.len(), human(bytes), gone[0].0.display()));
         }
     }
     let mut touched = false;
@@ -404,6 +417,21 @@ fn roots_in_use(packages: &Option<Dir>) -> HashSet<String> {
     let mut set = HashSet::new();
     if let Some(p) = packages {
         for n in package_names(packages) {
+            if let Ok(mut f) = p.open_file(OsStr::new(&n)) {
+                if let Ok(ft) = panpak_core::read_footer(&mut f) {
+                    set.insert(panpak_core::hex(&ft.root));
+                }
+            }
+        }
+    }
+    set
+}
+
+/// The roots of the trees that packages other than `ours` use.
+fn roots_of_other_packages(packages: &Option<Dir>, ours: &[String]) -> HashSet<String> {
+    let mut set = HashSet::new();
+    if let Some(p) = packages {
+        for n in package_names(packages).into_iter().filter(|n| !ours.contains(n)) {
             if let Ok(mut f) = p.open_file(OsStr::new(&n)) {
                 if let Ok(ft) = panpak_core::read_footer(&mut f) {
                     set.insert(panpak_core::hex(&ft.root));
@@ -566,7 +594,34 @@ pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
     test_pause();
     let ids = ctx.app_ids();
     let facts = ctx.facts(id, &ids);
-    ensure_code!(facts.found_anything(), ErrorCode::E2004, "nothing is installed or left over under the id {id}");
+    ensure_code!(
+        facts.found_anything(),
+        ErrorCode::E2004,
+        "{id} is not installed: nothing to remove (it was removed already, or never installed). `panpak list` shows the installed apps"
+    );
+    let app_part = facts.in_apps || !facts.packages.is_empty() || facts.has_launcher || facts.has_desktop || facts.has_icon;
+    if !app_part && !purge {
+        let left: Vec<String> = [(&facts.data_bytes, "settings and data"), (&facts.cache_bytes, "cache")]
+            .into_iter()
+            .filter_map(|(b, what)| b.map(|b| format!("{what} ({})", human(b))))
+            .collect();
+        return Err(coded(
+            ErrorCode::E2004,
+            format!("{id} is not installed: no app to remove, but its {} {} left; `panpak remove --purge-data {id}` deletes {}", left.join(" and "), if left.len() > 1 { "are" } else { "is" }, if left.len() > 1 { "them" } else { "it" }),
+        ));
+    }
+    // What the removal will free, worked out before anything goes: the packages, the trees no other app's
+    // package uses, and the data and cache if they are deleted too. The shared blobs stay and are not counted.
+    let others = roots_of_other_packages(&ctx.packages, &facts.packages);
+    let mut freed = facts.package_bytes;
+    for r in facts.roots.iter().filter(|r| !others.contains(*r)) {
+        for t in [&ctx.trees, &ctx.farms].into_iter().flatten() {
+            freed += t.disk_usage(OsStr::new(r)).unwrap_or(0);
+        }
+    }
+    if purge {
+        freed += facts.data_bytes.unwrap_or(0) + facts.cache_bytes.unwrap_or(0);
+    }
 
     let dirs = panpak_core::app_dirs(id)?;
     if purge {
@@ -675,7 +730,8 @@ pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
         Err(e) => problems.push(e.to_string()),
     }
 
-    println!("removed {id}:");
+    let ver = facts.version.as_deref().map(|v| format!(" {}", clean(v))).unwrap_or_default();
+    println!("removed {id}{ver}: freed {}", human(freed));
     if removed.is_empty() {
         println!("  (nothing was left of the app itself)");
     }

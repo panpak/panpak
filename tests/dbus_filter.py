@@ -293,21 +293,29 @@ def main():
 
 
 def fast_path(lab, sess):
-    """Started the way the GNOME menu does (inside `app-gnome-panpak.<id>-<n>.scope`), the stub makes no scope of its
-    own: the app, the proxy and the stub are all in the scope of the desktop, and the portal still knows `panpak.<id>`."""
-    unit = f'app-gnome-panpak.{app_dirs.ID}-{os.getpid()}.scope'
+    """Started the way a desktop does (inside a scope or a service that names the app), the stub makes no scope of its
+    own: the app, the proxy and the stub are all in the unit of the desktop, and the portal still knows `panpak.<id>`.
+    The shapes of the systemd convention: GNOME's scope, a scope with no launcher word, and a service with `@<n>` (the
+    portal reads each of them; see panpak-core/src/unitname.rs)."""
     report_file = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/data/report.txt'
-    report_file.unlink(missing_ok=True)
-    sess.log.write_text('')
-    # systemd-run talks to the real user manager (the environment of this script); the launcher gets the lab's environment.
-    p = subprocess.run(['systemd-run', '--user', '--scope', '--quiet', f'--unit={unit}', 'env', '-i', *[f'{k}={v}' for k, v in lab.env.items()], str(lab.home / '.local/bin' / app_dirs.ID)],
-                       capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
-    need(p.returncode == 0, f'fast path start failed: {p.stderr}')
-    rep = dict(l.partition('=')[::2] for l in report_file.read_text().splitlines())
-    need(rep.get('cgroup') == unit, f'fast path: the app is in {rep.get("cgroup")}, not in {unit}')
-    log = sess.log.read_text()
-    need(f'Inhibit app_id=panpak.{app_dirs.ID}' in log, f'fast path: the portal does not know the app: {log!r}')
-    print('  desktop scope reused: the app is in', unit, 'and the portal knows panpak.' + app_dirs.ID)
+    launcher = [*[f'{k}={v}' for k, v in lab.env.items()], str(lab.home / '.local/bin' / app_dirs.ID)]
+    n = os.getpid()
+    shapes = [
+        (f'app-gnome-panpak.{app_dirs.ID}-{n}.scope', ['--scope']),
+        (f'app-panpak.{app_dirs.ID}-{n}.scope', ['--scope']),
+        (f'app-gnome-panpak.{app_dirs.ID}@{n}.service', ['--wait', '--collect']),
+    ]
+    for unit, how in shapes:
+        report_file.unlink(missing_ok=True)
+        sess.log.write_text('')
+        # systemd-run talks to the real user manager (the environment of this script); the launcher gets the lab's environment.
+        p = subprocess.run(['systemd-run', '--user', *how, '--quiet', f'--unit={unit}', 'env', '-i', *launcher], capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
+        need(p.returncode == 0, f'fast path start in {unit} failed: {p.stderr}')
+        rep = dict(l.partition('=')[::2] for l in report_file.read_text().splitlines())
+        need(rep.get('cgroup') == unit, f'fast path: the app is in {rep.get("cgroup")}, not in {unit}')
+        log = sess.log.read_text()
+        need(f'Inhibit app_id=panpak.{app_dirs.ID}' in log, f'fast path in {unit}: the portal does not know the app: {log!r}')
+        print('  desktop unit reused: the app is in', unit, 'and the portal knows panpak.' + app_dirs.ID)
 
 
 def report(lab, args=()):

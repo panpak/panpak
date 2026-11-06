@@ -657,6 +657,7 @@ dependencies = [
  "libc",
  "mimalloc",
  "panpak-core",
+ "panpak-icon",
  "serde",
  "sha2",
  "tar",
@@ -678,6 +679,13 @@ dependencies = [
  "serde",
  "toml",
  "zstd 0.14.3",
+]
+
+[[package]]
+name = "panpak-icon"
+version = "0.1.0"
+dependencies = [
+ "flate2",
 ]
 
 [[package]]

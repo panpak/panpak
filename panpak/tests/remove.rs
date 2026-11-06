@@ -546,11 +546,14 @@ fn ask(e: &Env, tools: &Path, id: &str) -> Output {
 }
 
 #[test]
-fn the_entry_has_an_uninstall_action_that_runs_the_installed_panpak() {
+fn the_entry_has_an_uninstall_action_that_runs_the_stable_panpak() {
     let e = env("action");
     e.install(A, "1", "a");
     let d = fs::read_to_string(e.desktop(A)).unwrap();
-    let exe = env!("CARGO_BIN_EXE_panpak");
+    // The action runs the copy of panpak in the store, never the binary that happened to run `install`.
+    let exe = e.store().join("bin/panpak");
+    let exe = exe.to_str().unwrap();
+    assert!(exe != env!("CARGO_BIN_EXE_panpak") && Path::new(exe).is_file());
     assert!(d.contains("\nActions=Uninstall;\n"), "{d}");
     assert!(d.contains("\n[Desktop Action Uninstall]\nName=Uninstall\n"), "{d}");
     assert!(d.contains("Name[it]=Disinstalla\n") && d.contains("Name[de]=") && d.contains("Name[fr]=") && d.contains("Name[es]="), "{d}");
@@ -638,4 +641,61 @@ fn ask_with_a_running_copy_or_a_wrong_id_removes_nothing_and_says_why() {
     assert!(!o.status.success() && text(&o).contains("PANPAK-E2004"));
     let o = cli(&e.home, &["remove", "--ask", "--yes", A]);
     assert!(!o.status.success() && text(&o).contains("PANPAK-E5001"));
+}
+
+#[test]
+fn remove_reports_version_and_space_and_a_second_run_has_nothing_to_do() {
+    let e = env("report");
+    e.install(A, "1.2", "a");
+    e.fake_data(A);
+    let o = e.remove(&[A]);
+    assert!(o.status.success(), "{}", text(&o));
+    let out = String::from_utf8_lossy(&o.stdout);
+    let first = out.lines().next().unwrap();
+    assert!(first.starts_with(&format!("removed {A} 1.2: freed ")), "{out}");
+    assert!(out.contains("kept (use `panpak remove --purge-data"), "{out}");
+    assert!(out.contains("launcher ") && out.contains("desktop entry "), "{out}");
+    // The same command again: nothing to do, said plainly, with the code and a failing exit; no "removed" line.
+    let o = e.remove(&[A]);
+    let (so, se) = (String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
+    assert!(!o.status.success() && se.contains("PANPAK-E2004") && se.contains(&format!("{A} is not installed: no app to remove")), "{so}{se}");
+    // The data of the removed app is still there, so the message says how to delete it.
+    assert!(se.contains("settings and data") && se.contains("--purge-data"), "{se}");
+    assert!(!so.contains("removed"), "{so}");
+    // Without the data there is just nothing.
+    let o = e.remove(&["--purge-data", "--yes", A]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(String::from_utf8_lossy(&o.stdout).lines().any(|l| l.starts_with(&format!("removed {A}: freed "))), "{}", text(&o));
+    let o = e.remove(&[A]);
+    let se = String::from_utf8_lossy(&o.stderr);
+    assert!(!o.status.success() && se.contains("it was removed already, or never installed") && se.contains("panpak list"), "{se}");
+}
+
+#[test]
+fn freed_space_leaves_out_a_tree_that_another_app_uses() {
+    let e = env("freed");
+    let root = e.install(A, "1", "same");
+    e.install(B, "1", "same");
+    e.fake_tree(&root);
+    let tree_len = |o: &Output| String::from_utf8_lossy(&o.stdout).lines().next().unwrap().to_string();
+    let o = e.remove(&[A]);
+    let first = tree_len(&o);
+    assert!(o.status.success() && first.starts_with(&format!("removed {A} 1: freed ")), "{}", text(&o));
+    assert!(String::from_utf8_lossy(&o.stdout).contains("stays (another package uses it)"), "{}", text(&o));
+    // B was the last user: its tree goes with it, so more is freed.
+    let o = e.remove(&[B]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!e.store().join("trees").join(&root).exists(), "the tree stays after the last app");
+}
+
+#[test]
+fn list_of_an_empty_store_says_how_to_install() {
+    let e = env("list-empty");
+    let t = text(&cli(&e.home, &["list"]));
+    assert!(t.contains("no apps installed. Install one with `panpak install <file.panpak>`."), "{t}");
+    e.install(A, "1", "a");
+    let t = String::from_utf8_lossy(&cli(&e.home, &["list"]).stdout).to_string();
+    // The table, a blank line, then the explanation of the columns.
+    let lines: Vec<&str> = t.lines().collect();
+    assert!(lines[0].starts_with("ID") && lines[1].starts_with(A) && lines[2].is_empty() && lines[3].starts_with("APP is "), "{t}");
 }

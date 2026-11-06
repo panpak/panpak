@@ -1,5 +1,5 @@
 [workspace]
-members = ["panpak-core", "panpak-stub", "panpak"]
+members = ["panpak-core", "panpak-stub", "panpak", "panpak-icon"]
 exclude = ["fuzz"]
 resolver = "2"
 

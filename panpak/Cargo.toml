@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 anyhow = "1"
 panpak-core = { path = "../panpak-core" }
+panpak-icon = { path = "../panpak-icon" }
 fastcdc = "5"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
