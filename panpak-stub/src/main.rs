@@ -1213,8 +1213,13 @@ fn real_main() -> Result<()> {
         Some(_) => bail!("PANPAK_SOCKET_PROBE is only available on x86-64"),
         None => None,
     };
-    let dark_theme = gtk_dark_theme(theme_query);
-    stage("theme answered");
+    // The answer of `gsettings` is needed only when the environment of the app is complete. With the view that is after the Wayland
+    // context, the D-Bus layer and the shared folders, which take about as long as the query: it is collected there (see
+    // `enter_view`), so the wait overlaps their work. Without the view it is collected here.
+    let (dark_theme, theme_query) = if view_usable { (None, theme_query) } else { (gtk_dark_theme(theme_query), None) };
+    if !view_usable {
+        stage("theme answered");
+    }
     let launch = man.launch.as_ref();
     let launch_args = launch
         .and_then(|l| l.args.as_deref())
@@ -1283,7 +1288,7 @@ fn real_main() -> Result<()> {
         let mut store_paths = plan.ld_path.clone();
         store_paths.extend(plan.loader.clone());
         store_paths.push(PathBuf::from(cmd.get_program()));
-        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref(), early_lock: early.as_ref(), store_paths, dbus: std::cell::Cell::new(dbus_early) };
+        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref(), early_lock: early.as_ref(), store_paths, dbus: std::cell::Cell::new(dbus_early), theme: std::cell::Cell::new(theme_query) };
         stage("entering the view");
         enter_view(&ctx, &mut cmd)?;
     }
@@ -1325,6 +1330,8 @@ struct ViewStart<'a> {
     store_paths: Vec<PathBuf>,
     /// The D-Bus layer, being built on another thread since the package was verified (see `dbus_layer`).
     dbus: std::cell::Cell<Option<Result<dbus_layer::Layer>>>,
+    /// The `gsettings` query for the dark-theme hint, collected as late as the job allows.
+    theme: std::cell::Cell<Option<InterfaceQuery>>,
 }
 
 /// Start the app in the isolated view: build the job for the inner stub and replace this
@@ -1467,6 +1474,12 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     // With X11 access the app reads the Xauthority file, which is put back into the view above.
     let mut job_ro = ctx.access.ro.clone();
     job_ro.extend(xauthority);
+    if let Some(q) = ctx.theme.take() {
+        if let Some(theme) = gtk_dark_theme(Some(q)) {
+            cmd.env("GTK_THEME", theme);
+        }
+        stage("theme answered");
+    }
     let parts = view::Job::command_of(cmd)?;
     let job = view::Job {
         version: view::JOB_VERSION,

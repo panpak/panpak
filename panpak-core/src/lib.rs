@@ -268,8 +268,19 @@ pub fn verify_stub_range(f: &mut File, stub_len: u64, man: &Manifest) -> Result<
         "manifest without [runtime].stub_hash: previous format, not verifiable (reinstall from a recent .panpak)",
     )?;
     ensure!(want.len() == 64 && want.bytes().all(|b| b.is_ascii_hexdigit()), "malformed stub_hash");
-    let stub = read_at(f, 0, stub_len)?;
-    let got = hex(blake3::hash(&stub).as_bytes());
+    // Hashed in pieces of 64 KiB from one buffer: the stub is about 3 MB, and reading it whole allocates and faults in a buffer of that
+    // size at every start (about 3 ms of the 5 that this check took); the hash is the same.
+    f.seek(SeekFrom::Start(0))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut left = stub_len;
+    while left > 0 {
+        let n = usize::try_from(left).unwrap_or(usize::MAX).min(buf.len());
+        f.read_exact(&mut buf[..n])?;
+        hasher.update(&buf[..n]);
+        left -= n as u64;
+    }
+    let got = hex(hasher.finalize().as_bytes());
     crate::ensure_code!(
         got == want,
         ErrorCode::E1002,
