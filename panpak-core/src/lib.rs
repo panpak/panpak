@@ -151,8 +151,6 @@ pub struct Provenance {
     pub image: Option<String>,
     /// Dependencies taken from the image instead of built from the pinned source.
     pub image_deps: Option<Vec<ImageDep>>,
-    /// The peak memory the build used (a measurement, for example `3.7G`).
-    pub build_memory_peak: Option<String>,
 }
 
 /// One dependency taken from the build image (declared in the recipe; the version is what the build found).
@@ -434,7 +432,7 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
     let v: toml::Value = toml::from_str(input).context("panpak.toml is not TOML")?;
     let t = v.as_table().context("panpak.toml: table required")?;
     const TOP: &[&str] = &["app", "abi", "permissions", "launch", "desktop", "runtime", "origin", "update", "env", "provenance"];
-    const PROVENANCE: &[&str] = &["source", "image", "image_deps", "build_memory_peak"];
+    const PROVENANCE: &[&str] = &["source", "image", "image_deps"];
     const IMAGE_DEP: &[&str] = &["name", "package", "version"];
     const DESKTOP: &[&str] = &["schemes", "wm_class", "icons"];
     const XDG_DIR: &[&str] = &["name", "access"];

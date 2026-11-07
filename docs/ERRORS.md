@@ -53,6 +53,8 @@ after the code always describes the actual problem.
 | PANPAK-E5002 | missing option or argument | A required argument or option value is absent, e.g. no `--secret-file` / `PANPAK_SECRET_FILE`, `keygen` without `-o` | Supply it as shown in the usage text |
 | PANPAK-E5003 | secret file ... permissions / symlink / not a regular file | Key file readable by group or others, a symlink, or not a regular file | `chmod 600 <file>`; use a regular file |
 | PANPAK-E5004 | non-interactive stdin | `install` needs a confirmation but stdin is not a terminal, or `install`/`update` found new permissions (`--yes` does not accept them) | Check what is asked, then pass `--yes` for the key, or `--accept-new-permissions` for new permissions; `data clear` needs `--yes` |
+| PANPAK-E6000 | `init` or `build` failed | A recipe is not valid, a source or image could not be fetched or does not match its hash or digest, a build step failed, or a plugin that a linked module needs is not in the package; the message says which and what to do | Read the message; the end of the log of a failed step is in it |
+| PANPAK-E6005 | not enough memory for this build | `build.memory` of the recipe (with `build.jobs`) is more than the memory that is available, even with one job | Free memory or close programs; the recipe's `build.memory` is what the build was measured to need |
 
 ## Generic codes
 

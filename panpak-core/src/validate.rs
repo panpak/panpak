@@ -326,7 +326,7 @@ pub fn validate_manifest(man: &Manifest) -> Result<()> {
         crate::pkgenv::check(env)?;
     }
     if let Some(p) = &man.provenance {
-        for (field, v) in [("provenance.source", &p.source), ("provenance.image", &p.image), ("provenance.build_memory_peak", &p.build_memory_peak)] {
+        for (field, v) in [("provenance.source", &p.source), ("provenance.image", &p.image)] {
             if let Some(v) = v {
                 display_text(field, v, 512)?;
             }

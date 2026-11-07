@@ -223,6 +223,12 @@ then call `PermissionStore.DeletePermission` for the app and revoke its document
 - **Device ioctl.** From Landlock V5 the app can do an ioctl only on `/dev/tty`, `/dev/dri` and the pseudo-terminals `ptmx` and `pts` (and on descriptors it
   inherited, such as its terminal). `/dev/null`, `/dev/zero`, `/dev/urandom` and the other nodes refuse it with `EACCES`
   (tested per device).
+- **Variables that point at the tree (`[env]`).** The manifest can set a short list of variables, with values made of `${PANPAK_ROOT}` and a relative path inside the tree
+  (PANPAK-FORMAT.md §3.1.6). The list leaves out everything that changes how code is loaded from outside the tree (`LD_*`) or that the runtime protects; `pack`, `install` and the runtime check
+  each value, and `pack` refuses a path that is not in the tree. What a package can load is therefore what its signed files contain. It replaces the shell script that a source build used to need as its entry.
+- **Builds from source (`panpak build`).** The build runs in a user namespace of bubblewrap with one user id, no network (except the first run of a recipe that says `network = "fetch"`), the source
+  read-only, and a memory cap. It is a build sandbox, not a security boundary against a malicious build script: a recipe is code, and the commit or hash it pins is what the author vouches for.
+  The package records where the source and the image came from (`[provenance]`), and the libraries taken from the image instead of the pinned source are declared one by one.
 - **Pseudo-terminals.** Every app may open a pty (terminals, IDEs and editors with a terminal need one), so it is not a permission. What makes it safe is
   that the view has a devpts of its own: a pty of the app is not a terminal of the user, and the app cannot read the keys the user types in another terminal
   or write into one. `TIOCSTI` and `TIOCLINUX` are refused by seccomp. A shell on a pty is still inside the same view, Landlock and seccomp as the app.

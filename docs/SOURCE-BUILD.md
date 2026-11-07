@@ -175,172 +175,179 @@ different CPU count, which for Meson and CMake does not change the output, and f
 should not run two at once (the machine froze once when several builds ran together; since then every build runs in a
 scope with a memory cap).
 
-### 3.2 `panpak.toml` for the developer
+### 3.2 The recipe (`panpak.toml`), `panpak.lock` and the commands
 
-Today `panpak.toml` describes the package. For a source build it grows four tables (`[source]`, `[build]`, `[collect]`, `[license]`) and the build
-leaves a record in the signed manifest (`[provenance]`). Schema, with the fields that came out of the first part of phase 2 (memory, jobs, dependencies taken from the image):
+Decided with the owner (phase 3), and built (section 6). A recipe is a `panpak.toml` with the tables `[app]`, `[source]`, `[build]`, `[collect]`, `[desktop]`, `[permissions]`, `[launch]`,
+`[env]`, `[license]`; `panpak build` makes from it the manifest of the package (adds `[abi]`, `[runtime]`, `[update]`, `[provenance]`).
 
 ```toml
-[app]                        # as today
+[app]                        # as in a manifest
 id = "org.gnome.TextEditor"  # the application id (F11)
 name = "Text Editor"
 version = "48.3"
-entry = "bin/gnome-text-editor"
+entry = "bin/gnome-text-editor"   # the program itself, relative to the installed tree (/usr is the root): never a shell script
 
-[source]                     # what is built; exactly one of git or url
+[source]                     # exactly one of git (with commit) or url (with sha256)
 git = "https://gitlab.gnome.org/GNOME/gnome-text-editor.git"
-commit = "6f40f0bf2d443471ecc0267e8e87d202b6d1ff6c"      # required: a tag alone is refused
-# url = "https://example.org/app-1.0.tar.gz"; sha256 = "<64 hex>"; signature = { minisign = "<key>", file = "<url>" }   (optional check)
+commit = "6f40f0bf2d443471ecc0267e8e87d202b6d1ff6c"   # the full id: a tag can move, so it is refused
+# epoch = 1790000000         # SOURCE_DATE_EPOCH; default: the date of the commit (git) or the newest file of the tarball (url)
 
 [build]
-image = "debian-13"          # a recipe image: the tool maps the name to a digest and a snapshot date it carries; an unknown name is an error
-system = "meson"             # meson | cmake | cargo | zig | custom
+# image = "debian-13"        # default; the NAME of the image. Which one exactly is fixed in panpak.lock
+system = "meson"             # meson | cmake | zig | custom
 configure = ["--prefix=/usr", "--libdir=lib", "--buildtype=release"]
-steps = []                   # only for system = "custom": each step an argument list, never a shell string
-writable_source = false      # true: the build writes into the source (qBittorrent), so it works on a copy
-memory = "2G"                # the peak the recipe was measured to need at `jobs` jobs; see below
-jobs = 6                     # the most jobs it was tested with
-memory_per_job = "0.5G"      # optional; default memory / jobs
-network = "fetch"            # fetch: the sources and the language packages are fetched first (the only step with the network) | none
+packages = ["meson", "ninja-build", "libgtk-4-dev"]   # of the image, from its snapshot (the base tools are always there)
+memory = "1G"                # what the build was measured to need at `jobs` jobs; optional
+jobs = 6                     # the most jobs it was tested with; default: the processors
+# memory_per_job = "0.5G"    # default: memory / jobs
+# network = "fetch"          # the first run may fetch what the build system downloads (Zig packages); default none
+# writable_source = true     # the build writes into its source (a generated header): it works on a copy
+# zig = { version = "0.15.2", sha256 = "<sha256 of the archive>" }     # for system = "zig": the compiler is pinned here
+# steps = [["make", "-j2"], ["make", "install"]]                      # for system = "custom": argument lists, never a shell string
 
-[build.image_packages]       # what the image needs for this app, from the image's dated snapshot
-packages = ["meson", "ninja-build", "libgtk-4-dev", "libadwaita-1-dev", "libgtksourceview-5-dev", "libspelling-1-dev", "itstool", "appstream"]
+[[build.image_deps]]         # a dependency taken from the image instead of built from the pinned source
+name = "gtk4-layer-shell"
+package = "libgtk4-layer-shell-dev"   # must be in build.packages
+why = "linked from the system by pkg-config"   # required
 
-[[build.image_deps]]         # a dependency taken from the build image instead of built from source (the -fsys case of Ghostty)
-name = "glslang"
-package = "glslang-dev"      # the image package, and its version is recorded by the build
-why = "the pinned copy needs more than 10 GB to compile"
-# every entry here is copied to [provenance] and shown by `panpak install`
+[collect]
+toolkit = "gtk4"             # gtk4 | qt6 | none
+# prefer_host = []   allow_missing = []   data = ["share/gtksourceview-5"]   exclude = ["include/*"]
 
-[collect]                    # what goes with the app (see 3.3)
-toolkit = "gtk4"             # gtk4 | gtk3 | qt6 | none
-prefer_host = []             # libwayland-* is always host (corrected); only what is beyond that
-data = ["share/gtksourceview-5", "share/icons/Adwaita"]
-exclude = []
+[desktop]                    # sizes default to [256, 128, 64, 48, 32]
+icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"   # or icons_png = [...] for PNG files of the tree
+# wm_class = "..."   schemes = [...]
 
-[desktop]
-icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"
-sizes = [256, 128, 64, 48, 32]
-schemes = []
+[env]                        # optional: added to what the toolkit needs (PANPAK-FORMAT.md section 3.1.6)
+# GSETTINGS_BACKEND = "keyfile"
 
-[permissions]                # as today
-dbus_own = ["org.gnome.TextEditor"]
+[permissions]  /  [launch]   # as in a manifest
 
 [license]
 spdx = "GPL-3.0-or-later"
-files = ["COPYING"]
-bundled = "auto"             # the license files of the libraries that are collected, from the image's package data
-
-[update]
-key = "ed25519:..."
-
-# Written by `panpak build`, never by hand (`pack` refuses it in the input): the record that the user sees at install.
-[provenance]
-source = "git https://... @ 6f40f0bf..."
-image = "debian-13 sha256:7378260c... snapshot 20261107T000000Z"
-image_deps = [{ name = "glslang", package = "glslang-dev", version = "15.1.0+1.4.309.0-1" }]
-build_memory_peak = "0.55G"
+files = ["COPYING"]          # copied into share/licenses/<id>/
+bundled = "auto"             # the copyright files of the image packages that the collected libraries came from
 ```
 
-**Memory (`build.memory`, `jobs`, `memory_per_job`).** A recipe declares what it needs: the peak measured at the number of jobs it was tested with.
-`panpak build` reads the available memory (`MemAvailable`, and swap only as a margin, not counted) and: if the available memory is at least `memory`, it runs with
-`jobs` (never more than the processors); if it is less, it lowers the number of jobs to `floor((available - base) / memory_per_job)` and says so; if not even one job fits it stops
-with `PANPAK-E6005` before it starts, naming what is missing. The build runs in a systemd user scope with `MemoryMax` of `max(memory, jobs x memory_per_job) x 1.25` and
-`MemorySwapMax` of the swap that is there, so that when the memory ends the kernel closes the build and not the desktop; the tool reads `memory.peak` of the scope and writes it to `[provenance]`
-and to the output, and says when the recipe's `memory` was too low (the number is a measurement, not a promise). Without `systemd-run --user` (a system with no user manager) it runs with `ulimit -v`
-as a poorer guard and says so. The measured recipes below: Text Editor 0.55 GB, qBittorrent 3.0 GB, Ghostty 3.7 GB (2.4 GB when the packages are already fetched).
-
-**Dependencies from the image (`[[build.image_deps]]`).** A recipe may say that a dependency is not built from the pinned source but taken from the image. It is declared one by one
-(name, image package, why), the build records the version it found, and the list goes into the signed `[provenance]` of the package and into what `install` prints, so the user sees
-that a library of the build system's distribution is inside, not the one the author of the app pinned. `pack` and `build` refuse an image dependency that is not declared.
-
-Commands:
-
-| Command | What it does | Clear errors and warnings |
-|---|---|---|
-| `panpak init` | Looks at the folder (`meson.build`, `CMakeLists.txt`, `Cargo.toml`, `build.zig`, a `.desktop` file, `share/dbus-1/services/*.service`, an icon) and writes a first `panpak.toml` with comments. Does not run anything of the project | does not overwrite an existing file; says which fields it could not guess (`id`, `commit`) and leaves them empty so that `build` refuses |
-| `panpak build` | Prepares the image (by digest), fetches the source at the pinned commit or hash (the only step with the network), builds in the sandbox with no network, installs into a staging folder, runs `collect`. Output: a tree, ready for `pack`, and a build record (inputs and digests) | `PANPAK-E6001` source without a commit or hash; `E6002` the fetched source does not match; `E6003` the build step failed (the last 40 lines are shown); `E6004` an image or snapshot that is not pinned; `E6005` the build needs more memory than the cap (the cap and the peak are shown) |
-| `panpak pack` | As today, plus checks on the tree | see the warnings below |
-
-Warnings and refusals (new, all with the usual error-code style):
-
-- Broad permissions: `network = true` without `network_allow_tcp`; `x11 = true` for an app that has a Wayland plugin;
-  any `home_paths`; `dbus_own` for a name that is another app's well-known name; `xdg_dirs` with `rw` that the
-  app's own code does not need (a hint, not a rule).
-- **Application id equal to a name that a native install may own** (F22): until the runtime can tell its own name
-  from a foreign owner, `pack` warns when `dbus_own` holds the application id of an app that is single-instance.
-  This is a stop-gap; the fix belongs in the runtime.
-- Missing pieces that fail silently today: a Qt app without the platform theme plugin (F26) or the SVG plugins
-  (F25); a GTK app without the pixbuf SVG loader; a tree with `libwayland-*` and no `prefer_host` (F19); an entry
-  that is not an executable; no `glibc_min`.
-- A terminal-like app (it opens `/dev/ptmx`): refused until a `pty` permission exists (F21).
-
-### 3.2.1 The three recipes in this format
-
-These are the recipes of the practical test written in the proposed schema; the build scripts used in phase 1 are what the `steps` and `configure` lines stand for.
-Numbers are the measured ones (section 1.2).
+`panpak.lock`, next to the recipe, written by `panpak init` or the first `panpak build` and changed only by `panpak build --update-lock`:
 
 ```toml
-# recipes/gnome-text-editor/panpak.toml
+[image]
+name = "debian-13"
+manifest_digest = "sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392"
+snapshot = "20261107T000000Z"
+```
+
+**Commands.**
+
+| Command | What it does |
+|---|---|
+| `panpak init [folder]` | Looks at the folder (`meson.build`, `CMakeLists.txt`, `build.zig`, a desktop entry, a D-Bus service file, an SVG icon, the git remote and the commit that is checked out) and writes a recipe with the holes marked `TODO`, and `panpak.lock`. Runs nothing of the project; does not overwrite |
+| `panpak build [folder] --secret-file <f> [--stub <stub>] [-o <out>] [--update-lock]` | The lock; the memory plan; the image (made once, kept in the cache); the source (git commit or hashed tarball); the build in the image; the collection; the manifest; `pack`. Prints the peak memory and, if the recipe does not say or says too little, the `build.memory` to write |
+| `panpak pack` | As before, plus: refuses an `[env]` path that is not in the tree, writes `glibc_min`, warns about a shell script as the entry and about a Qt tree without its plugins |
+
+**Defaults.** `build.image` is `debian-13`; `desktop.sizes` is `[256, 128, 64, 48, 32]`; `build.jobs` is the number of processors (lowered by the memory); `build.network` is `none`.
+
+**The lock and the image name.** The recipe has the name; the lock has the digest of the image in the registry and the date of the package snapshot. Two builds of one recipe use one image until someone runs
+`--update-lock`. A lock for another name than the recipe's is an error that says so. The image of a recipe is kept in the cache under a key made of the lock and the packages.
+
+**Memory.** `build.memory` is what the recipe was measured to need at `build.jobs` jobs. Before it starts, `build` reads `MemAvailable`: with enough, it runs `jobs` jobs; with less, it lowers the number
+of jobs (the part of the need that does not depend on the jobs is `memory - memory_per_job x (jobs - 1)`) and says so; if not even one job fits it stops with `PANPAK-E6005`, before downloading anything. The build runs in a
+systemd user scope with `MemoryMax` of 1.25 times what it needs and `MemorySwapMax` of the swap that exists (at most 6 GB), so that when memory ends the kernel closes the build and not the desktop; the tool samples `memory.peak` of the scope.
+At the end it prints the peak and, if there is no `build.memory` or the peak is above it, the value to write (the peak plus a tenth). The peak is **not** written into the package: it changes from run to run, and the same inputs must give the same bytes.
+Without `systemd-run --user` the build runs without a cap, with a warning.
+
+**Dependencies taken from the image.** `[[build.image_deps]]` declares them one by one, with the reason; the package must be in `build.packages`. The build records the version found, and the list goes into the signed
+`[provenance]` of the package and is shown by `install`. The three recipes below have one (Ghostty: `gtk4-layer-shell`); the `-fsys` route of Ghostty 1.4.0 (13b) would add `glslang` and `spirv-cross`.
+
+**`[env]` instead of a script.** The entry is the program. What the toolkits need (`GSETTINGS_SCHEMA_DIR`, `QT_PLUGIN_PATH`, `GDK_PIXBUF_MODULE_FILE`, `XDG_DATA_DIRS`, `GSETTINGS_BACKEND`, `QT_QPA_PLATFORM`) is data in the manifest, set by the stub;
+the allowed names, their kinds and why are in PANPAK-FORMAT.md section 3.1.6. Values are `${PANPAK_ROOT}/relative/path` (checked by `pack`: no absolute path, nothing outside the tree, the path must exist) or a word from a short list.
+
+**Warnings and refusals.** `pack` and `build` say, besides the above: broad permissions (`network = true` without ports, `x11 = true`, any `home_paths`); a Qt tree without its theme or SVG plugins (a stop in `build`); `libwayland-*` is never collected (the host's copy
+is used); a terminal-like app needs nothing (the pty is always there). Open until F22 is decided: a `dbus_own` equal to the id of an app that is single-instance gives the copy a way to the native instance; the recipe of Ghostty
+turns the single instance off and gives the window a class of its own.
+
+### 3.2.1 The three recipes in the final format
+
+As built by `panpak build` (these are the files used in section 6).
+
+```toml
+# gnome-text-editor/panpak.toml
 [app]
 id = "org.gnome.TextEditor"
 name = "Text Editor"
 version = "48.3"
 entry = "bin/gnome-text-editor"
+
 [source]
 git = "https://gitlab.gnome.org/GNOME/gnome-text-editor.git"
 commit = "6f40f0bf2d443471ecc0267e8e87d202b6d1ff6c"
+
 [build]
-image = "debian-13"
 system = "meson"
 configure = ["--prefix=/usr", "--libdir=lib", "--buildtype=release"]
+packages = [
+  "meson", "ninja-build", "libgtk-4-dev", "libadwaita-1-dev", "libgtksourceview-5-dev", "libspelling-1-dev", "libicu-dev",
+  "libenchant-2-dev", "libeditorconfig-dev", "blueprint-compiler", "itstool", "appstream", "sassc", "libxml2-utils",
+  "gsettings-desktop-schemas", "adwaita-icon-theme", "shared-mime-info", "librsvg2-common",
+]
 memory = "1G"
 jobs = 6
-network = "none"
-[build.image_packages]
-packages = ["meson", "ninja-build", "libgtk-4-dev", "libadwaita-1-dev", "libgtksourceview-5-dev", "libspelling-1-dev", "libicu-dev", "libenchant-2-dev", "libeditorconfig-dev", "blueprint-compiler", "itstool", "appstream", "sassc", "librsvg2-bin", "gsettings-desktop-schemas", "adwaita-icon-theme", "shared-mime-info", "librsvg2-common"]
+
 [collect]
 toolkit = "gtk4"
-data = ["share/gtksourceview-5", "share/icons/Adwaita", "share/mime"]
+data = ["share/gtksourceview-5"]
+
 [desktop]
 icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"
-sizes = [256, 128, 64, 48, 32]
+
 [permissions]
 dbus_own = ["org.gnome.TextEditor"]
+
 [[permissions.xdg_dirs]]
 name = "documents"
 access = "rw"
+
 [license]
 spdx = "GPL-3.0-or-later"
 files = ["COPYING"]
+bundled = "auto"
 ```
 
 ```toml
-# recipes/qbittorrent/panpak.toml
+# qbittorrent/panpak.toml
 [app]
 id = "org.qbittorrent.qBittorrent"
 name = "qBittorrent"
 version = "5.2.4"
 entry = "bin/qbittorrent"
+
 [source]
 git = "https://github.com/qbittorrent/qBittorrent.git"
 commit = "a1e4649cb8ae581925acc161dbab5cbc6584c542"
+
 [build]
-image = "debian-13"
 system = "cmake"
-configure = ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DGUI=ON", "-DWEBUI=ON", "-DSYSTEMD=OFF", "-DSTACKTRACE=OFF", "-DTESTING=OFF"]
+configure = [
+  "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib",
+  "-DGUI=ON", "-DWEBUI=ON", "-DSYSTEMD=OFF", "-DSTACKTRACE=OFF", "-DTESTING=OFF",
+]
+packages = [
+  "cmake", "ninja-build", "qt6-base-dev", "qt6-base-private-dev", "qt6-tools-dev", "qt6-tools-dev-tools", "qt6-l10n-tools",
+  "libqt6svg6-dev", "qt6-svg-plugins", "qt6-xdgdesktopportal-platformtheme", "qt6-wayland",
+  "libtorrent-rasterbar-dev", "libboost-dev", "libssl-dev", "zlib1g-dev",
+]
 writable_source = true
 memory = "3G"
 jobs = 4
 memory_per_job = "0.6G"
-network = "none"
-[build.image_packages]
-packages = ["cmake", "ninja-build", "qt6-base-dev", "qt6-base-private-dev", "qt6-tools-dev", "qt6-tools-dev-tools", "qt6-l10n-tools", "libqt6svg6-dev", "qt6-svg-plugins", "qt6-xdgdesktopportal-platformtheme", "qt6-wayland", "libtorrent-rasterbar-dev", "libboost-dev", "libssl-dev", "zlib1g-dev", "librsvg2-bin"]
+
 [collect]
 toolkit = "qt6"
+
 [desktop]
 icon_svg = "share/icons/hicolor/scalable/apps/qbittorrent.svg"
-sizes = [256, 128, 64, 48, 32]
+
 [permissions]
 network = true
 network_allow_tcp = [80, 443]
@@ -348,60 +355,75 @@ network_bind_tcp = [6881]
 notifications = true
 tray = true
 dbus_own = ["org.qbittorrent.qBittorrent"]
+
 [[permissions.xdg_dirs]]
 name = "download"
 access = "rw"
+
 [license]
-spdx = "GPL-3.0-or-later"        # the binary distribution; COPYING says so and adds an OpenSSL exception
+spdx = "GPL-3.0-or-later"
 files = ["COPYING"]
+bundled = "auto"
 ```
 
 ```toml
-# recipes/ghostty/panpak.toml    (1.3.1; the 1.4.0 recipe of 13b adds the two image_deps below)
+# ghostty/panpak.toml
 [app]
 id = "com.mitchellh.ghostty"
 name = "Ghostty"
 version = "1.3.1"
 entry = "bin/ghostty"
+
 [source]
 url = "https://release.files.ghostty.org/1.3.1/ghostty-1.3.1.tar.gz"
 sha256 = "3349d25600ffbda281197a18314f7d18791969cffe9474f0ff16a45a9ebfccdb"
-signature = { minisign = "RWQlAjJC23149WL2sEpT/l0QKy7hMIFhYdQOFy0Z7z7PbneUgvlsnYcV", file = "https://release.files.ghostty.org/1.3.1/ghostty-1.3.1.tar.gz.minisig" }
+epoch = 1790000000
+
 [build]
-image = "debian-13"
 system = "zig"
 zig = { version = "0.15.2", sha256 = "02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239" }
 configure = ["--prefix", "/usr", "-Doptimize=ReleaseFast", "-Dcpu=baseline"]
-memory = "4G"
+packages = [
+  "libgtk-4-dev", "libadwaita-1-dev", "libgtk4-layer-shell-dev", "blueprint-compiler", "libxml2-utils",
+  "gsettings-desktop-schemas", "adwaita-icon-theme", "shared-mime-info", "librsvg2-common",
+]
+network = "fetch"
+memory = "3G"
 jobs = 3
 memory_per_job = "1G"
-network = "fetch"
-[build.image_packages]
-packages = ["libgtk-4-dev", "libadwaita-1-dev", "libgtk4-layer-shell-dev", "blueprint-compiler", "libxml2-utils", "gettext", "pkg-config", "libglib2.0-dev-bin"]
+
 [[build.image_deps]]
 name = "gtk4-layer-shell"
 package = "libgtk4-layer-shell-dev"
 why = "linked from the system by pkg-config; Ghostty pins 1.1.0 and the image has 1.0.4"
-# 13b, Ghostty 1.4.0 with Zig 0.17: configure gets -fsys=glslang and -fsys=spirv-cross and these entries:
-# [[build.image_deps]]  name = "glslang"      package = "glslang-dev"                 why = "the pinned copy needs more than 10 GB to compile"
-# [[build.image_deps]]  name = "spirv-cross"  package = "libspirv-cross-c-shared-dev" why = "same"   (Debian has 2021.01.15: a much older version than the pinned one, to be checked)
+
 [collect]
 toolkit = "gtk4"
-data = ["share/ghostty", "share/terminfo"]
+exclude = [
+  "include/*", "lib/libghostty-vt*", "share/vim/*", "share/fish/*", "share/bash-completion/*", "share/zsh/*", "share/nvim/*",
+  "share/bat/*", "share/kio/*", "share/nautilus-python/*", "share/systemd/*", "share/pkgconfig/*",
+]
+
 [desktop]
-icons_png = ["share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png", "share/icons/hicolor/256x256/apps/com.mitchellh.ghostty.png", "share/icons/hicolor/128x128/apps/com.mitchellh.ghostty.png", "share/icons/hicolor/32x32/apps/com.mitchellh.ghostty.png", "share/icons/hicolor/16x16/apps/com.mitchellh.ghostty.png"]
-[permissions]
-dbus_own = ["com.mitchellh.ghostty"]    # F22: until the decision of section 4 this line gives the copy the call-through
+icons_png = [
+  "share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png", "share/icons/hicolor/256x256/apps/com.mitchellh.ghostty.png",
+  "share/icons/hicolor/128x128/apps/com.mitchellh.ghostty.png", "share/icons/hicolor/32x32/apps/com.mitchellh.ghostty.png",
+  "share/icons/hicolor/16x16/apps/com.mitchellh.ghostty.png",
+]
+wm_class = "com.mitchellh.ghostty.panpak"
+
+[launch]
+args = ["--gtk-single-instance=false", "--class=com.mitchellh.ghostty.panpak"]
+
 [[permissions.xdg_dirs]]
 name = "documents"
 access = "rw"
+
 [license]
 spdx = "MIT"
 files = ["LICENSE"]
+bundled = "auto"
 ```
-
-What the three show about the schema: `network = "fetch"` is needed only by the Zig recipe; `writable_source` by qBittorrent; `icons_png` next to `icon_svg` for apps that ship PNG;
-`zig = {...}` is a pinned toolchain in the recipe, not in the image; a recipe lists the image packages it needs, and the image itself stays one for all.
 
 ### 3.3 `panpak collect`: what is needed
 
@@ -566,7 +588,75 @@ ask; the price is that every app that opens a pty without declaring it fails wit
 memory of the scope 7.3 GB. AppImage group, full mode (median of 5 starts, first left out, conversions from the cache): all 15 start with icon, 545 s, peak 5.6 GB; window medians against step 7b: audacity 0.697 s (0.714), qBittorrent 0.269 (0.284), MuseScore 0.269 (0.280), Krita 0.875 (0.910), Kdenlive 1.341 (1.363), QOwnNotes 0.379 (0.397), so no regression from the new `/dev`. Source group: fast 11 s, full 33 s (window medians: Text Editor 0.52 s, qBittorrent 0.41 s, Ghostty 0.41 s; qBittorrent was 0.31 s before the
 change of `/dev`, one run each, not looked into). Workspace tests: all pass (peak 2.7 GB); clippy clean.
 
-## 6. Risks and open points
+## 6. Phase 3: decisions, the cost of start, and `panpak build`
+
+### 6.1 Decisions of the owner
+
+- **F22 and F23: no change in the product now.** The fix will be option 3 of section 4 (a private session bus for each app, with a bridge only for the portals, the notifications and the tray), in a step of its own right after 13a. The stop-gap
+  of option 1 would be thrown away when the private bus comes, and nothing is published today. It was not started.
+- **Ghostty, for now, in the recipe only:** `--gtk-single-instance=false` and a window class of its own (`--class=com.mitchellh.ghostty.panpak`, the same as `desktop.wm_class`). Tested in the lab (a native `/usr/bin/ghostty` running as a second program on a
+  private bus): the Panpak copy stays alive, opens a window of its own (its own process, class `com.mitchellh.ghostty.panpak`), the native instance keeps its one window, and there is no method call from the copy to `com.mitchellh.ghostty` on the bus (before: `DescribeAll` and
+  `Activate`). The recipe does not give the copy `dbus_own`. What this does not do: it protects only this app, and only while the recipe says so; any other single-instance app is still open until the private bus.
+  Without a session bus (`DBUS_SESSION_BUS_ADDRESS=disabled:`, a test with no bus) the window class that Sway sees is `GTK Application`: the class reaches the window only when the app has a bus.
+- **glibc floor 2.39 (Debian 13): accepted for the beta**, with how to go lower later written in 3.1.
+- **Schema approved with changes**, built in this phase: `panpak.lock`, `[env]` instead of a script, defaults, `build.packages`, memory measured and checked, `[[build.image_deps]]` and `[provenance]`, our own ELF reader for `collect`, GTK and Qt as tables of data.
+
+### 6.2 The cost of start (target: 26 ms or less, with the pty always there)
+
+The fixed cost of `tests/startup_budget.py` (80 interleaved runs per build, the main of 15fff8a built next to the branch):
+
+| | main | branch before | branch now |
+|---|---|---|---|
+| fixed cost, three series (ms) | 25.4, 24.7, 24.5 | 27.9, 27.9, 26.2 (first fix: 26.3, 26.1, 26.2) | **25.5, 25.3, 25.1** (main in the same series: 25.8, 24.0, 23.9) |
+
+So the "2.1 ms not explained" of the first measure (24.5 to 29.6) was in good part the state of the machine: interleaved against a main built here, the pty cost 2.4 ms, not 5.
+
+What was measured and tried:
+
+- **The nested user namespace.** `bwrap --dev` is the only unprivileged way to a devpts of its own, and it makes the view in two user namespaces (it needs to be uid 0 to mount the devpts, then enters a second one where the app has its own uid again): `/proc/self/uid_map` is
+  `1000 0 1` instead of `1000 1000 1`. The app still has its own uid and no capabilities; `tests/view.py` now expects this form. Passing `--uid`/`--gid` does not avoid it.
+- **Where the 3 ms of `--dev` go** (150 interleaved runs of a bare `bwrap`): no `/dev` 4.28 ms; the old bind of the host's `/dev` 4.52; `--dev` 6.37; `--dev` with the GPU folder 6.57; an empty tmpfs with six node binds and no pty 6.41. So the cost is the tmpfs and the six node binds, plus the second
+  namespace: the devpts itself costs next to nothing, and there is no cheaper way to a private devpts with bubblewrap. Not done: keeping the host `/dev` and adding only `ptmx` (it shares the host's devpts, with the user's terminals: refused in phase 2); giving the inner stub `CAP_SYS_ADMIN` to mount a devpts itself (it would have capabilities
+  for a moment in front of the app, to save about 2 ms: not worth the risk).
+- **What was taken out instead.** Profile of the stages (`PANPAK_DEBUG`): checking the stub (BLAKE3 of 3.2 MB) took 5 ms. The hash is 0.56 ms; the rest was allocating and faulting in a buffer of the size of the stub and one `read`. Hashing in pieces of 64 KiB takes 1.4 ms with the same hash.
+  The answer of `gsettings` (two processes started at the beginning, about 6 ms) was then the longest wait, so it is collected after the Wayland, D-Bus and shared-folder work (as late as the environment of the app allows) and the wait overlaps it. Total: 25.3 ms with the pty, 0.7 ms above main.
+- **Chosen:** keep `--dev` (the pty always available), and the two changes above.
+
+**qBittorrent from source, 0.31 s to 0.41 s** (median of 5 starts, first left out, 4 interleaved series each): the **same tree packed with the stub of main and with the stub of the branch gives 0.414 s and 0.415 s**, so it is not the runtime. The same tree with the SVG plugins taken out (no `libqsvg`, no `libqsvgicon`) gives 0.311 s, and with only the portal theme taken out 0.415 s.
+The 0.1 s is qBittorrent drawing its SVG icons, which it could not do when the plugins were missing (and the tray icon was empty, F25). It is the cost of working correctly, not a regression.
+
+### 6.3 F29: opening a link from the shell of Ghostty
+
+`xdg-open https://example.org` typed in the shell of the sandboxed Ghostty (lab with a fake `xdg-open` on the outer PATH that logs its arguments): **it goes through the opener channel**: the shim in the view (`$XDG_RUNTIME_DIR/panpak/bin/xdg-open`) hands the address to the outer stub, which ran the outer program, and the fake got `https://example.org` (exit 0).
+`xdg-open file:///etc/passwd` is refused in the view ("scheme file is not allowed (only http, https and mailto)", exit 1). The click on a link in the terminal (GTK `show_uri`) is still **not verified**: the injected Ctrl+click did not reach Ghostty. The filter has no rule for the `OpenURI` portal, so a GTK app that opens links
+that way probably cannot; nothing was changed.
+
+### 6.4 `panpak build` on the three recipes
+
+All three were built with `panpak build` from the recipes of 3.2.1 (no script, no wrapper) in the cache `XDG_CACHE_HOME`, every build in a scope with a memory cap, one at a time. The first build of a recipe includes making the image.
+
+| App | First build (image, source, build) | Warm build | Peak memory of the build | Package | Libraries | `glibc_min` |
+|---|---|---|---|---|---|---|
+| Text Editor | 62 s | 11 s | 0.5 GB | 52.7 MB | 106 (101 MB) | 2.39 |
+| qBittorrent | 283 s | 235 s | 2.8 GB | 60.5 MB | 83 (104 MB) | 2.39 |
+| Ghostty | 211 s | 172 s | 2.1 to 2.7 GB | 56.9 MB | 101 (66 MB) | 2.39 |
+
+- **Same as part A.** Text Editor: the 221 installed files are identical to part A. qBittorrent: the 31 installed files are identical. The libraries are the same except `libwayland-client` and `libwayland-egl`, which the host provides since phase 2.
+  Ghostty: 540 of 542 installed files are identical; **the `ghostty` executable differs from part A** (31,519,440 bytes in both, 721,298 bytes different), and so does `libghostty-vt.so`, which is not packaged (it differed between two builds of part A as well). The executable is the same in every `panpak build`
+  (two builds, and a third with the source mounted at another path), and it does not change with two more packages in the image (part A's image had `glslang-dev` and `libspirv-cross-c-shared-dev`). **The cause was not found.** What is left untested: the path of the Zig package cache, and the modification times
+  of the source files (part A unpacked the tarball; the build copies the files). Epoch, flags, Zig and the source hash are the same.
+- **Reproducible.** Each recipe was built twice and the two packages compared: **the three packages are identical byte for byte** (Text Editor `5e79681e…`, qBittorrent `4035600387…`, Ghostty `b2ed7346…`).
+- **Behavior is the same as part A.** Text Editor (portal color scheme live, icons through the pixbuf loader without a wrapper), qBittorrent (tray registration reaches the watcher; dark at start, no live switch), Ghostty (shell, colors, copy and paste, shader 187/23/29): same results.
+
+What the build found while it was being written (all fixed): the peak memory in `[provenance]` made two builds differ, so it is shown and not written; `ureq` tries only the first address it resolves and stalled on an unreachable IPv6 one (IPv4 only, 15 s to connect); the reader of ELF files did not look at `RUNPATH`
+(libproxy's backend in a folder next to it; `ldd` did); Zig wants `-j3`, not `-j 3`; the Qt table pointed at the root of the plugins and not at each category (the check "a linked module needs its plugin" caught it); `desktop-file-utils` had to be a base tool of the image.
+
+### 6.5 Open points
+
+- **`[env]` and old runtimes.** A package with `[env]` run by a runtime that does not read it starts without the variables (readers ignore what they do not know): the app would look broken. The remedy is the step 9 note "critical manifest fields with a minimum version"; not done.
+- The `[env]` table could also carry `GDK_PIXBUF_MODULE_FILE` only because the loader modules are named by file name in the cache and listed in `abi.needs` (the farm of the runtime links them); a cache with absolute paths would need the tree at a fixed place.
+
+## 7. Risks and open points
 
 - **F22 and F23 are the first thing to decide** (section 4). They exist today for any app whose panpak id equals an application
   id that another instance may own, and the design of this document (id = application id, F11) makes that the

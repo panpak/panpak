@@ -3,7 +3,7 @@
 //!
 //! Groups: E0 format and index, E1 signature and trust, E2 store and
 //! materialization, E3 sandbox and permissions, E4 updates and network,
-//! E5 CLI usage and options. `Exxx0` of each group is the generic code used
+//! E5 CLI usage and options, E6 builds from source. `Exxx0` of each group is the generic code used
 //! when an error carries no specific one.
 use std::fmt;
 
@@ -54,6 +54,8 @@ codes! {
     E5002 = "PANPAK-E5002",
     E5003 = "PANPAK-E5003",
     E5004 = "PANPAK-E5004",
+    E6000 = "PANPAK-E6000",
+    E6005 = "PANPAK-E6005",
 }
 
 impl fmt::Display for ErrorCode {

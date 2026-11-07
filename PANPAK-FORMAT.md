@@ -416,6 +416,48 @@ and only if the file is a regular file that panpak wrote for this app (same mark
 entry, each through a temporary file, `fsync` and `rename`. It never creates a missing entry, never touches a link or a file that
 is not its own, and a failure never stops the start.
 
+### 3.1.6 Environment of the tree [NORMATIVE]
+
+**`[env]`** (table of strings, at most 16). Variables that point the app at files of its own tree. Without it a program that needs `GSETTINGS_SCHEMA_DIR`
+or `QT_PLUGIN_PATH` needs a shell script as its entry, which works the path out from where it is: code that nobody reviews. Here a value is data.
+
+- A name MUST be one of the table below; any other name is refused (`PANPAK-E0007`), and in particular `LD_*`, `PANPAK_*`, `PATH`, `HOME`,
+  `XDG_RUNTIME_DIR` and the private folders of §9.1, which change how code is loaded or what the sandbox protects, or which the runtime sets itself.
+- A value is one of three kinds. *Path*: `${PANPAK_ROOT}/` and a relative path. *Path list*: up to 8 paths of that kind separated by `:`.
+  *Word*: one of the words listed for the name. `${PANPAK_ROOT}` is the folder of the package tree. The relative path MUST NOT be empty, MUST NOT have an
+  empty, `.` or `..` segment, a control character, `:` or `$`, and is at most 512 bytes. An absolute path, any other variable and a value that leaves the tree are refused.
+- `pack` also refuses a path that is not in the tree. `install`, `update` and the runtime check the table again.
+- The runtime sets each variable in the environment of the app, with `${PANPAK_ROOT}` replaced by the tree. A path list for `XDG_DATA_DIRS` goes in front of what
+  the runtime would have set; the other variables replace it.
+
+| Name | Kind | Why it is allowed |
+|---|---|---|
+| `XDG_DATA_DIRS` | path list | icon themes, MIME data, schemas and data folders of the toolkits and the app |
+| `GSETTINGS_SCHEMA_DIR` | path list | the compiled GSettings schemas |
+| `GDK_PIXBUF_MODULE_FILE` | path | the cache of the image loaders (the modules are named by file name in it and found through the library path; list them in `abi.needs`) |
+| `GDK_PIXBUF_MODULEDIR` | path | the folder of the image loaders |
+| `GIO_EXTRA_MODULES` | path list | GIO modules the app ships |
+| `GTK_PATH`, `GTK_IM_MODULE_FILE` | path list, path | GTK modules and input methods the app ships |
+| `QT_PLUGIN_PATH`, `QML_IMPORT_PATH`, `QML2_IMPORT_PATH` | path list | Qt plugins and QML modules |
+| `GST_PLUGIN_PATH` | path list | GStreamer plugins the app ships |
+| `TERMINFO_DIRS` | path list | the terminfo entry of a terminal emulator |
+| `XCURSOR_PATH` | path list | cursor themes the app ships |
+| `GSETTINGS_BACKEND` | `keyfile`, `memory` | settings in a file of the private config folder, because dconf is not reachable from the sandbox |
+| `GDK_BACKEND` | `wayland`, `x11`, `wayland,x11`, `x11,wayland` | the display protocol of GTK |
+| `QT_QPA_PLATFORM` | `wayland`, `xcb`, `wayland;xcb`, `xcb;wayland` | the display protocol of Qt |
+| `GTK_A11Y` | `none` | no accessibility bus (the filtered bus does not carry it) |
+| `ELECTRON_OZONE_PLATFORM_HINT` | `auto`, `wayland`, `x11` | the display protocol of Electron |
+
+Every path stays inside the tree, so what is loaded is what the signed package contains and nothing else. A package with an `[env]` table that is run by an older runtime
+is run without it (readers ignore what they do not know): a package that cannot work without it SHOULD carry `[runtime] min_runtime` of a runtime that reads it (see the open point in docs/SOURCE-BUILD.md).
+
+### 3.1.7 Provenance of a build from source [NORMATIVE]
+
+**`[provenance]`** is written by `panpak build` and refused by `pack` in an input file written by hand. It says how the package was made, and `install` shows it:
+`source` (`git <url> @ <commit>` or `url <url> sha256 <hex>`), `image` (the name of the build image, the digest of its manifest and the date of the package snapshot) and `image_deps`: the
+dependencies that were taken from the build image instead of being built from the source that the author pinned (`name`, the image `package`, and the `version` found). A reader MUST ignore a
+`[provenance]` it cannot use. It carries no measurement that changes from one build to the next (the peak memory of a build is not in it): the same inputs give the same bytes.
+
 ### 3.2 Public key and TOFU [NORMATIVE]
 
 Strict parsing of `[update].key`: exact prefix `ed25519:`

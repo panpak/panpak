@@ -10,6 +10,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod icons;
 mod remove;
+mod source;
 mod treewriter;
 use anyhow::{bail, ensure, Context, Result};
 use panpak_core::desktop::{self as dsk, desktop_is_ours, desktop_path, launcher_is_ours, legacy_desktop_path, sh_quote};
@@ -27,7 +28,7 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak install-runtime <stub> --allow-unsigned      (your own build; the file, not a folder)
+    "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (your own build; the file, not a folder)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
@@ -2425,6 +2426,7 @@ fn generic_code(sub: Option<&str>) -> ErrorCode {
     match sub {
         Some("pack" | "convert" | "dump-index" | "dump-manifest" | "dbus-rules") => ErrorCode::E0000,
         Some("keygen" | "release" | "install-runtime") => ErrorCode::E1000,
+        Some("init" | "build") => ErrorCode::E6000,
         Some("install" | "rollback" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove") => ErrorCode::E2000,
         Some("update") => ErrorCode::E4000,
         _ => ErrorCode::E5000,
@@ -2575,6 +2577,38 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                 }
             }
             cmd_open(id.ok_or_else(|| coded(ErrorCode::E5002, "open <app-id> [file]"))?, file, write, rename)?;
+            Ok(())
+        }
+        Some("init") => {
+            ensure_code!(args.len() <= 3, ErrorCode::E5001, "init [folder]\n{usage}", usage = usage());
+            source::init::cmd_init(Path::new(args.get(2).map(String::as_str).unwrap_or(".")))
+        }
+        Some("build") => {
+            let (mut dir, mut secret_file, mut stub, mut out, mut update_lock) = (None, None, None, None, false);
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--secret-file" => { secret_file = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--secret-file <f>"))?.clone()); i += 2; }
+                    "--stub" => { stub = Some(PathBuf::from(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--stub <file>"))?)); i += 2; }
+                    "-o" => { out = Some(PathBuf::from(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "-o <out>"))?)); i += 2; }
+                    "--update-lock" => { update_lock = true; i += 1; }
+                    x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    _ if dir.is_none() => { dir = Some(PathBuf::from(&args[i])); i += 1; }
+                    x => bail_code!(ErrorCode::E5001, "unexpected argument: {x}\n{usage}", usage = usage()),
+                }
+            }
+            let dir = dir.unwrap_or_else(|| PathBuf::from("."));
+            let secret = load_secret(secret_file.as_deref())?;
+            // The stub to embed: the one given, or the stable link of the store.
+            let stub = match stub {
+                Some(s) => s,
+                None => {
+                    let l = store_dir()?.join("bin").join("panpak-stub");
+                    ensure_code!(l.exists(), ErrorCode::E5002, "build needs the runtime to embed: --stub <file>, or install one first (`panpak install-runtime`)");
+                    l
+                }
+            };
+            source::build::cmd_build(source::build::BuildArgs { dir: &dir, secret: &secret, stub: &stub, out: out.as_deref(), update_lock })?;
             Ok(())
         }
         Some("convert") => {

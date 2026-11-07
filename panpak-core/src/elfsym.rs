@@ -48,6 +48,8 @@ pub struct ElfSyms {
 pub struct ElfInfo {
     /// The `DT_NEEDED` names (sorted, without duplicates; a name with `$ORIGIN` reduced to its last part).
     pub needs: Vec<String>,
+    /// The folders of `DT_RUNPATH` (or `DT_RPATH`), as written (`$ORIGIN` and all), in order.
+    pub runpath: Vec<String>,
     pub syms: ElfSyms,
 }
 
@@ -327,6 +329,26 @@ pub fn parse_syms(b: &[u8]) -> Result<ElfSyms> {
 /// The needs and symbols of an ELF file, reading only the sections that matter. A file that is not
 /// a little-endian ELF64 gives an empty result; one without section headers falls back to reading it
 /// whole for its `DT_NEEDED` names (it has no symbols to report).
+/// The folders of `DT_RUNPATH` (or `DT_RPATH` when there is no `RUNPATH`) of the `.dynamic` section.
+fn runpath_of(src: &(impl Source + ?Sized), secs: &[Section]) -> Vec<String> {
+    let Some(dynamic) = secs.iter().find(|s| s.kind == SHT_DYNAMIC) else { return Vec::new() };
+    let (Some(entries), Some(strs)) = (body(src, dynamic), secs.get(dynamic.link).and_then(|t| body(src, t))) else {
+        return Vec::new();
+    };
+    let (mut rpath, mut runpath) = (None, None);
+    for e in entries.as_chunks::<16>().0.iter().take(4096) {
+        let (Some(tag), Some(val)) = (u64_at(e, 0), u64_at(e, 8)) else { break };
+        let get = || usize::try_from(val).ok().and_then(|o| cstr(&strs, o));
+        match tag {
+            0 => break,
+            15 => rpath = get(),
+            29 => runpath = get(),
+            _ => {}
+        }
+    }
+    runpath.or(rpath).map(|p| p.split(':').filter(|d| !d.is_empty()).map(str::to_string).collect()).unwrap_or_default()
+}
+
 pub fn read_elf_info(path: &Path) -> Result<ElfInfo> {
     let src = FileSource::open(path)?;
     if !is_elf64(&src) {
@@ -335,9 +357,9 @@ pub fn read_elf_info(path: &Path) -> Result<ElfInfo> {
     let secs = sections(&src)?;
     if secs.is_empty() {
         let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-        return Ok(ElfInfo { needs: crate::elf_needs_bytes(&bytes).unwrap_or_default(), syms: ElfSyms::default() });
+        return Ok(ElfInfo { needs: crate::elf_needs_bytes(&bytes).unwrap_or_default(), runpath: Vec::new(), syms: ElfSyms::default() });
     }
-    Ok(ElfInfo { needs: needs_of(&src, &secs), syms: syms_of(&src, &secs)? })
+    Ok(ElfInfo { needs: needs_of(&src, &secs), runpath: runpath_of(&src, &secs), syms: syms_of(&src, &secs)? })
 }
 
 /// The libraries of glibc, whose version names (`GLIBC_2.39`) the host must provide.
@@ -452,6 +474,17 @@ mod tests {
 #[cfg(test)]
 mod glibc_tests {
     use super::*;
+
+    #[test]
+    fn a_system_library_with_a_runpath_names_its_folder() {
+        // libproxy of Debian has RUNPATH $ORIGIN/libproxy; the loader of the image would find its backend there.
+        if let Ok(p) = std::fs::canonicalize("/usr/lib/x86_64-linux-gnu/libproxy.so.1") {
+            let info = read_elf_info(&p).unwrap();
+            assert!(info.runpath.iter().any(|r| r.contains("ORIGIN")), "{:?}", info.runpath);
+        }
+        let own = read_elf_info(&std::env::current_exe().unwrap()).unwrap();
+        let _ = own.runpath; // any list, no panic
+    }
 
     #[test]
     fn version_names() {

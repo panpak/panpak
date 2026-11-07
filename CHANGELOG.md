@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`panpak init` and `panpak build`: packages from source.** A recipe (`panpak.toml` with `[source]`, `[build]`, `[collect]`) and `panpak.lock` (the build image: its digest and the date of the package snapshot,
+  changed only by `panpak build --update-lock`). `build` makes the image (a Debian root file system unpacked from the registry by digest, plus the recipe's packages from the snapshot) without root, fetches the source at a pinned commit or hash,
+  builds in bubblewrap with no network, collects the libraries (read from the ELF files, never with `ldd`), the plugins of GTK 4 or Qt 6 and the data, makes the icons, writes the manifest and packs. A recipe states the memory it needs
+  (`build.memory`, `jobs`): the build checks the memory that is available, lowers the number of jobs if it must, runs in a systemd scope with a memory cap, and measures the peak. A linked Qt module whose plugin is missing stops the build.
+  Dependencies taken from the image are declared (`[[build.image_deps]]`) and shown at install. See docs/SOURCE-BUILD.md.
+- **`[env]` in the manifest** (variables that point the app at its own tree, from a fixed list, relative to `${PANPAK_ROOT}`) replaces the shell script as the entry; `pack` warns about a script entry. New `[provenance]` table.
+- **Faster start.** The stub is hashed in pieces of 64 KiB (1.4 ms instead of 5 ms), and the answer of `gsettings` is collected after the Wayland, D-Bus and shared-folder work. With the pty always available the fixed cost is 25.3 ms (24.6 ms before).
+
 - **Apps can open a pty (terminals, IDEs).** The isolated view now has a devpts of its own and a minimal `/dev` of bubblewrap (null, zero, full, random, urandom, tty,
   the GPU folder `dri`) instead of the host's `/dev`; Landlock grants `ptmx` and `pts` read, write and the device ioctls. Before, `open("/dev/ptmx")` failed with `EACCES` and
   no terminal emulator could start a shell. The ptys an app sees are its own, never the user's terminals; `TIOCSTI` stays refused. No permission is needed. `tests/pty.py`.
