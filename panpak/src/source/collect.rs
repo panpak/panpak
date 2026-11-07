@@ -360,6 +360,19 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
             }
         }
     }
+    // 7b. The cache of every icon theme of the tree. Qt (and GTK, less so) that finds a theme folder without `icon-theme.cache` looks each icon up file by
+    // file: 49,000 failed lookups at the start of qBittorrent. The cache is made after the icons are in place; its bytes do not depend on the
+    // modification times of the folders (checked), so the package stays reproducible.
+    let icons_root = i.tree.join("share/icons");
+    if icons_root.is_dir() {
+        let mut themes: Vec<String> = std::fs::read_dir(&icons_root)?.flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        themes.sort();
+        for t in themes {
+            let dir = format!("/tree/share/icons/{t}");
+            sandbox_run(i, &["gtk-update-icon-cache", "-f", "-t", "-i", &dir], "gtk-update-icon-cache")?;
+            notes.push(format!("made icon-theme.cache for share/icons/{t}"));
+        }
+    }
     // 8. License files of the source, and the copyright files of the image packages the libraries came from.
     let lic_dir = i.tree.join("share/licenses").join(&r.app.id);
     if let Some(l) = &r.license {

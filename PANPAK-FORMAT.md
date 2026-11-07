@@ -576,6 +576,9 @@ package at the first failure:
 
 ## 6. Local store [INFORMATIVE, except §6.1]
 
+*Times in the tree.* A package carries no times. The runtime gives every file, folder and link of a tree the same modification time, 2000-01-01T00:00:00Z (`946684800`), when it makes the tree (files shared between trees get the same time in each). The time at which each entry happened to be created would be
+of no use, and it made a cache file older than the folder that holds it: Qt ignores an icon cache that is older than its folder, and looks each icon up file by file (measured: 49,000 failed lookups, 0.2 s at the start of qBittorrent).
+
 Reference-implementation layout (paths under
 `~/.local/share/panpak/`):
 

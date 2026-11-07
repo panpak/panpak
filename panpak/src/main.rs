@@ -8,6 +8,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod happy;
 mod icons;
 mod remove;
 mod source;
@@ -38,12 +39,11 @@ fn agent_for(url: &str, allow_insecure: bool, timeout_secs: u64) -> Result<ureq:
     let uri: http::Uri = url.parse().context("invalid URL")?;
     match uri.scheme_str() {
         // Always HTTPS anyway; redirects stay in https (ureq) and max 3.
-        Some("https") => Ok(ureq::Agent::config_builder()
-            .https_only(true)
-            .max_redirects(3)
-            .timeout_global(Some(std::time::Duration::from_secs(timeout_secs)))
-            .build()
-            .into()),
+        Some("https") => {
+            let config = ureq::Agent::config_builder().https_only(true).max_redirects(3).timeout_global(Some(std::time::Duration::from_secs(timeout_secs))).build();
+            // The address is chosen the way Happy Eyeballs does it: an unreachable IPv6 address does not stall the download (see `happy`).
+            Ok(ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::default(), happy::HappyEyeballs))
+        }
         // HTTP only for localhost/test WITH an explicit flag, and with no redirect
         // (max 0: a 3xx is never followed, fail on the expected 206).
         Some("http") if allow_insecure && is_localhost(uri.host().unwrap_or_default()) => {
@@ -758,6 +758,11 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
     // A Qt tree without the plugins that Qt loads with dlopen starts, and then looks or works wrong without a word: no dark mode,
     // no tray icon. Say so while the author can still fix it.
     for note in qt_plugin_notes(payload.iter().map(|p| p.entry.path.as_path())) {
+        eprintln!("panpak: WARNING: {note}");
+    }
+
+    // An icon theme folder without its cache makes Qt look up each icon file by file at the start (tens of thousands of failed lookups).
+    for note in icon_theme_notes(payload.iter().map(|p| p.entry.path.as_path())) {
         eprintln!("panpak: WARNING: {note}");
     }
 
@@ -2357,6 +2362,28 @@ fn disk_free(p: &Path) -> Option<u64> {
     }
 }
 
+/// The icon themes of a tree (`share/icons/<theme>/` with icons below) that have no `icon-theme.cache`. Qt that finds such a folder looks each icon up
+/// file by file (measured: 49,000 failed lookups at the start of qBittorrent, 0.1 s); `gtk-update-icon-cache -f -t -i <theme>` makes the cache.
+fn icon_theme_notes<'a>(paths: impl Iterator<Item = &'a Path>) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let (mut with_icons, mut with_cache): (BTreeSet<String>, BTreeSet<String>) = (BTreeSet::new(), BTreeSet::new());
+    for p in paths {
+        let parts: Vec<&str> = p.iter().filter_map(|c| c.to_str()).collect();
+        let Some(i) = parts.windows(2).position(|w| w == ["share", "icons"]) else { continue };
+        let (Some(theme), rest) = (parts.get(i + 2), parts.get(i + 3..).unwrap_or(&[])) else { continue };
+        let key = parts[..i + 3].join("/");
+        if rest == ["icon-theme.cache"] {
+            with_cache.insert(key);
+        } else if rest.len() >= 2 && !theme.is_empty() {
+            with_icons.insert(key);
+        }
+    }
+    with_icons
+        .difference(&with_cache)
+        .map(|t| format!("the icon theme folder {t} has no icon-theme.cache: Qt will look up each icon file by file at the start (tens of thousands of failed lookups, about 0.1 s); make it with `gtk-update-icon-cache -f -t -i {t}`"))
+        .collect()
+}
+
 /// What a Qt tree lacks of the plugins that Qt finds only by loading them. Empty for a tree without Qt, and for a Qt tree that has them.
 /// - The platform theme `xdgdesktopportal`: the runtime sets `QT_QPA_PLATFORMTHEME=xdgdesktopportal` when the app has the filtered
 ///   session bus; without the plugin Qt falls back to no theme: the portal's dark mode is ignored and the file dialogs of Qt are not the portal's.
@@ -2855,6 +2882,20 @@ mod tests {
         assert!(check_glibc(&man("2.1")).is_ok());
         let none: panpak_core::Manifest = toml::from_str("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n").unwrap();
         assert!(check_glibc(&none).is_ok());
+    }
+
+    #[test]
+    fn an_icon_theme_without_its_cache_is_named() {
+        let notes = |v: &[&str]| icon_theme_notes(v.iter().map(|s| Path::new(*s)));
+        assert!(notes(&["bin/app", "share/applications/a.desktop"]).is_empty());
+        let n = notes(&["share/icons/hicolor/48x48/apps/a.png", "share/icons/Adwaita/16x16/x.png", "share/icons/Adwaita/icon-theme.cache"]);
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert!(n[0].contains("share/icons/hicolor") && n[0].contains("gtk-update-icon-cache -f -t -i share/icons/hicolor"), "{n:?}");
+        assert!(notes(&["share/icons/hicolor/48x48/apps/a.png", "share/icons/hicolor/icon-theme.cache"]).is_empty());
+        // A theme folder with only an index file, or a file straight in share/icons, has no icons to look up.
+        assert!(notes(&["share/icons/hicolor/index.theme", "share/icons/a.png"]).is_empty());
+        // An AppImage layout (usr/share/icons) counts as well.
+        assert_eq!(notes(&["usr/share/icons/hicolor/32x32/apps/a.png"]).len(), 1);
     }
 
     #[test]

@@ -32,23 +32,15 @@ pub const KNOWN: &[Known] = &[Known {
 }];
 
 /// The tools every build image has (the compilers and the things a source package asks for first).
-pub const BASE_PACKAGES: &[&str] = &["ca-certificates", "curl", "git", "build-essential", "pkg-config", "xz-utils", "python3", "gettext", "desktop-file-utils", "file", "binutils", "librsvg2-bin", "libglib2.0-dev-bin"];
+pub const BASE_PACKAGES: &[&str] = &["ca-certificates", "curl", "git", "build-essential", "pkg-config", "xz-utils", "python3", "gettext", "desktop-file-utils", "file", "binutils", "librsvg2-bin", "libglib2.0-dev-bin", "gtk-update-icon-cache"];
 
 pub fn known(name: &str) -> Result<&'static Known> {
     KNOWN.iter().find(|k| k.name == name).with_context(|| format!("unknown build image {name:?}; this panpak knows: {}", KNOWN.iter().map(|k| k.name).collect::<Vec<_>>().join(", ")))
 }
 
 fn http() -> ureq::Agent {
-    // IPv4 only: ureq tries the first address it resolves and gives up on it, and on some networks that is an IPv6 address that is not reachable
-    // (curl falls back to the next one; this client does not). A connection that does not open in 15 s is given up.
-    ureq::Agent::config_builder()
-        .https_only(true)
-        .max_redirects(5)
-        .ip_family(ureq::config::IpFamily::Ipv4Only)
-        .timeout_connect(Some(std::time::Duration::from_secs(15)))
-        .timeout_global(Some(std::time::Duration::from_secs(900)))
-        .build()
-        .into()
+    // The addresses of a host are tried the way Happy Eyeballs does it (see `happy`): an unreachable IPv6 address does not stall a download.
+    crate::happy::agent(900)
 }
 
 /// Download `url` into `dest`, checking the SHA-256 on the way. `headers` are added to the request.

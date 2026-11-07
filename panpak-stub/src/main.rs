@@ -104,6 +104,35 @@ fn ensure_tree_readonly(tree: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The modification time of every file, folder and link of a tree in the store: 2000-01-01T00:00:00Z. A package does not carry times, and the time at which the store
+/// happened to create each entry is of no use: it made a cache file older than the folder that holds it (a folder gets a new time whenever an entry is
+/// created in it, and `icon-theme.cache` comes before the folders that sort after it), and Qt ignores an icon cache that is older than its folder.
+/// With one time for everything such a cache is never older. Files that are shared between trees (hard links of the blobs) get the same time in each.
+pub const TREE_MTIME: i64 = 946_684_800;
+
+fn set_tree_times(root: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    fn one(p: &Path) {
+        let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else { return };
+        let t = libc::timespec { tv_sec: TREE_MTIME, tv_nsec: 0 };
+        // SAFETY: utimensat(2) with a NUL-terminated path and two valid timespecs; the link itself is changed, never what it points to.
+        unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), [t, t].as_ptr(), libc::AT_SYMLINK_NOFOLLOW) };
+    }
+    fn walk(dir: &Path) -> Result<()> {
+        for e in fs::read_dir(dir)? {
+            let e = e?;
+            if e.file_type()?.is_dir() {
+                walk(&e.path())?;
+            }
+            one(&e.path());
+        }
+        Ok(())
+    }
+    walk(root)?;
+    one(root);
+    Ok(())
+}
+
 /// Materialize the tree into the store; chunks are verified before use.
 /// Identical files (by content+mode) share the same inode from store/blobs.
 fn materialize(
@@ -279,6 +308,7 @@ fn materialize(
     }
 
     File::create(tmp.join(".complete"))?;
+    set_tree_times(&tmp)?;
     // Non-writable tree before publishing it (defense in depth).
     strip_write_bits(&tmp)?;
     fs::rename(&tmp, &tree)?;
@@ -2260,6 +2290,11 @@ mod tests {
         let tree = materialize(&mut f, &dir.join("store"), &root, &chunks, &entries).unwrap();
         assert_eq!(fs::read(tree.join("bin/hello")).unwrap(), data);
         assert!(tree.join(".complete").exists());
+        // Every entry has the one time, the root and the folders included: a cache file is never older than the folder that holds it.
+        use std::os::unix::fs::MetadataExt;
+        for p in [tree.clone(), tree.join("bin"), tree.join("bin/hello"), tree.join(".complete")] {
+            assert_eq!(fs::symlink_metadata(&p).unwrap().mtime(), TREE_MTIME, "{}", p.display());
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
