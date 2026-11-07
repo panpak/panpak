@@ -12,7 +12,7 @@ fn main() {
     let cc = env::var(format!("CC_{}", target.replace('-', "_"))).or_else(|_| env::var("CC")).unwrap_or_else(|_| "cc".to_string());
     // CC_<target> can be a relative path (`scripts/zig-cc` in `.cargo/config.toml`, `relative = true`): cargo resolves it for us.
     let status = Command::new(&cc)
-        .args(["-shared", "-nostdlib", "-fPIC", "-O2", "-fno-stack-protector", "-Wl,--build-id=none", "-Wl,-soname,nochown.so", "-o"])
+        .args(["-shared", "-nostdlib", "-fPIC", "-O2", "-g0", "-fno-stack-protector", "-Wl,--build-id=none", "-Wl,--strip-all", "-Wl,-soname,nochown.so", "-o"])
         .arg(&out)
         .arg("assets/nochown.c")
         .status()
