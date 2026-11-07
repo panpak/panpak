@@ -683,6 +683,37 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
         payload.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
     }
 
+    // `[env]`: every path it names must be in the tree (the values themselves were checked when the manifest was read).
+    if let Some(env) = &man.env {
+        panpak_core::pkgenv::check(env)?;
+        for (k, v) in env {
+            for rel in panpak_core::pkgenv::paths_of(k, v)? {
+                let rel = Path::new(&rel);
+                ensure_code!(
+                    payload.iter().any(|p| p.entry.path == rel || p.entry.path.starts_with(rel)),
+                    ErrorCode::E0007,
+                    "invalid manifest field env.{k}: {} is not in the tree",
+                    rel.display()
+                );
+            }
+        }
+    }
+    // A shell script as the entry is code that nobody reviews; what such a wrapper usually does (pointing the toolkit at the tree) is what
+    // `[env]` is for. Said for packages made here; a converted AppImage has its AppRun and says nothing.
+    if man.origin.is_none() {
+        let entry = payload.iter().find(|p| p.entry.path == Path::new(&man.app.entry)).and_then(|p| p.source.as_ref());
+        if let Some(mut f) = entry.and_then(|p| File::open(p).ok()) {
+            use std::io::Read as _;
+            let mut head = [0u8; 64];
+            let n = f.read(&mut head).unwrap_or(0);
+            let line = String::from_utf8_lossy(&head[..n]);
+            let first = line.lines().next().unwrap_or("");
+            if first.starts_with("#!") && ["/sh", "/bash", "/dash", "/ash", "/zsh", "env sh", "env bash"].iter().any(|i| first.contains(i)) {
+                eprintln!("panpak: WARNING: the entry {} is a shell script: use the [env] table to point the app at the files of its tree, and make the entry the program", man.app.entry);
+            }
+        }
+    }
+
     // Spec §7: prefer_host + included glibc rejected by pack.
     if man.abi.as_ref().is_some_and(|a| a.prefer_host.as_ref().is_some_and(|v| !v.is_empty())) {
         let has_libc = payload.iter().any(|p| {

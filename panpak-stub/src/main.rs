@@ -1234,6 +1234,15 @@ fn real_main() -> Result<()> {
         .map(|(k, v)| Ok((k.clone(), app_dirs.expand(v)?)))
         .collect::<Result<Vec<_>>>()?;
 
+    // The `[env]` table of the manifest: variables that point the app at its own tree (PANPAK-FORMAT.md §3.1.6). Checked again here.
+    let pkg_env = match &man.env {
+        Some(env) => panpak_core::pkgenv::expand(env, &tree)?,
+        None => Vec::new(),
+    };
+    let data_dirs = match pkg_env.iter().find(|(k, _, before)| *before && k == "XDG_DATA_DIRS") {
+        Some((_, v, _)) => format!("{v}:{data_dirs}"),
+        None => data_dirs,
+    };
     let mut cmd = match &plan.loader {
         // Included glibc: all of user-space uses it, loader included.
         // BUT only if the entry is an ELF: a script passed to ld.so would die
@@ -1255,6 +1264,7 @@ fn real_main() -> Result<()> {
         .env("SQLITE_TMPDIR", &app_dirs.tmp)
         .env("XDG_CONFIG_DIRS", config_dirs)
         .env("XDG_DATA_DIRS", data_dirs)
+        .envs(pkg_env.iter().filter(|(k, _, before)| !*before && k != "XDG_DATA_DIRS").map(|(k, v, _)| (k, v)))
         .envs(launch_env);
     hide_local_sockets(
         &mut cmd,

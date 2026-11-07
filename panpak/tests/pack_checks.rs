@@ -150,7 +150,7 @@ fn pack_writes_the_glibc_the_files_need_and_install_checks_it() {
 fn pack_says_what_a_qt_tree_lacks() {
     let l = lab("qt");
     let fake = |_n: &str| b"not an elf, only a name for the check".to_vec();
-    let app = ("bin/app", b"#!/bin/sh\n".to_vec());
+    let app = ("bin/app", b"\x7fELF-not-really".to_vec());
     // No Qt: silence.
     let (o, _) = l.pack("noqt", std::slice::from_ref(&app), "");
     assert!(o.status.success() && !text(&o).contains("Qt"), "{}", text(&o));
@@ -173,4 +173,37 @@ fn pack_says_what_a_qt_tree_lacks() {
     with.push(("plugins/iconengines/libqsvgicon.so", fake("eng")));
     let (o, _) = l.pack("qt4", &with, "");
     assert!(o.status.success() && !text(&o).contains("WARNING"), "{}", text(&o));
+}
+
+#[test]
+fn pack_checks_the_env_table_and_the_entry() {
+    let l = lab("env");
+    let app = ("bin/app", b"\x7fELF-not-really".to_vec());
+    let schemas = ("share/glib-2.0/schemas/gschemas.compiled", b"x".to_vec());
+    // A good table: paths in the tree, one word.
+    let good = "[env]\nGSETTINGS_SCHEMA_DIR = \"${PANPAK_ROOT}/share/glib-2.0/schemas\"\nXDG_DATA_DIRS = \"${PANPAK_ROOT}/share\"\nGSETTINGS_BACKEND = \"keyfile\"\n";
+    let (o, pkg) = l.pack("envok", &[app.clone(), schemas.clone()], good);
+    assert!(o.status.success(), "{}", text(&o));
+    let m = l.manifest(&pkg);
+    assert!(m.contains("[env]") && m.contains("GSETTINGS_BACKEND = \"keyfile\""), "{m}");
+    // A path that is not in the tree.
+    let (o, _) = l.pack("envmissing", &[app.clone()], "[env]\nGSETTINGS_SCHEMA_DIR = \"${PANPAK_ROOT}/share/schemas\"\n");
+    let t = text(&o);
+    assert!(!o.status.success() && t.contains("PANPAK-E0007") && t.contains("env.GSETTINGS_SCHEMA_DIR") && t.contains("not in the tree"), "{t}");
+    // Names that are not on the list, absolute paths, paths that leave the tree, a word that is not allowed.
+    for bad in [
+        "LD_PRELOAD = \"${PANPAK_ROOT}/lib/x.so\"",
+        "PATH = \"${PANPAK_ROOT}/bin\"",
+        "GSETTINGS_SCHEMA_DIR = \"/usr/share/glib-2.0/schemas\"",
+        "GSETTINGS_SCHEMA_DIR = \"${PANPAK_ROOT}/../etc\"",
+        "GSETTINGS_BACKEND = \"dconf\"",
+    ] {
+        let (o, _) = l.pack("envbad", &[app.clone(), schemas.clone()], &format!("[env]\n{bad}\n"));
+        assert!(!o.status.success() && text(&o).contains("PANPAK-E0007"), "{bad}\n{}", text(&o));
+    }
+    // A shell script as the entry: a warning for a package made here.
+    let (o, _) = l.pack("script", &[("bin/app", b"#!/bin/sh\nexec x\n".to_vec())], "");
+    assert!(o.status.success() && text(&o).contains("is a shell script: use the [env] table"), "{}", text(&o));
+    let (o, _) = l.pack("notscript", &[app], "");
+    assert!(!text(&o).contains("shell script"), "{}", text(&o));
 }

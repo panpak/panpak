@@ -322,6 +322,24 @@ pub fn validate_manifest(man: &Manifest) -> Result<()> {
     if man.app.entry.len() > MAX_PATH_LEN || safe_path(&man.app.entry).is_err() {
         return Err(bad_field("app.entry", "must be a relative path without '.', '..' or empty segments"));
     }
+    if let Some(env) = &man.env {
+        crate::pkgenv::check(env)?;
+    }
+    if let Some(p) = &man.provenance {
+        for (field, v) in [("provenance.source", &p.source), ("provenance.image", &p.image), ("provenance.build_memory_peak", &p.build_memory_peak)] {
+            if let Some(v) = v {
+                display_text(field, v, 512)?;
+            }
+        }
+        if p.image_deps.as_ref().is_some_and(|d| d.len() > 32) {
+            return Err(bad_field("provenance.image_deps", "at most 32 entries"));
+        }
+        for d in p.image_deps.iter().flatten() {
+            display_text("provenance.image_deps.name", &d.name, 128)?;
+            display_text("provenance.image_deps.package", &d.package, 128)?;
+            display_text("provenance.image_deps.version", &d.version, 128)?;
+        }
+    }
     if let Some(a) = &man.abi {
         if let Some(g) = &a.glibc_min {
             let ok = g.len() <= 16 && g.split('.').count() >= 2 && g.split('.').all(|p| !p.is_empty() && p.len() <= 4 && p.bytes().all(|b| b.is_ascii_digit()));

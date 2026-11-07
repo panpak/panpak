@@ -7,6 +7,7 @@ pub mod dbus;
 pub mod desktop;
 pub mod frames;
 mod elfsym;
+pub mod pkgenv;
 mod errors;
 mod layout;
 mod openchan;
@@ -134,6 +135,32 @@ pub struct Manifest {
     pub runtime: Option<Runtime>,
     pub origin: Option<Origin>,
     pub update: Option<Update>,
+    /// Environment variables that point the app at files of its own tree (PANPAK-FORMAT.md §3.1.6): values relative to
+    /// `${PANPAK_ROOT}`, from a fixed list of names, checked by `pack` and by `install`.
+    pub env: Option<std::collections::BTreeMap<String, String>>,
+    /// How a package built from source was made (written by `panpak build`, PANPAK-FORMAT.md §3.1.7).
+    pub provenance: Option<Provenance>,
+}
+
+/// What `panpak build` records about the build, so that the user can see it at install.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Provenance {
+    /// `git <url> @ <commit>` or `url <url> sha256 <hex>`.
+    pub source: Option<String>,
+    /// The build image: name, manifest digest and snapshot date.
+    pub image: Option<String>,
+    /// Dependencies taken from the image instead of built from the pinned source.
+    pub image_deps: Option<Vec<ImageDep>>,
+    /// The peak memory the build used (a measurement, for example `3.7G`).
+    pub build_memory_peak: Option<String>,
+}
+
+/// One dependency taken from the build image (declared in the recipe; the version is what the build found).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ImageDep {
+    pub name: String,
+    pub package: String,
+    pub version: String,
 }
 
 /// Provenance for converted packages (e.g. from AppImage): the converter
@@ -406,7 +433,9 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
     let mut out: Vec<(String, String)> = Vec::new();
     let v: toml::Value = toml::from_str(input).context("panpak.toml is not TOML")?;
     let t = v.as_table().context("panpak.toml: table required")?;
-    const TOP: &[&str] = &["app", "abi", "permissions", "launch", "desktop", "runtime", "origin", "update"];
+    const TOP: &[&str] = &["app", "abi", "permissions", "launch", "desktop", "runtime", "origin", "update", "env", "provenance"];
+    const PROVENANCE: &[&str] = &["source", "image", "image_deps", "build_memory_peak"];
+    const IMAGE_DEP: &[&str] = &["name", "package", "version"];
     const DESKTOP: &[&str] = &["schemes", "wm_class", "icons"];
     const XDG_DIR: &[&str] = &["name", "access"];
     const LAUNCH: &[&str] = &["args", "env"];
@@ -431,6 +460,20 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
         for k in keys(v, "[app]")? {
             if !APP.contains(&k) {
                 out.push(("[app]".to_string(), k.to_string()));
+            }
+        }
+    }
+    if let Some(v) = get("provenance") {
+        for k in keys(v, "[provenance]")? {
+            if !PROVENANCE.contains(&k) {
+                out.push(("[provenance]".to_string(), k.to_string()));
+            }
+        }
+        for d in v.get("image_deps").and_then(|h| h.as_array()).into_iter().flatten() {
+            for k in keys(d, "[[provenance.image_deps]]")? {
+                if !IMAGE_DEP.contains(&k) {
+                    out.push(("[[provenance.image_deps]]".to_string(), k.to_string()));
+                }
             }
         }
     }
@@ -1529,6 +1572,8 @@ mod tests {
             runtime: Some(Runtime { min_runtime: None, stub_hash: Some(good_hash.clone()) }),
             origin: None,
             update: None,
+            env: None,
+            provenance: None,
         };
         let mut f = std::fs::File::open(&p).unwrap();
         assert!(verify_stub_range(&mut f, stub.len() as u64, &man_ok).is_ok());

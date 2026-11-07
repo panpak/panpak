@@ -149,6 +149,8 @@ jobs:
         run: python3 tests/hardening.py
       - name: A pty in the isolated view (shell, window size, job control, a full-screen program)
         run: python3 tests/pty.py
+      - name: The [env] table (variables that point an app at its own tree)
+        run: python3 tests/pkgenv.py
       - name: Lock files left by an app that stops on a signal
         run: python3 tests/stale_lock_exit.py
       - name: Update with icons (changed, removed, new sizes, none)
