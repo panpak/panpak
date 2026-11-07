@@ -90,7 +90,7 @@ out['store_runtime'] = 'present' if os.path.exists(store + '/runtimes/1/panpak-s
 out['home_secret'] = 'present' if os.path.exists(home + '/.config/gh/hosts.yml') else 'absent'
 out['home_xauthority'] = 'present' if os.path.exists(home + '/.Xauthority') else 'absent'
 for name, path in {'gtk': home + '/.config/gtk-3.0/settings.ini', 'font': home + '/.local/share/fonts/f.txt',
-                   'icon': home + '/.local/share/icons/i.txt', 'mimeapps': home + '/.config/mimeapps.list',
+                   'icon': home + '/.local/share/icons/MyTheme/i.txt', 'hicolor': home + '/.local/share/icons/hicolor/h.txt', 'mimeapps': home + '/.config/mimeapps.list',
                    'notes': home + '/Notes/n.txt', 'docs_ro': home + '/Docs/ro.txt', 'xauthority': home + '/.Xauthority'}.items():
     try:
         open(path).read()
@@ -399,7 +399,7 @@ def main():
     (h / '.config/gh/hosts.yml').write_text('oauth_token: fake\n')
     # The user's own files: settings, fonts, icons, notes and secrets, and the folder of another app.
     for rel, text in {'.config/gtk-3.0/settings.ini': '[Settings]\n', '.config/mimeapps.list': '[Default Applications]\n',
-                      '.local/share/fonts/f.txt': 'f', '.local/share/icons/i.txt': 'i', 'Notes/n.txt': 'n', 'Docs/ro.txt': 'r',
+                      '.local/share/fonts/f.txt': 'f', '.local/share/icons/MyTheme/i.txt': 'i', '.local/share/icons/hicolor/h.txt': 'h', 'Notes/n.txt': 'n', 'Docs/ro.txt': 'r',
                       '.local/share/panpak/userdata/org.other.app/secret': 's', '.Xauthority': ''}.items():
         (h / rel).parent.mkdir(parents=True, exist_ok=True)
         (h / rel).write_text(text)
@@ -464,7 +464,7 @@ def main():
         gone = dict(sock_ssh_cm='absent', sock_gpg_home='absent', home_ssh_dir='absent', home_gnupg_dir='absent', home_secret='absent',
                     home_xauthority='absent', store_packages='absent', store_blobs='absent', store_apps='absent',
                     store_abi_cache='absent', store_userdata_org_other_app='absent', store_trees='present',
-                    store_farms='present', store_runtime='present', read_gtk='ok', read_font='ok', read_icon='ok',
+                    store_farms='present', store_runtime='present', read_gtk='ok', read_font='ok', read_icon='ok', read_hicolor='err2',
                     read_mimeapps='ok', read_notes='err2', read_docs_ro='err2', write_gtk='err30', write_stray='err30',
                     sock_bus='absent', sock_systemd_private='absent', sock_gpg_agent='absent', sock_gpg_agent_ssh='absent',
                     sock_ssh_agent='absent', sock_system_bus_fake='absent', sock_system_bus='absent',

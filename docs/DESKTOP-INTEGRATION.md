@@ -556,3 +556,26 @@ What `convert` only reads: the existence check of the entry (`is_file`, follows 
 
 `install` and `update` also print a non-blocking warning when the manifest of a signed package has keys this panpak does not know
 (`unknown_manifest_keys`), since an older panpak would otherwise just show no icon. The critical fields with a minimum version are for step 9.
+
+### 8.9 The cost of the icon folder for Qt apps, and why `hicolor` is out of the view
+
+The harness showed QOwnNotes starting 110 ms later and qBittorrent 60 ms later once the icons were in `~/.local/share/icons/hicolor`. An A/B on the same home
+(with and without that folder) reproduced it; the stub was ruled out (the stage times are the same, and the step 7 stub and the new one give the same medians), so the time is
+inside the app. `strace -f` on QOwnNotes, for the file system calls only:
+
+| | file calls | `access()` | failed `access()` | window |
+|---|---:|---:|---:|---:|
+| no user icon folder | 9,270 | 1,252 | 470 | 0.395 s |
+| `~/.local/share/icons/hicolor` without cache (as installed) | 49,099 | 41,029 | 40,247 | 0.499 s |
+| the same with `index.theme` and `icon-theme.cache` (`gtk-update-icon-cache`) | | | 470 | 0.401 s |
+| `~/.icons/hicolor` without cache | | | 40,247 | 0.501 s |
+| `~/.local/share/icons/mytheme` (a theme nobody uses), without cache | | | 470 | 0.392 s |
+
+Cause: Qt reads `icon-theme.cache` of the system `hicolor` (3 calls) but finds none in the user's, so it tests each icon name in each size folder one at a time (20,640 tries in
+the size folders, and the `@2` and `scalable` ones). Only the themes Qt actually searches matter: `hicolor` is always searched, so it always costs; a theme in use that has
+no cache would cost the same natively.
+
+Rule: **the user's `hicolor` is not given to the app** (`~/.local/share/icons/hicolor` and `~/.icons/hicolor`); the other theme folders are, one by one, so that a theme the user chose
+still reaches the app. Alternatives: generate `icon-theme.cache` at install (needs `gtk-update-icon-cache` and an `index.theme`, and goes stale at every install and remove: discarded);
+leave the folder and accept 60 to 110 ms on Qt apps (discarded). What the app loses: icons that other programs put in the user's `hicolor`, which it has no use for. Test: `the_user_hicolor_theme_stays_out_of_the_view_and_the_other_themes_in`,
+`tests/app_dirs.py` and `tests/view.py` (a readable theme and an invisible `hicolor`).

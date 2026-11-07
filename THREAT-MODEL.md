@@ -108,7 +108,7 @@ do not change. The old `~/.local/share/<id>` is not touched and not writable.
 
 - writes through each XDG variable and `TMPDIR` land in the right folders;
 - a write to `~/.config/<anything>` or to the home is denied;
-- `~/.config/gtk-3.0` and `~/.local/share/icons` can be read and not written;
+- `~/.config/gtk-3.0` and the theme folders of `~/.local/share/icons` can be read and not written; `~/.local/share/icons/hicolor` (where the menu icons go) is not in the view;
 - `~/.config/gh` with a fake token file cannot be read, and `~/.config` cannot
   be listed;
 - missing optional paths do not stop the start;

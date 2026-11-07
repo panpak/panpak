@@ -788,8 +788,14 @@ folders:
 
 - in the config folder: `fontconfig`, `gtk-3.0`, `gtk-4.0`, `kdeglobals`,
   `user-dirs.dirs`, `mimeapps.list`, `qt5ct`, `qt6ct`, `Trolltech.conf`;
-- in the data folder: `fonts`, `icons`, `themes`, `mime`;
-- in the home folder: `.fonts`, `.icons`.
+- in the data folder: `fonts`, `themes`, `mime`, and each theme folder of `icons` except `hicolor`;
+- in the home folder: `.fonts`, and each theme folder of `.icons` except `hicolor`.
+
+The user's `hicolor` icon theme (`~/.local/share/icons/hicolor`, `~/.icons/hicolor`) is not readable by the app. It is the folder where
+`install` puts the menu icons of the apps (§3.1.3), which the app has no use for, and it has no `icon-theme.cache`, so Qt looks up each icon
+name file by file in every size folder: 40,247 failed `access()` calls and about 100 ms more before the window of QOwnNotes appeared (470
+calls and no delay with the folder out of the view, and also with a user `hicolor` that has an `index.theme` and a cache). A user theme that is
+not in use costs nothing and stays readable, as do loose files of no theme: they are not mounted (only theme folders are).
 
 *Fonts.* Fontconfig reads user fonts only from `$XDG_DATA_HOME/fonts` and the
 configuration in `$XDG_CONFIG_HOME/fontconfig`, which are private now. At every start the runtime

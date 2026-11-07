@@ -139,21 +139,49 @@ impl AppDirs {
 /// What the app may read of the user's own settings, for theme, fonts and icons. Only
 /// entries that exist: a missing one is skipped. Never a whole config or data folder.
 pub fn readonly_user_paths() -> Vec<PathBuf> {
+    readonly_user_paths_in(dirs::config_dir().as_deref(), dirs::data_dir().as_deref(), dirs::home_dir().as_deref())
+}
+
+/// The user's icon folders hold themes, one folder each. The app may read every theme but `hicolor`.
+///
+/// `hicolor` is the theme that the toolkits always search, and it is where `panpak install` puts the icons of the apps
+/// for the menu of the desktop. That folder has no `icon-theme.cache`, so Qt looks up every icon name file by file in each
+/// size folder: QOwnNotes made 40,247 failed `access()` calls and needed 100 ms more to show its window (against 470 calls
+/// without the folder). The same happens with `~/.icons/hicolor`; a theme that is not in use costs nothing. The app has no use
+/// for the icons of the menu, so `hicolor` of the user stays out of the view; the themes the user chose stay in.
+const HIDDEN_ICON_THEME: &str = "hicolor";
+
+fn icon_themes(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut v: Vec<PathBuf> = rd
+        .flatten()
+        .filter(|e| e.file_name() != HIDDEN_ICON_THEME)
+        .map(|e| e.path())
+        // A theme is a folder (a link to one counts); a loose file is not mounted.
+        .filter(|p| p.is_dir())
+        .collect();
+    v.sort();
+    v
+}
+
+pub fn readonly_user_paths_in(config: Option<&Path>, data: Option<&Path>, home: Option<&Path>) -> Vec<PathBuf> {
     const CONFIG: &[&str] =
         &["fontconfig", "gtk-3.0", "gtk-4.0", "kdeglobals", "user-dirs.dirs", "mimeapps.list", "qt5ct", "qt6ct", "Trolltech.conf"];
-    const DATA: &[&str] = &["fonts", "icons", "themes", "mime"];
-    const HOME: &[&str] = &[".fonts", ".icons"];
+    const DATA: &[&str] = &["fonts", "themes", "mime"];
     let mut all = Vec::new();
-    if let Some(c) = dirs::config_dir() {
+    if let Some(c) = config {
         all.extend(CONFIG.iter().map(|n| c.join(n)));
     }
-    if let Some(d) = dirs::data_dir() {
+    if let Some(d) = data {
         all.extend(DATA.iter().map(|n| d.join(n)));
     }
-    if let Some(h) = dirs::home_dir() {
-        all.extend(HOME.iter().map(|n| h.join(n)));
+    if let Some(h) = home {
+        all.push(h.join(".fonts"));
     }
     all.retain(|p| p.exists());
+    for icons in data.map(|d| d.join("icons")).into_iter().chain(home.map(|h| h.join(".icons"))) {
+        all.extend(icon_themes(&icons));
+    }
     all
 }
 
@@ -442,6 +470,32 @@ pub fn added_permissions(old: &Manifest, new: &Manifest) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_user_hicolor_theme_stays_out_of_the_view_and_the_other_themes_in() {
+        let t = std::env::temp_dir().join(format!("panpak-layout-icons-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        let (data, home) = (t.join("data"), t.join("home"));
+        for d in ["icons/hicolor/48x48/apps", "icons/MyTheme", "icons/Other", "fonts", ".fonts-not", "x"] {
+            std::fs::create_dir_all(data.join(d)).unwrap();
+        }
+        for d in [".icons/hicolor/16x16/apps", ".icons/Old", ".fonts"] {
+            std::fs::create_dir_all(home.join(d)).unwrap();
+        }
+        std::fs::write(data.join("icons/loose.png"), "x").unwrap();
+        std::os::unix::fs::symlink(data.join("icons/MyTheme"), data.join("icons/Linked")).unwrap();
+        let got = readonly_user_paths_in(None, Some(&data), Some(&home));
+        let rel = |p: &PathBuf| p.strip_prefix(&t).unwrap().display().to_string();
+        let got: Vec<String> = got.iter().map(rel).collect();
+        // `icons` and `.icons` themselves are never granted; their themes are, except hicolor; loose files are not.
+        assert_eq!(got, ["data/fonts", "home/.fonts", "data/icons/Linked", "data/icons/MyTheme", "data/icons/Other", "home/.icons/Old"]);
+        assert!(!got.iter().any(|p| p.contains("hicolor") || p.ends_with("/icons") || p.ends_with("/.icons") || p.contains("loose")));
+        // Without any user icon folder nothing is added, and a folder with only hicolor adds nothing.
+        std::fs::remove_dir_all(data.join("icons")).unwrap();
+        std::fs::create_dir_all(data.join("icons/hicolor")).unwrap();
+        assert!(readonly_user_paths_in(None, Some(&data), None).iter().all(|p| !p.starts_with(data.join("icons"))));
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
     use super::*;
 
     fn man(perm: &str) -> Manifest {

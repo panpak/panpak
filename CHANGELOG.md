@@ -14,6 +14,8 @@
 - **`convert` no longer writes through links of the AppImage.** The unpacked tree is a private `mkdtemp` folder, and every write to it (files, folders, links, the wrapper
   scripts and `panpak.toml`) goes through folder descriptors that do not follow links. Before, an AppImage with `bin -> /somewhere` or `panpak.toml -> /some/file` could make
   `convert` write outside its folder.
+- **The user's `hicolor` icon theme is not in the view of the app.** The menu icons that `install` writes there made Qt apps start 60 to 110 ms later (no `icon-theme.cache`: 40,000 failed lookups). The app still reads the
+  other theme folders of `~/.local/share/icons` and `~/.icons`.
 - **A stable `panpak` and a stable stub.** The store has `bin/panpak-stub` (a link to the best runtime) and `bin/panpak`. Launchers run the stub
   through the link, so a new runtime reaches every app at its next start, and the menu action "Uninstall" runs `bin/panpak`: no launcher or
   entry names the folder from which `panpak` was run any more. `install-runtime` writes both with a rename; `install` copies `panpak` when there is none and warns when the one in

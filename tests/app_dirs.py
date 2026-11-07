@@ -44,8 +44,10 @@ try read_gtk 'cat "$HOME/.config/gtk-3.0/settings.ini" >/dev/null'
 try write_gtk 'echo x >> "$HOME/.config/gtk-3.0/settings.ini"'
 try read_gh 'cat "$HOME/.config/gh/hosts.yml" >/dev/null'
 try list_config 'ls "$HOME/.config" >/dev/null'
-try read_icons 'ls "$HOME/.local/share/icons" >/dev/null'
-try write_icons 'echo x > "$HOME/.local/share/icons/x"'
+try read_icons 'ls "$HOME/.local/share/icons/MyTheme" >/dev/null'
+try write_icons 'echo x > "$HOME/.local/share/icons/MyTheme/x"'
+try read_hicolor 'ls "$HOME/.local/share/icons/hicolor" >/dev/null'
+try read_icons_dir 'ls "$HOME/.local/share/icons" >/dev/null'
 try read_old_appdata 'ls "$HOME/.local/share/'"$PANPAK_APP_ID"'" >/dev/null'
 try read_other_userdata 'ls "$HOME/.local/share/panpak" >/dev/null'
 try read_notes 'ls "$HOME/Notes" >/dev/null'
@@ -163,7 +165,9 @@ def main():
     (h / '.config/gtk-3.0/settings.ini').write_text('[Settings]\ngtk-application-prefer-dark-theme=1\n')
     (h / '.config/gh').mkdir()
     (h / '.config/gh/hosts.yml').write_text('oauth_token: fake\n')
-    (h / '.local/share/icons').mkdir(parents=True)
+    # A theme of the user's, and the hicolor folder where the menu icons of the apps go: the first is readable, the second is not in the view.
+    (h / '.local/share/icons/MyTheme').mkdir(parents=True)
+    (h / '.local/share/icons/hicolor/48x48/apps').mkdir(parents=True)
     (h / '.local/share/fonts').mkdir(parents=True)
     fonts = subprocess.run(['fc-list', ':file'], capture_output=True, text=True).stdout.split(':')
     font = next((f.strip() for f in fonts if f.strip().endswith('.ttf') and Path(f.strip()).is_file()), None)
@@ -189,7 +193,7 @@ def main():
     cache = h / f'.cache/panpak/{ID}'
     expect(rep, write_config='ok', write_data='ok', rename_across_dirs='ok', link_tree_file='deny', move_tree_file='deny', link_system_file='deny', write_state='ok', write_cache='ok', write_tmpdir='ok',
            write_home_config='deny', write_home_file='deny', read_gtk='ok', write_gtk='deny', read_gh='deny',
-           list_config='ok' if VIEW else 'deny', read_icons='ok', write_icons='deny', read_old_appdata='deny',
+           list_config='ok' if VIEW else 'deny', read_icons='ok', write_icons='deny', read_hicolor='deny', read_icons_dir='ok' if VIEW else 'deny', read_old_appdata='deny',
            read_other_userdata='ok' if VIEW else 'deny', read_notes='deny', write_notes='deny', read_docs='deny', write_docs='deny',
            write_tmp='ok', args='one two', fonts_found='1')
     assert (userdata / 'config/c.txt').exists() and (userdata / 'data/d.txt').exists()
