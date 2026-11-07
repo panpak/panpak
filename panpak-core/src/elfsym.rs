@@ -475,15 +475,58 @@ mod tests {
 mod glibc_tests {
     use super::*;
 
-    #[test]
-    fn a_system_library_with_a_runpath_names_its_folder() {
-        // libproxy of Debian has RUNPATH $ORIGIN/libproxy; the loader of the image would find its backend there.
-        if let Ok(p) = std::fs::canonicalize("/usr/lib/x86_64-linux-gnu/libproxy.so.1") {
-            let info = read_elf_info(&p).unwrap();
-            assert!(info.runpath.iter().any(|r| r.contains("ORIGIN")), "{:?}", info.runpath);
+    /// A minimal ELF64 with section headers: a null section, `.dynamic` (linked to `.dynstr`) and `.dynstr`.
+    fn elf_with_dynamic(entries: &[(u64, u64)], strtab: &[u8]) -> Vec<u8> {
+        let dynamic: Vec<u8> = entries.iter().chain(&[(0u64, 0u64)]).flat_map(|(t, v)| t.to_le_bytes().into_iter().chain(v.to_le_bytes())).collect();
+        let mut f = vec![0u8; 64];
+        f[..4].copy_from_slice(b"\x7fELF");
+        f[4] = 2;
+        f[5] = 1;
+        let (dyn_off, str_off) = (64usize, 64 + dynamic.len());
+        f.extend(&dynamic);
+        f.extend(strtab);
+        while f.len() % 8 != 0 {
+            f.push(0);
         }
-        let own = read_elf_info(&std::env::current_exe().unwrap()).unwrap();
-        let _ = own.runpath; // any list, no panic
+        let shoff = f.len();
+        let mut sh = |kind: u32, off: usize, size: usize, link: u32| {
+            let mut h = vec![0u8; 64];
+            h[4..8].copy_from_slice(&kind.to_le_bytes());
+            h[0x18..0x20].copy_from_slice(&(off as u64).to_le_bytes());
+            h[0x20..0x28].copy_from_slice(&(size as u64).to_le_bytes());
+            h[0x28..0x2C].copy_from_slice(&link.to_le_bytes());
+            h
+        };
+        let table: Vec<u8> = [sh(0, 0, 0, 0), sh(SHT_DYNAMIC, dyn_off, dynamic.len(), 2), sh(3, str_off, strtab.len(), 0)].concat();
+        f.extend(table);
+        f[0x28..0x30].copy_from_slice(&(shoff as u64).to_le_bytes());
+        f[0x3A..0x3C].copy_from_slice(&64u16.to_le_bytes());
+        f[0x3C..0x3E].copy_from_slice(&3u16.to_le_bytes());
+        f
+    }
+
+    #[test]
+    fn the_runpath_of_the_dynamic_section_is_read() {
+        let dir = std::env::temp_dir().join(format!("panpak-runpath-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // strtab: "\0libfoo.so.1\0$ORIGIN/libproxy:/opt/lib\0"
+        let strtab = b"\0libfoo.so.1\0$ORIGIN/libproxy:/opt/lib\0old\0";
+        let p = dir.join("a.so");
+        std::fs::write(&p, elf_with_dynamic(&[(1, 1), (29, 13)], strtab)).unwrap();
+        let info = read_elf_info(&p).unwrap();
+        assert_eq!(info.needs, ["libfoo.so.1"]);
+        assert_eq!(info.runpath, ["$ORIGIN/libproxy", "/opt/lib"]);
+        // DT_RPATH is used only when there is no DT_RUNPATH.
+        std::fs::write(&p, elf_with_dynamic(&[(15, 39)], strtab)).unwrap();
+        assert_eq!(read_elf_info(&p).unwrap().runpath, ["old"]);
+        std::fs::write(&p, elf_with_dynamic(&[(15, 39), (29, 13)], strtab)).unwrap();
+        assert_eq!(read_elf_info(&p).unwrap().runpath, ["$ORIGIN/libproxy", "/opt/lib"]);
+        // None: an empty list. A value outside the string table: no panic.
+        std::fs::write(&p, elf_with_dynamic(&[(1, 1)], strtab)).unwrap();
+        assert!(read_elf_info(&p).unwrap().runpath.is_empty());
+        std::fs::write(&p, elf_with_dynamic(&[(29, 9999)], strtab)).unwrap();
+        assert!(read_elf_info(&p).unwrap().runpath.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
