@@ -561,7 +561,7 @@ needs a stranger to get a Flathub id they do not own. It is not a rule of the bu
 Two steps. **Now, option 1**, because it is small and closes the call-through (F22, A and C) for the case that is certain, a native instance that is running: check the owner at
 start, leave the name out and say so, list the application id and the "can call" meaning in the install text, and print a note at install when the id exists natively.
 For recipes: set the single instance off where the app has the switch, and a class of its own. **Target, option 3**, the private bus per app, because it is the only
-one that removes F22, F23, the squatting (B) and F11 together, and it is the shape that does not depend on a list of names; start with a prototype that measures the cost at start and
+one that removes F22, F23, the squatting (B) and F11 together, and it is the shape that does not depend on a list of names (the owner chose it, for step 13p); start with a prototype that measures the cost at start and
 shows that the bridge for portals, notifications and the tray does not need a filter of its own. Option 4 is worth doing at step 9 for its own reasons (who may publish which id) and is not
 a substitute. Option 2 only if the prototype of option 3 shows that the bridge is, in fact, option 2. The decision is the owner's.
 
@@ -593,7 +593,7 @@ change of `/dev`, one run each, not looked into). Workspace tests: all pass (pea
 
 ### 6.1 Decisions of the owner
 
-- **F22 and F23: no change in the product now.** The fix will be option 3 of section 4 (a private session bus for each app, with a bridge only for the portals, the notifications and the tray), in a step of its own right after 13a. The stop-gap
+- **F22 and F23: no change in the product now.** The fix will be option 3 of section 4 (a private session bus for each app, with a bridge only for the portals, the notifications and the tray), in a step of its own right after 13a, step 13p. The stop-gap
   of option 1 would be thrown away when the private bus comes, and nothing is published today. It was not started.
 - **Ghostty, for now, in the recipe only:** `--gtk-single-instance=false` and a window class of its own (`--class=com.mitchellh.ghostty.panpak`, the same as `desktop.wm_class`). Tested in the lab (a native `/usr/bin/ghostty` running as a second program on a
   private bus): the Panpak copy stays alive, opens a window of its own (its own process, class `com.mitchellh.ghostty.panpak`), the native instance keeps its one window, and there is no method call from the copy to `com.mitchellh.ghostty` on the bus (before: `DescribeAll` and
