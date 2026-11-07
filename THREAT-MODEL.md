@@ -220,9 +220,13 @@ then call `PermissionStore.DeletePermission` for the app and revoke its document
   the program against an interpreter for every entry; the filter loaded in a child process of the real kernel; the same calls from an app
   started by the real launcher (ENOSYS or EPERM as documented, threads, fork and exec still work). Costs about 0.1 ms
   at start and tens of nanoseconds a call. `panpak doctor` reports kernel support; without it the app does not start.
-- **Device ioctl.** From Landlock V5 the app can do an ioctl only on `/dev/tty` and `/dev/dri` (and on descriptors it
+- **Device ioctl.** From Landlock V5 the app can do an ioctl only on `/dev/tty`, `/dev/dri` and the pseudo-terminals `ptmx` and `pts` (and on descriptors it
   inherited, such as its terminal). `/dev/null`, `/dev/zero`, `/dev/urandom` and the other nodes refuse it with `EACCES`
   (tested per device).
+- **Pseudo-terminals.** Every app may open a pty (terminals, IDEs and editors with a terminal need one), so it is not a permission. What makes it safe is
+  that the view has a devpts of its own: a pty of the app is not a terminal of the user, and the app cannot read the keys the user types in another terminal
+  or write into one. `TIOCSTI` and `TIOCLINUX` are refused by seccomp. A shell on a pty is still inside the same view, Landlock and seccomp as the app.
+  A pty gives no new authority; what it removes is a reason why a whole class of apps could not run (`tests/pty.py`: shell, window size, job control, a full-screen program).
 - **Wayland socket with a security context.** When the compositor supports `wp_security_context_v1` the app is given a
   socket of its own that the compositor knows is sandboxed (engine `io.github.panpak`, app id `panpak.<id>`), instead of the user's own
   socket. What a sandboxed client may do is the compositor's choice (screen capture, virtual input and global shortcuts are the usual

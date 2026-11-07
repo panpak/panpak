@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Apps can open a pty (terminals, IDEs).** The isolated view now has a devpts of its own and a minimal `/dev` of bubblewrap (null, zero, full, random, urandom, tty,
+  the GPU folder `dri`) instead of the host's `/dev`; Landlock grants `ptmx` and `pts` read, write and the device ioctls. Before, `open("/dev/ptmx")` failed with `EACCES` and
+  no terminal emulator could start a shell. The ptys an app sees are its own, never the user's terminals; `TIOCSTI` stays refused. No permission is needed. `tests/pty.py`.
+- **The Wayland client libraries come from the host.** `libwayland-client`, `libwayland-egl` and `libwayland-cursor` join the graphics stack that the system always wins (a bundled copy next to the host's
+  Mesa made EGL fail: Ghostty built from source had no OpenGL context).
+- **`pack` writes `glibc_min`** (the highest `GLIBC_x.y` the files ask for) and `install` and `update` refuse a package that needs a newer glibc than the system has, with both versions (`PANPAK-E2005`).
+- **`pack` warns about a Qt tree without the plugins Qt loads at run time:** the `xdgdesktopportal` platform theme (dark mode, portal dialogs) and, with `libQt6Svg`, the SVG image format and icon engine plugins (tray icons).
+
 - **A lock file left by an app that stops on a signal is removed when the last copy ends.** qBittorrent (a Qt `QLockFile`) stopped with `SIGTERM` left its `lockfile`, and the next start did not
   start because process ids start again at 1 in the view. The runtime that stays now searches for the stale lock files of the private folders when the last copy ends, before it removes the mark "in use" (cost at
   exit, 0.4 to 3.7 ms on the 15 test apps; none at start). A copy that is not the last touches nothing. `tests/stale_lock_exit.py`.

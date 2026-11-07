@@ -34,13 +34,24 @@ Version choices, with the reason (each is a finding, see 3):
   and libadwaita 1.6, which trixie has.
 - Ghostty 1.4.0 (needs Zig 0.17.0) was tried first and could not be built, see F16.
 
+### 1.1.1 Ghostty: the route used at the end, and its dependencies
+
+Final route: **Ghostty 1.3.1 with Zig 0.15.2, without `-fsys`**: every dependency is the Zig package that Ghostty pins (hash-checked by Zig), built from source
+and linked statically into the `ghostty` executable (FreeType, HarfBuzz 11.0.0, Fontconfig 2.14.2, Oniguruma, libpng, zlib, glslang, SPIRV-Cross, highway, simdutf and
+the others of `build.zig.zon.txt`). The `-fsys=glslang -fsys=spirv-cross` route was tried only on 1.4.0 (F16) and did not take effect there; it is not used in the packages.
+What stays shared is the GTK stack and one more library: the executable needs `libgtk-4`, `libgio`, `libgobject`, `libglib`, `libadwaita-1`, `libX11`,
+`libwayland-client` and `libgtk4-layer-shell`. All are collected from the build image (Debian) into the package (`libwayland-client` comes from the host since the
+correction of F19). `libgtk4-layer-shell` is Debian's **1.0.4**; Ghostty pins 1.1.0 in its Zig packages but this build did not produce or install that copy (the
+executable links the system one by `pkg-config`, with `RUNPATH` to the system folder), so the one in the package is the Debian one. It worked in every test; the quick-terminal
+(the layer-shell feature) was not tried. When 1.4.0 comes back in 13b, this version question comes with it.
+
 ### 1.2 Results
 
 | App | Build | Start | Wayland, no X11 | Use tests | Problems |
 |---|---|---|---|---|---|
 | Text Editor 48.3 (GTK 4, libadwaita) | ok, 7 s | window in 0.52 s (median of 5, first excluded) | yes: no `x11` permission, no `DISPLAY`, window in Sway | light and dark follow the portal live (mean brightness 0.97 light, 0.13 dark, dark again after switching back); opens a file given on the command line; saves with the GTK file dialog into the granted `documents` folder; settings persist (keyfile backend, F15); symbolic icons render (SVG pixbuf loader collected) | F11 (D-Bus name), F12 (a11y bus), F15 (GSettings), F28 (no `glibc_min`). Only a close button was seen: the GNOME default layout, and the headless run has no GSettings to say otherwise; minimize and maximize were not tested |
 | qBittorrent 5.2.4 (Qt 6, CMake) | ok, 225 s (`-j4`) | window in 0.31 s | yes (platform plugin `wayland`, no `xcb` plugin collected) | window and menus; legal notice pre-accepted as in the AppImage tests; tray: the app calls `RegisterStatusNotifierItem` on the watcher through the filtered bus (seen with `dbus-monitor`; a fake watcher cannot draw it); notifications: the `Notify` rules are granted but no notification was triggered; dark at start follows the portal | F25 (SVG plugins), F26 (platform theme plugin), F27 (no live switch). The "listen on local socket failed, Name error" line is old: the AppImage logs of step 7 have it too |
-| Ghostty 1.3.1 (GTK 4, Zig) | ok, 187 s (`-j3`, with the package download) | window in 0.41 s, OpenGL 4.5 | yes | window, rendering. **No shell**: `openpty` fails (F21), so colors, copy and paste, and opening a link could not be tried. Single instance with a native Ghostty: F22 and F23 | F16 to F24 |
+| Ghostty 1.3.1 (GTK 4, Zig) | ok, 187 s (`-j3`, with the package download) | window in 0.41 s, OpenGL 4.5 | yes | Phase 1: window, rendering, no shell (F21). **After the correction of F21 and F19**: a shell with colors (`TERM=xterm-ghostty`, 256 colors, red, green and blue text rendered), paste from the clipboard (`Ctrl+Shift+V`), select all and copy (`Ctrl+Shift+A`, `Ctrl+Shift+C`; the clipboard held the terminal text), no `prefer_host` needed for OpenGL 4.5. **Custom shader** (`custom-shader` with a GLSL file that tints the output red): the shader is loaded and applied (mean color of the window 187/23/29 against 41/46/55 without it), so rendering is right with a custom shader and not only a window that opens. Opening a link: **not verified** (the injected Ctrl+click did not reach Ghostty; no `xdg-open` call and no portal call were seen, F29). Single instance with a native Ghostty: F22 and F23 | F16 to F24, F29 |
 
 Harness (group `source` of the fast harness, outside the repository): fast mode (one start per app) 10 s for the three
 apps; full mode (first start, then the median of 5) 31 s. Both run in a scope with a memory cap; the peak was 0.9 GB.
@@ -60,6 +71,9 @@ with its own 100 MB copy of `panpak`), a second image, the failed Ghostty 1.4.0 
 
 ## 2. Findings
 
+Status after phase 2: F19, F21, F25, F26 and F28 are corrected (section 5); F22 and F23 have a design in section 4 and wait for a decision; F11
+waits for that decision. Rows keep the text of phase 1.
+
 Priority: H = security or blocks an app class, M = wrong or silent behaviour, L = information. "Not corrected" means
 the product was not touched, as the task requires.
 
@@ -75,6 +89,7 @@ the product was not touched, as the task requires.
 | F28 | M | `pack` writes no `glibc_min` (the field is empty in the three manifests). The tools can compute it from the version needs of the ELF files (see 4.1); on an older host the failure is a loader error at start |
 | F15 | M | The dconf GSettings backend needs `ca.desrt.dconf` on the bus (not allowed). `GSETTINGS_BACKEND=keyfile` in the wrapper keeps settings in the private config folder (verified: the keyfile is written) |
 | F24 | M, to verify | Dock and menu grouping. The copy's window class is `com.mitchellh.ghostty` (with D-Bus) or `GTK Application` (without), and the entry is `panpak.com.mitchellh.ghostty.desktop`. With the real class GNOME groups it with the native launcher and shows the native icon and name. Not verifiable headless. Steps for the user: install the package, start native Ghostty, then the Panpak one, and look at the dock (one icon or two, which icon, which name). Run it with the native one stopped too |
+| F29 | M, to verify | Opening a link from Ghostty (GTK `show_uri`): the filtered bus has no `org.freedesktop.portal.OpenURI` rule (`panpak dbus-rules` lists Settings, Inhibit, Request and Session) and the opener of section 9.3 only serves programs that run `xdg-open`. A GTK app that opens a link through the portal probably cannot. The test could not click the link (the virtual pointer events did not reach the app), so this is **not verified**; try it by hand: Ctrl+click on a URL in the Panpak Ghostty, with a native `xdg-open` that you can see |
 | F27 | L | With the portal theme plugin, qBittorrent starts dark when the portal says dark; a live switch to light within 2 s is not followed (Qt 6.8 Fusion). GTK follows live (F13) |
 | F12 | L | GTK a11y bus: "Unable to acquire the address of the accessibility bus" on the filtered bus. Harmless; `GTK_A11Y=none` or a filter rule would silence it |
 | F16 | build | Ghostty 1.4.0 with Zig 0.17.0: compiling the bundled glslang `SPIRV/doc.cpp` (the clang of Zig) reached 10 GB of RSS in 12 s and was killed by the kernel inside the capped scope. With `-j6` and a 7 GB cap the build thrashed (the cap reached 1.36 million times, 800 MB/s of disk reads). `-fsys=glslang -fsys=spirv-cross` did not avoid the bundled copy. Ghostty 1.3.1 with Zig 0.15.2 builds in 3.7 GB |
@@ -122,8 +137,9 @@ the image, not by the app.
 | B. Older base (Debian 12 or Ubuntu 22.04) with GLib, GTK, libadwaita, GtkSourceView and Qt compiled in the image | 2.34 to 2.36 | adds the three older systems | Estimate, not measured: hours for Qt 6 and a long list of GNOME libraries to keep in step; a recipe per toolkit version. Ghostty's GTK and libadwaita floors are high anyway |
 | C. Debian 13 with the host glibc symbols pinned (link against old symbol versions) | about 2.34 for most symbols | same as B | not tried: it needs a compat layer for each of `__isoc23_*`, `exp10`, `pidfd_*`; fragile |
 
-Proposal for 13a: **A**, and let `pack` write `glibc_min` from the files (F28), so that an older host gets a clear
-message. B is a later option for the apps whose users run enterprise distributions; it is a recipe choice, the format does not change.
+**Decision (accepted for the beta): A.** The floor is glibc 2.39. It covers Ubuntu 24.04 and later, Debian 13, Fedora 40 and later, Bluefin and the rolling
+distributions. **Debian 12, Ubuntu 22.04 and RHEL 9 and its clones stay outside.** `pack` now writes `glibc_min` from the files (F28), and `install` and
+`update` refuse with `PANPAK-E2005` and both versions on a system with an older glibc, so that no one finds out from a loader error. Going lower later is option B: an older image (Debian 12 or Ubuntu 22.04) with GLib, GTK, libadwaita, GtkSourceView and Qt compiled on top of it, at an estimated cost (not measured) of hours of build per toolkit version and a recipe to keep up to date for each; or option C. It is a recipe choice, the format does not change. Not done now.
 
 **Rootless, with the fewest outside dependencies.** Measured on this host:
 
@@ -161,49 +177,82 @@ scope with a memory cap).
 
 ### 3.2 `panpak.toml` for the developer
 
-Today `panpak.toml` describes the package. For a source build it would grow three tables. Minimal schema:
+Today `panpak.toml` describes the package. For a source build it grows four tables (`[source]`, `[build]`, `[collect]`, `[license]`) and the build
+leaves a record in the signed manifest (`[provenance]`). Schema, with the fields that came out of the first part of phase 2 (memory, jobs, dependencies taken from the image):
 
 ```toml
-[app]                       # as today
-id = "org.gnome.TextEditor" # the application id (F11)
+[app]                        # as today
+id = "org.gnome.TextEditor"  # the application id (F11)
 name = "Text Editor"
 version = "48.3"
 entry = "bin/gnome-text-editor"
 
-[source]                    # what is built
+[source]                     # what is built; exactly one of git or url
 git = "https://gitlab.gnome.org/GNOME/gnome-text-editor.git"
-commit = "6f40f0bf2d443471ecc0267e8e87d202b6d1ff6c"   # required; a tag alone is refused
-# or: url = "https://.../editor-1.0.tar.gz", sha256 = "<64 hex>"
+commit = "6f40f0bf2d443471ecc0267e8e87d202b6d1ff6c"      # required: a tag alone is refused
+# url = "https://example.org/app-1.0.tar.gz"; sha256 = "<64 hex>"; signature = { minisign = "<key>", file = "<url>" }   (optional check)
 
 [build]
-image = "debian-13"                  # a named recipe image, pinned by the tool to a digest and a snapshot date
-system = "meson"                     # meson | cmake | cargo | zig | custom
+image = "debian-13"          # a recipe image: the tool maps the name to a digest and a snapshot date it carries; an unknown name is an error
+system = "meson"             # meson | cmake | cargo | zig | custom
 configure = ["--prefix=/usr", "--libdir=lib", "--buildtype=release"]
-steps = []                           # only for system = "custom"; each step is a list, no shell
-packages = ["libgtk-4-dev"]          # extra packages of the image, from the snapshot
-network = "sources"                  # sources | none; the build step itself never has the network
+steps = []                   # only for system = "custom": each step an argument list, never a shell string
+writable_source = false      # true: the build writes into the source (qBittorrent), so it works on a copy
+memory = "2G"                # the peak the recipe was measured to need at `jobs` jobs; see below
+jobs = 6                     # the most jobs it was tested with
+memory_per_job = "0.5G"      # optional; default memory / jobs
+network = "fetch"            # fetch: the sources and the language packages are fetched first (the only step with the network) | none
 
-[collect]                            # what goes with the app, see 3.3
-toolkit = "gtk4"                     # gtk4 | gtk3 | qt6 | none
-prefer_host = ["libwayland-*"]
+[build.image_packages]       # what the image needs for this app, from the image's dated snapshot
+packages = ["meson", "ninja-build", "libgtk-4-dev", "libadwaita-1-dev", "libgtksourceview-5-dev", "libspelling-1-dev", "itstool", "appstream"]
+
+[[build.image_deps]]         # a dependency taken from the build image instead of built from source (the -fsys case of Ghostty)
+name = "glslang"
+package = "glslang-dev"      # the image package, and its version is recorded by the build
+why = "the pinned copy needs more than 10 GB to compile"
+# every entry here is copied to [provenance] and shown by `panpak install`
+
+[collect]                    # what goes with the app (see 3.3)
+toolkit = "gtk4"             # gtk4 | gtk3 | qt6 | none
+prefer_host = []             # libwayland-* is always host (corrected); only what is beyond that
 data = ["share/gtksourceview-5", "share/icons/Adwaita"]
+exclude = []
 
-[desktop]                            # as today, plus the source of the icons
+[desktop]
 icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"
 sizes = [256, 128, 64, 48, 32]
 schemes = []
 
-[permissions]                        # as today
+[permissions]                # as today
 dbus_own = ["org.gnome.TextEditor"]
 
-[license]                            # data for the license screen and for `panpak licenses`
+[license]
 spdx = "GPL-3.0-or-later"
 files = ["COPYING"]
-bundled = "auto"                     # license files of the collected libraries, from the image's package data
+bundled = "auto"             # the license files of the libraries that are collected, from the image's package data
 
 [update]
 key = "ed25519:..."
+
+# Written by `panpak build`, never by hand (`pack` refuses it in the input): the record that the user sees at install.
+[provenance]
+source = "git https://... @ 6f40f0bf..."
+image = "debian-13 sha256:7378260c... snapshot 20261107T000000Z"
+image_deps = [{ name = "glslang", package = "glslang-dev", version = "15.1.0+1.4.309.0-1" }]
+build_memory_peak = "0.55G"
 ```
+
+**Memory (`build.memory`, `jobs`, `memory_per_job`).** A recipe declares what it needs: the peak measured at the number of jobs it was tested with.
+`panpak build` reads the available memory (`MemAvailable`, and swap only as a margin, not counted) and: if the available memory is at least `memory`, it runs with
+`jobs` (never more than the processors); if it is less, it lowers the number of jobs to `floor((available - base) / memory_per_job)` and says so; if not even one job fits it stops
+with `PANPAK-E6005` before it starts, naming what is missing. The build runs in a systemd user scope with `MemoryMax` of `max(memory, jobs x memory_per_job) x 1.25` and
+`MemorySwapMax` of the swap that is there, so that when the memory ends the kernel closes the build and not the desktop; the tool reads `memory.peak` of the scope and writes it to `[provenance]`
+and to the output, and says when the recipe's `memory` was too low (the number is a measurement, not a promise). Without `systemd-run --user` (a system with no user manager) it runs with `ulimit -v`
+as a poorer guard and says so. The measured recipes below: Text Editor 0.55 GB, qBittorrent 3.0 GB, Ghostty 3.7 GB (2.4 GB when the packages are already fetched).
+
+**Dependencies from the image (`[[build.image_deps]]`).** A recipe may say that a dependency is not built from the pinned source but taken from the image. It is declared one by one
+(name, image package, why), the build records the version it found, and the list goes into the signed `[provenance]` of the package and into what `install` prints, so the user sees
+that a library of the build system's distribution is inside, not the one the author of the app pinned. `pack` and `build` refuse an image dependency that is not declared.
 
 Commands:
 
@@ -225,6 +274,134 @@ Warnings and refusals (new, all with the usual error-code style):
   (F25); a GTK app without the pixbuf SVG loader; a tree with `libwayland-*` and no `prefer_host` (F19); an entry
   that is not an executable; no `glibc_min`.
 - A terminal-like app (it opens `/dev/ptmx`): refused until a `pty` permission exists (F21).
+
+### 3.2.1 The three recipes in this format
+
+These are the recipes of the practical test written in the proposed schema; the build scripts used in phase 1 are what the `steps` and `configure` lines stand for.
+Numbers are the measured ones (section 1.2).
+
+```toml
+# recipes/gnome-text-editor/panpak.toml
+[app]
+id = "org.gnome.TextEditor"
+name = "Text Editor"
+version = "48.3"
+entry = "bin/gnome-text-editor"
+[source]
+git = "https://gitlab.gnome.org/GNOME/gnome-text-editor.git"
+commit = "6f40f0bf2d443471ecc0267e8e87d202b6d1ff6c"
+[build]
+image = "debian-13"
+system = "meson"
+configure = ["--prefix=/usr", "--libdir=lib", "--buildtype=release"]
+memory = "1G"
+jobs = 6
+network = "none"
+[build.image_packages]
+packages = ["meson", "ninja-build", "libgtk-4-dev", "libadwaita-1-dev", "libgtksourceview-5-dev", "libspelling-1-dev", "libicu-dev", "libenchant-2-dev", "libeditorconfig-dev", "blueprint-compiler", "itstool", "appstream", "sassc", "librsvg2-bin", "gsettings-desktop-schemas", "adwaita-icon-theme", "shared-mime-info", "librsvg2-common"]
+[collect]
+toolkit = "gtk4"
+data = ["share/gtksourceview-5", "share/icons/Adwaita", "share/mime"]
+[desktop]
+icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"
+sizes = [256, 128, 64, 48, 32]
+[permissions]
+dbus_own = ["org.gnome.TextEditor"]
+[[permissions.xdg_dirs]]
+name = "documents"
+access = "rw"
+[license]
+spdx = "GPL-3.0-or-later"
+files = ["COPYING"]
+```
+
+```toml
+# recipes/qbittorrent/panpak.toml
+[app]
+id = "org.qbittorrent.qBittorrent"
+name = "qBittorrent"
+version = "5.2.4"
+entry = "bin/qbittorrent"
+[source]
+git = "https://github.com/qbittorrent/qBittorrent.git"
+commit = "a1e4649cb8ae581925acc161dbab5cbc6584c542"
+[build]
+image = "debian-13"
+system = "cmake"
+configure = ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DGUI=ON", "-DWEBUI=ON", "-DSYSTEMD=OFF", "-DSTACKTRACE=OFF", "-DTESTING=OFF"]
+writable_source = true
+memory = "3G"
+jobs = 4
+memory_per_job = "0.6G"
+network = "none"
+[build.image_packages]
+packages = ["cmake", "ninja-build", "qt6-base-dev", "qt6-base-private-dev", "qt6-tools-dev", "qt6-tools-dev-tools", "qt6-l10n-tools", "libqt6svg6-dev", "qt6-svg-plugins", "qt6-xdgdesktopportal-platformtheme", "qt6-wayland", "libtorrent-rasterbar-dev", "libboost-dev", "libssl-dev", "zlib1g-dev", "librsvg2-bin"]
+[collect]
+toolkit = "qt6"
+[desktop]
+icon_svg = "share/icons/hicolor/scalable/apps/qbittorrent.svg"
+sizes = [256, 128, 64, 48, 32]
+[permissions]
+network = true
+network_allow_tcp = [80, 443]
+network_bind_tcp = [6881]
+notifications = true
+tray = true
+dbus_own = ["org.qbittorrent.qBittorrent"]
+[[permissions.xdg_dirs]]
+name = "download"
+access = "rw"
+[license]
+spdx = "GPL-3.0-or-later"        # the binary distribution; COPYING says so and adds an OpenSSL exception
+files = ["COPYING"]
+```
+
+```toml
+# recipes/ghostty/panpak.toml    (1.3.1; the 1.4.0 recipe of 13b adds the two image_deps below)
+[app]
+id = "com.mitchellh.ghostty"
+name = "Ghostty"
+version = "1.3.1"
+entry = "bin/ghostty"
+[source]
+url = "https://release.files.ghostty.org/1.3.1/ghostty-1.3.1.tar.gz"
+sha256 = "3349d25600ffbda281197a18314f7d18791969cffe9474f0ff16a45a9ebfccdb"
+signature = { minisign = "RWQlAjJC23149WL2sEpT/l0QKy7hMIFhYdQOFy0Z7z7PbneUgvlsnYcV", file = "https://release.files.ghostty.org/1.3.1/ghostty-1.3.1.tar.gz.minisig" }
+[build]
+image = "debian-13"
+system = "zig"
+zig = { version = "0.15.2", sha256 = "02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239" }
+configure = ["--prefix", "/usr", "-Doptimize=ReleaseFast", "-Dcpu=baseline"]
+memory = "4G"
+jobs = 3
+memory_per_job = "1G"
+network = "fetch"
+[build.image_packages]
+packages = ["libgtk-4-dev", "libadwaita-1-dev", "libgtk4-layer-shell-dev", "blueprint-compiler", "libxml2-utils", "gettext", "pkg-config", "libglib2.0-dev-bin"]
+[[build.image_deps]]
+name = "gtk4-layer-shell"
+package = "libgtk4-layer-shell-dev"
+why = "linked from the system by pkg-config; Ghostty pins 1.1.0 and the image has 1.0.4"
+# 13b, Ghostty 1.4.0 with Zig 0.17: configure gets -fsys=glslang and -fsys=spirv-cross and these entries:
+# [[build.image_deps]]  name = "glslang"      package = "glslang-dev"                 why = "the pinned copy needs more than 10 GB to compile"
+# [[build.image_deps]]  name = "spirv-cross"  package = "libspirv-cross-c-shared-dev" why = "same"   (Debian has 2021.01.15: a much older version than the pinned one, to be checked)
+[collect]
+toolkit = "gtk4"
+data = ["share/ghostty", "share/terminfo"]
+[desktop]
+icons_png = ["share/icons/hicolor/512x512/apps/com.mitchellh.ghostty.png", "share/icons/hicolor/256x256/apps/com.mitchellh.ghostty.png", "share/icons/hicolor/128x128/apps/com.mitchellh.ghostty.png", "share/icons/hicolor/32x32/apps/com.mitchellh.ghostty.png", "share/icons/hicolor/16x16/apps/com.mitchellh.ghostty.png"]
+[permissions]
+dbus_own = ["com.mitchellh.ghostty"]    # F22: until the decision of section 4 this line gives the copy the call-through
+[[permissions.xdg_dirs]]
+name = "documents"
+access = "rw"
+[license]
+spdx = "MIT"
+files = ["LICENSE"]
+```
+
+What the three show about the schema: `network = "fetch"` is needed only by the Zig recipe; `writable_source` by qBittorrent; `icons_png` next to `icon_svg` for apps that ship PNG;
+`zig = {...}` is a pinned toolchain in the recipe, not in the image; a recipe lists the image packages it needs, and the image itself stays one for all.
 
 ### 3.3 `panpak collect`: what is needed
 
@@ -303,9 +480,95 @@ for step 8: the store works on chunks of the content (not of the package), and t
 references per chunk; and apps built in one pinned image should be encouraged (the image digest is a natural key
 for "these libraries are the same").
 
-## 4. Risks and open points
+## 4. D-Bus names shared with a native app (F22 and F23): design
 
-- **F22 and F23 are the first thing to decide.** They exist today for any app whose panpak id equals an application
+Design only; no code. The decision is the owner's. Everything was tested on a private session bus (a `dbus-daemon` of its own with the real
+`xdg-desktop-portal`, in a runtime folder of its own), with fake "native" programs that own a name and log every call they get, and a headless
+Sway. The user's session bus was never used. The scripts are `f22.py`, `fake_native.py` and the probe package in the work folder.
+
+### 4.1 What the filtered bus allows today
+
+The runtime gives the proxy `--own=<name>` and `--talk=<name>` for the application id and for each name of `dbus_own`
+(`panpak dbus-rules` prints exactly these lines). In `xdg-dbus-proxy` the policy levels add up (its manual): **OWN implies TALK**, and TALK means "you can send any
+method calls and signals to the name" and call `StartServiceByName` on it. So the proxy has no setting "own it, but do not talk to a foreign owner".
+
+| Test | What was done | Result |
+|---|---|---|
+| A. A native process owns the name (a fake password manager, `org.keepassxc.KeePassXC`) | A package with `dbus_own` of that name calls three methods on the name: `org.freedesktop.DBus.Peer.Ping`, an invented `com.example.Secret.GetSecret` on an invented path, and `org.gtk.Application.Activate` | All three are delivered and answered; the native program logged all three, from the proxy's connection. The package also tried to own the name: it lost (the name stays with the native process), but kept the right to call it. **Any interface and any path reach the native process** |
+| B. The native app is not running; a package owns its name | A package with `dbus_own = ["org.keepassxc.KeePassXC"]` owns it; a client outside the sandbox (what a browser extension or another app would do) calls `org.keepassxc.KeePassXC.GetEntry` | The package owns the name (`GetNameOwner` shows the proxy's connection) and **receives the call** (`Introspect` and `GetEntry` in its log) and answers it. The caller got the package's reply: **a package can take the place of a native app on the session bus, and receive what is meant for it** |
+| C. The native app is not running but has an activation file | A service file for `org.example.NativeApp` on the bus; a package with that name in `dbus_own` calls it | The bus starts the native program **outside the sandbox** (its log shows it started and received the three calls from the package) |
+| D. Which names `dbus_own` refuses | `pack` with names of services and apps | `org.freedesktop.secrets` and `org.gnome.keyring.*` are refused (`PANPAK-E0007`, the list of section 3.1.5). `org.keepassxc.KeePassXC`, `com.bitwarden.desktop` and `org.mozilla.firefox` are accepted: the list protects the desktop's own services, not other apps |
+| E. What the user is told | `panpak install` of the package of B | One line: "the app can own org.keepassxc.KeePassXC on your session bus, besides its own id". It does not say that the app can also call whoever owns it, and the application id itself (`--own` and `--talk` for `app.id`) is never listed, so a package whose **id** is `org.keepassxc.KeePassXC` has the same powers with no line at all |
+| F. Ghostty with the native one running (phase 1) | The Panpak copy starts while a native `ghostty` owns `com.mitchellh.ghostty` (both orders) | The copy becomes a remote instance and calls `org.gtk.Actions.DescribeAll` and `org.gtk.Application.Activate`; the native process opens a window outside the sandbox (F22). In the other order the native command opens its window inside the copy (F23) |
+
+Answers: (1) yes, with `--own` on a name that a process outside the sandbox owns, the app can call that process, every interface, and start it if it is activatable.
+(2) Yes: a package with the id or a `dbus_own` of a sensitive app owns the name when that app is closed and receives its messages. Nothing in the install text warns about it.
+What it cannot do: own the services of the desktop (`org.freedesktop.*`, the keyring, the shell). What the test does not show: whether a given real app (a real KeePassXC, a real browser
+integration) accepts or leaks anything through those calls; the test shows that the messages arrive.
+
+### 4.2 Flatpak in the same case
+
+From the documentation (read for this document, nothing was run: Flatpak is not installed here): the default session bus policy of a Flatpak app "only allows the application to
+own its own namespace named by `$FLATPAK_ID`" (subnames and the MPRIS name of that id included), the page "does not address" what happens when a host app has the same id, and it says
+nothing about verifying the id. `xdg-dbus-proxy` is the same program that Panpak uses, so with the same policy lines the same case behaves the same way: a Flatpak app that finds
+its own id owned by a host process is a remote instance of it, and can call it. What Flatpak adds is on the **distribution** side: Flathub requires that the application id
+be a reverse-DNS name of a domain the author controls ("the author or the developer or the project must have control over the domain", with a token file for verification) or the
+code-hosting prefix (`io.github.`, `io.gitlab.`, ...), and `org.kde.` only for projects on KDE Invent. That narrows who can publish a package with a given id, so the squatting of B
+needs a stranger to get a Flathub id they do not own. It is not a rule of the bus.
+
+### 4.3 Options
+
+| Option | What it is | Pros | Cons |
+|---|---|---|---|
+| 1. Check at start | The outer stub asks the real bus who owns each name it would grant (`GetNameOwner`, then the owner's credentials and unit with the code of `conn.rs`). If the owner is not in this app's own scope (not one of our copies), the stub leaves out `--own` and `--talk` for that name and says so. Also: the install text lists the application id too and says "and call whoever owns it"; `install` prints a note when the id or a name is owned now or has a `.desktop` file or a service file on the system | Small (a function of the outer stub plus text); closes F22 and test A and C for names that are taken at the start; cheap at start (one call, about the cost of the scope call that is already made) | A race: a native app that starts after the check, and F23 (the native `ghostty` command is routed into the copy that holds the name) stay; test B is not closed when the native app is simply closed (the package may own the name then); and an app that is refused its own name dies with F11 (a GApplication cannot register) unless the recipe turns the single instance off (Ghostty has `--gtk-single-instance=false`; many apps have no such switch) |
+| 2. A proxy of our own that owns but does not call foreign owners | Replace `xdg-dbus-proxy` by a filtering proxy that knows who is the owner of a name and lets an app talk to a name only when the owner is the app itself | The exact rule; closes A, B (with a prefix or id check), C, and F | Large and risky: an authenticated D-Bus server side (names, matches, file descriptors, replies, broadcasts) of our own, in a part of the system where `xdg-dbus-proxy` is the well-tested one; `conn.rs` and `wire.rs` (about 1,000 lines) are a client, not a daemon. No estimate is given: it needs a prototype before a date |
+| 3. A private session bus for each app | The app does not see the user's bus: it gets a bus of its own (one per app and shared by its copies, in `$XDG_RUNTIME_DIR/panpak/<id>/`) where it owns its id and any names it wants. Only what it asked for on the real bus (portals, notifications, tray, the settings) is bridged to it | Closes A, B, C, F and F23 completely, in both directions; F11 disappears (the app can always own its id on its own bus); single instance between our copies keeps working; no list of allowed names to keep | A bus daemon per app (the host's `dbus-daemon`, which not every system has; `dbus-broker` systems may not) or our own, and a bridge that forwards calls and replies and the signals to the real bus without turning into option 2; tray items and MPRIS are objects that the host calls back by name, so the bridge has to carry that too; an extra process and some milliseconds at start, to be measured. The most work, and the right shape |
+| 4. Names only for verified ids (step 9) | The own id and `dbus_own` on the real bus are granted only to a package whose id the store has verified (domain control, as Flathub does), or a prefix | Stops strangers from taking the name of a known app (B) at the place where it is cheap: the store | Not the bus: F22 and F23 stay for a verified publisher whose app is also installed natively (the same publisher, so a smaller problem); useless for local and unsigned packages; a GApplication name cannot be given a prefix (F11) |
+
+### 4.4 Effect on F11 and on the dock (F24)
+
+- **F11** (a GApplication that dies when it cannot own its name): option 1 makes it more visible, because a refused name means a dead app, so it needs the recipe to switch the single
+  instance off where the app allows it. Option 3 removes it. Options 2 and 4 do not change it (2 grants the name, 4 does not touch it).
+- **Dock (F24)**: the window class that the app sets (for a GTK app its application id) decides the grouping, and the desktop looks for `<class>.desktop`: the native entry matches before
+  `panpak.<id>.desktop` does. None of the options change that. The fix is in the recipe: a class of its own where the app has the option (Ghostty has `--class`, which also changes its
+  application id) with the same value in `desktop.wm_class`; where it has not, the copy shows up under the native app's icon. To check by hand on the real desktop (not done here, it cannot be done headless).
+
+### 4.5 Recommendation
+
+Two steps. **Now, option 1**, because it is small and closes the call-through (F22, A and C) for the case that is certain, a native instance that is running: check the owner at
+start, leave the name out and say so, list the application id and the "can call" meaning in the install text, and print a note at install when the id exists natively.
+For recipes: set the single instance off where the app has the switch, and a class of its own. **Target, option 3**, the private bus per app, because it is the only
+one that removes F22, F23, the squatting (B) and F11 together, and it is the shape that does not depend on a list of names; start with a prototype that measures the cost at start and
+shows that the bridge for portals, notifications and the tray does not need a filter of its own. Option 4 is worth doing at step 9 for its own reasons (who may publish which id) and is not
+a substitute. Option 2 only if the prototype of option 3 shows that the bridge is, in fact, option 2. The decision is the owner's.
+
+## 5. Phase 2: corrections in the product
+
+Corrections that the owner cleared, on branch `source-1`. F11, F22 and F23 are not touched (they wait for section 4). Each has a test that failed before and passes now.
+
+| Finding | What changed | Test and result |
+|---|---|---|
+| F21, no pty | The view's `/dev` is bubblewrap's own minimal one (`--dev /dev`, which has a devpts of its own and `ptmx`) with the GPU folder put back (`--dev-bind-try /dev/dri`), instead of the host's `/dev`. Landlock gives `/dev/ptmx` and `/dev/pts` read, write and the device ioctls (also in the whole-`/dev` fallback). `TIOCSTI` stays refused. PANPAK-FORMAT section 9 and THREAT-MODEL describe it | `tests/pty.py` (in the CI): `openpty`; `/dev/pts` in the view has another `st_dev` than the host's, so the user's terminals are not visible; an interactive bash answers, has a controlling terminal, sees the window size and a second change of it; Ctrl+Z stops a job, `jobs` lists it, `fg` and Ctrl+C end it; `less` uses the alternate screen and leaves it; `TIOCSTI` on the pty gives EPERM. With the old binaries the same test stops at "out of pty devices". Ghostty 1.3.1 now runs a shell with colors, paste, select-all and copy, and a custom shader (section 1.2) |
+| F19, `libwayland` | `libwayland-client`, `libwayland-egl` and `libwayland-cursor` are in the list of libraries that the system always wins (`SYSTEM_WINS`), with the bundle as the fallback when the host has none. Section 7 of the format says so | Unit test of the choice table; Ghostty repacked **without** the `prefer_host` line of phase 1: OpenGL 4.5 and no EGL error |
+| F25 and F26, Qt plugins | `pack` prints a warning when a tree has `libQt5Core` or `libQt6Core` and no `platformthemes/libqxdgdesktopportal`, and when it has `libQt6Svg` and not both `imageformats/libqsvg` and `iconengines/libqsvgicon`. It is a warning, not a refusal: converted AppImages may lack them for reasons of their own. The real collector comes later | Unit tests and `panpak/tests/pack_checks.rs`; by hand: the qBittorrent tree with the plugins removed gives both warnings, and the complete tree gives none. qBittorrent with the plugins: the tray registration call reaches the watcher on the bus (seen with `dbus-monitor`) and the window starts dark when the portal says dark. A live switch to light is not followed (F27) |
+| F28, `glibc_min` | `pack` writes `abi.glibc_min` from the symbol versions of the files (`.gnu.version_r`, only the glibc libraries; a declared value can only raise it; a tree with its own glibc gets none). `install` and `update` refuse a package that needs more than the system has (`PANPAK-E2005`, both versions in the message) before anything is written. The field is validated (`2.39`-like) | Unit tests; `panpak/tests/pack_checks.rs`: the file's version is written, a script gets none, a declared `99.1` is kept and refused at install with the right text, a declared `2.1` is not kept below the file's. The three source packages say `glibc_min = "2.39"` |
+
+The icon rule you cleared stays as it is: the `bKGD` chunk is removed with one note per icon.
+
+**Pty: a permission or always?** Always. A pty is not an authority: the view has a devpts of its own, so the ptys of the app are the app's, not the user's terminals; `TIOCSTI` and
+`TIOCLINUX` are refused; a shell on the pty is inside the same view, Landlock and seccomp as the app. And it is not only terminals: IDEs, editors with a terminal, git front ends and
+Electron apps with `node-pty` open ptys, so a permission would be asked of half of the apps and would carry no information. The price, measured: bubblewrap's own `/dev` costs **3.0 ms** more
+at every start than the old bind of the host's `/dev` (60 interleaved runs of a bare `bwrap`: median 5.60 ms against 8.57 ms), and the fixed cost of the launcher in
+`tests/startup_budget.py` is **29.6 ms** (budget 30 ms, 24.5 ms at step 7: the rest of the difference is not looked into). If the 3 ms matters, the alternative is `terminal = true` in the manifest and the old `/dev` for the apps that do not
+ask; the price is that every app that opens a pty without declaring it fails with "out of pty devices".
+
+**Harness.** AppImage group, cold (every conversion again, because the binaries changed), 15 apps: all start, all with icon; 1,838 s (conversions 1,796 s, installs 5 s, starts 34 s), peak
+memory of the scope 7.3 GB. Source group: fast 11 s, full 33 s (window medians: Text Editor 0.52 s, qBittorrent 0.41 s, Ghostty 0.41 s; qBittorrent was 0.31 s before the
+change of `/dev`, one run each, not looked into). Workspace tests: all pass (peak 2.7 GB); clippy clean.
+
+## 6. Risks and open points
+
+- **F22 and F23 are the first thing to decide** (section 4). They exist today for any app whose panpak id equals an application
   id that another instance may own, and the design of this document (id = application id, F11) makes that the
   normal case.
 - F21 (no pty) removes a whole class of apps; F19, F25, F26 produce apps that start but look or work wrong with no
@@ -317,6 +580,6 @@ for "these libraries are the same").
   compiled the bundled `doc.cpp`, so the flags or the packages of the image need a closer look first).
 - Toolkit freshness: the three apps pinned to versions the image could build; newer upstream releases need newer
   toolkits than a stable distribution has (Text Editor 49 and later, Ghostty 1.4), which pushes toward option B of 3.1.
-- Not done in this phase: the dock check (F24), notifications actually delivered by qBittorrent, copy and paste and
-  link opening in Ghostty (blocked by F21), the minimize and maximize buttons, `linuxdeploy` run side by side,
+- Not done: the dock check (F24), notifications actually delivered by qBittorrent, opening a link from Ghostty (F29: the test could not click it), the
+  minimize and maximize buttons, `linuxdeploy` run side by side,
   Podman measured, Zig output with a different path or CPU count.

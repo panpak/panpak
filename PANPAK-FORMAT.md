@@ -586,6 +586,13 @@ to showing the key fingerprint (no trust assumed).
 `panpak pack` compiles `needs` by scanning `DT_NEEDED` of the ELF
 files in the tree (union with any declared `needs`; names containing
 `$ORIGIN` MUST be resolved against the directory containing them).
+
+`panpak pack` also writes `glibc_min`: the highest `GLIBC_x.y` version name that the ELF files of the tree ask of the
+glibc libraries (`libc.so.6`, `libm.so.6`, `libpthread.so.0`, `libdl.so.2`, `librt.so.1`, `libresolv.so.2`, `libutil.so.1`, the loader
+and the like; read from `.gnu.version_r`; `GLIBC_PRIVATE` does not count). A declared `glibc_min` can only raise it, never lower it.
+A tree that carries its own glibc (world B) gets none from the files. The value is a version of two to four numbers (`2.39`).
+`install` and `update` MUST refuse a package whose `glibc_min` is higher than the glibc of the system (`PANPAK-E2005`), with both
+versions in the message, before anything is written; a system whose glibc cannot be read (musl, no `ldd`) is not refused by this check.
 The stub resolves at SONAME granularity (names, not symbol versions
 yet) with two worlds:
 
@@ -599,7 +606,9 @@ yet) with two worlds:
      `libthread_db`, `libcidn`, `libnss_*`) and for the graphics stack that
      must match the driver (`libGL`, `libGLX`, `libGLdispatch`, `libOpenGL`,
      `libEGL`, `libGLESv1_CM`, `libGLESv2`, `libvulkan`, `libgbm`, `libdrm`,
-     `libdrm_*`, `libglapi`, `libxcb-dri2`, `libxcb-dri3`, `libnvidia-*`).
+     `libdrm_*`, `libglapi`, `libxcb-dri2`, `libxcb-dri3`, `libnvidia-*`) and for the Wayland client libraries (`libwayland-client`,
+     `libwayland-egl`, `libwayland-cursor`), which the host's EGL calls into and which must be the same copy in the process
+     (measured: a bundled 1.23 next to a newer host Mesa made `eglGetDisplay` fail).
      The list is a subset of the AppImage excludelist
      (<https://github.com/AppImageCommunity/pkg2appimage/blob/master/excludelist>):
      only the entries for which the system MUST win. The other entries of
@@ -730,12 +739,16 @@ before distributing the converted package.
   On Landlock below V9 this also lets an app connect to any Unix socket
   under `/run`, including the D-Bus session bus (THREAT-MODEL.md §3).
 - `/dev`: only nodes `null`, `zero`, `full`, `urandom`, `random`, `tty`
-  + dirs `dri`, `shm`. Explicit fallback (with warning) to whole
+  + dirs `dri`, `shm`, and the pseudo-terminals: `ptmx` and `pts` (see below). Explicit fallback (with warning) to whole
   `/dev` if the kernel rejects per-file rules; privileged nodes stay
   protected by DAC/capabilities. From Landlock V5 the device ioctl right
   (`IoctlDev`) is granted only on `tty` (termios, window size) and on `dri` (the GPU);
   an ioctl on any other device the app opens is refused with `EACCES`, whole-`/dev` fallback
   included. Descriptors the app inherited (its standard streams) are not affected.
+  *Pseudo-terminals.* Every app can open a pty (a terminal emulator, an editor or IDE with a terminal, a program that
+  uses `openpty`), so there is no permission for it. The isolated view has a devpts of its own (a new instance, with its own `ptmx`),
+  never the host's, so the ptys an app can see are its own and not the terminals of the user. `ptmx` and `pts` get read, write
+  and the device ioctls (window size, session, job control); `TIOCSTI` and `TIOCLINUX` stay refused by the system call filter (§9.8).
 - Read-only: the system caches of §9.9 (`/var/cache/fontconfig`), mounted into the view and given
   one Landlock rule each.
 - TCP networking: denied by default (`network = false`); with
@@ -829,8 +842,8 @@ ssh-agent, audio servers) with independent layers, and uses every layer the mach
    (a new, empty tmpfs that holds only the links `/var/run` and `/var/lock` to the new `/run`), `/opt`, `/srv`,
    `/mnt`, `/media`, `/root`, `/boot`, `/snap`, nor the part of `/nix` and `/gnu` that is not the store, because a
    folder of the host can hold a socket that a Landlock below V9 does not stop the app from using. A path
-   that the runtime must give to the app (a granted folder, an opened file) is mounted at its own place wherever it is. `/dev` as
-   it is; a new `/proc`; a new tmpfs for `/run`; `/tmp` and `/dev/shm` as in §9.4, or a new tmpfs for `/tmp` when the runtime folder is not usable; an empty tmpfs on `$HOME` (read-only once the
+   that the runtime must give to the app (a granted folder, an opened file) is mounted at its own place wherever it is. `/dev` is a new
+   minimal one (the nodes of §9, a devpts of its own, and the GPU folder `dri` of the host); a new `/proc`; a new tmpfs for `/run`; `/tmp` and `/dev/shm` as in §9.4, or a new tmpfs for `/tmp` when the runtime folder is not usable; an empty tmpfs on `$HOME` (read-only once the
    binds are made) where only these are put back: the private folders of §9.1 and the `home_paths` as declared,
    the read-only settings listed in §9.1 that exist, the Xauthority file with `x11 = true`, a file opened with
    `panpak open` as granted, and from the store the tree, the library folder `farms/<root>`, the loader and
