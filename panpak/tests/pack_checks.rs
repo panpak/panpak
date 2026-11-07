@@ -187,7 +187,7 @@ fn pack_checks_the_env_table_and_the_entry() {
     let m = l.manifest(&pkg);
     assert!(m.contains("[env]") && m.contains("GSETTINGS_BACKEND = \"keyfile\""), "{m}");
     // A path that is not in the tree.
-    let (o, _) = l.pack("envmissing", &[app.clone()], "[env]\nGSETTINGS_SCHEMA_DIR = \"${PANPAK_ROOT}/share/schemas\"\n");
+    let (o, _) = l.pack("envmissing", std::slice::from_ref(&app), "[env]\nGSETTINGS_SCHEMA_DIR = \"${PANPAK_ROOT}/share/schemas\"\n");
     let t = text(&o);
     assert!(!o.status.success() && t.contains("PANPAK-E0007") && t.contains("env.GSETTINGS_SCHEMA_DIR") && t.contains("not in the tree"), "{t}");
     // Names that are not on the list, absolute paths, paths that leave the tree, a word that is not allowed.

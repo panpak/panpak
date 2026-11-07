@@ -139,7 +139,7 @@ mod tests {
         }
         // A single path variable takes one path, not a list.
         assert!(one("GDK_PIXBUF_MODULE_FILE", "${PANPAK_ROOT}/a:${PANPAK_ROOT}/b").is_err());
-        assert!(one("QT_PLUGIN_PATH", &vec!["${PANPAK_ROOT}/a"; MAX_LIST + 1].join(":")).is_err());
+        assert!(one("QT_PLUGIN_PATH", &["${PANPAK_ROOT}/a"; MAX_LIST + 1].join(":")).is_err());
     }
 
     #[test]

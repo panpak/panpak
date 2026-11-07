@@ -54,10 +54,8 @@ pub fn https_url(u: &str) -> Option<String> {
         format!("https://{h}/{p}")
     } else if u.starts_with("https://") {
         u.to_string()
-    } else if let Some(rest) = u.strip_prefix("ssh://git@") {
-        format!("https://{rest}")
     } else {
-        return None;
+        format!("https://{}", u.strip_prefix("ssh://git@")?)
     };
     Some(if r.ends_with(".git") { r } else { format!("{r}.git") })
 }
