@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A lock file left by an app that stops on a signal is removed when the last copy ends.** qBittorrent (a Qt `QLockFile`) stopped with `SIGTERM` left its `lockfile`, and the next start did not
+  start because process ids start again at 1 in the view. The runtime that stays now searches for the stale lock files of the private folders when the last copy ends, before it removes the mark "in use" (cost at
+  exit, 0.4 to 3.7 ms on the 15 test apps; none at start). A copy that is not the last touches nothing. `tests/stale_lock_exit.py`.
+
 - **Desktop integration (step 7b).** Apps get their icon in the menu: `[desktop] icons` lists up to 6 PNG files of the package; `install`
   and `update` check them (PNG only, a short list of chunks, 16 to 1024 pixels, at most 256 KiB, image data of exactly the promised size;
   SVG is not accepted) and write them as `~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<id>.png`; `remove` deletes them. `panpak

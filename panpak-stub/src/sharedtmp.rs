@@ -98,12 +98,21 @@ pub fn prepare(base: &Path, marker: &Path, early: Option<File>) -> Result<Shared
 }
 
 impl Shared {
-    /// The app ended normally: if no other copy is alive, remove the mark "in use". Whether this is the last
-    /// copy is told by trying to take the exclusive lock, which fails while another copy holds the shared one.
-    pub fn ended_normally(&self) {
-        if flock(&self.lock, libc::LOCK_EX | libc::LOCK_NB) {
+    /// The app ended and this might be the last copy: it is, if the exclusive lock can be taken, which fails while another
+    /// copy holds the shared one. Then nobody is alive, so the stale lock files that this copy may have left are searched in
+    /// `roots` (the private folders) and removed *before* the mark "in use" goes: an app that stops on a signal, or with status
+    /// 0, does not always remove its own lock file (a Qt `QLockFile`), and the next start would take it for a live copy. The
+    /// mark is removed only after a normal end (`clean`); after any other end it stays and the next start searches too.
+    /// Returns the files removed, and whether this was the last copy.
+    pub fn ended(&self, clean: bool, roots: &[&Path]) -> (Vec<PathBuf>, bool) {
+        if !flock(&self.lock, libc::LOCK_EX | libc::LOCK_NB) {
+            return (Vec::new(), false);
+        }
+        let gone = panpak_core::stalelocks::remove(roots);
+        if clean {
             let _ = fs::remove_file(&self.marker);
         }
+        (gone, true)
     }
 }
 
@@ -166,11 +175,30 @@ mod tests {
         let x = prepare(&base, &mark, None).unwrap();
         assert!(mark.exists() && !x.stale);
         let y = prepare(&base, &mark, None).unwrap();
-        x.ended_normally();
-        assert!(mark.exists(), "another copy is alive: the mark stays");
-        y.ended_normally();
-        assert!(!mark.exists(), "the last copy ended normally: no mark");
+        let locks = base.with_extension("locks");
+        let _ = fs::remove_dir_all(&locks);
+        fs::create_dir_all(&locks).unwrap();
+        let lockfile = locks.join("lockfile");
+        // A Qt QLockFile that the app left behind: a process id (which a new view reuses), the name and the host.
+        fs::write(&lockfile, b"2\nqbittorrent\nhost\n\n0123-4567\n").unwrap();
+        assert_eq!(x.ended(true, &[locks.as_path()]), (vec![], false), "another copy is alive: nothing is touched");
+        assert!(mark.exists() && lockfile.exists(), "another copy is alive: the mark and its lock files stay");
+        let (gone, last) = y.ended(true, &[locks.as_path()]);
+        assert!(last && gone == [lockfile.clone()], "the last copy removes the lock file it left: {gone:?}");
+        assert!(!lockfile.exists() && !mark.exists(), "the last copy ended normally: no lock file, no mark");
         drop((x, y));
+        // An end that is not normal (the app crashed, the runtime saw no clean status) still clears the lock files, and keeps the mark.
+        let (p, q) = (prepare(&base, &mark, None).unwrap(), prepare(&base, &mark, None).unwrap());
+        fs::write(&lockfile, b"2\nqbittorrent\nhost\n\n0123-4567\n").unwrap();
+        fs::write(locks.join("notes.txt"), b"2\nmy notes\nabout locks\n").unwrap();
+        drop(p);
+        let (gone, last) = q.ended(false, &[locks.as_path()]);
+        assert!(last && gone == [lockfile.clone()], "{gone:?}");
+        assert!(mark.exists(), "not a normal end: the mark stays");
+        assert!(locks.join("notes.txt").exists(), "a file that does not look like a lock is not touched");
+        drop(q);
+        let _ = fs::remove_file(&mark);
+        let _ = fs::remove_dir_all(&locks);
         let z = prepare(&base, &mark, None).unwrap();
         assert!(!z.stale);
         drop(z); // killed: nothing removed the mark

@@ -1428,6 +1428,8 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
             eprintln!("panpak: removed a stale lock file: {}", gone.display());
         }
     }
+    // The private folders searched for stale locks when the last copy ends.
+    let end_roots: Vec<PathBuf> = app_dirs.as_ref().map(|d| panpak_core::stalelocks::roots_of(d).to_vec()).unwrap_or_default();
     stage("shared folders");
     let plan = view::ViewPlan {
         root: view::root_layout(Path::new("/")),
@@ -1483,9 +1485,18 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     // The lock of the shared folders must outlive bwrap, so the outer stub stays whenever there is one.
     match (opener_server, shared, dbus, wayland) {
         (None, None, None, None) => match view::exec_bwrap(&plan)? {},
-        (server, shared, dbus, wayland) => match view::run_bwrap(&plan, (server, shared, dbus, wayland), |(_, shared, _, _), clean| {
-            if let (true, Some(s)) = (clean, shared) {
-                s.ended_normally();
+        (server, shared, dbus, wayland) => match view::run_bwrap(&plan, (server, shared, dbus, wayland), move |(_, shared, _, _), clean| {
+            // The last copy to end looks for the lock files it left (see `Shared::ended`). The cost is at exit, not at start.
+            if let Some(s) = shared {
+                let t0 = std::time::Instant::now();
+                let roots: Vec<&Path> = end_roots.iter().map(PathBuf::as_path).collect();
+                let (gone, last) = s.ended(clean, &roots);
+                for g in &gone {
+                    eprintln!("panpak: removed a stale lock file at exit: {}", g.display());
+                }
+                if panpak_core::debug_enabled() {
+                    eprintln!("panpak: debug: exit: {} the last copy, stale lock search {:.2} ms, {} removed", if last { "is" } else { "is not" }, t0.elapsed().as_secs_f64() * 1000.0, gone.len());
+                }
             }
         })? {},
     }

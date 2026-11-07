@@ -917,7 +917,12 @@ alive) and the last run of the app did not end normally MUST therefore remove th
 starts it, and MUST NOT remove them while another copy is alive. The runtime makes a mark `userdata/<id>.in-use`
 (beside the app folder, so the app cannot see it; on disk, because the runtime folder is gone after a shutdown) at
 every start and removes it when the last copy ends normally (exit status 0, or a signal that the runtime passed on);
-without the mark at the next start nothing is searched. It recognises them by content, with no list in the manifest: a link
+without the mark at the next start nothing is searched. The search is made at two moments. At the start, as above. And when a copy
+ends: the runtime that stays until the app is gone MUST then try to take the exclusive lock, which fails while another copy is alive; if it gets it, it
+is the last copy and MUST search for stale lock files in the private folders and remove them *before* it removes the mark, whatever way the app
+ended (a Qt application that gets `SIGTERM` or exits with status 0 does not always remove its `QLockFile`, and the next start would take the file for
+a live copy). It removes the mark only after a normal end; after any other end the mark stays and the next start searches too. A copy that is not the last one touches
+no lock file. The cost is paid at exit (0.4 to 3.7 ms on the 15 test apps), not at start. It recognises them by content, with no list in the manifest: a link
 `SingletonLock` to `<host>-<pid>` (Chromium and Electron; the links `SingletonSocket` and `SingletonCookie`
 in the same folder go too), a link `lock` to `<ip>:+<pid>` (Firefox), and a regular file of at most 512 bytes
 whose name contains `lock` and whose lines are a process id, an application name and a host name (Qt
