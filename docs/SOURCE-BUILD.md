@@ -563,7 +563,7 @@ at every start than the old bind of the host's `/dev` (60 interleaved runs of a 
 ask; the price is that every app that opens a pty without declaring it fails with "out of pty devices".
 
 **Harness.** AppImage group, cold (every conversion again, because the binaries changed), 15 apps: all start, all with icon; 1,838 s (conversions 1,796 s, installs 5 s, starts 34 s), peak
-memory of the scope 7.3 GB. Source group: fast 11 s, full 33 s (window medians: Text Editor 0.52 s, qBittorrent 0.41 s, Ghostty 0.41 s; qBittorrent was 0.31 s before the
+memory of the scope 7.3 GB. AppImage group, full mode (median of 5 starts, first left out, conversions from the cache): all 15 start with icon, 545 s, peak 5.6 GB; window medians against step 7b: audacity 0.697 s (0.714), qBittorrent 0.269 (0.284), MuseScore 0.269 (0.280), Krita 0.875 (0.910), Kdenlive 1.341 (1.363), QOwnNotes 0.379 (0.397), so no regression from the new `/dev`. Source group: fast 11 s, full 33 s (window medians: Text Editor 0.52 s, qBittorrent 0.41 s, Ghostty 0.41 s; qBittorrent was 0.31 s before the
 change of `/dev`, one run each, not looked into). Workspace tests: all pass (peak 2.7 GB); clippy clean.
 
 ## 6. Risks and open points
