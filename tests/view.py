@@ -473,8 +473,10 @@ def main():
                     sock_snapd='absent', sock_libvirt='absent',
                     x11_dir='absent', tmp_marker='hidden', env_TMPDIR='/tmp', env_SQLITE_TMPDIR='/tmp',
                     write_tmpdir='ok', write_data='ok', write_runtime='ok',
-                    uid=str(os.getuid()), uid_map=f'{os.getuid()} {os.getuid()} 1')
+                    uid=str(os.getuid()), uid_map=f'{os.getuid()} 0 1')
         if view_here:
+            # bubblewrap's own /dev (the devpts of the view) is made as uid 0 of its first user namespace, and bwrap then enters a second one where
+            # the app has the uid of the caller again: one id, mapped to 0 of the parent, no other ids.
             check(rep, **gone)
             assert rep['rt_entries'] == 'panpak,wayland-0', rep['rt_entries']
             assert rep['sid'] != str(os.getsid(0)), 'the app is in the session of the caller (no --new-session)'
@@ -730,7 +732,10 @@ def main():
             assert not marker.exists(), 'the mark stays after a normal end'
             plant()
             _, rep = run_report(lab, [], mask=False)
-            assert len(stale_left()) == 4, f'a normal end was followed by a search: {stale_left()}'
+            # The start does not look (the mark is gone), but the run that follows ends as the last copy and, since the exit search
+            # (tests/stale_lock_exit.py), removes the lock files it finds on the way out.
+            assert stale_left() == [], f'the last copy did not remove the lock files at its end: {stale_left()}'
+            plant()
             # Another copy is alive: nothing is removed, and the mark stays until the last copy ends normally.
             first = hold()
             _, rep = run_report(lab, [], mask=False)
