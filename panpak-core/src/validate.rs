@@ -323,6 +323,12 @@ pub fn validate_manifest(man: &Manifest) -> Result<()> {
         return Err(bad_field("app.entry", "must be a relative path without '.', '..' or empty segments"));
     }
     if let Some(a) = &man.abi {
+        if let Some(g) = &a.glibc_min {
+            let ok = g.len() <= 16 && g.split('.').count() >= 2 && g.split('.').all(|p| !p.is_empty() && p.len() <= 4 && p.bytes().all(|b| b.is_ascii_digit()));
+            if !ok {
+                return Err(bad_field("abi.glibc_min", "must be a version like 2.39"));
+            }
+        }
         for (field, list) in [("abi.needs", &a.needs), ("abi.prefer_host", &a.prefer_host), ("abi.allow_missing", &a.allow_missing)] {
             for n in list.iter().flatten() {
                 soname(field, n)?;

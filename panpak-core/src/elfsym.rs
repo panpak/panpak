@@ -340,6 +340,45 @@ pub fn read_elf_info(path: &Path) -> Result<ElfInfo> {
     Ok(ElfInfo { needs: needs_of(&src, &secs), syms: syms_of(&src, &secs)? })
 }
 
+/// The libraries of glibc, whose version names (`GLIBC_2.39`) the host must provide.
+const GLIBC_FILES: &[&str] = &[
+    "libc.so.6", "libm.so.6", "libpthread.so.0", "libdl.so.2", "librt.so.1", "libresolv.so.2", "libutil.so.1", "libanl.so.1",
+    "ld-linux-x86-64.so.2", "libmvec.so.1", "libthread_db.so.1",
+];
+
+/// The numbers of a `GLIBC_2.39` version name (`[2, 39]`); `GLIBC_PRIVATE` and the others give `None`.
+pub fn glibc_version_number(name: &str) -> Option<Vec<u32>> {
+    let rest = name.strip_prefix("GLIBC_")?;
+    if !rest.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    rest.split('.').map(|p| p.parse::<u32>().ok()).collect()
+}
+
+/// The highest `GLIBC_x.y` that an ELF file asks of the glibc libraries (`.gnu.version_r`), reading only that section.
+/// `None` when it asks for none (a script, a static file, a file that does not use glibc).
+pub fn glibc_needed(path: &Path) -> Result<Option<Vec<u32>>> {
+    let src = FileSource::open(path)?;
+    if !is_elf64(&src) {
+        return Ok(None);
+    }
+    let mut best: Option<Vec<u32>> = None;
+    let secs = sections(&src)?;
+    for s in secs.iter().filter(|s| s.kind == SHT_VERNEED) {
+        for (file, ver) in read_verneed(&src, s, &secs).1 {
+            if !GLIBC_FILES.contains(&file.as_str()) {
+                continue;
+            }
+            if let Some(v) = glibc_version_number(&ver) {
+                if best.as_ref().is_none_or(|b| v > *b) {
+                    best = Some(v);
+                }
+            }
+        }
+    }
+    Ok(best)
+}
+
 /// The numeric part of a `GLIBCXX_3.4.30`, `CXXABI_1.3.13` or `GCC_4.8.0` version, to compare them.
 pub fn version_number(name: &str) -> Option<Vec<u32>> {
     let (_, nums) = name.split_once('_')?;
@@ -407,5 +446,34 @@ mod tests {
         assert_ne!(sym_hash(b"foo", None), sym_hash(b"foo", Some(b"V1")));
         assert_ne!(sym_hash(b"foo", Some(b"V1")), sym_hash(b"foo", Some(b"V2")));
         assert_eq!(sym_hash(b"foo", Some(b"V1")), sym_hash(b"foo", Some(b"V1")));
+    }
+}
+
+#[cfg(test)]
+mod glibc_tests {
+    use super::*;
+
+    #[test]
+    fn version_names() {
+        assert_eq!(glibc_version_number("GLIBC_2.39"), Some(vec![2, 39]));
+        assert_eq!(glibc_version_number("GLIBC_2.2.5"), Some(vec![2, 2, 5]));
+        assert_eq!(glibc_version_number("GLIBC_PRIVATE"), None);
+        assert_eq!(glibc_version_number("GLIBCXX_3.4.30"), None);
+        assert_eq!(glibc_version_number("GLIBC_"), None);
+        assert_eq!(glibc_version_number("GLIBC_2.x"), None);
+    }
+
+    #[test]
+    fn a_program_of_this_system_names_a_glibc_and_a_script_none() {
+        let dir = std::env::temp_dir().join(format!("panpak-glibc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("s");
+        std::fs::write(&script, b"#!/bin/sh\n").unwrap();
+        assert_eq!(glibc_needed(&script).unwrap(), None);
+        // The test binary itself is a glibc program on a glibc system (and a static one on musl: nothing to ask).
+        if let Some(v) = glibc_needed(&std::env::current_exe().unwrap()).unwrap() {
+            assert!(v.len() >= 2 && v[0] == 2, "{v:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

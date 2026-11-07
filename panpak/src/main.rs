@@ -295,6 +295,10 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
         dec.decode(&comp, c.raw as u64, &mut raw)?;
         panpak_core::verify_chunk(c, &raw)?;
     }
+    if let Err(e) = check_glibc(&vman) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
     // The icons of the new version are checked before anything is published.
     let new_icons = icons::read_from_package(&mut vf, &vraw, &vman)?;
     icons::check_destinations(app_id, &new_icons)?;
@@ -715,6 +719,43 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
                         allow_missing: None,
                     })
                 }
+            }
+        }
+    }
+
+    // A Qt tree without the plugins that Qt loads with dlopen starts, and then looks or works wrong without a word: no dark mode,
+    // no tray icon. Say so while the author can still fix it.
+    for note in qt_plugin_notes(payload.iter().map(|p| p.entry.path.as_path())) {
+        eprintln!("panpak: WARNING: {note}");
+    }
+
+    // glibc_min: the highest GLIBC_x.y that the ELF files of the tree ask of the system glibc. A tree that carries its own glibc
+    // (world B) runs on its own, so it has none from the files. It is computed from the files.
+    {
+        let bundles_libc = payload.iter().any(|p| p.entry.path.file_name().is_some_and(|n| n == "libc.so.6"));
+        let mut best: Option<Vec<u32>> = None;
+        if !bundles_libc {
+            for p in payload.iter() {
+                if let Some(src) = &p.source {
+                    if let Some(v) = panpak_core::glibc_needed(src).with_context(|| format!("scan {}", src.display()))? {
+                        if best.as_ref().is_none_or(|b| v > *b) {
+                            best = Some(v);
+                        }
+                    }
+                }
+            }
+        }
+        // An author may declare a higher floor than the files show (a feature that needs a newer glibc at run time), never a lower one.
+        let declared = man.abi.as_ref().and_then(|a| a.glibc_min.as_deref()).map(|d| glibc_numbers(d).with_context(|| format!("abi.glibc_min {d:?} is not a version like 2.39"))).transpose()?;
+        let floor = match (best, declared) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+        if let Some(v) = floor {
+            let text = v.iter().map(u32::to_string).collect::<Vec<_>>().join(".");
+            match &mut man.abi {
+                Some(a) => a.glibc_min = Some(text),
+                None => man.abi = Some(panpak_core::Abi { glibc_min: Some(text), needs: None, prefer_host: None, allow_missing: None }),
             }
         }
     }
@@ -1922,6 +1963,8 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         "package requires runtime >= {need}, installed {best_abi}: update with `panpak install-runtime`"
     );
 
+    check_glibc(&man)?;
+
     let appdir = store.join("apps").join(&man.app.id);
     fs::create_dir_all(&appdir)?;
     // The user folders the manifest asks for, found now in the real user-dirs.dirs.
@@ -2280,6 +2323,59 @@ fn disk_free(p: &Path) -> Option<u64> {
         }
         st.f_bavail.checked_mul(st.f_frsize as u64)
     }
+}
+
+/// What a Qt tree lacks of the plugins that Qt finds only by loading them. Empty for a tree without Qt, and for a Qt tree that has them.
+/// - The platform theme `xdgdesktopportal`: the runtime sets `QT_QPA_PLATFORMTHEME=xdgdesktopportal` when the app has the filtered
+///   session bus; without the plugin Qt falls back to no theme: the portal's dark mode is ignored and the file dialogs of Qt are not the portal's.
+/// - With `libQt5Svg`/`libQt6Svg` in the tree: the SVG image format and icon engine plugins, or icons drawn from SVG (a tray icon) are empty.
+fn qt_plugin_notes<'a>(paths: impl Iterator<Item = &'a Path>) -> Vec<String> {
+    let (mut qt, mut svg_lib, mut theme, mut svg_fmt, mut svg_icon) = (false, false, false, false, false);
+    for p in paths {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let dir = p.parent().and_then(Path::file_name).and_then(|n| n.to_str()).unwrap_or("");
+        qt |= name.starts_with("libQt6Core.so") || name.starts_with("libQt5Core.so");
+        svg_lib |= name.starts_with("libQt6Svg.so") || name.starts_with("libQt5Svg.so");
+        theme |= dir == "platformthemes" && name.starts_with("libqxdgdesktopportal");
+        svg_fmt |= dir == "imageformats" && name.starts_with("libqsvg.so");
+        svg_icon |= dir == "iconengines" && name.starts_with("libqsvgicon.so");
+    }
+    let mut out = Vec::new();
+    if qt && !theme {
+        out.push("a Qt app without the platform theme plugin platformthemes/libqxdgdesktopportal.so: the desktop's dark mode will not be followed and Qt's file dialogs will not use the portal (add the plugin to the tree)".to_string());
+    }
+    if qt && svg_lib && !(svg_fmt && svg_icon) {
+        out.push("a Qt app with libQt6Svg but without imageformats/libqsvg.so and iconengines/libqsvgicon.so: icons drawn from SVG (for example a tray icon) will be empty (add the plugins to the tree)".to_string());
+    }
+    out
+}
+
+/// The numbers of a glibc version as `ldd --version` prints it (`2.39`, `2.39-0ubuntu8`).
+fn glibc_numbers(text: &str) -> Option<Vec<u32>> {
+    let head: String = text.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let nums: Option<Vec<u32>> = head.trim_matches('.').split('.').map(|p| p.parse::<u32>().ok()).collect();
+    nums.filter(|n| n.len() >= 2)
+}
+
+/// Refuses a package whose `abi.glibc_min` is higher than the glibc of this system, with the two versions in the message.
+/// A system whose glibc cannot be read (musl, no `ldd`) is not refused here: the loader says what is wrong at the first start.
+fn check_glibc(man: &panpak_core::Manifest) -> Result<()> {
+    let Some(min) = man.abi.as_ref().and_then(|a| a.glibc_min.as_deref()) else { return Ok(()) };
+    let Some(need) = glibc_numbers(min) else { return Ok(()) };
+    if let Some((kind, ver)) = host_glibc() {
+        if kind == "glibc" {
+            if let Some(have) = glibc_numbers(&ver) {
+                ensure_code!(
+                    have >= need,
+                    ErrorCode::E2005,
+                    "{} {} needs glibc {min} or newer (it uses symbols of that version); this system has glibc {ver}. It cannot run here: install it on a newer distribution",
+                    man.app.name,
+                    man.app.version
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn host_glibc() -> Option<(String, String)> {
@@ -2674,6 +2770,40 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn glibc_versions_are_read_from_ldd_output_and_compared() {
+        assert_eq!(glibc_numbers("2.39"), Some(vec![2, 39]));
+        assert_eq!(glibc_numbers("2.39-0ubuntu8.4"), Some(vec![2, 39]));
+        assert_eq!(glibc_numbers("2.41"), Some(vec![2, 41]));
+        assert_eq!(glibc_numbers("2"), None);
+        assert_eq!(glibc_numbers("musl"), None);
+        assert!(glibc_numbers("2.9").unwrap() < glibc_numbers("2.10").unwrap(), "numbers, not text");
+    }
+
+    #[test]
+    fn a_package_that_needs_a_newer_glibc_is_refused_with_both_versions() {
+        let man = |min: &str| -> panpak_core::Manifest {
+            toml::from_str(&format!("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n[abi]\nglibc_min = \"{min}\"\n")).unwrap()
+        };
+        assert!(check_glibc(&man("99.1")).is_err_and(|e| e.to_string().contains("needs glibc 99.1 or newer")));
+        assert!(check_glibc(&man("2.1")).is_ok());
+        let none: panpak_core::Manifest = toml::from_str("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n").unwrap();
+        assert!(check_glibc(&none).is_ok());
+    }
+
+    #[test]
+    fn the_qt_plugin_notes_follow_the_files() {
+        let notes = |v: &[&str]| qt_plugin_notes(v.iter().map(|s| Path::new(*s)));
+        assert!(notes(&["bin/app"]).is_empty());
+        assert!(notes(&["lib/libQt6Core.so.6"]).iter().any(|n| n.contains("xdgdesktopportal")));
+        assert!(notes(&["lib/libQt5Core.so.5"]).iter().any(|n| n.contains("xdgdesktopportal")));
+        assert!(notes(&["lib/libQt6Core.so.6", "plugins/platformthemes/libqxdgdesktopportal.so"]).is_empty());
+        assert_eq!(notes(&["lib/libQt6Core.so.6", "lib/libQt6Svg.so.6", "plugins/platformthemes/libqxdgdesktopportal.so"]).len(), 1);
+        assert!(notes(&["lib/libQt6Core.so.6", "lib/libQt6Svg.so.6", "plugins/platformthemes/libqxdgdesktopportal.so", "plugins/imageformats/libqsvg.so", "plugins/iconengines/libqsvgicon.so"]).is_empty());
+        // A plugin in the wrong folder does not count.
+        assert!(!notes(&["lib/libQt6Core.so.6", "x/libqxdgdesktopportal.so"]).is_empty());
+    }
     use super::*;
 
     #[test]

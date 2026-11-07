@@ -20,7 +20,7 @@ pub mod wayland;
 mod userdirs;
 mod validate;
 mod view;
-pub use elfsym::{parse_syms, read_elf_info, sym_hash, version_number, ElfInfo, ElfSyms, Needed};
+pub use elfsym::{glibc_needed, glibc_version_number, parse_syms, read_elf_info, sym_hash, version_number, ElfInfo, ElfSyms, Needed};
 pub use openchan::{handle as handle_open_request, RateLimit, Target as OpenTarget, BURST, MAX_REQUEST, RATE_PER_SEC};
 pub use openurl::{check_scheme_name, check_url, UrlKind, MAX_URL};
 pub use userdirs::{
@@ -2007,6 +2007,9 @@ pub mod abi {
         "libGL.so.1", "libGLX.so.0", "libGLdispatch.so.0", "libOpenGL.so.0", "libEGL.so.1",
         "libGLESv1_CM.so.1", "libGLESv2.so.2", "libvulkan.so.1", "libgbm.so.1", "libdrm.so.2",
         "libdrm_*", "libglapi.so.0", "libxcb-dri2.so.0", "libxcb-dri3.so.0", "libnvidia-*",
+        // The Wayland client libraries: Mesa's EGL (the host's) calls into them, and two different copies in one process make
+        // `eglGetDisplay` fail ("Failed to create EGL display", observed with a bundled 1.23 next to a newer host).
+        "libwayland-client.so.0", "libwayland-egl.so.1", "libwayland-cursor.so.0",
     ];
 
     /// The C++ and compiler runtime libraries whose copy is chosen by symbol versions.
