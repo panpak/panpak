@@ -312,6 +312,9 @@ for "these libraries are the same").
   message.
 - Memory: a Zig or C++ build can need 3.7 GB and one translation unit can run away (F16). Recipes must state the
   memory and the job count they were tested with.
+- Decision for Ghostty: it stays on 1.3.1 with Zig 0.15.2 for all of 13a. Ghostty 1.4.0 with Zig 0.17 is taken up again in
+  13b, by the `-fsys=glslang -fsys=spirv-cross` route and not by raising the memory (the one attempt made here still
+  compiled the bundled `doc.cpp`, so the flags or the packages of the image need a closer look first).
 - Toolkit freshness: the three apps pinned to versions the image could build; newer upstream releases need newer
   toolkits than a stable distribution has (Text Editor 49 and later, Ghostty 1.4), which pushes toward option B of 3.1.
 - Not done in this phase: the dock check (F24), notifications actually delivered by qBittorrent, copy and paste and
