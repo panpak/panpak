@@ -90,6 +90,7 @@ the product was not touched, as the task requires.
 | F15 | M | The dconf GSettings backend needs `ca.desrt.dconf` on the bus (not allowed). `GSETTINGS_BACKEND=keyfile` in the wrapper keeps settings in the private config folder (verified: the keyfile is written) |
 | F24 | M, to verify | Dock and menu grouping. The copy's window class is `com.mitchellh.ghostty` (with D-Bus) or `GTK Application` (without), and the entry is `panpak.com.mitchellh.ghostty.desktop`. With the real class GNOME groups it with the native launcher and shows the native icon and name. Not verifiable headless. Steps for the user: install the package, start native Ghostty, then the Panpak one, and look at the dock (one icon or two, which icon, which name). Run it with the native one stopped too |
 | F29 | M, to verify | Opening a link from Ghostty (GTK `show_uri`): the filtered bus has no `org.freedesktop.portal.OpenURI` rule (`panpak dbus-rules` lists Settings, Inhibit, Request and Session) and the opener of section 9.3 only serves programs that run `xdg-open`. A GTK app that opens a link through the portal probably cannot. The test could not click the link (the virtual pointer events did not reach the app), so this is **not verified**; try it by hand: Ctrl+click on a URL in the Panpak Ghostty, with a native `xdg-open` that you can see |
+| F30 | M, corrected | Qt looks up each icon file by file when an icon theme folder of the package has no `icon-theme.cache` (49,000 failed lookups, 0.2 s at the start of qBittorrent), and ignores a cache that is older than its folder. Corrected in phase 3b: `collect` makes the caches, the store gives one time to every entry of a tree, `pack` warns (6.5) |
 | F27 | L | With the portal theme plugin, qBittorrent starts dark when the portal says dark; a live switch to light within 2 s is not followed (Qt 6.8 Fusion). GTK follows live (F13) |
 | F12 | L | GTK a11y bus: "Unable to acquire the address of the accessibility bus" on the filtered bus. Harmless; `GTK_A11Y=none` or a filter rule would silence it |
 | F16 | build | Ghostty 1.4.0 with Zig 0.17.0: compiling the bundled glslang `SPIRV/doc.cpp` (the clang of Zig) reached 10 GB of RSS in 12 s and was killed by the kernel inside the capped scope. With `-j6` and a 7 GB cap the build thrashed (the cap reached 1.36 million times, 800 MB/s of disk reads). `-fsys=glslang -fsys=spirv-cross` did not avoid the bundled copy. Ghostty 1.3.1 with Zig 0.15.2 builds in 3.7 GB |
@@ -645,13 +646,55 @@ All three were built with `panpak build` from the recipes of 3.2.1 (no script, n
   Ghostty: 540 of 542 installed files are identical; **the `ghostty` executable differs from part A** (31,519,440 bytes in both, 721,298 bytes different), and so does `libghostty-vt.so`, which is not packaged (it differed between two builds of part A as well). The executable is the same in every `panpak build`
   (two builds, and a third with the source mounted at another path), and it does not change with two more packages in the image (part A's image had `glslang-dev` and `libspirv-cross-c-shared-dev`). **The cause was not found.** What is left untested: the path of the Zig package cache, and the modification times
   of the source files (part A unpacked the tarball; the build copies the files). Epoch, flags, Zig and the source hash are the same.
-- **Reproducible.** Each recipe was built twice and the two packages compared: **the three packages are identical byte for byte** (Text Editor `5e79681e…`, qBittorrent `4035600387…`, Ghostty `b2ed7346…`).
+- **Reproducible.** Each recipe was built twice and the two packages compared: **the three packages are identical byte for byte** (with the icon caches of 6.5 and the final stub: Text Editor `c67e49c1…` built twice, qBittorrent `eec7cea6…` and Ghostty `07ec86b7…` built twice before the tree times were added; each again once after).
 - **Behavior is the same as part A.** Text Editor (portal color scheme live, icons through the pixbuf loader without a wrapper), qBittorrent (tray registration reaches the watcher; dark at start, no live switch), Ghostty (shell, colors, copy and paste, shader 187/23/29): same results.
 
 What the build found while it was being written (all fixed): the peak memory in `[provenance]` made two builds differ, so it is shown and not written; `ureq` tries only the first address it resolves and stalled on an unreachable IPv6 one (IPv4 only, 15 s to connect); the reader of ELF files did not look at `RUNPATH`
 (libproxy's backend in a folder next to it; `ldd` did); Zig wants `-j3`, not `-j 3`; the Qt table pointed at the root of the plugins and not at each category (the check "a linked module needs its plugin" caught it); `desktop-file-utils` had to be a base tool of the image.
 
-### 6.5 Open points
+### 6.5 Phase 3b: the icon cache, Happy Eyeballs, and two numbers made clear
+
+**The +0.1 s of qBittorrent and the icon cache.** `strace -f` of qBittorrent started through the launcher (lookups: `access`, `openat`, `stat`, `newfstatat`, `statx`):
+Qt looked up each icon file by file, as it did for the user's `hicolor` in step 7b, because the folder `share/icons/hicolor` of the package has no `icon-theme.cache`
+(and no `index.theme`). **49,282 failed lookups** were under that folder alone. Two things were needed, not one:
+
+1. `collect` makes `icon-theme.cache` for every icon theme folder of the tree (`gtk-update-icon-cache -f -t -i`, run in the image after the icons are in place; `-t` because the tree has no `index.theme`, `-i` for no image data). The bytes of the cache do not
+   depend on the modification times of the folders (checked with two different sets of times), so the package stays reproducible (each recipe built twice: identical). The image gets `gtk-update-icon-cache` as a base tool.
+2. A cache that is **older than its folder is ignored** by Qt. The store made each entry with the time of its creation, and a folder gets a new time whenever an entry is created in it: `icon-theme.cache` sorts before `scalable`, so the cache was
+   0.4 ms older than `hicolor` and Qt opened it and then ignored it (the strace shows the open and the 49,000 failed lookups after it). The store now gives every file, folder and link of a tree one time, 2000-01-01T00:00:00Z
+   (PANPAK-FORMAT section 6), so a cache is never older than its folder. `pack` warns about a theme folder with icons and no cache.
+
+| qBittorrent from source | before | after |
+|---|---|---|
+| lookups of files at start (`strace -f`) | 57,936 (52,599 failed) | 8,685 (3,300 failed) |
+| of them about icons | 49,450 (49,388 failed) | 198 (107 failed) |
+| window, median of 5 starts, first left out (series) | 0.414 s | 0.208 s (series: 0.207, 0.208, 0.213, 0.311) |
+| same package without the cache files (control, same stub) | | 0.415 s |
+
+So the package is now faster than it was before the SVG plugins were added (0.311 s). One series in four gave 0.311 s; the cause was not looked into.
+
+| Text Editor from source | before | after |
+|---|---|---|
+| lookups of files at start | 14,370 (7,195 failed) | 14,373 (7,177 failed) |
+| of them about icons | 158 (44 failed) | 161 (37 failed) |
+| window, median of 5 starts (series) | 0.517 s | 0.516 s (0.515, 0.517, 0.515) |
+| same package without the cache files (control) | | 0.619 s (0.621, 0.72, 0.517; noisy) |
+
+GTK does not look icons up file by file the way Qt does, so Text Editor does not change; the cache makes its time steadier. `pack` and `build` say it when a theme has no cache.
+
+**Downloads: Happy Eyeballs instead of IPv4 only.** The resolver of the downloads (`panpak/src/happy.rs`, used by `build` and by `update`) puts the addresses of the host in turn (IPv6, IPv4, IPv6, ...), starts a connection to the first, starts the next 250 ms later (at once if the first has
+failed), uses the first that opens, and gives an address 4 s to open. Tests: an IPv6 address that hangs for 3 s and a working IPv4 address (the answer comes after the stagger, under 1 s); a failed first attempt (the next starts at once, no waiting for the stagger);
+a host with only IPv4; nothing answers (an error, not a hang); real sockets with an address of the documentation range `2001:db8::/32` (unreachable) and a listening `127.0.0.1`. On this network the registry has IPv6 addresses that are not reachable: the pull of the base image
+took 4.5 s (3.2 s with IPv4 only).
+
+**Two numbers that arrived cut.**
+
+- *Memory peak of the Ghostty build.* The 3.7 GB of phase 1 was `memory.peak` of the whole scope of my script (the fetch of the Zig packages and the first compile, `-j3`), counted by the kernel with the page cache of everything read and written; the same script run again with no network gave 2.4 GB.
+  `panpak build` reads `memory.peak` of the scope of the build step alone. Measured, all `-j3`: first build with the fetch 2.7 GB; later builds 2.1, 2.3, 2.6, 2.7, 2.8 GB (it varies from run to run by the amount of page cache). The recipe says `build.memory = "3G"`. Both are the same counter; what differs is what is inside the scope.
+- *Final fixed cost with the pty always available* (`tests/startup_budget.py`, 80 interleaved runs per series, main built here next to the branch, same machine, six series): main 24.9, 25.2, 23.8, 24.9, 24.4, 24.5 ms (mean 24.6);
+  branch **24.7, 25.0, 25.1, 25.2, 24.8 ms (mean 25.0) and one series at 30.4 ms** (the first after the batch of tests; not repeated). So the pty costs about 0.4 ms in the end, after the stub hash and the theme wait were taken out (target: 26 ms or less, met).
+
+### 6.6 Open points
 
 - **`[env]` and old runtimes.** A package with `[env]` run by a runtime that does not read it starts without the variables (readers ignore what they do not know): the app would look broken. The remedy is the step 9 note "critical manifest fields with a minimum version"; not done.
 - The `[env]` table could also carry `GDK_PIXBUF_MODULE_FILE` only because the loader modules are named by file name in the cache and listed in `abi.needs` (the farm of the runtime links them); a cache with absolute paths would need the tree at a fixed place.

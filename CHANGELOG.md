@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Icon caches.** `panpak build` makes `icon-theme.cache` for every icon theme folder of the package (`gtk-update-icon-cache`), and `pack` warns about a theme folder with icons and no cache. Qt looked each icon up file by file without it: qBittorrent from source made 49,000 failed lookups at the start (0.415 s; now 0.21 s).
+- **One time for every entry of a tree in the store** (2000-01-01T00:00:00Z): the store made each entry with the time of its creation, which made a cache file older than its folder, and Qt ignores such a cache (PANPAK-FORMAT section 6).
+- **Downloads choose the address like Happy Eyeballs** (IPv6 and IPv4 in turn, 250 ms apart, 4 s per address) for `build` and `update`; an unreachable IPv6 address no longer stalls a download.
+
 - **`panpak init` and `panpak build`: packages from source.** A recipe (`panpak.toml` with `[source]`, `[build]`, `[collect]`) and `panpak.lock` (the build image: its digest and the date of the package snapshot,
   changed only by `panpak build --update-lock`). `build` makes the image (a Debian root file system unpacked from the registry by digest, plus the recipe's packages from the snapshot) without root, fetches the source at a pinned commit or hash,
   builds in bubblewrap with no network, collects the libraries (read from the ELF files, never with `ldd`), the plugins of GTK 4 or Qt 6 and the data, makes the icons, writes the manifest and packs. A recipe states the memory it needs
