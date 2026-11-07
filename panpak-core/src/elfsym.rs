@@ -485,11 +485,11 @@ mod glibc_tests {
         let (dyn_off, str_off) = (64usize, 64 + dynamic.len());
         f.extend(&dynamic);
         f.extend(strtab);
-        while f.len() % 8 != 0 {
+        while !f.len().is_multiple_of(8) {
             f.push(0);
         }
         let shoff = f.len();
-        let mut sh = |kind: u32, off: usize, size: usize, link: u32| {
+        let sh = |kind: u32, off: usize, size: usize, link: u32| {
             let mut h = vec![0u8; 64];
             h[4..8].copy_from_slice(&kind.to_le_bytes());
             h[0x18..0x20].copy_from_slice(&(off as u64).to_le_bytes());
