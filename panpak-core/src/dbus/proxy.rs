@@ -151,6 +151,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// `proxy_version`, tried again while the system says "Text file busy" (ETXTBSY). A script that was just written cannot be
+    /// started while any process still has it open for writing, and a process that another test thread forks at that very
+    /// moment inherits the descriptor until its own `exec` closes it (close-on-exec acts only there). It happens in about 7 of 100
+    /// starts when other threads fork all the time, and the window gets wider on a loaded machine; it says nothing about
+    /// `proxy_version`. Only that error is tried again, for at most a second, so a real failure is still reported at once.
+    fn version_of(p: &Path) -> Result<(u32, u32, u32)> {
+        let mut last = None;
+        for _ in 0..100 {
+            match proxy_version(p) {
+                Err(e) if format!("{e:#}").contains("Text file busy") => {
+                    last = Some(e);
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                other => return other,
+            }
+        }
+        Err(last.unwrap())
+    }
+
     #[test]
     fn a_program_that_hangs_or_fails_is_reported() {
         let dir = std::env::temp_dir().join(format!("panpak-proxy-{}", std::process::id()));
@@ -161,11 +180,15 @@ mod tests {
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
             p
         };
-        assert_eq!(proxy_version(&mk("ok", "echo xdg-dbus-proxy 0.1.9")).unwrap(), (0, 1, 9));
-        assert!(proxy_version(&mk("fail", "exit 3")).is_err());
-        assert!(proxy_version(&mk("junk", "echo hello")).is_err());
+        assert_eq!(version_of(&mk("ok", "echo xdg-dbus-proxy 0.1.9")).unwrap(), (0, 1, 9));
+        let e = version_of(&mk("fail", "exit 3")).unwrap_err();
+        assert!(format!("{e:#}").contains("--version failed"), "{e:#}");
+        let e = version_of(&mk("junk", "echo hello")).unwrap_err();
+        assert!(!format!("{e:#}").contains("--version failed"), "it ran and printed something else: {e:#}");
+        let hang = mk("hang", "sleep 30");
         let t = Instant::now();
-        assert!(proxy_version(&mk("hang", "sleep 30")).is_err());
+        let e = version_of(&hang).unwrap_err();
+        assert!(format!("{e:#}").contains("did not finish in 3 s"), "{e:#}");
         assert!(t.elapsed() < Duration::from_secs(6));
         let _ = std::fs::remove_dir_all(dir);
     }
