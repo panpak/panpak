@@ -48,6 +48,17 @@ struct Env {
     pubkey: String,
 }
 
+/// The scratch folder holds a copy of the `panpak` binary (`install` puts one in the store), which is about 100 MB in a debug
+/// build: it is removed when the test ends, unless the test failed (then it stays for a look).
+impl Drop for Env {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = std::process::Command::new("chmod").args(["-R", "u+w"]).arg(&self.home).output();
+            let _ = std::fs::remove_dir_all(&self.home);
+        }
+    }
+}
+
 fn script_stub(home: &Path, name: &str, abi: u32) -> PathBuf {
     let stub = home.join(name);
     fs::write(&stub, format!("#!/bin/sh\necho {abi}\n")).unwrap();

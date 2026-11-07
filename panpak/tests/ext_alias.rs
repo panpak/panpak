@@ -23,6 +23,17 @@ struct Env {
     stub: PathBuf,
 }
 
+/// The scratch folder holds a copy of the `panpak` binary (`install` puts one in the store), which is about 100 MB in a debug
+/// build: it is removed when the test ends, unless the test failed (then it stays for a look).
+impl Drop for Env {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = std::process::Command::new("chmod").args(["-R", "u+w"]).arg(&self.dir).output();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
 fn cli(env: &Env, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_panpak"))
         .args(args)

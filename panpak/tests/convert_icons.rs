@@ -46,6 +46,16 @@ struct Lab {
     stub: PathBuf,
 }
 
+/// The scratch folder holds a copy of the `panpak` binary (about 100 MB in a debug build): removed when the test ends, kept if it failed.
+impl Drop for Lab {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = Command::new("chmod").args(["-R", "u+w"]).arg(&self.home).output();
+            let _ = fs::remove_dir_all(&self.home);
+        }
+    }
+}
+
 fn lab(name: &str) -> Lab {
     let home = work(name);
     let key = home.join("secret.key");
