@@ -323,7 +323,10 @@ fn view_args(plan: &ViewPlan) -> Vec<OsString> {
         a.extend([os("--symlink"), target.as_os_str().into(), dest.as_os_str().into()]);
     }
     a.extend(["--tmpfs", "/var", "--symlink", "../run", "/var/run", "--symlink", "../run/lock", "/var/lock"].map(os));
-    a.extend(["--dev-bind", "/dev", "/dev", "--proc", "/proc"].map(os));
+    // `/dev` is bubblewrap's own minimal one (null, zero, full, random, urandom, tty, shm, and a devpts of its own with
+    // `ptmx`), not the host's: a terminal emulator or an IDE opens a pty, and it must get one that belongs to the view, never
+    // the host's devpts, where it would see the terminals of the user. The GPU nodes are put back by name.
+    a.extend(["--dev", "/dev", "--dev-bind-try", "/dev/dri", "/dev/dri", "--proc", "/proc"].map(os));
     match &plan.shared_tmp {
         Some(t) => a.extend([os("--bind"), t.as_os_str().into(), os("/tmp")]),
         None => a.extend(["--tmpfs", "/tmp"].map(os)),
@@ -469,7 +472,8 @@ mod tests {
         let a = strings(&plan());
         assert_eq!(&a[..5], ["--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc"]);
         assert!(pos(&a, &["--ro-bind", "/usr", "/usr"]).unwrap() < pos(&a, &["--tmpfs", "/tmp"]).unwrap());
-        assert!(pos(&a, &["--dev-bind", "/dev", "/dev", "--proc", "/proc"]).is_some());
+        assert!(pos(&a, &["--dev", "/dev", "--dev-bind-try", "/dev/dri", "/dev/dri", "--proc", "/proc"]).is_some());
+        assert!(pos(&a, &["--dev-bind", "/dev", "/dev"]).is_none(), "the host /dev is never mounted whole");
         // The host root is never mounted whole, and /var is a new tmpfs with the two links.
         assert!(pos(&a, &["--ro-bind", "/", "/"]).is_none() && pos(&a, &["--bind", "/", "/"]).is_none());
         let var = pos(&a, &["--tmpfs", "/var", "--symlink", "../run", "/var/run", "--symlink", "../run/lock", "/var/lock"]).unwrap();
@@ -644,7 +648,7 @@ mod tests {
         p.shared_shm = Some("/run/user/1000/panpak/org.example.app/shm".into());
         let a = strings(&p);
         assert!(pos(&a, &["--tmpfs", "/tmp"]).is_none());
-        let dev = pos(&a, &["--dev-bind", "/dev", "/dev"]).unwrap();
+        let dev = pos(&a, &["--dev", "/dev"]).unwrap();
         let tmp = pos(&a, &["--bind", "/run/user/1000/panpak/org.example.app/tmp", "/tmp"]).unwrap();
         let shm = pos(&a, &["--bind", "/run/user/1000/panpak/org.example.app/shm", "/dev/shm"]).unwrap();
         assert!(dev < tmp && dev < shm, "the binds come after the device tree they cover");

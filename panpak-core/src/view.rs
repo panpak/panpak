@@ -93,7 +93,7 @@ fn probe(bwrap: &Path) -> ViewStatus {
         return ViewStatus::Unusable(ViewProblem::Failed("no /usr/bin/true to run".to_string()));
     };
     let child = Command::new(bwrap)
-        .args(["--unshare-user", "--unshare-pid", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev", "--proc", "/proc"])
+        .args(["--unshare-user", "--unshare-pid", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"])
         .args(["--tmpfs", "/tmp", "--tmpfs", "/run", "--", truebin])
         .stdin(Stdio::null())
         .stdout(Stdio::null())

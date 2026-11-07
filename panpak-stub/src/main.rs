@@ -679,6 +679,14 @@ fn build_ruleset(
                 rs = rs.add_rule(PathBeneath::new(fd, access))?;
             }
         }
+        // A pty: the view has a devpts of its own (see `view_args`), so these are the app's own terminals and nobody else's.
+        // The master side (`ptmx`) and the slave nodes need read, write and the terminal ioctls (window size, session, job control);
+        // TIOCSTI and TIOCLINUX stay refused by seccomp.
+        for node in ["/dev/ptmx", "/dev/pts"] {
+            if let Some(fd) = rule_fd(Path::new(node)) {
+                rs = rs.add_rule(PathBeneath::new(fd, AccessFs::ReadFile | AccessFs::WriteFile | dev_ioctl))?;
+            }
+        }
         // The GPU needs its ioctls (DRM); /dev/shm holds plain files, to which the ioctl right does not apply.
         if let Some(fd) = rule_fd(Path::new("/dev/dri")) {
             rs = rs.add_rule(PathBeneath::new(fd, dev_rw | dev_ioctl))?;
@@ -687,8 +695,13 @@ fn build_ruleset(
             rs = rs.add_rule(PathBeneath::new(fd, dev_rw))?;
         }
     } else if let Some(fd) = rule_fd(Path::new("/dev")) {
-        // Whole /dev (the kernel refused the single nodes): no device ioctls, except the GPU below.
+        // Whole /dev (the kernel refused the single nodes): no device ioctls, except the GPU and the ptys below.
         rs = rs.add_rule(PathBeneath::new(fd, dev_rw))?;
+        for node in ["/dev/ptmx", "/dev/pts"] {
+            if let Some(fd) = rule_fd(Path::new(node)) {
+                rs = rs.add_rule(PathBeneath::new(fd, dev_rw | dev_ioctl))?;
+            }
+        }
         if let Some(fd) = rule_fd(Path::new("/dev/dri")) {
             rs = rs.add_rule(PathBeneath::new(fd, dev_rw | dev_ioctl))?;
         }
@@ -2430,6 +2443,11 @@ mod tests {
             ("libdrm_amdgpu.so.1", &["libdrm_amdgpu.so.1"], &["libdrm_amdgpu.so.1"], 'H'),
             ("libnvidia-glcore.so.550", &["libnvidia-glcore.so.550"], &["libnvidia-glcore.so.550"], 'H'),
             ("libGL.so.1", &[], &["libGL.so.1"], 'B'),
+            // The Wayland client libraries go with the host's EGL: always the system copy, the bundle only as the fallback.
+            ("libwayland-client.so.0", &["libwayland-client.so.0"], &["libwayland-client.so.0"], 'H'),
+            ("libwayland-egl.so.1", &["libwayland-egl.so.1"], &["libwayland-egl.so.1"], 'H'),
+            ("libwayland-cursor.so.0", &["libwayland-cursor.so.0"], &["libwayland-cursor.so.0"], 'H'),
+            ("libwayland-client.so.0", &[], &["libwayland-client.so.0"], 'B'),
             // Not on the list: the included copy wins.
             ("libasound.so.2", &["libasound.so.2"], &["libasound.so.2"], 'B'),
             ("libfreetype.so.6", &["libfreetype.so.6"], &["libfreetype.so.6"], 'B'),

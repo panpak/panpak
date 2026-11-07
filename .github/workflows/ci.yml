@@ -147,6 +147,8 @@ jobs:
           bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
       - name: Hardening (seccomp filter and system font cache, through the real launcher)
         run: python3 tests/hardening.py
+      - name: A pty in the isolated view (shell, window size, job control, a full-screen program)
+        run: python3 tests/pty.py
       - name: Lock files left by an app that stops on a signal
         run: python3 tests/stale_lock_exit.py
       - name: Update with icons (changed, removed, new sizes, none)
