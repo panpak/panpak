@@ -579,3 +579,21 @@ Rule: **the user's `hicolor` is not given to the app** (`~/.local/share/icons/hi
 still reaches the app. Alternatives: generate `icon-theme.cache` at install (needs `gtk-update-icon-cache` and an `index.theme`, and goes stale at every install and remove: discarded);
 leave the folder and accept 60 to 110 ms on Qt apps (discarded). What the app loses: icons that other programs put in the user's `hicolor`, which it has no use for. Test: `the_user_hicolor_theme_stays_out_of_the_view_and_the_other_themes_in`,
 `tests/app_dirs.py` and `tests/view.py` (a readable theme and an invisible `hicolor`).
+
+### 8.10 Found on the way: a lock file left by an app that stops on a signal (not changed here)
+
+qBittorrent (the file is `config/qBittorrent/lockfile` in the private folder; it is a Qt `QLockFile`: the process id, the application name, the host and an identifier, one per line,
+and Qt takes a lock for live when that process id exists and has the same name, which is always true in a view that starts again at process id 1). Tests with the launcher and nothing else, in the
+harness home (`kill -9` and a signal sent to the app or to every process of the run):
+
+| How the app ended | the mark "in use" | the lock file | next start with the stub alone |
+|---|---|---|---|
+| `SIGKILL` to the app only | stays | stays | starts (the stub says "removed a stale lock file") |
+| `SIGKILL` to every process of the run | stays | stays | starts (same) |
+| `SIGTERM` to the app | **removed** | stays | **does not start** (the app takes the lock for live and exits; "LocalPeer: failed to connect") |
+
+So the stale-lock rule of PANPAK-FORMAT.md §9.4 works for a hard kill. The gap is in the rule "an end by a signal that the runtime passed on, or with status 0, is a normal end": a Qt app that gets `SIGTERM`
+(a logout, a `kill`, the user's systemd stopping the scope) dies or exits without removing its lock file, and the runtime has just removed the mark that would have made the next start look for it.
+Proposal, not applied (it changes the rule of §9.4): when the last copy ends, the outer runtime, which holds the exclusive lock at that moment, runs the same search for stale locks on the private folders
+(depth 3, no links followed) before it removes the mark, so a lock file left by a copy that ended on a signal or with status 0 is gone before anyone can start. The cost is at exit, not at start (a walk of a few
+small folders), and the start does not change. The alternative, to keep the mark whenever the app ended on a signal, costs a search at the next start and leaves the stale file in the meantime.
