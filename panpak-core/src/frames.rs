@@ -171,7 +171,7 @@ pub fn act(req: &Request, limit: &mut RateLimit, now: Instant, target: &mut dyn 
             }
             match target.open(url) {
                 Ok(()) => Response { status: Status::Done, text: String::new() },
-                Err(_) => Response { status: Status::Failed, text: "cannot open".into() },
+                Err(e) => Response { status: Status::Failed, text: format!("cannot open: {}", e.replace(['\n', '\r'], " ").chars().take(160).collect::<String>()) },
             }
         }
         KIND_FILE_CHOOSER | KIND_BROWSER => Response { status: Status::Unsupported, text: "not done by this version".into() },

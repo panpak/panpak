@@ -117,7 +117,7 @@ elif mode == "link":
     answers = {}
     c.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request", "Response", None, None, Gio.DBusSignalFlags.NONE, lambda conn, snd, path, i, sig, params: answers.update({path: params.unpack()[0]}))
     ctx = GLib.MainContext.default()
-    for n, uri in enumerate(("https://example.org/a", "mailto:a@b.org", "mailto:a@b.org?attach=/etc/passwd", "file:///etc/passwd")):
+    for n, uri in enumerate(("https://example.org/a", "mailto:a@b.org", "https://example.org/fail", "mailto:a@b.org?attach=/etc/passwd", "file:///etc/passwd")):
         path = "/org/freedesktop/portal/desktop/request/" + res["unique"][1:].replace(".", "_") + "/lk%d" % n
         r = call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.OpenURI", "OpenURI", ("", uri, {"handle_token": GLib.Variant("s", "lk%d" % n)}), "(ssa{sv})")
         t0 = time.time()
@@ -163,6 +163,13 @@ class Lab:
         isolation.require_isolated_home(self.home, self.sess.home.parent)
         self.env = dict(self.sess.env)
         self.stub = BIN / 'panpak-stub'
+        # A stand-in for the system's xdg-open, first in the PATH of the stub: it records the address and fails for one that contains "fail".
+        fake = work / 'bin'
+        fake.mkdir(exist_ok=True)
+        self.opened = work / 'opened.txt'
+        (fake / 'xdg-open').write_text(f'#!/bin/sh\necho "$1" >> {self.opened}\ncase "$1" in *fail*) echo "no browser" >&2; exit 3;; esac\nexit 0\n')
+        (fake / 'xdg-open').chmod(0o755)
+        self.env['PATH'] = f'{fake}:' + self.env.get('PATH', '/usr/bin:/bin')
         self.key = work / 'secret.key'
         out = self.cli('keygen', '-o', str(self.key)).stdout
         self.pub = next(line.split()[-1] for line in out.splitlines() if line.startswith('key:'))
@@ -332,11 +339,13 @@ def scenario_identity(lab):
 
 def scenario_links(lab):
     r = lab.run('org.panpaktest.Portal', 'link', '-')
-    want = {'https://example.org/a': 2, 'mailto:a@b.org': 2, 'mailto:a@b.org?attach=/etc/passwd': 2, 'file:///etc/passwd': 2}
+    want = {'https://example.org/a': 0, 'mailto:a@b.org': 0, 'https://example.org/fail': 2, 'mailto:a@b.org?attach=/etc/passwd': 2, 'file:///etc/passwd': 2}
     for uri, code in want.items():
         got = r['links'][uri]
         need(got[0].startswith('ok ') and '/org/freedesktop/portal/desktop/request/' in got[0], f'L: {uri}: {got}')
-        need(got[1] == [code], f'L: {uri}: the app was told {got[1]}, expected {code} (no opener is connected to the router in this test, so every address ends with 2)')
+        need(got[1] == [code], f'L: {uri}: the app was told {got[1]}, expected {code}')
+    opened = lab.opened.read_text().split() if lab.opened.exists() else []
+    need(opened == ['https://example.org/a', 'mailto:a@b.org', 'https://example.org/fail'], f'L: the system opener got {opened}')
     print('L   OpenURI is answered by the router and the app is told what happened: ok')
 
 

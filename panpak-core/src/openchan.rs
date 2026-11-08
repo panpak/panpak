@@ -54,7 +54,7 @@ pub fn handle(request: &[u8], limit: &mut RateLimit, now: Instant, target: &mut 
     }
     match target.open(url) {
         Ok(()) => "OK".into(),
-        Err(_) => "ERR cannot open".into(),
+        Err(e) => format!("ERR cannot open: {}", e.replace(['\n', '\r'], " ").chars().take(160).collect::<String>()),
     }
 }
 

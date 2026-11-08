@@ -3164,6 +3164,7 @@ mod tests {
             notifications: None,
             tray: None,
             dbus_own: None,
+            mpris: None,
         });
         let access = Access { rw: vec![appdata.clone()], ..Access::default() };
         let err = build_ruleset(&tree, &access, &man, abi, true, false, None).unwrap_err();

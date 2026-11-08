@@ -283,7 +283,13 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
             let _ = std::fs::remove_file(&pending);
             let listener = UnixListener::bind(&pending).with_context(|| format!("cannot make {}", pending.display()))?;
             std::fs::set_permissions(&pending, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-            guard.attachment = Some(crate::busrouter::attach(&spec, listener, pdir.join("real"))?);
+            // The opener of this copy for OpenURI: the actor (this process) is on one end of a socket pair, the router on the other.
+            let opener = crate::opener::system_target().and_then(|t| {
+                let (mine, theirs) = std::os::unix::net::UnixStream::pair().ok()?;
+                crate::opener::serve_actor(mine, t).ok()?;
+                Some(theirs)
+            });
+            guard.attachment = Some(crate::busrouter::attach(&spec, listener, pdir.join("real"), opener)?);
             await_proxy(&mut guard, "real")?;
             if let Some(g2) = guard.a11y.as_mut() {
                 if let Err(e) = await_proxy(g2, "a11y") {

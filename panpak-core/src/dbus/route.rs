@@ -307,6 +307,7 @@ impl<F> Router<F> {
     }
 
     /// A message of the router's own to the host, on behalf of a connection; the reply is not passed to the app.
+    #[allow(clippy::too_many_arguments)]
     fn own_call(&mut self, c: ClientId, dest: &str, path: &str, iface: &str, member: &str, sig: &str, body: Vec<Value>) -> Option<Vec<u8>> {
         let cl = self.clients.get_mut(&c)?;
         let serial = cl.next_serial();

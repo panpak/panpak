@@ -20,6 +20,8 @@ pub const NAMES: &[&str] = &["xdg-open", "gnome-open", "kde-open", "kde-open5", 
 
 /// In the view, below the runtime folder: the folder of the links (first in `PATH`) and the socket.
 pub const BIN_DIR: &str = "panpak/bin";
+/// How long the actor waits to learn whether `xdg-open` worked.
+const OPEN_WAIT: Duration = Duration::from_secs(4);
 pub const SOCKET: &str = "panpak/open.sock";
 
 /// Opener processes alive at the same time. A browser started by `xdg-open` may be that process.
@@ -80,6 +82,9 @@ fn close_from_3() {
 }
 
 impl Target for SystemXdgOpen {
+    /// Start `xdg-open` and say what happened: its exit status if it ends within `OPEN_WAIT` (it normally hands the address to the browser and
+    /// ends), "started" if it is still running then (a browser that was started by it is not waited for). An app and a user are not told "done" for
+    /// a program that failed or that found nothing to open the address with.
     fn open(&mut self, url: &str) -> Result<(), String> {
         use std::sync::atomic::Ordering::SeqCst;
         if self.live.load(SeqCst) >= MAX_LIVE {
@@ -87,7 +92,7 @@ impl Target for SystemXdgOpen {
         }
         let mut cmd = Command::new(&self.program);
         // The address starts with http:, https: or mailto:, so it cannot be taken for an option.
-        cmd.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        cmd.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
         // SAFETY: the closure calls only setsid and close_range/close (async-signal-safe).
         unsafe {
             cmd.pre_exec(|| {
@@ -99,11 +104,47 @@ impl Target for SystemXdgOpen {
         let mut child = cmd.spawn().map_err(|e| format!("run {}: {e}", self.program.display()))?;
         self.live.fetch_add(1, SeqCst);
         let live = self.live.clone();
-        std::thread::spawn(move || {
-            let _ = child.wait();
-            live.fetch_sub(1, SeqCst);
-        });
-        Ok(())
+        let end = Instant::now() + OPEN_WAIT;
+        let outcome = loop {
+            match child.try_wait() {
+                Ok(Some(st)) => break Some(st),
+                Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(15)),
+                Ok(None) => break None,
+                Err(e) => {
+                    live.fetch_sub(1, SeqCst);
+                    return Err(format!("cannot wait for xdg-open: {e}"));
+                }
+            }
+        };
+        match outcome {
+            Some(st) => {
+                live.fetch_sub(1, SeqCst);
+                if st.success() {
+                    return Ok(());
+                }
+                let mut text = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = e.by_ref().take(400).read_to_string(&mut text);
+                }
+                let why = match st.code() {
+                    Some(3) => "no browser or program is set to open this kind of address (xdg-open found nothing to use)".to_string(),
+                    Some(4) => "the program that opens addresses failed".to_string(),
+                    Some(c) => format!("xdg-open ended with status {c}"),
+                    None => "xdg-open was stopped by a signal".to_string(),
+                };
+                let text = text.trim();
+                Err(if text.is_empty() { why } else { format!("{why}: {}", text.lines().next().unwrap_or("")) })
+            }
+            None => {
+                // Still running: a browser that xdg-open started and waits for. A thread reaps it.
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                    live.fetch_sub(1, SeqCst);
+                });
+                Ok(())
+            }
+        }
     }
 }
 
@@ -250,6 +291,17 @@ fn spawn_receiver(launch: Launch, listener: &UnixListener, theirs: &UnixStream) 
             }
         }
     }
+}
+
+/// Serve the frames of a router (it does what the receiver does, in the same process as the bus router): the actor on this end of a socket pair.
+pub fn serve_actor(sock: UnixStream, target: impl Target) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name("opener-router".into()).spawn(move || act_loop(sock, target))
+}
+
+/// The program that opens addresses, found in the `PATH` of this process.
+pub fn system_target() -> Option<SystemXdgOpen> {
+    let path = std::env::var_os("PATH")?;
+    find_in_path("xdg-open", &path).map(SystemXdgOpen::new)
 }
 
 /// The actor: read frames from the receiver, check each one again, act on it, answer. Ends when the receiver closes
@@ -562,7 +614,7 @@ mod tests {
         let mut t = SystemXdgOpen::new(fake_browser(&dir));
         let started = Instant::now();
         t.open("https://example.org/stay").unwrap();
-        assert!(started.elapsed() < Duration::from_millis(400), "open() waited for the process");
+        assert!(started.elapsed() < OPEN_WAIT + Duration::from_secs(1), "open() waited for the process for too long");
         let pid_file = dir.join("pid");
         for _ in 0..100 {
             if dir.join("sid").exists() && std::fs::metadata(dir.join("sid")).map(|m| m.len() > 0).unwrap_or(false) {

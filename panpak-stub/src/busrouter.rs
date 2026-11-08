@@ -16,6 +16,7 @@
 
 use anyhow::{bail, ensure, Context, Result};
 use panpak_core::dbus::{self, AuthStep, ClientId, Limits, Msg, Out, Router, RouterConfig, ServerAuth};
+use panpak_core::frames::{self, Status};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -238,6 +239,11 @@ struct Control {
     attached: bool,
     listener: Option<OwnedFd>,
     out: Vec<u8>,
+    /// The opener of this copy: a socket to its actor (the outer stub, which checks again and runs `xdg-open`), the frames in and out, and who waits.
+    actor: Option<OwnedFd>,
+    actor_in: Vec<u8>,
+    actor_out: Vec<u8>,
+    pending: VecDeque<u64>,
 }
 
 struct Process {
@@ -272,11 +278,19 @@ impl Process {
                         c.u.push(m);
                     }
                 }
-                Out::Open { token, uri, .. } => {
-                    // The opener is not connected to the router yet: say so, so that the app is told the truth.
-                    self.log(&format!("OpenURI {uri}: no opener"));
-                    let more = self.router.open_done(token, Err("the runtime has no way to open addresses here".into()));
-                    self.apply(more);
+                Out::Open { client, token, uri } => {
+                    let key = self.conns.get(&client).map(|c| c.control);
+                    let sent = key.and_then(|k| self.controls.get_mut(&k)).filter(|c| c.actor.is_some()).and_then(|c| {
+                        let frame = frames::encode_request(frames::KIND_OPEN_URI, uri.as_bytes()).ok()?;
+                        c.actor_out.extend_from_slice(&frame);
+                        c.pending.push_back(token);
+                        Some(())
+                    });
+                    if sent.is_none() {
+                        self.log(&format!("OpenURI {uri}: no opener"));
+                        let more = self.router.open_done(token, Err("the runtime has no way to open addresses here".into()));
+                        self.apply(more);
+                    }
                 }
                 Out::Close(id, why) => {
                     self.log(&format!("closing connection {id}: {why}"));
@@ -443,6 +457,7 @@ impl Process {
                 (Some("ATTACH"), None) if !ctl.attached => match ctl.fds.pop_front() {
                     Some(l) => {
                         ctl.listener = Some(l);
+                        ctl.actor = ctl.fds.pop_front();
                         ctl.attached = true;
                         if self.debug {
                             eprintln!("panpak-busrouter: +{:.1} ms copy {key} attached", self.t0.elapsed().as_secs_f64() * 1000.0);
@@ -475,6 +490,60 @@ impl Process {
         }
     }
 
+    /// Answers from the actor of a copy (frames, in order), and the requests waiting to be written to it.
+    fn actor_events(&mut self, key: u64, revents: i16) {
+        let mut done: Vec<(u64, Result<(), String>)> = Vec::new();
+        let mut broken = false;
+        if let Some(c) = self.controls.get_mut(&key) {
+            let fd = c.actor.as_ref().map(AsRawFd::as_raw_fd).unwrap_or(-1);
+            if revents & libc::POLLOUT != 0 && !c.actor_out.is_empty() {
+                match send_with_fds(fd, &c.actor_out.clone(), &[]) {
+                    Ok(n) => {
+                        c.actor_out.drain(..n);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(_) => broken = true,
+                }
+            }
+            if revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+                let mut buf = [0u8; 1024];
+                let mut none = VecDeque::new();
+                match recv_with_fds(fd, &mut buf, &mut none, 0) {
+                    Ok(0) => broken = true,
+                    Ok(n) => c.actor_in.extend_from_slice(&buf[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(_) => broken = true,
+                }
+                loop {
+                    match frames::parse_response(&c.actor_in) {
+                        Ok(Some((r, used))) => {
+                            c.actor_in.drain(..used);
+                            if let Some(t) = c.pending.pop_front() {
+                                done.push((t, if r.status == Status::Done { Ok(()) } else { Err(r.text) }));
+                            }
+                        }
+                        Ok(None) => break,
+                        Err(_) => {
+                            broken = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if broken {
+                // The opener is gone or confused: everything waiting is answered, and there is no opener any more for this copy.
+                while let Some(t) = c.pending.pop_front() {
+                    done.push((t, Err("the opener of the runtime ended".into())));
+                }
+                c.actor = None;
+            }
+        }
+        for (t, r) in done {
+            let more = self.router.open_done(t, r);
+            self.apply(more);
+        }
+    }
+
     /// A copy is gone (or misbehaved): its listener and every connection it brought end.
     fn drop_control(&mut self, key: u64) {
         if self.controls.remove(&key).is_none() {
@@ -497,6 +566,7 @@ impl Process {
                 Listen,
                 Control(u64),
                 Accept(u64),
+                Actor(u64),
                 App(ClientId),
                 Up(ClientId),
             }
@@ -509,6 +579,11 @@ impl Process {
                 if let Some(l) = &c.listener {
                     fds.push(libc::pollfd { fd: l.as_raw_fd(), events: libc::POLLIN, revents: 0 });
                     kinds.push(Kind::Accept(*k));
+                }
+                if let Some(a) = &c.actor {
+                    let ev = libc::POLLIN | if c.actor_out.is_empty() { 0 } else { libc::POLLOUT };
+                    fds.push(libc::pollfd { fd: a.as_raw_fd(), events: ev, revents: 0 });
+                    kinds.push(Kind::Actor(*k));
                 }
             }
             for (id, c) in &self.conns {
@@ -544,7 +619,7 @@ impl Process {
                             if peer_uid(fd) == Some(self.uid) {
                                 let key = self.next_control;
                                 self.next_control += 1;
-                                self.controls.insert(key, Control { sock, buf: Vec::new(), fds: VecDeque::new(), attached: false, listener: None, out: Vec::new() });
+                                self.controls.insert(key, Control { sock, buf: Vec::new(), fds: VecDeque::new(), attached: false, listener: None, out: Vec::new(), actor: None, actor_in: Vec::new(), actor_out: Vec::new(), pending: VecDeque::new() });
                                 ever = true;
                                 last_copy = None;
                             }
@@ -563,6 +638,7 @@ impl Process {
                         }
                     }
                     Kind::Accept(key) => self.accept_app(key),
+                    Kind::Actor(key) => self.actor_events(key, r),
                     Kind::App(id) => {
                         if r & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
                             self.read_app(id);
@@ -797,14 +873,20 @@ fn connect_upstream(path: &Path) -> Result<UnixStream> {
 
 /// Attach this copy: hand the router the listening socket the app will connect to, and serve its requests for connections to the copy's
 /// proxy (`upstream`) from a thread. Returns when the router has accepted the copy.
-pub fn attach(spec: &Spec, listener: UnixListener, upstream: PathBuf) -> Result<Attachment> {
+pub fn attach(spec: &Spec, listener: UnixListener, upstream: PathBuf, opener: Option<UnixStream>) -> Result<Attachment> {
     let ctl = connect_or_start(spec)?;
     // The descriptors the router receives share this flag: the router may not call fcntl.
     listener.set_nonblocking(true)?;
     let lfd = listener.as_raw_fd();
     let mut ctl_w = ctl.try_clone()?;
     ctl_w.set_write_timeout(Some(Duration::from_secs(2)))?;
-    ensure!(send_with_fds(ctl_w.as_raw_fd(), b"ATTACH\n", &[lfd]).context("ATTACH")? == 7, "ATTACH was cut");
+    let mut fds = vec![lfd];
+    if let Some(o) = &opener {
+        o.set_nonblocking(true)?;
+        fds.push(o.as_raw_fd());
+    }
+    ensure!(send_with_fds(ctl_w.as_raw_fd(), b"ATTACH\n", &fds).context("ATTACH")? == 7, "ATTACH was cut");
+    drop(opener);
     drop(listener); // the router holds the only descriptor that matters now
     let mut rd = ctl.try_clone()?;
     rd.set_read_timeout(Some(Duration::from_secs(5)))?;
