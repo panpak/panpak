@@ -761,6 +761,12 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
         eprintln!("panpak: WARNING: {note}");
     }
 
+    // A graphical app whose window class is not declared: the desktop matches the window to `panpak.<id>.desktop` by the class, and without it the task
+    // bar and the dock may show a gear or another program's icon (the window of a Qt or GTK app is named by its own application id, not by ours).
+    if man.desktop.as_ref().and_then(|d| d.wm_class.as_ref()).is_none() && payload.iter().any(|p| p.entry.path.starts_with("share/applications")) {
+        eprintln!("panpak: WARNING: [desktop] wm_class is not set: the task bar may not show the icon of the app (set it to the window class or application id the app uses; `panpak build` takes it from the recipe)");
+    }
+
     // An icon theme folder without its cache makes Qt look up each icon file by file at the start (tens of thousands of failed lookups).
     for note in icon_theme_notes(payload.iter().map(|p| p.entry.path.as_path())) {
         eprintln!("panpak: WARNING: {note}");

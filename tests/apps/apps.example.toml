@@ -46,6 +46,7 @@ data = ["share/gtksourceview-5"]
 
 [desktop]
 icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"
+wm_class = "org.gnome.TextEditor"
 
 [permissions]
 dbus_own = ["org.gnome.TextEditor"]
@@ -96,6 +97,7 @@ toolkit = "qt6"
 
 [desktop]
 icon_svg = "share/icons/hicolor/scalable/apps/qbittorrent.svg"
+wm_class = "org.qbittorrent.qBittorrent"
 
 [permissions]
 network = true
