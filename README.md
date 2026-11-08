@@ -4,9 +4,19 @@ Panpak (pronounced "pan-pak") is a package format and runtime for Linux desktop 
 `.panpak` file is verified with a signature before it runs, and the app then runs in a sandbox built
 from Landlock and, when available, bubblewrap.
 
-> **Status: pre-alpha.** The format may change without notice, there are no stable releases, and the
-> sandbox has known gaps ([Known limitations](THREAT-MODEL.md#5-known-limitations)). Do not use it for
-> important data or for software you do not trust.
+> **Status: pre-beta. Read this before you use it.**
+>
+> - The package format is **not stable**: it may change without notice, and an old package may stop
+>   working with a newer runtime.
+> - There are no releases. **Do not publish packages** made with this code (yours or anyone else's): there
+>   is no registry, no key policy and no review process yet.
+> - The sandbox has known gaps, listed in [THREAT-MODEL.md](THREAT-MODEL.md#5-known-limitations). One
+>   matters for the first apps: until the step that gives each app its own D-Bus bus (step 13p), a Panpak
+>   app that owns a D-Bus name can talk to a natively installed program that owns the same name (known
+>   case: single-instance Ghostty, KL-31 in the threat model).
+> - Do not use it for important data or for software you do not trust.
+> - Source builds (`panpak build`, [docs/SOURCE-BUILD.md](docs/SOURCE-BUILD.md)) work for three example
+>   programs only; the app harness ([docs/APP-HARNESS.md](docs/APP-HARNESS.md)) shows how they are tested.
 
 ## The problem
 
@@ -174,6 +184,23 @@ Where Panpak does worse, in the same measurements:
   install keeps both the package and the tree.
 
 There is no comparison with Flatpak or Snap yet.
+
+### Redo the numbers
+
+Build the release binaries first (Quick start below). Every command runs in an isolated HOME and never
+touches your own store.
+
+| Row | Command |
+|---|---|
+| Update size (3 rows) | `python3 bench/inputs.py fetch && python3 bench/public_bench.py delta` |
+| First start after install; later start, warm | `python3 bench/public_bench.py start` |
+| Cost of the isolated view | `python3 bench/public_bench.py view` |
+| Library resolution | `python3 bench/public_bench.py resolution` |
+| Fixed cost of a start | `python3 tests/startup_budget.py --runs 40` (add `--dbus` for the filtered session bus) |
+| First start of Audacity, font cache | the first number (with the system cache) is a start of Audacity with a time to window: `python3 tests/apps/run.py --apps YOUR_LIST.toml --full audacity` ([docs/APP-HARNESS.md](docs/APP-HARNESS.md)); the variant without the system cache was made by a local script that is not in the repository, so that number cannot be redone from here yet |
+
+Full options, inputs and limits: [docs/BENCHMARKS.md](docs/BENCHMARKS.md#run-the-benchmarks-again).
+Times depend on the machine: compare runs from the same machine.
 
 ## Quick start
 

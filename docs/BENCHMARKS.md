@@ -5,7 +5,7 @@ made with the scripts in `bench/`. Every number on this page is in a CSV file in
 [`bench-data/`](bench-data/), with the machine, the system, the versions and the date at the top of
 the file. The charts are drawn from those files. Nothing here is estimated.
 
-Panpak is pre-alpha. These numbers describe one machine and a handful of apps. They are not a
+Panpak is pre-beta. These numbers describe one machine and a handful of apps. They are not a
 comparison with Flatpak or Snap, which have not been measured.
 
 ## Machine and build

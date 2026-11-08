@@ -538,7 +538,7 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
 One list of what Panpak does not do or does not guarantee today. Each entry says what
 the limit is, what it means in practice, and where the detail is. The entries in §3 and
 §4 give the reasons; this section is the summary to read before relying on the sandbox.
-Status of the project: pre-alpha.
+Status of the project: pre-beta.
 
 **Sockets, buses and the desktop**
 
@@ -569,6 +569,16 @@ Status of the project: pre-alpha.
   bus socket in `sockets_allow`, the app has no bus (or the whole bus, the second case), so notifications, tray icons and the
   appearance portal are missing. Not mediated yet: the file chooser (KL-7), the clipboard, global menus. `doctor` says
   which part is missing. See `docs/COMPATIBILITY.md` (D-Bus summary), `PORTAL-DESIGN.md`, `docs/PORTALS-STUDY.md`.
+- **KL-31 An app can talk to a native app that has the same D-Bus name (open until step 13p).** The
+  proxy rules `--own=NAME` and `--talk=NAME` cannot tell the app's own name from the same name owned
+  by a process outside the sandbox. If a Panpak app owns a name (`dbus_own`, and by default its package
+  id) that a natively installed copy of the same program already owns, the Panpak copy can call that
+  native process through the filtered bus: found with Ghostty (single-instance GApplication), where the
+  copy became a remote instance and the native process, outside the sandbox, opened a second window
+  (F22); the opposite order routes the native command into the copy (F23). In practice: do not install
+  a package whose application id is the one of a program you also run natively and that is
+  single-instance, until each app has its own bus. The recipe of Ghostty turns the single instance off
+  for this reason. The design and the options are in `docs/SOURCE-BUILD.md` section 4.
 - **KL-6 No keyring.** `org.freedesktop.secrets` is never given to an app, because it would
   expose every password of the user's keyring. In practice: apps that store a password
   there (Bitwarden and Obsidian ask for it in the tests) start without a keyring, and the

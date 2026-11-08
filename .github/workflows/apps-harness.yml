@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Weekly app check: builds GNOME Text Editor from source with `panpak build` and
+# measures its start in a headless Sway with the app harness (tests/apps/run.py).
+# Only Text Editor: it is the smallest of the three example recipes (about ten
+# minutes of build on a runner). No secrets, no publish, read-only token.
+#
+# It is not part of the `ci` workflow and not in its gate: a failure here (a
+# changed base image, a package that left the Debian snapshot, a slow runner) is
+# looked at, but it does not block a pull request. It runs
+#   - every week (Monday 04:11 UTC);
+#   - by hand (workflow_dispatch);
+#   - on a pull request of this repository that changes the harness or this file
+#     (never on a pull request from a fork: it builds and starts programs).
+# The time of the job is in the summary of the run.
+
+name: apps-harness
+
+on:
+  schedule:
+    - cron: "11 4 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/apps-harness.yml"
+      - "tests/apps/**"
+
+concurrency:
+  group: apps-harness-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.99.1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  text-editor:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Unit tests of the harness
+        run: python3 -m unittest discover -s tests/apps -p 'test_*.py'
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
+          echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+      - name: Build panpak and panpak-stub
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl
+      - name: Bubblewrap, Sway and user namespaces
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap sway
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Build Text Editor and measure it
+        # --memory-cap none: the runner has no user systemd. The numbers are in the log and in the summary.
+        run: |
+          started=$(date +%s)
+          python3 tests/apps/run.py --apps tests/apps/apps.example.toml --full --memory-cap none \
+            --json "$RUNNER_TEMP/apps.json" text-editor | tee "$RUNNER_TEMP/apps.txt"
+          {
+            echo '### Text Editor, built from source and started in a headless Sway'
+            echo '```'
+            cat "$RUNNER_TEMP/apps.txt"
+            echo '```'
+            echo "Time of this step: $(( $(date +%s) - started )) s"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -23,11 +23,29 @@
    - conformance fixtures (`conformance/gen.py` + `run.py`)
      for any format/verify change.
 4. Run before committing:
-   `cargo test --target x86_64-unknown-linux-musl`,
+   `cargo test --locked --target x86_64-unknown-linux-musl`,
+   `cargo clippy --locked --all-targets --target x86_64-unknown-linux-musl -- -D warnings`
+   (CI runs clippy on this target with warnings as errors),
    `python3 conformance/run.py --rust`,
-   `./scripts/repro-build.sh` (if you touch build/toolchain).
+   `python3 -m unittest discover -s tests/apps -p 'test_*.py'` (the app harness),
+   `./scripts/check-spdx.sh` and `./scripts/repro-build.sh` (if you touch build or toolchain files; a change
+   to the binaries needs new hashes in `REPRODUCIBLE-HASHES.md`, in a separate commit).
 5. Update the docs touched by the change
    (`QUICKSTART.md`, `RELEASE.md`, `THREAT-MODEL.md`, etc.).
+
+## Rules for tests and builds
+
+- A test that creates or deletes files runs in an isolated HOME inside its own work folder and uses
+  `tests/isolation.py`. It never touches your real home or store.
+- Graphical tests run on a virtual X server or a headless Sway, never on your own session. Tests of
+  D-Bus use a private bus (`tests/dbus_lab.py`), never your session bus.
+- A test ends the processes it started by their process id, never by name.
+- Builds of programs from source (`panpak build`, `tests/apps/run.py`) are heavy: run one at a time, and
+  give the run a memory cap (`systemd-run --user --scope -p MemoryMax=10G -p MemorySwapMax=6G -- ...`;
+  the harness does it by itself unless `--memory-cap none`). See `docs/APP-HARNESS.md`.
+- Test data is made for the repository and declared in `docs/TEST-DATA.md`. Do not add files of third
+  parties, secrets, personal paths or user names.
+- Do not publish packages made with this code: there is no registry yet (see the status in `README.md`).
 
 ## Style
 

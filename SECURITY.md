@@ -1,6 +1,6 @@
 # Security policy
 
-Panpak is pre-alpha software. The format may change and nothing here is a
+Panpak is pre-beta software. The format may change and nothing here is a
 promise of security for important data. This file says how to report a
 problem and what to expect.
 
@@ -55,7 +55,11 @@ There is **no bug bounty** and no payment of any kind.
   stale lock files.
 - The parsers of untrusted input: the package format, the manifest, and
   `panpak convert` reading an AppImage.
+- `panpak build` and its recipes (the fetch of sources and images, the build sandbox, the package it makes).
 - The build and release scripts, and the reproducibility of the binaries.
+
+Known limits that are already written down (`THREAT-MODEL.md` section 5, for example KL-31, the D-Bus
+names shared with a native program until step 13p) are not new findings; a way around them is.
 
 ## Out of scope
 
