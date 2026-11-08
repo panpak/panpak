@@ -59,7 +59,7 @@ else:
     out['settings'] = gd(*PORTAL, 'org.freedesktop.portal.Settings.ReadOne', 'org.freedesktop.appearance', 'color-scheme')
     out['names'] = gd(*BUS, 'org.freedesktop.DBus.ListNames')
     out['location'] = gd(*PORTAL, 'org.freedesktop.portal.Location.CreateSession', '{}')
-    out['registry'] = gd('--dest', 'org.freedesktop.portal.Desktop', '--object-path', '/org/freedesktop/host/portal/Registry', '--method', 'org.freedesktop.host.portal.Registry.Register', 'org.example.fake', '{}')
+    out['registry'] = gd('--dest', 'org.freedesktop.portal.Desktop', '--object-path', '/org/freedesktop/portal/desktop', '--method', 'org.freedesktop.host.portal.Registry.Register', 'org.example.fake', '{}')
     out['documents'] = gd('--dest', 'org.freedesktop.portal.Documents', '--object-path', '/org/freedesktop/portal/documents', '--method', 'org.freedesktop.portal.Documents.GetMountPoint')
     out['properties'] = gd(*PORTAL, 'org.freedesktop.DBus.Properties.Get', 'org.freedesktop.portal.Settings', 'version')
     out['introspect'] = gd(*PORTAL, 'org.freedesktop.DBus.Introspectable.Introspect')
@@ -131,10 +131,10 @@ def direct_checks(sess, lab, pkg):
     bus = proxy_for(sess, rules, None, 'direct')
     rc, t = sess.call('org.freedesktop.portal.Desktop', '/org/freedesktop/portal/desktop', 'org.freedesktop.portal.Settings.ReadOne', 'org.freedesktop.appearance', 'color-scheme', bus=bus)
     need(rc == 0 and 'uint32' in t, f'Settings.ReadOne through {PROXY}: {t}')
-    rc, t = sess.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.RequestName', f'{app_dirs.ID}', 'uint32 4', bus=bus)
-    need(rc == 0 and '(uint32 1,)' in t, f'own id through {PROXY}: {t}')
-    rc, t = sess.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.RequestName', 'org.example.notmine.Name', 'uint32 4', bus=bus)
-    need(rc != 0 and ('AccessDenied' in t or 'ServiceUnknown' in t), f'other name through {PROXY}: {t}')
+    # The proxy gives no name of the app: they are on its private bus, in the router. (Before step 13p the app's id was owned here.)
+    for name in (app_dirs.ID, 'org.example.notmine.Name'):
+        rc, t = sess.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.RequestName', name, 'uint32 4', bus=bus)
+        need(rc != 0 and ('AccessDenied' in t or 'ServiceUnknown' in t), f'{name} was given by {PROXY}: {t}')
     # a signal crosses: the harness changes the theme while a monitor listens through the proxy
     mon = subprocess.Popen(['gdbus', 'monitor', '-a', bus, '--dest', 'org.freedesktop.portal.Desktop', '--object-path', '/org/freedesktop/portal/desktop'], env=sess.env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     time.sleep(1)
@@ -144,7 +144,7 @@ def direct_checks(sess, lab, pkg):
     need('SettingChanged' in mon.stdout.read(), f'SettingChanged did not cross {PROXY}')
     sess.call('org.freedesktop.impl.portal.desktop.fake', '/test/fake', 'test.Fake.SetColorScheme', 'uint32 1')
     ver = subprocess.run([PROXY, '--version'], capture_output=True, text=True).stdout.strip()
-    print(f'direct checks with {ver}: settings, own id, refusal of another name, SettingChanged: ok')
+    print(f'direct checks with {ver}: settings, no name given, SettingChanged: ok')
 
 
 def need(cond, msg):
@@ -352,12 +352,18 @@ def run_all(lab, sess, work):
     for bad in ('secrets', 'systemd1', 'gnome', 'kde', 'dconf', 'Documents'):
         need(bad not in names, f'ListNames shows {bad}: {names}')
     need('org.freedesktop.portal.Desktop' in names and 'org.freedesktop.Notifications' in names, f'ListNames: {names}')
-    for k in ('location', 'registry', 'documents', 'properties', 'introspect', 'secrets', 'systemd', 'own_other', 'own_notif', 'own_tray', 'talk_tray'):
+    # 'registry': the app cannot register an identity (the router does, and refuses the app's own call). 'introspect': not in the rules.
+    for k in ('location', 'registry', 'documents', 'introspect', 'secrets', 'systemd', 'talk_tray'):
         need(rep[k] == 'denied', f'{k}: {rep[k]}')
-    for k in ('portal_notify', 'inhibit', 'old_notify'):
+    for k in ('portal_notify', 'inhibit', 'old_notify', 'properties'):
         need(rep[k].startswith('ok'), f'{k}: {rep[k]}')
-    need(rep['own_self'].startswith('ok') and '(uint32 1,)' in rep['own_self'], f'own id: {rep["own_self"]}')
-    need(rep['own_declared'].startswith('ok'), f'declared name: {rep["own_declared"]}')
+    # Names: every name is the app's own on its private bus, whatever it is (even one of a desktop service: it only talks to itself) ...
+    for k in ('own_self', 'own_other', 'own_notif', 'own_tray', 'own_declared'):
+        need(rep[k].startswith('ok') and '(uint32 1,)' in rep[k], f'{k}: {rep[k]}')
+    # ... and none of them is on the host bus, where the real owner of org.freedesktop.Notifications is still the desktop's.
+    for name in (app_dirs.ID, 'org.example.notmine.Name', 'org.kde.StatusNotifierItem-2-1', 'org.example.dirs.Second'):
+        rc, out = sess.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.GetNameOwner', name)
+        need(rc != 0, f'{name} is owned on the host bus: {out}')
     log = sess.log.read_text()
     need(f'AddNotification app_id={pid} id=n1' in log, f'the portal did not know the app as {pid}: {log!r}')
     need(f'Inhibit app_id={pid}' in log, f'inhibit identity: {log!r}')
@@ -367,18 +373,20 @@ def run_all(lab, sess, work):
     # --- 3. without the permission: no notification, no declared name
     need(lab.install('').returncode == 0, 'install failed')
     rep = report(lab)
-    for k in ('portal_notify', 'own_declared', 'old_notify'):
+    for k in ('portal_notify', 'old_notify'):
         need(rep[k] == 'denied', f'without the permission {k}: {rep[k]}')
     need('org.freedesktop.Notifications' not in rep['names'], f'the notification service is visible without the permission: {rep["names"]}')
     need(rep['inhibit'].startswith('ok') and rep['own_self'].startswith('ok'), 'base rules lost')
-    print('without the permissions: notification and declared name refused, base rules kept: ok')
+    print('without the permissions: notification refused, base rules kept: ok')
     data = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/data'
     # --- 3b. the tray: only the watcher; no item name is owned (the icon is registered with the unique name)
     need(lab.install('[permissions]\ntray = true\n').returncode == 0, 'install failed')
     rep = report(lab)
-    need(rep['own_tray'] == 'denied' and rep['talk_tray'].startswith('ok'), f'tray: {rep["own_tray"]} / {rep["talk_tray"]}')
-    need(rep['own_other'] == 'denied' and rep['own_notif'] == 'denied', 'tray permission opened other names')
-    print('tray permission: the watcher is reachable, no item name can be owned, other names still refused: ok')
+    need(rep['talk_tray'].startswith('ok'), f'tray: {rep["talk_tray"]}')
+    rc, out = sess.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.GetNameOwner', 'org.kde.StatusNotifierItem-2-1')
+    need(rc != 0, f'the tray permission gave an item name on the host bus: {out}')
+    need(rep['portal_notify'] == 'denied', 'tray permission opened the notifications')
+    print('tray permission: the watcher is reachable, no item name is on the host bus, other rules unchanged: ok')
     need(lab.install('').returncode == 0, 'install failed')
     # --- 4. single instance across two starts
     first = subprocess.Popen([str(lab.home / '.local/bin' / app_dirs.ID), '--hold-name'], env=lab.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -388,9 +396,13 @@ def run_all(lab, sess, work):
                 break
             time.sleep(0.1)
         need((data / 'name-held').exists(), 'the first copy never held the name')
+        # The name is on the app's private bus, not on the host's; the second copy is a second launch, which reaches the first through the router that
+        # both share. With one router for each launch this fails (the second launch gets ServiceUnknown): that is the control of this test.
+        rc, out = sess.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.GetNameOwner', app_dirs.ID)
+        need(rc != 0, f'the app holds its id on the host bus: {out}')
         second = report(lab, ['--ping-first'])
-        need(second['ping_first'].startswith('ok'), f'the second copy cannot reach the first: {second["ping_first"]}')
-        print('single instance: the second copy reaches the first through the bus: ok')
+        need(second['ping_first'].startswith('ok'), f'the second launch cannot reach the first: {second["ping_first"]}')
+        print('single instance: the second launch reaches the first through the router of the app (and the id is not on the host bus): ok')
     finally:
         (data / 'name-release').write_text('x')
         first.wait(timeout=60)
