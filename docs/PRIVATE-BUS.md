@@ -406,8 +406,24 @@ Two copies, the first started first and ended before the second asks the portal 
 
 In B the agent stays inside the scope that copy 1 made; when copy 1 ends, the scope stays alive because the agent is in it, which is why the portal
 still knows copy 2. That is a detail to settle in the product: the agent should have a scope of its own (named after the app) so that its life does not
-depend on the first copy. In A, each copy's own scope is what the portal reads, as today. **Not run yet: the same with the real file chooser of
-Text Editor on GNOME** (two copies started with `--standalone`, the first closed before the second opens a file); see 11.6.
+depend on the first copy. In A, each copy's own scope is what the portal reads, as today.
+
+With the real file chooser of Text Editor on the GNOME VM (design A, shared router; two independent copies started with `--standalone`):
+
+1. **The filter has to let the app read the portal's properties.** First try, with only the `FileChooser.*` rule: the dialog that opened was GTK's own,
+   and no `OpenFile` reached the bus. GTK asks the portal for the version of the interface first (`org.freedesktop.DBus.Properties.Get` on the portal's
+   object); the filter refused it and GTK fell back. With `Properties.Get` and `GetAll` allowed on `/org/freedesktop/portal/desktop`, GTK used the
+   portal. This goes into the rule list the day the file chooser (KL-7, step 11) is given.
+2. Copy 1 (`:1.115`): `Ctrl+O` opened the system dialog (GNOME's, with its sidebar); `OpenFile` was seen on the bus from `:1.115`; `Esc`: the `Response`
+   arrived at `request/1_115/gtk...` and the editor was usable again.
+3. Copy 1 closed (process group ended). Copy 2 (`:1.132`): `Ctrl+O` opened the dialog; a file was chosen; the `Response` (code 0, `uris`) arrived at
+   `request/1_132/gtk...`, to copy 2, and the dialog closed. So the portal still knew copy 2 and the answer went to the right copy after the first copy was gone.
+4. The file did **not** appear in the editor. The portal answered with a real path (`file:///var/home/<user>/...`) because it takes the app for a host
+   application; the view does not contain that path. That is KL-7 and the reason for the file chooser of step 11, not an effect of the bus; the agent or the
+   router would have to hand the files over through the document portal or bind them.
+5. The system dialog is not attached to the editor (it covers it): the app has no parent window handle to give. Noted for step 11.
+
+The same test on design B (agent) was not repeated on the VM; the lab test above (`Inhibit`, same request path rule) covers its identity logic.
 
 ### 11.3 Measure 3: accessibility without opening a window on the other apps
 
@@ -444,9 +460,21 @@ to keys that were never pressed), and **plus** nothing. Tested with the Flatpak 
 | the probe calls `ListNames` | allowed: it shows a few unique names (`:1.1`, `:1.3`) and `org.a11y.atspi.Registry`, but the connections cannot be called |
 
 So: the app can register and be read; it cannot read or command the other apps. What it can learn is that other connections exist and which listeners
-are registered. Orca on the GNOME VM spoke the text and the buttons of Text Editor through this chain (the filtered bus, in the first design); menus were
-silent once and spoken in a second run of the same setup. Not tested: Orca with the variable and without the answers on the session bus (the GNOME VM was
-off when the variable was found); that is part of 11.6.
+are registered. Orca on the GNOME VM, six runs (owner's ears), all with Text Editor:
+
+| Run | Setup | Typed text | Menu entries |
+|---|---|---|---|
+| 1 | filtered a11y proxy, address served on the session bus | spoken | silent |
+| 2 | the same | spoken | spoken |
+| 3 | filtered, `AT_SPI_BUS_ADDRESS` only | spoken | silent |
+| 4 | **unfiltered** a11y proxy, `AT_SPI_BUS_ADDRESS` only | spoken | spoken |
+| 5 | filtered, `AT_SPI_BUS_ADDRESS` only, proxy log on | spoken | spoken |
+
+Run 5's proxy log (6,593 lines) has **no denied and no hidden message**: 79 messages "filtered in" and none out, with Orca reading the menus. So no call that
+Orca or the toolkit needs was refused in the one run that was logged, and the same filtered setup was silent in runs 1 and 3 and spoken in 2 and 5. The
+unfiltered run is one run. **The silence of the menus is not explained by the filter**; it looks like Orca's first contact with a freshly started app
+(it fixed itself in 2 of 4 filtered runs, with nothing changed). It stays an open point: phase 2 should repeat the filtered and the unfiltered setup several times
+each, restarting Orca between runs, and log the proxy in all of them.
 
 ### 11.4 Investigation 4: empty `app_id` on Fedora, `xdg-desktop-portal` 1.22.1
 
@@ -484,27 +512,44 @@ before its first portal call ("Registered too late"). Consequences:
 
 ### 11.5 Investigation 5: GTK 4.18 of the Debian image crashes on Fedora 45 KDE
 
-Reproduced outside the sandbox (the tree's `gnome-text-editor` started by hand with the stub's library path): `SIGSEGV`, so it is not the sandbox,
-not the Wayland security context (also off) and not the bus.
+**Cause found, from the sources of GTK and KWin.** Reproduced outside the sandbox (the tree's `gnome-text-editor` started by hand with the stub's library
+path): `SIGSEGV`, so not the sandbox, not the security context, not the bus.
 
-- **Where.** Backtrace of the core dump (thread 1): `libgtk-4.so.1 + 0x47d730`, called by `ffi_call`/`wl_closure_invoke` of the host `libwayland-client`
-  (1.26.0, Fedora, `SYSTEM_WINS`), from `dispatch_event` while GTK opens the display (`gdk_display_manager_open_display`,
-  `gtk_init`). Disassembly of the tree's `libgtk-4.so.1` at that address: a small callback of the Wayland display code that does
-  `g_ptr_array_add (data->X->array, data->pending)` and clears `data->pending`; the dereference of `data->X` (offset 0x30) faults. The neighbouring
-  function uses `munmap` of a mapped table. This is the shape of the handler of `zwp_linux_dmabuf_feedback_v1.tranche_done` (the table is the
-  `format_table`).
-- **What the compositor sent last** (`WAYLAND_DEBUG=1`): `zwp_linux_dmabuf_feedback_v1#26.format_table(fd, 2432)`, `tranche_target_device`,
-  `tranche_formats`, `tranche_flags`, **`tranche_done()`**, then the crash. KWin 6.8.2 on a virtio GPU (the VM).
-- **Versions.** Package: GTK 4.18.6 (Debian 13), libadwaita 1.7.6, Pango and GLib of Debian 13. Host: GTK 4.24.1, wayland 1.26.0, Mesa 26.2.6,
-  KWin 6.8.2. The host's own GTK 4.24 apps run on the same compositor.
-- **Not the fix:** `GDK_DISABLE=dmabuf` (and with `vulkan`) and `GSK_RENDERER=cairo` do not change it (the feedback object is created while the display
-  is opened); `[launch] env` of the manifest was not needed to see that, the variable was set on the process itself.
-- **A library from the host?** Putting only the host's `libgtk-4.so.1` (4.24.1) in front of the tree's libraries fails at once:
-  `undefined symbol: pango_font_description_set_width` (the host GTK needs a Pango newer than the tree's). So GTK can come from the host only with its whole
-  stack (GLib, Pango, Cairo, GdkPixbuf, Graphene, HarfBuzz, and libadwaita rebuilt or taken too): the "graphics family" of `SYSTEM_WINS` would have to
-  grow from Wayland and Mesa to the GTK stack, which defeats the purpose of carrying the app's own GTK. The honest choices are: build the GTK apps with a
-  GTK that has the fix (the image of step 13b with a newer base or a GTK from a backport), or accept that the oldest GTK in an image sets the oldest
-  compositor it can run on. The crash was seen on one VM with a virtio GPU and one compositor version; a real GPU was not tried.
+- **Crash site.** Core dump: `libgtk-4.so.1 + 0x47d730`, called by `ffi_call`/`wl_closure_invoke` of the host `libwayland-client` 1.26.0 while GTK opens the
+  display. The disassembly of the tree's library at that offset is `linux_dmabuf_tranche_done` of `gdk/wayland/gdkdmabuf-wayland.c`:
+  `g_ptr_array_add (info->pending_dmabuf_formats->tranches, info->pending_tranche)`. The fault is the read of `pending_dmabuf_formats->tranches`
+  (`info + 0x30`, then `+ 0x8`): `pending_dmabuf_formats` is `NULL`. It is only set in `linux_dmabuf_main_device`.
+- **Why no `main_device`.** `WAYLAND_DEBUG=1` shows `format_table`, `tranche_target_device`, `tranche_formats`, `tranche_flags`, `tranche_done` and no
+  `main_device`. KWin 6.8 (`src/wayland/linuxdmabufv1clientbuffer.cpp`, `LinuxDmaBufV1FeedbackPrivate::send`) sends `main_device` **only if the client's
+  object is older than version 6**: `if (resource->version() < ZWP_LINUX_BUFFER_PARAMS_V1_SET_SAMPLING_DEVICE_SINCE_VERSION) send_main_device(...)`. In
+  `linux-dmabuf` version 6 `main_device` is replaced by sampling devices in the tranches.
+- **Why GTK 4.18 gets version 6.** In GTK 4.18.6 (`gdk/wayland/gdkdisplay-wayland.c`, line 370) the global is bound with the **server's** version:
+  `wl_registry_bind (..., &zwp_linux_dmabuf_v1_interface, version)`, and its handlers only know up to version 5. KWin 6.8 advertises version 6.
+- **Fixed upstream, but not in 4.18.** Commit `e2d0ac2691` "wayland: Add interface version defines" (Matthias Clasen, 2025-03-31) binds with
+  `MIN (version, LINUX_DMABUF_VERSION)` (5). It is in 4.19.0, so in **4.20.0** (2025-08-29) and after; 4.24.1 (the Fedora 45 host) has it. 4.18.6 (2025-06-09)
+  is the last 4.18 release and the fix was not backported. No issue in the GTK tracker names `tranche_done` or the dmabuf feedback (searches on
+  `tranche_done`, `dmabuf feedback`, `main_device`: none; the only match, #8224, is about sampling feedback support). The `NULL` dereference in
+  `linux_dmabuf_tranche_done` itself is still unguarded in 4.24.1 and in `main`: a compositor that sends a tranche without `main_device` crashes any GTK
+  that binds a version it does not handle; with the cap that no longer happens.
+- **Does it depend on the virtual GPU?** From the code, no: the version KWin advertises and the condition for `main_device` do not look at the GPU. It was seen on
+  a virtio GPU; a run with virtio with and without 3D is asked for below as a confirmation, not as the explanation. (Not done: the VM's hardware is changed by the
+  owner.)
+- **Other things tried:** `GDK_DISABLE=dmabuf` (and with `vulkan`) and `GSK_RENDERER=cairo` do not help (the feedback object is created while the display is
+  opened). Only the host's `libgtk-4.so.1` (4.24.1) in front of the tree's libraries fails at once, `undefined symbol: pango_font_description_set_width`: it needs the host's Pango.
+
+**Options** (GTK apps built from source on the Debian 13 image):
+
+| Option | What it is | For | Against |
+|---|---|---|---|
+| 1. Patch GTK in the image | Rebuild `libgtk-4-1` 4.18.6 from the Debian source package with one change: `MIN (version, 5)` at line 370 (and, as a second line of defence, a `NULL` check in `linux_dmabuf_tranche_done`). The package carries the patched library | Smallest change in behaviour; the app stays on the GTK it was tested with; the patch is the upstream one | A GTK build for every GTK recipe (heavy: GTK is built in about an hour on 6 cores, memory to be measured), a patch to keep while the base is 4.18, and the library stops being the distribution's |
+| 2. A newer GTK built in the image | GTK 4.20.x or later from source (or from a newer Debian suite) | The fix and others come with it; no patch of ours | Needs newer GLib, Pango, libadwaita and others than Debian 13 has: a stack, not one library; the app is tested on another GTK than the one the recipe was written for |
+| 3. A newer base for GTK recipes | Build GTK apps on a Debian suite that already ships GTK 4.20+ (testing) | No build of GTK by us | glibc of the base goes up (`glibc_min` rises, the 2.39 line of 13a); the snapshot discipline holds, but the package then does not run on older hosts |
+| 4. A compatibility step in the runtime | Cap the version of `zwp_linux_dmabuf_v1` for apps that need it: a small preloaded library (as `nochown.so` is for the build) that wraps `wl_registry_bind`, or the same cap in a Wayland proxy | No rebuild; works for every GTK 4.18 app, also converted AppImages | `LD_PRELOAD` is forbidden for apps by the `[env]` rules; a Wayland proxy is a large new component; both touch every app to fix one toolkit |
+| 5. Do nothing now | List it as a known limit: GTK 4.18 apps crash on compositors that advertise `linux-dmabuf` version 6 (KWin 6.8 and later) | Free | Plasma 6.8 is the current KDE; Ghostty and Text Editor would not start there |
+
+Recommendation for the image: **option 1 for the 13b images** (the patch is one line and exists upstream), with option 2 or 3 as the way out when the base moves to
+a Debian suite with GTK 4.20 or later. Option 4 only if converted AppImages with GTK 4.18 turn out to need the same (not seen). The GTK stack can come from the
+host only as a whole; the "graphics family" of `SYSTEM_WINS` (Wayland, Mesa) should not grow to GTK.
 
 ### 11.6 Comparison
 
