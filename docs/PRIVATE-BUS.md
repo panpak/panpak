@@ -624,3 +624,37 @@ That is the narrowest rule: it does not reach the file chooser. What does not ne
 `SettingChanged`), notifications and inhibit are calls of their own interface. Nothing narrower than the pair `Get` and `GetAll` exists for the
 FileChooser version: the rule cannot name an interface in the arguments, so allowing one is allowing the file chooser. The complete rule set for the
 file chooser comes with step 11.
+
+## 13. Results of the code phase (step 13p)
+
+What runs (tests in `tests/privbus.py`, `tests/dbus_filter.py`, unit tests of `panpak-core::dbus`, `fuzz_router`):
+
+- A, B, C, F11, F22, F23 (names are the app's own and never on the host bus; a native program with the same name is not reached; F22 and F23 closed);
+  S (a second launch finds the first through the one router of the app); I and R (identity `panpak.<id>` for each copy, also after the first copy ended; the
+  app cannot register one); L (OpenURI answered with the real outcome of `xdg-open`; the version of OpenURI read as GTK reads it); M (media alias); X
+  (accessibility: the app is read by a screen reader, `GetChildren` on the root and `RegisterEvent` are refused); R1 to R4 (copies started together share one
+  router, a copy killed with SIGKILL does not take it down, it ends with the last copy, also when that one is killed); E (a copy that starts while the router
+  decides to end gets a bus: the router ends only under the lock of the app's folder and the test holds that window open for 1.5 s; the same test fails with
+  `may_end` always true).
+- Real desktops. Bluefin (GNOME): the file dialog is GTK's own and opens and saves in the granted folder; links from Ghostty and from the About dialog of Text
+  Editor open Firefox (a Flatpak: `xdg-open` needs `XDG_DATA_DIRS`, which the opener now supplies, defect 55); Orca, 5 rounds with Orca restarted each time, lists the
+  sandboxed Text Editor in 0.00 to 0.02 s with 6 nodes and the window title, the same numbers as the Flatpak Text Editor read directly (5 of 5 rounds each; speech was not
+  checked by ear). Fedora KDE (Plasma 6.8.2): Text Editor and Ghostty built on the patched GTK (4.18.6+ds-2+panpak1) start and stay open, the task bar shows the
+  right icon (with the real desktop entry in place), and links open Firefox (defect 54).
+- GTK patch: `panpak/data/patches/gtk4-dmabuf-v5.patch`, applied by rebuilding the `gtk4` source package of the snapshot once per image version (about 10 minutes, 6 GB
+  peak). Two independent builds gave the same hash for the packages that go into images (`libgtk-4-1`, `libgtk-4-common`, `libgtk-4-dev`, `libgtk-4-bin`,
+  `gir1.2-gtk-4.0`, `libgtk-4-media-gstreamer`); only `gtk-4-examples`, which no image installs, differed. The text for the upstream report is
+  not in the repository (it names versions of the author's machines); the cause is in section 10.
+
+Measures (this machine, release build, `tests/startup_budget.py --runs 30`, `tests/privbus.py` probe `lat`):
+
+| | no bus layer | router and proxies |
+|---|---|---|
+| fixed cost of a start from a terminal | 25.6 ms | 41.7 ms (budget 45 ms) |
+| memory: router | | 2.3 MB resident (one for all copies of an app) |
+| memory: proxy | | 6.3 MB resident for each copy (two copies: 12.6 MB) |
+| round trip of a portal call (`Settings.ReadOne`, fake backend in Python) | 486 us | 843 to 959 us |
+
+The round trip adds 360 to 470 us in this lab, more than the 47 to 52 us measured for the prototype; the lab's backend and the client are Python programs, each hop
+(router, proxy) costs a process wake-up, and a real app makes few calls (settings, one inhibit, one notification). Not measured: the cost with a real portal. The
+router stays alive 1.5 s after the last copy; it no longer holds the caller's error output open (a script that read it waited 1.5 s; found by the budget test).

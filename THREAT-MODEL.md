@@ -681,7 +681,7 @@ Status of the project: pre-beta.
   setup has no input method engine.
 - **KL-24 The accessibility bus is filtered, not given.** The app reaches `org.a11y.Bus` only through a second proxy with the rules of Flatpak's
   `flatpak_run_add_a11y_dbus_env` minus `NotifyListenersSync` and `NotifyListenersAsync`: it registers and is read by a screen reader, and it cannot read or
-  command other applications (test X: `GetChildren` on the root and `RegisterEvent` are refused). Without `xdg-dbus-proxy` or without the accessibility bus the variable `AT_SPI_BUS_ADDRESS` is removed and the app is not visible to
+  command other applications (test X: `GetChildren` on the root and `RegisterEvent` are refused). Orca on GNOME lists and reads a sandboxed Text Editor as it reads the Flatpak one (5 rounds each, same tree). Without `xdg-dbus-proxy` or without the accessibility bus the variable `AT_SPI_BUS_ADDRESS` is removed and the app is not visible to
   assistive tools.
 - **KL-25 Tray icons are registered with the unique name.** The runtime owns no `StatusNotifierItem-<pid>-<n>` name
   (the pid is the one in the view, always 2, so two apps would compete for it). Chromium (Zulip 5.13.2) and Qt 6

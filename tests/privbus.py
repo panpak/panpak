@@ -132,6 +132,21 @@ elif mode == "link":
             ctx.iteration(False)
             time.sleep(0.01)
         res["links"][uri] = [r[:90], [answers[path]] if path in answers else []]
+elif mode == "lat":
+    # Round trips: Settings.ReadOne at the portal (through the router and the proxy) and Peer.Ping to a name of the app itself (answered by the router).
+    request_name(name, 4)
+    lat = {}
+    host = ("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings", "ReadOne", GLib.Variant("(ss)", ("org.freedesktop.appearance", "color-scheme")))
+    own = (name, "/", "org.freedesktop.DBus.Peer", "Ping", None)
+    for label, (dest, path, iface, member, args) in (("host", host), ("own", own)):
+        for _ in range(200):
+            c.call_sync(dest, path, iface, member, args, None, Gio.DBusCallFlags.NONE, 3000, None)
+        t0 = time.perf_counter()
+        n = 2000
+        for _ in range(n):
+            c.call_sync(dest, path, iface, member, args, None, Gio.DBusCallFlags.NONE, 3000, None)
+        lat[label] = round((time.perf_counter() - t0) / n * 1e6, 1)
+    res["lat_us"] = lat
 elif mode == "mpris":
     res["codes"] = [request_name("org.mpris.MediaPlayer2.vlc", 4), request_name("org.mpris.MediaPlayer2.other", 4)]
     serve(secs)
@@ -408,9 +423,9 @@ def scenario_identity(lab):
     pid = 'org.panpaktest.Portal'
     lab.install(pid, '[permissions]\nnotifications = true\n')
     lab.sess.log.write_text('')
-    p1 = lab.start(pid, 'portal', 1)
+    p1 = lab.start(pid, 'portal', '-', 1)
     time.sleep(0.8)
-    p2 = lab.start(pid, 'portal', 8)
+    p2 = lab.start(pid, 'portal', '-', 8)
     r1 = lab.finish(p1, pid, 'portal')
     # The first copy is over; the second asks the portal now.
     r2 = lab.finish(p2, pid, 'portal')

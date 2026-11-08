@@ -9,8 +9,10 @@
   privileges (Landlock, seccomp, limits) and is fuzzed. `dbus_own` has no effect any more. The accessibility bus is filtered like Flatpak's, without
   `NotifyListenersSync` and `NotifyListenersAsync` (KL-24). `Properties` on the portal stays refused until the file chooser (step 11). `tests/privbus.py`, `docs/PRIVATE-BUS.md`.
 - **GTK 4.18 on KDE Plasma 6.8 (defect 54).** The Debian 13 build image rebuilds GTK 4 once per image version with a one-line patch (bind `zwp_linux_dmabuf_v1` at version 5 at most, as
-  GTK 4.20 does); the patch is in `panpak.lock` (`patches`) and in `[provenance]`. A lock without `patches` builds on
+  GTK 4.20 does); the patch is in `panpak.lock` (`patches`) and in `[provenance]`. Text Editor and Ghostty built on it start on Plasma 6.8.2. A lock without `patches` builds on
   unpatched packages; `panpak build --update-lock` adds it.
+- **Links tell the truth (defect 55).** The address-opening channel waits up to 4 s for `xdg-open` and answers with its exit status and the reason; on Bluefin the only browser is a Flatpak, found through `XDG_DATA_DIRS`, which the opener takes from the launch, the user's systemd manager or the defaults with the folders of Flatpak and Snap.
+- **The router ends under a lock** so that a copy started at that moment always gets a bus (`tests/privbus.py`, scenario E).
 - **`pack` warns when `[desktop] wm_class` is missing** (the task bar showed a gear or another program's icon, defect 56).
 
 - **Icon caches.** `panpak build` makes `icon-theme.cache` for every icon theme folder of the package (`gtk-update-icon-cache`), and `pack` warns about a theme folder with icons and no cache. Qt looked each icon up file by file without it: qBittorrent from source made 49,000 failed lookups at the start (0.415 s; now 0.21 s).

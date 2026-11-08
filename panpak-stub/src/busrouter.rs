@@ -852,6 +852,10 @@ fn connect_or_start(spec: &Spec) -> Result<UnixStream> {
         .env_clear()
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null());
+    // The router outlives the copy by a moment: it must not hold the caller's error output open (a script that reads it would wait for EOF).
+    if !spec.debug {
+        cmd.stderr(std::process::Stdio::null());
+    }
     // SAFETY: only dup2, close_range and setsid run between fork and exec; they are async-signal-safe.
     unsafe {
         use std::os::unix::process::CommandExt;
