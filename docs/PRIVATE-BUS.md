@@ -55,7 +55,7 @@ Two things the study found that change the design of the idea as it was written:
 ## 2. The idea, and what the tests of the prototype show
 
 Prototype files (not in the repository): `router2.py` (one router for each start, with the accessibility, link and media
-player parts), `router3.py` with `routerlib.py` (one router for each app, shared by its copies), `rs/router.rs` (Rust
+player parts), `router3.py` with `routerlib.py` (one router for each app, shared by its copies), rs/router.rs (Rust
 skeleton for the cost numbers), and the test scripts. The stub changes on the local branch `privbus-proto` are two:
 `PANPAK_PROTO_PROXY` makes the stub start a given program in place of `xdg-dbus-proxy` (same command line), and the Landlock
 list of sockets allows one more socket for the accessibility part.
