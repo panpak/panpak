@@ -130,5 +130,7 @@ class Session:
                 p.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 pass
+        # The store makes its trees read-only: make them writable first, or the folder stays behind.
+        subprocess.run(['chmod', '-R', 'u+rwX', str(self.rt), str(self.home)], capture_output=True)
         shutil.rmtree(self.rt, ignore_errors=True)
         shutil.rmtree(self.home, ignore_errors=True)
