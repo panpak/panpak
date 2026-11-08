@@ -7,6 +7,7 @@ stub asks that bus for its scope (a transient scope that ends with the process).
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -93,14 +94,41 @@ class Session:
                                     env=self.env, capture_output=True, text=True, timeout=20)
         return ET.fromstring(out.stdout) if out.returncode == 0 and out.stdout.strip() else None
 
+    def _lab_pids(self):
+        """Processes of this lab, found by their environment (`XDG_RUNTIME_DIR` is the lab's private folder), never by name: the
+        services the bus daemon started on demand (portal, permission store, document portal, dconf) are not children of this script."""
+        want = f'XDG_RUNTIME_DIR={self.rt}'.encode()
+        pids = []
+        for d in os.listdir('/proc'):
+            if not d.isdigit() or int(d) == os.getpid():
+                continue
+            try:
+                if os.stat(f'/proc/{d}').st_uid == os.getuid() and want in open(f'/proc/{d}/environ', 'rb').read().split(b'\0'):
+                    pids.append(int(d))
+            except OSError:
+                pass
+        return pids
+
     def close(self):
-        # The document portal's FUSE mount first, then the processes, then the folder.
+        # The document portal's FUSE mount first, then the processes (by process id), then the folder.
         subprocess.run(['fusermount3', '-u', '-z', str(self.rt / 'doc')], capture_output=True)
         for p in reversed(self.procs):
             p.terminate()
-        for name in ('xdg-document-portal', 'xdg-permission-store', 'xdg-desktop-portal', 'dconf-service'):
-            subprocess.run(['pkill', '-u', str(os.getuid()), '-f', f'{name}.*{self.rt.name}'], capture_output=True)
-        subprocess.run(['pkill', '-u', str(os.getuid()), '-f', 'xdg-desktop-portal'], capture_output=True, env={}) if False else None
-        time.sleep(0.2)
+        for sig, wait in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 1.0)):
+            pids = self._lab_pids()
+            for pid in pids:
+                try:
+                    os.kill(pid, sig)
+                except OSError:
+                    pass
+            deadline = time.monotonic() + wait
+            while pids and time.monotonic() < deadline:
+                time.sleep(0.05)
+                pids = self._lab_pids()
+        for p in self.procs:
+            try:
+                p.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
         shutil.rmtree(self.rt, ignore_errors=True)
         shutil.rmtree(self.home, ignore_errors=True)
