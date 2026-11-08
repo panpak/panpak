@@ -21,6 +21,7 @@ Regression tests of the findings of docs/SOURCE-BUILD.md section 4 and docs/PRIV
   X    the accessibility bus is filtered: the app is found by a screen reader, cannot read or command the other applications
 """
 import json
+import signal
 import os
 from pathlib import Path
 import shutil
@@ -318,6 +319,59 @@ def scenario_single_instance(lab):
     print('S   two launches share one router: the second reaches the first: ok')
 
 
+def routers(lab):
+    """PIDs of the router processes of this lab: the program they run is the stub installed in the lab's home folder.
+    (Their descriptors cannot be read from outside: they are not dumpable.)"""
+    found = []
+    for d in Path('/proc').iterdir():
+        if not d.name.isdigit():
+            continue
+        try:
+            cmd = (d / 'cmdline').read_bytes().split(b'\0')
+        except OSError:
+            continue
+        if b'--panpak-busrouter' in cmd and cmd[0].startswith(str(lab.home).encode() + b'/'):
+            found.append(int(d.name))
+    return found
+
+
+def wait_routers(lab, n, seconds):
+    end = time.time() + seconds
+    while time.time() < end:
+        if len(routers(lab)) == n:
+            return True
+        time.sleep(0.2)
+    return len(routers(lab)) == n
+
+
+def scenario_lifecycle(lab):
+    gid = 'org.panpaktest.Gapp'
+    need(wait_routers(lab, 0, 8), f'R1: a router is left from an earlier test: {routers(lab)}')
+    # Two copies that start together share one router; it ends after the last one.
+    p1 = lab.start(gid, 'gapp', gid, 9)
+    p2 = lab.start(gid, 'gapp', gid, 9)
+    time.sleep(3)
+    need(len(routers(lab)) == 1, f'R1: two copies started together have {len(routers(lab))} routers')
+    # A copy that dies badly: the other one goes on, the router stays.
+    os.killpg(p1.pid, signal.SIGKILL)
+    p1.wait(timeout=10)
+    time.sleep(1.5)
+    need(len(routers(lab)) == 1, f'R2: after a copy was killed there are {len(routers(lab))} routers')
+    r3 = lab.run('org.panpaktest.Portal', 'portal', 1)
+    need(r3['inhibit'].startswith('ok'), f'R2: a new copy cannot use the bus after another one was killed: {r3}')
+    # The last copy ends: the router ends with it.
+    lab.finish(p2, gid, 'gapp', timeout=60)
+    need(wait_routers(lab, 0, 8), f'R3: the router stayed after the last copy ended: {routers(lab)}')
+    # All copies killed: no router left either.
+    p4 = lab.start(gid, 'gapp', gid, 30)
+    time.sleep(2.5)
+    need(len(routers(lab)) == 1, 'R4: no router for a single copy')
+    os.killpg(p4.pid, signal.SIGKILL)
+    p4.wait(timeout=10)
+    need(wait_routers(lab, 0, 10), f'R4: the router stayed after its only copy was killed: {routers(lab)}')
+    print('R   one router for copies started together, it survives a copy killed badly, and ends with the last copy (also when it is killed): ok')
+
+
 def scenario_identity(lab):
     pid = 'org.panpaktest.Portal'
     lab.install(pid, '[permissions]\nnotifications = true\n')
@@ -401,6 +455,7 @@ def main():
         scenario_c(lab)
         scenario_f22_f23_f11(lab)
         scenario_single_instance(lab)
+        scenario_lifecycle(lab)
         scenario_identity(lab)
         scenario_links(lab)
         scenario_mpris(lab)
