@@ -20,6 +20,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 pub type ClientId = u32;
 
+/// A unique connection name as the daemon gives it: `:` and digits, dots, `_` or `-`, at most 255 bytes.
+fn valid_unique(s: &str) -> bool {
+    s.len() > 1 && s.len() <= 255 && s.starts_with(':') && s[1..].bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
 /// The name of the daemon and its object.
 pub const BUS: &str = "org.freedesktop.DBus";
 const BUS_PATH: &str = "/org/freedesktop/DBus";
@@ -540,6 +545,10 @@ impl<F> Router<F> {
         if first_reply {
             if let Ok(full) = parse_message(&msg.raw, 0, &self.lim) {
                 if let Some(Value::Str(u)) = full.body.first() {
+                    if !valid_unique(u) || self.by_unique.contains_key(u) {
+                        outs.push(Out::Close(c, "the host gave this connection a name that cannot be one".into()));
+                        return outs;
+                    }
                     if let Some(cl) = self.clients.get_mut(&c) {
                         cl.unique = Some(u.clone());
                     }
@@ -1167,6 +1176,23 @@ mod tests {
         // A unique name cannot be requested.
         let outs = r.from_app(d, msg(bus_call(100, "RequestName", "su", vec![Value::str(":1.99"), Value::U32(0)])));
         assert_eq!(apps(&outs, d)[0].kind, ERROR);
+    }
+
+    #[test]
+    fn a_unique_name_that_cannot_be_one_is_not_taken() {
+        // Found by the fuzzer: the host side answered Hello with a string that is no connection name, and replies built for it did not read.
+        let mut r = R::new(config());
+        let c = r.new_client();
+        r.from_app(c, msg(bus_call(1, "Hello", "", vec![])));
+        let outs = r.from_up(c, msg(reply_to(1, "x", "s", vec![Value::str("x")])));
+        assert!(matches!(outs[0], Out::Close(id, _) if id == c), "{outs:?}");
+        // And two connections cannot have the same name.
+        let a = connect(&mut r, 5);
+        let b = r.new_client();
+        r.from_app(b, msg(bus_call(1, "Hello", "", vec![])));
+        let outs = r.from_up(b, msg(reply_to(1, ":1.5", "s", vec![Value::str(":1.5")])));
+        assert!(matches!(outs[0], Out::Close(id, _) if id == b));
+        assert_eq!(r.unique_of(a), Some(":1.5"));
     }
 
     #[test]

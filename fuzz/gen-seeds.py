@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Generate the fuzz seed corpus for fuzz_elf, fuzz_squash, fuzz_dbus, fuzz_dbus_names, fuzz_journal, fuzz_wayland, fuzz_receiver and fuzz_icon.
+"""Generate the fuzz seed corpus for fuzz_elf, fuzz_squash, fuzz_dbus, fuzz_dbus_names, fuzz_router, fuzz_journal, fuzz_wayland, fuzz_receiver and fuzz_icon.
 
 Every seed is written by this script from scratch (hand-built ELF headers) or
 built from small text files created here (squashfs, via mksquashfs). No
@@ -212,6 +212,33 @@ def dbus_seeds():
     return out
 
 
+def router_seeds():
+    """Sequences of events for fuzz_router: tag (0 new connection, 1 from the app, 2 from the host, 3 gone, 4 answer of the opener), connection, length, then
+    a byte with the number of descriptors and the message."""
+    path = lambda p: (1, "o", _str(p))
+    iface = lambda i: (2, "s", _str(i))
+    member = lambda m: (3, "s", _str(m))
+    dest = lambda d: (6, "s", _str(d))
+    bus = [path("/org/freedesktop/DBus"), iface("org.freedesktop.DBus"), dest("org.freedesktop.DBus")]
+
+    def ev(tag, who, msg=b"", nfds=0):
+        pl = (bytes([nfds]) + msg) if msg else b""
+        return bytes([tag, who]) + struct.pack("<H", len(pl)) + pl
+
+    hello = dbus_message(1, 1, bus + [member("Hello")])
+    hello_reply = dbus_message(2, 2, [(5, "u", struct.pack("<I", 1))], "s", _str(":1.5"))
+    request = lambda serial, name, flags: dbus_message(1, serial, bus + [member("RequestName")], "su", _str(name) + b"\0" * (-(len(_str(name))) % 4) + struct.pack("<I", flags))
+    start = ev(0, 0) + ev(1, 0, hello) + ev(2, 0, hello_reply)
+    out = {}
+    out["hello"] = start
+    out["names"] = start + ev(1, 0, request(2, "org.example.App", 4)) + ev(0, 1) + ev(1, 1, hello) + ev(2, 1, hello_reply) + ev(1, 1, request(2, "org.example.App", 4)) + ev(3, 0)
+    out["registry"] = start + ev(1, 0, dbus_message(1, 3, [path("/org/freedesktop/portal/desktop"), iface("org.freedesktop.host.portal.Registry"), member("Register"), dest("org.freedesktop.portal.Desktop")], "sa{sv}", _str("org.mozilla.firefox") + b"\0" * 0 + struct.pack("<I", 0) + b"\0" * 4))
+    out["mpris"] = start + ev(1, 0, request(2, "org.mpris.MediaPlayer2.vlc", 4)) + ev(2, 0, dbus_message(2, 9, [(5, "u", struct.pack("<I", 1073741825))], "u", struct.pack("<I", 1)))
+    out["openuri"] = start + ev(1, 0, dbus_message(1, 3, [path("/org/freedesktop/portal/desktop"), iface("org.freedesktop.portal.OpenURI"), member("OpenURI"), dest("org.freedesktop.portal.Desktop")], "ssa{sv}", _str("") + _str("https://example.org/") + b"\0" * 0 + struct.pack("<I", 0) + b"\0" * 4)) + ev(4, 0, b"\0")
+    out["match"] = start + ev(1, 0, dbus_message(1, 4, bus + [member("AddMatch")], "s", _str("type='signal',interface='org.example.I',arg0='x'")))
+    return out
+
+
 def dbus_names_seeds():
     names = ["org.example.app.Second", "org.freedesktop.Notifications", "org.kde.kdenlive", "org.kde.StatusNotifierWatcher",
              "org.example.*", "a.b", "ca.desrt.dconf", "org.example.app\norg.example.app\nApp", "org.gtk.vfs.Daemon", "x.y.z" + "a" * 260]
@@ -326,6 +353,7 @@ def main():
     write("fuzz_squash", squash_seeds(), "seed")
     write("fuzz_dbus", dbus_seeds(), "seed")
     write("fuzz_dbus_names", dbus_names_seeds(), "seed")
+    write("fuzz_router", router_seeds(), "seed")
     write("fuzz_journal", journal_seeds(), "seed")
     write("fuzz_wayland", wayland_seeds(), "seed")
     write("fuzz_receiver", receiver_seeds(), "seed")
