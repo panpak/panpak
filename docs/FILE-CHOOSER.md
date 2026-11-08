@@ -135,7 +135,7 @@ Revocation, in order of what a user does:
 
 1. `panpak remove <app>` revokes every document of the app (section 3.5).
 2. The user removes the grant in the desktop's settings where it lists "files" permissions of an app; those panels are written for Flatpak ids and may not
-   list `panpak.<id>` **[to test]**; `panpak grants <app>` (new, small) lists them and `panpak grants <app> --revoke` removes them.
+   list `panpak.<id>` **[to test]**; the Panpak app (step 10b) will list and revoke them; `panpak grants` is postponed.
 3. The user moves or deletes the folder: the document stays in the store and the app gets errors; a later pick of another folder gives a new id.
 
 ### 3.5 Life cycle
@@ -172,7 +172,7 @@ those interfaces. This differs from the first sentence of the brief ("reopen Pro
 
 | App | Without `xdg_dirs` | Comment |
 |---|---|---|
-| Text Editor | yes, for documents, desktop and downloads | files are chosen, saved or restored from `recent` through documents; **[to test]** the restore of the open files after a restart; opening a file from the command line or from the file manager is NOT covered (the argument is a host path): that needs the outer stub to share the arguments (what Flatpak's file forwarding does), a later step |
+| Text Editor | yes, for documents, desktop and downloads | files are chosen, saved or restored from `recent` through documents; **[to test]** the restore of the open files after a restart; opening a file from the command line or from the file manager is covered by 3.9 |
 | qBittorrent | the `.torrent` yes; the download folder only after the user picks it once | the default `~/Downloads` is gone from the view, so the first start asks; or keep `xdg_dirs = download` |
 | Ghostty | not applicable | a terminal needs the shell's view of the home, not the dialog |
 
@@ -180,6 +180,46 @@ Rule for `pack` (a note, not a failure): when a recipe asks for a user folder (`
 access, and the toolkit is GTK or Qt (read from the files, as `pack` does for the Qt plugins), print: `note: the file dialog of the desktop can give this
 app the files the user chooses; consider removing xdg_dirs = [...] unless the app reads the folder on its own (indexer, project folder, file manager)`.
 Install text for the user stays simple: "can open the files you choose" when only the dialog is used; "can read and write the folder X" when a folder is granted.
+
+### 3.9 Files given at the start (Open with, double click, command line)
+
+Approved scope of step 11. The same actor, the same sharing, before the app is started.
+
+Which arguments are files. The outer stub looks at each argument after the app id:
+
+- `file:///...` (percent-encoded, no host part other than empty or `localhost`): a file or folder; the URI form is kept in the replacement.
+- An argument that does not start with `-` and names an existing file or folder (absolute, or relative to the directory the stub was started in; `~` is
+  expanded by the shell, not here): a path; the path form is kept.
+- Everything else is left alone: options (`--new-window`), `http:`, `https:`, `mailto:` and other addresses (they are not files; the opener channel
+  handles addresses), words that match nothing. An option with a path inside (`--config=/home/x/f`) is left alone too: the stub cannot know it is a path.
+  The desktop entry written by `install` passes the file field codes (`%U`) so that a double click or "Open with" arrives as plain arguments; **[to check]**
+  the entry that `install` writes today.
+
+What happens, in one batch before the app starts (one call, so the cost does not grow with the number of files):
+
+| Argument | Sharing | The app receives |
+|---|---|---|
+| existing file | `AddFull` with the fd opened as in section 4; `read`, and `write` when the user can write the file | `/run/user/<uid>/doc/<id>/<name>` (or `file://` of it) |
+| several files | one `AddFull` with all fds (at most 64; more are refused with a message) | one path each, same order |
+| folder | `AddFull` with the export-directory flag, `read` and `write` when writable | `/run/user/<uid>/doc/<id>/<folder name>` |
+| file that does not exist, folder exists | `AddNamedFull` (as SaveFile): the app creates the file on its first write, as `gnome-text-editor new.txt` does | document path of the new name |
+| file that does not exist, folder does not | not shared; the argument is dropped with a message | nothing |
+| symbolic link as the final component | refused as in 4.3; message: `the file you chose is a link: choose the original file` | nothing |
+| file the user cannot read | not shared; message with the system error | nothing |
+
+Failure policy: a failed argument is dropped and reported on standard error and, when a desktop session is running, as a notification (through the
+opener's path, not the app's); the app still starts with the other arguments. An app that is started with no valid file is the same as a start with no
+file. Nothing is shared for an argument the stub rejected.
+
+Same rules as the dialog: `reuse_existing` and `persistent`, no `grant-permissions` or `delete`, the app id `panpak.<id>`, the checks of section 4. Before the app
+runs there is no router and no app to trust: the arguments come from the user who started the program. The risk is only that a wrong argument shares the wrong
+file; that is the user's command, as for any program. A program that starts Panpak apps with arguments it got from a web page or a message is the launcher's
+problem, not this step's.
+
+Second launch while the first copy runs (single instance across copies, 13p): the second stub shares its files in the same way and starts a second copy
+that hands the paths to the first one over the app's bus; both copies have the same id, so the first copy can read the documents.
+
+Cost: none without file arguments. With arguments, one `AddFull` round trip before the exec **[estimate: 1 to 5 ms for the batch]**.
 
 ## 4. Opening the file on the host
 
@@ -212,7 +252,7 @@ The actor receives a path from the portal and does not follow what it did not me
 | The portal's answer is not the portal's | the actor takes the owner's unique name from `GetNameOwner` and checks the sender of the `Response` |
 
 Residual: a dialog the user confirms for a folder gives the app that folder for as long as the grant stays. The note in the install text and
-`panpak grants` are what the user has to see it.
+the Panpak app (step 10b) are what the user has to see it.
 
 ## 6. Tests planned
 
@@ -225,9 +265,11 @@ On the VMs (Bluefin and Fedora KDE, the user powers them on one at a time):
 1. Text Editor: open a file with the dialog; save a new file; save as; save over an existing file (the file on the disk after each); close and start
    again and see the recent file work.
 2. qBittorrent: open a `.torrent`; pick the download folder; start a download; restart the app and see the folder still there.
-3. `panpak remove` with the grants present: the list is empty afterwards and the user's files are intact; with `--purge-data`: the store has no entry for
+3. Files given at the start: `panpak run <app> file`, double click and "Open with" from the file manager (GNOME, KDE) for one file, several files, a
+   folder, a file that does not exist yet (Text Editor), a link and a file in a folder the user cannot read; the second launch while the first copy runs.
+4. `panpak remove` with the grants present: the list is empty afterwards and the user's files are intact; with `--purge-data`: the store has no entry for
    `panpak.<id>`.
-4. Both dialogs are the desktop's own (GNOME and KDE), with the app window as parent.
+5. Both dialogs are the desktop's own (GNOME and KDE), with the app window as parent.
 
 ## 7. Cost
 
@@ -243,5 +285,7 @@ and a large file transfer in a document folder.
 2. `FileChooser` properties are answered by the router (3.7), not passed from the portal.
 3. `grant-permissions` and `delete` are not given (3.1).
 4. A final symbolic link is refused (4.3).
-5. `panpak grants` is a new small command (3.4); it can be left for later if a smaller first version is wanted.
-6. File arguments from the command line or the file manager are outside this step (3.8).
+
+Answers (owner): 1 and 2 yes; 3 yes, with the message `the file you chose is a link: choose the original file` (user-facing text in the language of the
+desktop is the job of step 10b; the English text is the source); 4 `panpak grants` is postponed (the grants will be shown in the Panpak app, step 10b);
+5 file arguments at the start are part of step 11 (3.9). qBittorrent keeps `xdg_dirs = download`; Text Editor has no `xdg_dirs`; `pack` prints a note, not an error.
