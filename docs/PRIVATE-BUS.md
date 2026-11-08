@@ -609,3 +609,15 @@ every later change. The small corrections found on the way are noted, not made: 
    test `tests/dbus_filter.py` rewritten for the new rule, with the fuzz targets; (b) the accessibility proxy; (c) links;
    (d) the media alias; (e) the install text and docs; (f) the full harness on the 25 AppImages and the three source builds, on
    GNOME and KDE.
+
+## 12. Decision: no `Properties` on the portal until step 11
+
+The rule list does not allow `org.freedesktop.DBus.Properties.Get` and `GetAll` on `/org/freedesktop/portal/desktop`. Section 9 showed that with them
+GTK finds the `FileChooser` interface and shows the portal's dialog, and the file it returns is a path of the host that the sandbox cannot read (KL-7).
+Until the file chooser of step 11 is given (with the document portal), the user must get a file dialog that works, so GTK keeps its own dialog,
+which opens and saves in the folders the app was granted.
+
+What does not need `Properties`: OpenURI is answered by the router (it is not forwarded to the portal), the settings (`Settings.Read`, `ReadAll`,
+`SettingChanged`), notifications and inhibit are calls of their own interface. Nothing narrower than the pair `Get` and `GetAll` exists for the
+FileChooser version: the rule cannot name an interface in the arguments, so allowing one is allowing the file chooser. The complete rule set for the
+file chooser comes with step 11.

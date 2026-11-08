@@ -170,7 +170,9 @@ mod tests {
     use super::*;
 
     fn project() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("panpak-init-{}", std::process::id()));
+        // One folder per call: tests run in parallel in one process.
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let d = std::env::temp_dir().join(format!("panpak-init-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("data/icons")).unwrap();
         std::fs::write(d.join("meson.build"), "project('demo', 'c',\n  version: '2.1.0',\n)\ndependency('gtk4')\n").unwrap();

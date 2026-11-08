@@ -155,9 +155,8 @@ pub fn proxy_args(n: &BusNeeds<'_>) -> Vec<String> {
     // The identity: the router registers `panpak.<id>` on each connection, as its first call. The app's own calls to the registry never get here
     // (the router refuses them), so this rule is for the router only.
     call(&mut a, PORTAL, "org.freedesktop.host.portal.Registry.Register", PORTAL_PATH);
-    // GTK and Qt read the version of a portal interface before they use it.
-    call(&mut a, PORTAL, "org.freedesktop.DBus.Properties.Get", PORTAL_PATH);
-    call(&mut a, PORTAL, "org.freedesktop.DBus.Properties.GetAll", PORTAL_PATH);
+    // No Properties.Get/GetAll on the portal: with them GTK finds the FileChooser interface and shows the portal's dialog, which hands the app a path
+    // the sandbox cannot read (step 11). OpenURI does not need them: the router answers it. See docs/PRIVATE-BUS.md.
     if n.perms.is_some_and(|p| p.notifications == Some(true)) {
         call(&mut a, PORTAL, "org.freedesktop.portal.Notification.*", PORTAL_PATH);
         for m in ["Notify", "CloseNotification", "GetCapabilities", "GetServerInformation"] {
@@ -283,11 +282,10 @@ mod tests {
             "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Request.Response@/org/freedesktop/portal/desktop/request/*",
             "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Session.*@/org/freedesktop/portal/desktop/session/*",
             "--call=org.freedesktop.portal.Desktop=org.freedesktop.host.portal.Registry.Register@/org/freedesktop/portal/desktop",
-            "--call=org.freedesktop.portal.Desktop=org.freedesktop.DBus.Properties.Get@/org/freedesktop/portal/desktop",
-            "--call=org.freedesktop.portal.Desktop=org.freedesktop.DBus.Properties.GetAll@/org/freedesktop/portal/desktop",
         ] {
             assert!(a.iter().any(|x| x == want), "missing {want}");
         }
+        assert!(a.iter().all(|x| !x.contains("Properties")), "no Properties call on the portal: {a:?}");
         // The names of the app are on its private bus: the host is never asked to give them.
         assert!(a.iter().all(|x| !x.starts_with("--own=")), "{a:?}");
         assert!(a.iter().all(|x| !x.contains("com.example.app")), "{a:?}");

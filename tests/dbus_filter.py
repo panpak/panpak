@@ -353,9 +353,9 @@ def run_all(lab, sess, work):
         need(bad not in names, f'ListNames shows {bad}: {names}')
     need('org.freedesktop.portal.Desktop' in names and 'org.freedesktop.Notifications' in names, f'ListNames: {names}')
     # 'registry': the app cannot register an identity (the router does, and refuses the app's own call). 'introspect': not in the rules.
-    for k in ('location', 'registry', 'documents', 'introspect', 'secrets', 'systemd', 'talk_tray'):
+    for k in ('location', 'registry', 'documents', 'introspect', 'properties', 'secrets', 'systemd', 'talk_tray'):
         need(rep[k] == 'denied', f'{k}: {rep[k]}')
-    for k in ('portal_notify', 'inhibit', 'old_notify', 'properties'):
+    for k in ('portal_notify', 'inhibit', 'old_notify'):
         need(rep[k].startswith('ok'), f'{k}: {rep[k]}')
     # Names: every name is the app's own on its private bus, whatever it is (even one of a desktop service: it only talks to itself) ...
     for k in ('own_self', 'own_other', 'own_notif', 'own_tray', 'own_declared'):
