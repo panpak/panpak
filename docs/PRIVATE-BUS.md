@@ -617,7 +617,10 @@ GTK finds the `FileChooser` interface and shows the portal's dialog, and the fil
 Until the file chooser of step 11 is given (with the document portal), the user must get a file dialog that works, so GTK keeps its own dialog,
 which opens and saves in the folders the app was granted.
 
-What does not need `Properties`: OpenURI is answered by the router (it is not forwarded to the portal), the settings (`Settings.Read`, `ReadAll`,
+What did need it, found on Bluefin: a click on a link in GTK's About dialog did nothing, because GTK reads the `version` property of
+`org.freedesktop.portal.OpenURI` before it uses the portal, and without it falls back to a launcher that finds nothing in the view. So the router answers
+`Properties.Get(OpenURI, version)` and `GetAll(OpenURI)` itself (version 3) and passes every other `Properties` call to the host, where the rules refuse it.
+That is the narrowest rule: it does not reach the file chooser. What does not need `Properties`: the settings (`Settings.Read`, `ReadAll`,
 `SettingChanged`), notifications and inhibit are calls of their own interface. Nothing narrower than the pair `Get` and `GetAll` exists for the
 FileChooser version: the rule cannot name an interface in the arguments, so allowing one is allowing the file chooser. The complete rule set for the
 file chooser comes with step 11.

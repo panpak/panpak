@@ -93,6 +93,17 @@ impl Target for SystemXdgOpen {
         let mut cmd = Command::new(&self.program);
         // The address starts with http:, https: or mailto:, so it cannot be taken for an option.
         cmd.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
+        // Started from a minimal environment (a user unit, a test) there is no XDG_DATA_DIRS, and the default of the specification does not list the
+        // folders where Flatpak exports its applications: on Bluefin the only browser is a Flatpak, and xdg-open ended with "Not Found" (defect 55).
+        if std::env::var_os("XDG_DATA_DIRS").is_none_or(|v| v.is_empty()) {
+            let home = std::env::var("HOME").unwrap_or_default();
+            let mut dirs = Vec::new();
+            if !home.is_empty() {
+                dirs.push(format!("{home}/.local/share/flatpak/exports/share"));
+            }
+            dirs.extend(["/var/lib/flatpak/exports/share", "/usr/local/share", "/usr/share"].map(String::from));
+            cmd.env("XDG_DATA_DIRS", dirs.join(":"));
+        }
         // SAFETY: the closure calls only setsid and close_range/close (async-signal-safe).
         unsafe {
             cmd.pre_exec(|| {

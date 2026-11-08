@@ -626,6 +626,14 @@ impl<F> Router<F> {
                     self.open_uri(c, &h, &msg, &mut outs);
                     return outs;
                 }
+                // GTK reads the version of the OpenURI interface before it uses the portal (without it, a click on a link does nothing). The router answers
+                // for that one interface; every other interface stays with the host (where the rules refuse it), so the file chooser is not reached.
+                if iface == "org.freedesktop.DBus.Properties" && self.cfg.open_uri && dest.as_deref() == Some(PORTAL) && m.path.as_deref() == Some(PORTAL_PATH) {
+                    if let Some(raw) = self.openuri_properties(c, &m, &msg) {
+                        outs.push(app(c, raw));
+                        return outs;
+                    }
+                }
                 if dest.as_deref() == Some(BUS) {
                     self.bus_call(c, &h, msg, &mut outs);
                     return outs;
@@ -853,6 +861,33 @@ impl<F> Router<F> {
     }
 
     /// The opener answered. `Ok` means the address was handed to the system; `Err(text)` says why not.
+    /// `Properties.Get` and `GetAll` of `org.freedesktop.portal.OpenURI`: `version` is 3. None for anything else.
+    fn openuri_properties(&mut self, c: ClientId, m: &Message, msg: &Msg<F>) -> Option<Vec<u8>> {
+        let member = m.member.as_deref()?;
+        if member != "Get" && member != "GetAll" {
+            return None;
+        }
+        let full = parse_message(&msg.raw, msg.fds.len(), &self.lim).ok()?;
+        let Some(Value::Str(i)) = full.body.first() else { return None };
+        if i != OPENURI_IFACE || (member == "Get" && !matches!(full.body.get(1), Some(Value::Str(p)) if p == "version")) {
+            return None;
+        }
+        let version = Value::Variant(Box::new(Value::U32(3)));
+        let (sig, body) = if member == "Get" {
+            ("v", vec![version])
+        } else {
+            ("a{sv}", vec![Value::Array("{sv}".into(), vec![Value::Entry(Box::new(Value::Str("version".into())), Box::new(version))])])
+        };
+        let cl = self.clients.get_mut(&c)?;
+        let mut r = new_message(RETURN, cl.next_serial());
+        r.reply_serial = Some(m.serial);
+        r.destination = cl.unique.clone();
+        r.sender = Some(cl.portal_owner.clone().unwrap_or_else(|| PORTAL.to_string()));
+        r.signature = sig.into();
+        r.body = body;
+        encode_message(&r).ok()
+    }
+
     pub fn open_done(&mut self, token: u64, result: Result<(), String>) -> Vec<Out<F>> {
         let mut outs = Vec::new();
         let Some((c, serial, handle)) = self.opens.remove(&token) else { return outs };
@@ -1149,6 +1184,24 @@ mod tests {
         let c2 = connect(&mut r2, 5);
         let (_, outs) = request(&mut r2, c2, 2, "org.mpris.MediaPlayer2.vlc", 0);
         assert!(ups(&outs, c2).is_empty());
+    }
+
+    #[test]
+    fn the_version_of_openuri_is_answered_and_nothing_else_of_the_portal() {
+        let mut r = R::new(config());
+        let c = connect(&mut r, 5);
+        for (member, sig, args) in [("Get", "ss", vec![Value::str(OPENURI_IFACE), Value::str("version")]), ("GetAll", "s", vec![Value::str(OPENURI_IFACE)])] {
+            let raw = call(30, PORTAL, PORTAL_PATH, "org.freedesktop.DBus.Properties", member, sig, args);
+            let outs = r.from_app(c, msg(raw));
+            assert!(outs.iter().all(|o| !matches!(o, Out::Up(..))), "{member}: {outs:?}");
+            assert_eq!(apps(&outs, c).len(), 1, "{member}");
+        }
+        // Another interface, or another property: to the host (where it is refused).
+        for args in [vec![Value::str("org.freedesktop.portal.FileChooser"), Value::str("version")], vec![Value::str(OPENURI_IFACE), Value::str("other")]] {
+            let raw = call(31, PORTAL, PORTAL_PATH, "org.freedesktop.DBus.Properties", "Get", "ss", args);
+            let outs = r.from_app(c, msg(raw));
+            assert!(outs.iter().any(|o| matches!(o, Out::Up(..))), "{outs:?}");
+        }
     }
 
     #[test]

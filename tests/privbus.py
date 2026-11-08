@@ -115,6 +115,8 @@ elif mode == "portal":
     res["register"] = call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.host.portal.Registry", "Register", ("org.mozilla.firefox", {}), "(sa{sv})")
 elif mode == "link":
     res["links"] = {}
+    res["props"] = [call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.DBus.Properties", "Get", ("org.freedesktop.portal.OpenURI", "version"), "(ss)")[:60],
+                    call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.DBus.Properties", "Get", ("org.freedesktop.portal.FileChooser", "version"), "(ss)")[:60]]
     answers = {}
     c.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request", "Response", None, None, Gio.DBusSignalFlags.NONE, lambda conn, snd, path, i, sig, params: answers.update({path: params.unpack()[0]}))
     ctx = GLib.MainContext.default()
@@ -345,11 +347,11 @@ def wait_routers(lab, n, seconds):
 
 
 def scenario_lifecycle(lab):
-    gid = 'org.panpaktest.Gapp'
+    gid = 'org.panpaktest.Squat'  # not a single-instance app: both copies stay for the given seconds
     need(wait_routers(lab, 0, 8), f'R1: a router is left from an earlier test: {routers(lab)}')
     # Two copies that start together share one router; it ends after the last one.
-    p1 = lab.start(gid, 'gapp', gid, 9)
-    p2 = lab.start(gid, 'gapp', gid, 9)
+    p1 = lab.start(gid, 'own', 'org.example.Life1', 9)
+    p2 = lab.start(gid, 'own', 'org.example.Life2', 9)
     time.sleep(3)
     need(len(routers(lab)) == 1, f'R1: two copies started together have {len(routers(lab))} routers')
     # A copy that dies badly: the other one goes on, the router stays.
@@ -360,10 +362,10 @@ def scenario_lifecycle(lab):
     r3 = lab.run('org.panpaktest.Portal', 'portal', 1)
     need(r3['inhibit'].startswith('ok'), f'R2: a new copy cannot use the bus after another one was killed: {r3}')
     # The last copy ends: the router ends with it.
-    lab.finish(p2, gid, 'gapp', timeout=60)
+    lab.finish(p2, gid, 'own', timeout=60)
     need(wait_routers(lab, 0, 8), f'R3: the router stayed after the last copy ended: {routers(lab)}')
     # All copies killed: no router left either.
-    p4 = lab.start(gid, 'gapp', gid, 30)
+    p4 = lab.start(gid, 'own', 'org.example.Life3', 30)
     time.sleep(2.5)
     need(len(routers(lab)) == 1, 'R4: no router for a single copy')
     os.killpg(p4.pid, signal.SIGKILL)
@@ -393,6 +395,8 @@ def scenario_identity(lab):
 
 def scenario_links(lab):
     r = lab.run('org.panpaktest.Portal', 'link', '-')
+    need(r['props'][0].startswith('ok') and '3' in r['props'][0], f"L: the version of OpenURI: {r['props'][0]}")
+    need(not r['props'][1].startswith('ok'), f"L: the app read a property of the file chooser: {r['props'][1]}")
     want = {'https://example.org/a': 0, 'mailto:a@b.org': 0, 'https://example.org/fail': 2, 'mailto:a@b.org?attach=/etc/passwd': 2, 'file:///etc/passwd': 2}
     for uri, code in want.items():
         got = r['links'][uri]
