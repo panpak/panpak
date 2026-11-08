@@ -567,18 +567,14 @@ Status of the project: pre-beta.
   session bus (§3, "The filtered session bus") needs the isolated view, a systemd user manager, and
   `xdg-dbus-proxy` 0.1.5 or newer at a fixed path. Without one of them, or with a manifest that lists the
   bus socket in `sockets_allow`, the app has no bus (or the whole bus, the second case), so notifications, tray icons and the
-  appearance portal are missing. Not mediated yet: the file chooser (KL-7), the clipboard, global menus. `doctor` says
+  appearance portal are missing. Since 13p the app also needs the router (a process of the stub itself, no extra package). Not mediated yet: the file chooser (KL-7), the clipboard, global menus. `doctor` says
   which part is missing. See `docs/COMPATIBILITY.md` (D-Bus summary), `PORTAL-DESIGN.md`, `docs/PORTALS-STUDY.md`.
-- **KL-31 An app can talk to a native app that has the same D-Bus name (open until step 13p).** The
-  proxy rules `--own=NAME` and `--talk=NAME` cannot tell the app's own name from the same name owned
-  by a process outside the sandbox. If a Panpak app owns a name (`dbus_own`, and by default its package
-  id) that a natively installed copy of the same program already owns, the Panpak copy can call that
-  native process through the filtered bus: found with Ghostty (single-instance GApplication), where the
-  copy became a remote instance and the native process, outside the sandbox, opened a second window
-  (F22); the opposite order routes the native command into the copy (F23). In practice: do not install
-  a package whose application id is the one of a program you also run natively and that is
-  single-instance, until each app has its own bus. The recipe of Ghostty turns the single instance off
-  for this reason. The design and the options are in `docs/SOURCE-BUILD.md` section 4.
+- **KL-31 An app could talk to a native app that has the same D-Bus name (closed in step 13p).** The proxy rules `--own=NAME` and `--talk=NAME` could not
+  tell the app's own name from the same name owned outside the sandbox (found with Ghostty: F22 and F23). Since 13p the names of an app are on a bus of its
+  own, in a router process shared by the copies of that app, and none is on the host bus: the tests `tests/privbus.py` (A, B, C, F11, F22, F23) and
+  `tests/dbus_filter.py` check that. What remains: the router reads the app's bytes and has no privileges (Landlock with no rule, seccomp allow list,
+  `RLIMIT_NPROC` 0, fuzzed parser); a flaw in it gives the attacker the router, not the user's session. The media alias of `permissions.mpris` is the one name
+  an app has on the host bus. The design is in `docs/PRIVATE-BUS.md`.
 - **KL-6 No keyring.** `org.freedesktop.secrets` is never given to an app, because it would
   expose every password of the user's keyring. In practice: apps that store a password
   there (Bitwarden and Obsidian ask for it in the tests) start without a keyring, and the
@@ -683,10 +679,10 @@ Status of the project: pre-beta.
   that need an input method) does not work in them, except through what the toolkit does without the bus. The portal
   of IBus (`IBUS_USE_PORTAL=1`) is a candidate for later; it was not tried because the test
   setup has no input method engine.
-- **KL-24 No accessibility bus.** `org.a11y.Bus` is not given: it hands out the address of a bus where every
-  application exposes its widgets and where input can be sent, so one app could read and drive the others. In
-  practice: screen readers and other assistive tools do not see the apps in the view. A permission with a bus of its
-  own and a closed list is a possible later step.
+- **KL-24 The accessibility bus is filtered, not given.** The app reaches `org.a11y.Bus` only through a second proxy with the rules of Flatpak's
+  `flatpak_run_add_a11y_dbus_env` minus `NotifyListenersSync` and `NotifyListenersAsync`: it registers and is read by a screen reader, and it cannot read or
+  command other applications (test X: `GetChildren` on the root and `RegisterEvent` are refused). Without `xdg-dbus-proxy` or without the accessibility bus the variable `AT_SPI_BUS_ADDRESS` is removed and the app is not visible to
+  assistive tools.
 - **KL-25 Tray icons are registered with the unique name.** The runtime owns no `StatusNotifierItem-<pid>-<n>` name
   (the pid is the one in the view, always 2, so two apps would compete for it). Chromium (Zulip 5.13.2) and Qt 6
   (qBittorrent 5.3.0), with every such name refused, register the icon with the unique name of their connection, and a

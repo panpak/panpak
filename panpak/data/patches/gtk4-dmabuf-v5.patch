@@ -1,0 +1,20 @@
+From: Panpak
+Subject: wayland: bind zwp_linux_dmabuf_v1 at version 5 at most
+
+A compositor that offers version 6 (KWin 6.8) does not send main_device, and linux_dmabuf_tranche_done
+dereferences the data that main_device creates. Same change as upstream commit e2d0ac2691 (GTK 4.20),
+reduced to the bind. See the report in docs/PRIVATE-BUS.md.
+---
+--- a/gdk/wayland/gdkdisplay-wayland.c
++++ b/gdk/wayland/gdkdisplay-wayland.c
+@@ -366,8 +366,9 @@
+     {
+       struct zwp_linux_dmabuf_feedback_v1 *feedback;
+ 
++      /* Version 6 of the protocol no longer sends main_device, which the handlers below rely on. */
+       display_wayland->linux_dmabuf =
+-        wl_registry_bind (display_wayland->wl_registry, id, &zwp_linux_dmabuf_v1_interface, version);
++        wl_registry_bind (display_wayland->wl_registry, id, &zwp_linux_dmabuf_v1_interface, MIN (version, 5));
+       feedback = zwp_linux_dmabuf_v1_get_default_feedback (display_wayland->linux_dmabuf);
+       display_wayland->dmabuf_formats_info = dmabuf_formats_info_new (GDK_DISPLAY (display_wayland),
+                                                                       "default",

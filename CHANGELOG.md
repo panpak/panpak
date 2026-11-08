@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A private bus for each app (step 13p).** The names of an app (its id and any name it takes) are on a bus of its own, in a router process shared by all copies of
+  that app (started by the first, ended after the last), and never on the host bus. A native program with the same D-Bus name no longer meets the copy (KL-31 closed:
+  Ghostty, F22 and F23). The router registers the identity `panpak.<id>` with the portal itself (the app cannot), answers `OpenURI` through the address-opening channel
+  and tells the app what happened (the exit status of `xdg-open`, with the reason), and gives a media player one alias on the host bus (`permissions.mpris`). It has no
+  privileges (Landlock, seccomp, limits) and is fuzzed. `dbus_own` has no effect any more. The accessibility bus is filtered like Flatpak's, without
+  `NotifyListenersSync` and `NotifyListenersAsync` (KL-24). `Properties` on the portal stays refused until the file chooser (step 11). `tests/privbus.py`, `docs/PRIVATE-BUS.md`.
+- **GTK 4.18 on KDE Plasma 6.8 (defect 54).** The Debian 13 build image rebuilds GTK 4 once per image version with a one-line patch (bind `zwp_linux_dmabuf_v1` at version 5 at most, as
+  GTK 4.20 does); the patch is in `panpak.lock` (`patches`) and in `[provenance]`. A lock without `patches` builds on
+  unpatched packages; `panpak build --update-lock` adds it.
+- **`pack` warns when `[desktop] wm_class` is missing** (the task bar showed a gear or another program's icon, defect 56).
+
 - **Icon caches.** `panpak build` makes `icon-theme.cache` for every icon theme folder of the package (`gtk-update-icon-cache`), and `pack` warns about a theme folder with icons and no cache. Qt looked each icon up file by file without it: qBittorrent from source made 49,000 failed lookups at the start (0.415 s; now 0.21 s).
 - **One time for every entry of a tree in the store** (2000-01-01T00:00:00Z): the store made each entry with the time of its creation, which made a cache file older than its folder, and Qt ignores such a cache (PANPAK-FORMAT section 6).
 - **Downloads choose the address like Happy Eyeballs** (IPv6 and IPv4 in turn, 250 ms apart, 4 s per address) for `build` and `update`; an unreachable IPv6 address no longer stalls a download.

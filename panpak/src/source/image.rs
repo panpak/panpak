@@ -20,6 +20,23 @@ pub struct Known {
     /// What a new lock gets today.
     pub manifest_digest: &'static str,
     pub snapshot: &'static str,
+    /// Patches to source packages of the image, applied by rebuilding those packages once per image (see `patched_debs`).
+    pub patches: &'static [Patch],
+}
+
+/// A patch to a Debian source package.
+#[derive(Debug)]
+pub struct Patch {
+    pub package: &'static str,
+    pub name: &'static str,
+    pub text: &'static str,
+}
+
+impl Patch {
+    /// How the lock names it: the package, the file name and the hash of the text.
+    pub fn entry(&self) -> String {
+        format!("{} {} sha256:{}", self.package, self.name, hex(&Sha256::digest(self.text.as_bytes())))
+    }
 }
 
 pub const KNOWN: &[Known] = &[Known {
@@ -29,6 +46,8 @@ pub const KNOWN: &[Known] = &[Known {
     // debian:trixie-slim for linux/amd64, 2026-11-05.
     manifest_digest: "sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392",
     snapshot: "20261107T000000Z",
+    // GTK 4.18 crashes at the start on a compositor that offers zwp_linux_dmabuf_v1 version 6 (KWin 6.8): defect 54, docs/PRIVATE-BUS.md.
+    patches: &[Patch { package: "gtk4", name: "gtk4-dmabuf-v5.patch", text: include_str!("../../data/patches/gtk4-dmabuf-v5.patch") }],
 }];
 
 /// The tools every build image has (the compilers and the things a source package asks for first).
@@ -181,6 +200,10 @@ pub fn image_key(lock: &Lock, packages: &[String]) -> String {
     p.dedup();
     let mut h = Sha256::new();
     h.update(format!("panpak-image-v1\n{}\n{}\n{}\n{}\n", lock.image.name, lock.image.manifest_digest, lock.image.snapshot, p.join(" ")));
+    // Only an image with patches has this line, so that the key of an image without them does not change.
+    if !lock.image.patches.is_empty() {
+        h.update(format!("patches {}\n", lock.image.patches.join(";")));
+    }
     hex(&h.finalize())[..20].to_string()
 }
 
@@ -206,7 +229,7 @@ pub fn ensure(cache: &Path, lock: &Lock, packages: &[String]) -> Result<PathBuf>
     let etc = root.join("etc/apt");
     let _ = std::fs::remove_dir_all(etc.join("sources.list.d"));
     std::fs::create_dir_all(etc.join("sources.list.d"))?;
-    std::fs::write(etc.join("sources.list"), format!("deb http://snapshot.debian.org/archive/debian/{s}/ {suite} main\ndeb http://snapshot.debian.org/archive/debian-security/{s}/ {suite}-security main\n", s = lock.image.snapshot, suite = k.suite))?;
+    write_sources(&etc, lock, k, false)?;
     std::fs::create_dir_all(etc.join("apt.conf.d"))?;
     std::fs::write(etc.join("apt.conf.d/99panpak"), "APT::Sandbox::User \"root\";\nAcquire::Check-Valid-Until \"false\";\nAPT::Install-Recommends \"false\";\nAcquire::Retries \"3\";\nDPkg::Options { \"--force-unsafe-io\"; };\n")?;
     std::fs::create_dir_all(root.join("opt"))?;
@@ -226,14 +249,146 @@ pub fn ensure(cache: &Path, lock: &Lock, packages: &[String]) -> Result<PathBuf>
     install.net = true;
     install.run_logged(&log, "apt-get install")?;
     // Record what is in the image (name and version), so that a build can say which version of an image dependency it found.
-    let mut dpkg = sandbox::Run::new(&root, &shim, &["dpkg-query", "-W", "-f", "${Package}\\t${Version}\\n"]);
-    dpkg.net = false;
-    let out = dpkg.output()?;
-    ensure!(out.status.success(), "dpkg-query failed in the new image");
-    std::fs::write(dir.join("packages.tsv"), &out.stdout)?;
+    let mut tsv = installed(&root, &shim)?;
+    // Patched packages: the ones the image has are replaced by the rebuilt ones (built once for all images of this lock).
+    if !lock.image.patches.is_empty() {
+        let debs = patched_debs(cache, lock, k)?;
+        let have: Vec<&str> = tsv.lines().filter_map(|l| l.split('\t').next()).collect();
+        let mut names: Vec<String> = Vec::new();
+        for e in std::fs::read_dir(&debs)? {
+            let f = e?.file_name().to_string_lossy().into_owned();
+            if f.ends_with(".deb") && f.split('_').next().is_some_and(|n| have.contains(&n)) {
+                names.push(f);
+            }
+        }
+        names.sort();
+        if !names.is_empty() {
+            super::say(&format!("installing the patched packages: {}", names.join(" ")));
+            let paths: Vec<String> = names.iter().map(|n| format!("/opt/patched/{n}")).collect();
+            let mut argv: Vec<&str> = vec!["apt-get", "install", "-y", "-q", "--allow-downgrades"];
+            argv.extend(paths.iter().map(String::as_str));
+            let mut inst = sandbox::Run::new(&root, &shim, &argv).bind(&debs, "/opt/patched", false);
+            inst.net = true;
+            inst.run_logged(&log, "apt-get install (patched packages)")?;
+            tsv = installed(&root, &shim)?;
+        }
+    }
+    std::fs::write(dir.join("packages.tsv"), &tsv)?;
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::write(dir.join(".complete"), format!("{}\n", lock.image.manifest_digest))?;
     Ok(root)
+}
+
+/// `name<TAB>version` for every installed package of the image.
+fn installed(root: &Path, shim: &Path) -> Result<String> {
+    let mut dpkg = sandbox::Run::new(root, shim, &["dpkg-query", "-W", "-f", "${Package}\\t${Version}\\n"]);
+    dpkg.net = false;
+    let out = dpkg.output()?;
+    ensure!(out.status.success(), "dpkg-query failed in the image");
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The package sources: the main archive and the security archive of the snapshot's day, and with `with_src` the source packages too.
+fn write_sources(etc: &Path, lock: &Lock, k: &Known, with_src: bool) -> Result<()> {
+    let (s, suite) = (&lock.image.snapshot, k.suite);
+    let mut t = format!("deb http://snapshot.debian.org/archive/debian/{s}/ {suite} main\ndeb http://snapshot.debian.org/archive/debian-security/{s}/ {suite}-security main\n");
+    if with_src {
+        t.push_str(&format!("deb-src http://snapshot.debian.org/archive/debian/{s}/ {suite} main\ndeb-src http://snapshot.debian.org/archive/debian-security/{s}/ {suite}-security main\n"));
+    }
+    std::fs::write(etc.join("sources.list"), t)?;
+    Ok(())
+}
+
+/// Seconds since 1970 of a snapshot date `YYYYMMDDTHHMMSSZ` (for SOURCE_DATE_EPOCH).
+pub fn snapshot_epoch(snapshot: &str) -> Result<i64> {
+    let n = |a: usize, b: usize| -> Result<i64> { snapshot.get(a..b).and_then(|t| t.parse::<i64>().ok()).context("snapshot date") };
+    let (y, m, d) = (n(0, 4)?, n(4, 6)?, n(6, 8)?);
+    let (hh, mm, ss) = (n(9, 11)?, n(11, 13)?, n(13, 15)?);
+    // days from civil
+    let y2 = if m <= 2 { y - 1 } else { y };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Ok(days * 86400 + hh * 3600 + mm * 60 + ss)
+}
+
+/// The rebuilt packages of the lock's patches, in a folder of the cache. They are built once for an image version (the base image, the snapshot and the
+/// patches), not once per recipe: the first image that needs them builds them in a separate image with the build dependencies, and every later image
+/// installs the same files. The build is deterministic as far as Debian's packaging is (fixed SOURCE_DATE_EPOCH, fixed changelog date, no tests, no
+/// documentation); the hash of each file is written to `SHA256SUMS` next to them.
+pub fn patched_debs(cache: &Path, lock: &Lock, k: &Known) -> Result<PathBuf> {
+    let mut h = Sha256::new();
+    h.update(format!("panpak-patched-v1\n{}\n{}\n{}\n{}\n", lock.image.name, lock.image.manifest_digest, lock.image.snapshot, lock.image.patches.join(";")));
+    let id = hex(&h.finalize())[..20].to_string();
+    let dir = cache.join("patched").join(&id);
+    let debs = dir.join("debs");
+    if dir.join(".complete").exists() {
+        return Ok(debs);
+    }
+    super::say("building the patched packages of the image once (the build dependencies and the compilation take a while, about half an hour for GTK)");
+    let _ = chmod_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let (root, work, out, scratch) = (dir.join("builder"), dir.join("work"), dir.join("out"), dir.join("scratch"));
+    for d in [&work, &out, &scratch] {
+        std::fs::create_dir_all(d)?;
+    }
+    pull_base(lock, k, &root, &scratch)?;
+    let shim = sandbox::shim_in(cache)?;
+    let etc = root.join("etc/apt");
+    let _ = std::fs::remove_dir_all(etc.join("sources.list.d"));
+    std::fs::create_dir_all(etc.join("sources.list.d"))?;
+    write_sources(&etc, lock, k, true)?;
+    std::fs::create_dir_all(etc.join("apt.conf.d"))?;
+    std::fs::write(etc.join("apt.conf.d/99panpak"), "APT::Sandbox::User \"root\";\nAcquire::Check-Valid-Until \"false\";\nAPT::Install-Recommends \"false\";\nAcquire::Retries \"3\";\nDPkg::Options { \"--force-unsafe-io\"; };\n")?;
+    let log = scratch.join("build.log");
+    let step = |argv: &[&str], what: &str, mounts: bool| -> Result<()> {
+        let mut r = sandbox::Run::new(&root, &shim, argv);
+        r.net = true;
+        if mounts {
+            r = r.bind(&work, "/work", true).bind(&out, "/out", true);
+        }
+        r.cwd = mounts.then(|| "/work".to_string());
+        r.run_logged(&log, what)
+    };
+    step(&["apt-get", "update", "-q"], "apt-get update", false)?;
+    step(&["apt-get", "install", "-y", "-q", "ca-certificates", "build-essential", "dpkg-dev", "fakeroot", "patch"], "apt-get install (build tools)", false)?;
+    let jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).min(8);
+    let epoch = snapshot_epoch(&lock.image.snapshot)?.to_string();
+    for entry in &lock.image.patches {
+        let p = k.patches.iter().find(|p| p.entry() == *entry).with_context(|| format!("panpak.lock names a patch this panpak does not have: {entry}"))?;
+        std::fs::write(work.join(p.name), p.text)?;
+        step(&["apt-get", "build-dep", "-y", "-q", p.package], "apt-get build-dep", false)?;
+        let script = format!(
+            "set -e\ncd /work\napt-get source -q {pkg}\ncd {pkg}-*/\npatch -p1 < /work/{name}\nV=$(dpkg-parsechangelog -S Version)\n\
+             {{ printf '{pkg} (%s+panpak1) {suite}; urgency=medium\\n\\n  * Patch {name}.\\n\\n -- Panpak <noreply@invalid>  %s\\n\\n' \"$V\" \"$(date -u -d @{epoch} -R)\"; cat debian/changelog; }} > /work/changelog.new\n\
+             cp /work/changelog.new debian/changelog\n\
+             SOURCE_DATE_EPOCH={epoch} TZ=UTC LC_ALL=C DEB_BUILD_OPTIONS='nocheck nodoc noautodbgsym parallel={jobs}' dpkg-buildpackage -b -uc -us\n\
+             cp /work/*.deb /out/\n",
+            pkg = p.package, name = p.name, suite = k.suite, epoch = epoch, jobs = jobs
+        );
+        std::fs::write(work.join("build.sh"), script)?;
+        step(&["sh", "/work/build.sh"], &format!("build of {} with {}", p.package, p.name), true)?;
+    }
+    std::fs::create_dir_all(&debs)?;
+    let mut sums = String::new();
+    let mut files: Vec<_> = std::fs::read_dir(&out)?.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|f| f.ends_with(".deb")).collect();
+    files.sort();
+    ensure!(!files.is_empty(), "the patched build produced no package");
+    for f in &files {
+        std::fs::copy(out.join(f), debs.join(f))?;
+        sums.push_str(&format!("{}  {}\n", hex(&Sha256::digest(std::fs::read(debs.join(f))?)), f));
+    }
+    std::fs::write(dir.join("SHA256SUMS"), &sums)?;
+    super::say(&format!("patched packages built:\n{sums}"));
+    // The builder is large and not needed again.
+    let _ = chmod_all(&root);
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&work);
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::write(dir.join(".complete"), format!("{}\n", lock.image.patches.join("\n")))?;
+    Ok(debs)
 }
 
 /// The version of an image package, from the list written when the image was made.
@@ -253,6 +408,36 @@ pub fn chmod_all(dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Builds the patched GTK for real (network, bubblewrap, half an hour): `cargo test -- --ignored builds_the_patched_packages`, with
+    /// XDG_CACHE_HOME pointing at a scratch folder. Prints the hashes of the packages.
+    #[test]
+    #[ignore]
+    fn builds_the_patched_packages() {
+        let cache = super::super::cache_dir().unwrap();
+        let l = Lock::current_for("debian-13").unwrap();
+        let debs = patched_debs(&cache, &l, known("debian-13").unwrap()).unwrap();
+        let sums = std::fs::read_to_string(debs.parent().unwrap().join("SHA256SUMS")).unwrap();
+        eprintln!("{sums}");
+        assert!(sums.contains("libgtk-4-1_"));
+    }
+
+    #[test]
+    fn snapshot_dates_and_patches() {
+        assert_eq!(snapshot_epoch("20261107T000000Z").unwrap(), 1794009600);
+        assert_eq!(snapshot_epoch("19700101T000001Z").unwrap(), 1);
+        assert!(snapshot_epoch("yesterday").is_err());
+        // The patch of the image is in the lock a new build writes, and the key of an image with it differs from one without.
+        let l = Lock::current_for("debian-13").unwrap();
+        assert_eq!(l.image.patches.len(), 1);
+        assert!(l.image.patches[0].starts_with("gtk4 gtk4-dmabuf-v5.patch sha256:"));
+        let mut bare = l.clone();
+        bare.image.patches.clear();
+        assert_ne!(image_key(&l, &[]), image_key(&bare, &[]));
+        let mut bad = l.clone();
+        bad.image.patches = vec!["gtk4 other.patch sha256:0000000000000000000000000000000000000000000000000000000000000000".into()];
+        assert!(bad.check().is_err());
+    }
 
     #[test]
     fn known_images_and_keys() {

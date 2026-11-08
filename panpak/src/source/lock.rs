@@ -21,6 +21,9 @@ pub struct LockImage {
     pub manifest_digest: String,
     /// `YYYYMMDDTHHMMSSZ`: the snapshot of the package archive.
     pub snapshot: String,
+    /// Patches applied to packages of the image (`<package> <file> sha256:<hash>`); they are part of the image, so a lock without them builds on unpatched packages.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patches: Vec<String>,
 }
 
 pub fn path_in(dir: &Path) -> PathBuf {
@@ -33,14 +36,17 @@ impl Lock {
         ensure!(d.len() == 71 && d.starts_with("sha256:") && d[7..].bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "panpak.lock: image.manifest_digest must be sha256:<64 lowercase hex>");
         let s = &self.image.snapshot;
         ensure!(s.len() == 16 && s.as_bytes()[8] == b'T' && s.as_bytes()[15] == b'Z' && s[..8].bytes().all(|b| b.is_ascii_digit()) && s[9..15].bytes().all(|b| b.is_ascii_digit()), "panpak.lock: image.snapshot must look like 20261107T000000Z");
-        image::known(&self.image.name)?;
+        let k = image::known(&self.image.name)?;
+        for e in &self.image.patches {
+            ensure!(k.patches.iter().any(|p| p.entry() == *e), "panpak.lock: the patch {e:?} is not one this panpak has for {}; run `panpak build --update-lock`", k.name);
+        }
         Ok(())
     }
 
     /// The lock that the tool would write today for an image name.
     pub fn current_for(name: &str) -> Result<Lock> {
         let k = image::known(name)?;
-        Ok(Lock { image: LockImage { name: k.name.to_string(), manifest_digest: k.manifest_digest.to_string(), snapshot: k.snapshot.to_string() } })
+        Ok(Lock { image: LockImage { name: k.name.to_string(), manifest_digest: k.manifest_digest.to_string(), snapshot: k.snapshot.to_string(), patches: k.patches.iter().map(|p| p.entry()).collect() } })
     }
 
     pub fn read(dir: &Path) -> Result<Option<Lock>> {

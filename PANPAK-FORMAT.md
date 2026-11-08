@@ -146,7 +146,8 @@ sockets_allow = ["$XDG_RUNTIME_DIR/bus"]  # path Unix sockets (requires ABI V9);
                                # leading $XDG_RUNTIME_DIR and $HOME expanded
 notifications = false           # opt-in, §3.1.5: desktop notifications
 tray = false                   # opt-in, §3.1.5: a tray icon
-dbus_own = []                  # §3.1.5: extra names the app may own on the session bus (at most 8)
+dbus_own = []                  # §3.1.5: names of the app on its private bus (no effect since step 13p; kept for old packages)
+mpris = false                  # §3.1.5: a media player: one alias org.mpris.MediaPlayer2.panpak.<id> on the host bus
 
 [[permissions.home_paths]]     # last resort, §3.1.2: a fixed path in the home folder
 path = ".config/editor"        # relative to the home, no ".."
@@ -354,8 +355,13 @@ are delivered only by the portal.
 permission, and MUST NOT use a wildcard. An app that cannot own such a name registers the icon with the unique name of
 its connection (measured with Chromium and Qt 6), which the host can read and activate through the filter.
 
-**`permissions.dbus_own`** (list of strings, at most 8, each at most once). Names the app may own
-on the session bus besides its own `app.id`. Each is a D-Bus well-known name of at least three
+**`permissions.mpris`** (boolean). The app is a media player: the runtime owns the one name
+`org.mpris.MediaPlayer2.panpak.<id>` (the id with each `.` and `-` written `_`) on the host bus for it, and the media keys and the shell's media
+widget reach the player through it (§9.5). The app never owns a name on the host bus.
+
+**`permissions.dbus_own`** (list of strings, at most 8, each at most once). Before step 13p: names the app may own
+on the session bus besides its own `app.id`. Since 13p every name the app takes is on its private bus (§9.5) and none is on the host bus, so the
+field has no effect; it is still validated, shown at install and counted as before. Each is a D-Bus well-known name of at least three
 elements (`[A-Za-z_][A-Za-z0-9_]*` separated by `.`, at most 255 bytes), with no `*`. A name is refused
 by `pack`, `install`, `update` and the verifier when it is, or is below, one of these: `org.freedesktop`,
 `org.gtk`, `org.gnome.Shell`, `org.gnome.SessionManager`, `org.gnome.Mutter`, `org.gnome.SettingsDaemon`,
@@ -1041,11 +1047,38 @@ when the runtime stops waiting for the app). The runtime also sets `GTK_USE_PORT
 `org.freedesktop.portal.Settings.*` and the signal `SettingChanged`, `org.freedesktop.portal.Inhibit.*` and its `StateChanged`,
 `Request.*` with the signal `Response`, and `Session.*` with the signal `Closed`, each on its own object path
 (`/org/freedesktop/portal/desktop`, `.../request/*`, `.../session/*`). The app may own and talk to its own `app.id`
-(single instance across copies) and to the names of `dbus_own`. `notifications` and `tray` add the rules of §3.1.5.
+(single instance across copies; since step 13p on its private bus). `notifications` and `tray` add the rules of §3.1.5.
 Every other interface, method and name is refused, including `org.freedesktop.DBus.Properties`, `Introspectable`, every other portal interface
 (Location, Background, Screenshot, ScreenCast, RemoteDesktop, Camera, Secret, Account, FileChooser, OpenURI and
 the rest), `org.freedesktop.portal.Documents`, `org.freedesktop.secrets` and `org.freedesktop.systemd1`. The rules MUST
 come from one function that the tests also use (`panpak dbus-rules <package>` prints them).
+
+*The private bus (step 13p) [NORMATIVE for the policy].* The names of the app (its `app.id` and any name it takes) MUST NOT be on the host bus.
+The app has a bus of its own: one router process per app, shared by all copies of that app, started by the first copy and ended after the last one
+(1.5 s after the last copy detached; 10 s to wait for a first copy). Each copy has its own `xdg-dbus-proxy` in front of the host bus, as above, whose
+listening socket is NOT in the view; the app's socket (`$XDG_RUNTIME_DIR/bus`) is the router's, which reads only the headers of the messages and passes each
+one on unchanged to the proxy of the copy, or answers it from the state it keeps:
+
+- `RequestName`, `ReleaseName`, `GetNameOwner`, `NameHasOwner`, `ListQueuedOwners`, `StartServiceByName`, `AddMatch`, `RemoveMatch` for names that are not the host's;
+  delivery of calls, replies and signals between the connections of all copies (a second launch finds the first by the app's id);
+- the identity: after `Hello` the router calls `org.freedesktop.host.portal.Registry.Register("panpak.<id>", {})` on that connection, as the first call, and
+  keeps the reply from the app. A call of the app to that interface MUST be refused (`AccessDenied`). The portal accepts the identity only when
+  `panpak.<id>.desktop` exists (portal 1.21 and later);
+- `org.freedesktop.portal.OpenURI` goes to the address-opening channel (§9.3) and the router builds the method return and the `Response` (code 0 when the
+  address was opened, 2 when it was refused or could not be opened, with the reason on the channel);
+- with `permissions.mpris`, one alias on the host bus, taken with `DO_NOT_QUEUE`; the rules of the proxy allow `--own` for that one name only.
+
+The router MUST NOT have privileges: no new privileges, no dump, `RLIMIT_NPROC` 0, Landlock with no rule, a seccomp allow list of the calls it needs
+(sockets, poll, read, write, memory, exit), limits on messages (16 MiB), names (32 per connection), rules (64) and open requests (8). It does not open or connect
+a path: the stub of each copy passes it the descriptors. The parser of the router is fuzzed (`fuzz_router`).
+
+*Accessibility.* The runtime asks the host for the address of the accessibility bus (`org.a11y.Bus.GetAddress`) and starts a second proxy for it with
+the rules of Flatpak's `flatpak_run_add_a11y_dbus_env`, without `NotifyListenersSync` and `NotifyListenersAsync` (the app registers and is read by the screen reader but
+cannot read or command other applications); `AT_SPI_BUS_ADDRESS` points to it. If it cannot be made the variable is removed.
+
+*Rules, since 13p.* The proxy rules no longer include `--own` or `--talk` for the app's own names. They add `--call` for
+`org.freedesktop.host.portal.Registry.Register` (for the router only). `org.freedesktop.DBus.Properties` on the portal stays refused until the
+file chooser (KL-7, docs/FILE-CHOOSER.md).
 
 *Documents.* When `$XDG_RUNTIME_DIR/doc/by-app` exists the runtime mounts `$XDG_RUNTIME_DIR/doc/by-app/panpak.<id>` in the
 view as `$XDG_RUNTIME_DIR/doc`, from the start, read-write. The Landlock rule for the runtime folder covers

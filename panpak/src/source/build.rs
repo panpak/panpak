@@ -159,7 +159,7 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
     // shown at the end of the build, for the recipe's `build.memory`.
     let prov = panpak_core::Provenance {
         source: Some(src.describe.clone()),
-        image: Some(format!("{} {} snapshot {}", lk.image.name, lk.image.manifest_digest, lk.image.snapshot)),
+        image: Some(format!("{} {} snapshot {}{}", lk.image.name, lk.image.manifest_digest, lk.image.snapshot, lk.image.patches.iter().map(|p| format!(" patch {p}")).collect::<String>())),
         image_deps: (!deps.is_empty()).then_some(deps),
     };
     let toml_text = manifest_toml(&r, &col, &pubkey, &prov)?;
