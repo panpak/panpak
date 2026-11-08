@@ -378,6 +378,32 @@ def scenario_lifecycle(lab):
     print('R   one router for copies started together, it survives a copy killed badly, and ends with the last copy (also when it is killed): ok')
 
 
+def scenario_end_race(lab):
+    """A copy that starts while the router is deciding to end must get a bus. The router is told to wait 1.5 s with its lock held between the
+    decision and the end, so that the new copy surely arrives inside that window (it ends 1.5 s after the last copy left)."""
+    gid = 'org.panpaktest.Squat'
+    need(wait_routers(lab, 0, 8), f'E: a router is left from an earlier test: {routers(lab)}')
+    lab.env['PANPAK_ROUTER_END_PAUSE_MS'] = '1500'
+    try:
+        # `run` would wait for the end of the router too (it holds the output pipe), so the copy is waited for by itself.
+        pa = lab.start(gid, 'own', 'org.example.RaceA', 1)
+        pa.wait(timeout=60)
+        a = json.loads(lab.report_path(gid, 'own').read_text())
+        need(a['code'] == 1, f'E: the first copy got no bus: {a}')
+        time.sleep(1.7)
+        need(len(routers(lab)) == 1, f'E: the router was not in its window to end: {routers(lab)}')
+        lab.report_path(gid, 'own').unlink()
+        pb = lab.start(gid, 'own', 'org.example.RaceB', 1)
+        pb.wait(timeout=60)
+        need(lab.report_path(gid, 'own').exists(), 'E: the copy that came while the router ended wrote no report')
+        b = json.loads(lab.report_path(gid, 'own').read_text())
+        need(b.get('unique') and b['code'] == 1, f'E: the copy that came while the router ended has no bus: {b}')
+    finally:
+        del lab.env['PANPAK_ROUTER_END_PAUSE_MS']
+    need(wait_routers(lab, 0, 10), f'E: the router stayed after the last copy: {routers(lab)}')
+    print('E   a copy that starts while the router decides to end gets a bus (a new router, or the old one stays)')
+
+
 def scenario_identity(lab):
     pid = 'org.panpaktest.Portal'
     lab.install(pid, '[permissions]\nnotifications = true\n')
@@ -465,6 +491,7 @@ def main():
         scenario_f22_f23_f11(lab)
         scenario_single_instance(lab)
         scenario_lifecycle(lab)
+        scenario_end_race(lab)
         scenario_identity(lab)
         scenario_links(lab)
         scenario_mpris(lab)

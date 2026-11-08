@@ -28,6 +28,8 @@ use std::time::{Duration, Instant};
 pub const FLAG: &str = "--panpak-busrouter";
 /// The control listener, as the router is started with it.
 const CONTROL_FD: RawFd = 3;
+/// The lock file of the app's folder, opened again for the router (its own open file description): the router takes the lock to end, see `Process::may_end`.
+const LOCK_FD: RawFd = 4;
 
 const MAX_FILES: u64 = 512;
 const MAX_ADDRESS_SPACE: u64 = 1 << 30;
@@ -43,6 +45,7 @@ const MAX_CONNS: usize = 128;
 #[cfg(target_arch = "x86_64")]
 const ALLOWED: &[i64] = &[
     libc::SYS_accept4,
+    libc::SYS_flock,
     libc::SYS_poll,
     libc::SYS_read,
     libc::SYS_write,
@@ -256,6 +259,7 @@ struct Process {
     /// The user id, read before the system calls were limited.
     uid: u32,
     t0: Instant,
+    end_pause_ms: i32,
 }
 
 impl Process {
@@ -556,6 +560,33 @@ impl Process {
         self.log(&format!("copy {key} detached; {} left", self.controls.len()));
     }
 
+    /// Decide to end without losing a copy that arrives at that moment. A copy takes the lock of the app's folder, connects to the control socket and only
+    /// then lets go of the lock. So: take the lock without waiting (if a copy holds it, it is connecting now: do not end); with the lock held, look once
+    /// more at the control socket (a connection that is waiting is a copy that has just left the lock: do not end). Otherwise end while holding the lock:
+    /// the listener closes with the process, and a copy that waits for the lock finds nobody listening and starts a new router.
+    fn may_end(&self, control_listener: &UnixListener) -> bool {
+        // SAFETY: flock on the descriptor the parent passed; nothing else uses it.
+        if unsafe { libc::flock(LOCK_FD, libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            self.log("a copy is connecting: the router stays");
+            return false;
+        }
+        let mut pfd = libc::pollfd { fd: control_listener.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: poll on one valid pollfd.
+        let waiting = unsafe { libc::poll(&mut pfd, 1, 0) } > 0 && pfd.revents & libc::POLLIN != 0;
+        if waiting {
+            self.log("a copy has just connected: the router stays");
+            // SAFETY: as above.
+            unsafe { libc::flock(LOCK_FD, libc::LOCK_UN) };
+            return false;
+        }
+        if self.end_pause_ms > 0 {
+            // For tests: a long window between the decision and the end. Poll on nothing is a sleep the filter allows.
+            // SAFETY: poll with no descriptors.
+            unsafe { libc::poll(std::ptr::null_mut(), 0, self.end_pause_ms) };
+        }
+        true
+    }
+
     fn run(&mut self, control_listener: UnixListener) -> Result<()> {
         let mut last_copy: Option<Instant> = Some(Instant::now());
         let mut ever = false;
@@ -688,7 +719,7 @@ impl Process {
             // The end: nobody came, or the last copy is gone and nobody replaced it.
             if self.controls.is_empty() {
                 let since = *last_copy.get_or_insert_with(Instant::now);
-                if since.elapsed() > if ever { LAST_WAIT } else { FIRST_WAIT } {
+                if since.elapsed() > if ever { LAST_WAIT } else { FIRST_WAIT } && self.may_end(&control_listener) {
                     self.log("no copy is left: the router ends");
                     return Ok(());
                 }
@@ -697,12 +728,13 @@ impl Process {
     }
 }
 
-/// Entry of the router process. Arguments after the flag: `<portal id or -> <alias or -> <open_uri 0|1> <debug 0|1>`.
+/// Entry of the router process. Arguments after the flag: `<portal id or -> <alias or -> <open_uri 0|1> <debug 0|1> <end pause ms>`.
 pub fn main_router(args: &[String]) -> Result<()> {
-    ensure!(args.len() == 4, "usage: {FLAG} <portal-id|-> <mpris-alias|-> <open-uri 0|1> <debug 0|1>");
+    ensure!(args.len() == 5, "usage: {FLAG} <portal-id|-> <mpris-alias|-> <open-uri 0|1> <debug 0|1> <end-pause-ms>");
     let opt = |s: &String| (s != "-").then(|| s.clone());
     let cfg = RouterConfig { portal_id: opt(&args[0]), mpris_alias: opt(&args[1]), open_uri: args[2] == "1" };
     let debug = args[3] == "1";
+    let end_pause_ms: i32 = args[4].parse::<i32>().unwrap_or(0).clamp(0, 5000);
     // SAFETY: the parent started this process with the control listener on this descriptor and nothing else above 2.
     let ctl = unsafe { UnixListener::from_raw_fd(CONTROL_FD) };
     // Before the system calls are limited: the accept loop must not block on the control listener.
@@ -719,6 +751,7 @@ pub fn main_router(args: &[String]) -> Result<()> {
         debug,
         uid,
         t0: Instant::now(),
+        end_pause_ms,
     };
     p.run(ctl)
 }
@@ -768,6 +801,8 @@ pub struct Spec {
     pub mpris_alias: Option<String>,
     pub open_uri: bool,
     pub debug: bool,
+    /// For tests: how long the router waits, holding the lock, before it ends (from PANPAK_ROUTER_END_PAUSE_MS).
+    pub end_pause_ms: u64,
 }
 
 /// The attachment of one copy to the router of the app. Dropping it detaches the copy (the router closes its listener and its connections).
@@ -803,6 +838,9 @@ fn connect_or_start(spec: &Spec) -> Result<UnixStream> {
     let _ = std::fs::remove_file(&sock);
     let listener = UnixListener::bind(&sock).with_context(|| format!("cannot make {}", sock.display()))?;
     let fd = listener.as_raw_fd();
+    // The router's own open file description of the lock file (a lock is per description: sharing ours would let the router unlock the copies' lock).
+    let router_lock = std::fs::OpenOptions::new().write(true).open(spec.app_dir.join("router.lock")).context("router lock for the router")?;
+    let lfd = router_lock.as_raw_fd();
     let exe = std::env::current_exe().context("own path")?;
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg(FLAG)
@@ -810,6 +848,7 @@ fn connect_or_start(spec: &Spec) -> Result<UnixStream> {
         .arg(spec.mpris_alias.as_deref().unwrap_or("-"))
         .arg(if spec.open_uri { "1" } else { "0" })
         .arg(if spec.debug { "1" } else { "0" })
+        .arg(spec.end_pause_ms.to_string())
         .env_clear()
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null());
@@ -817,11 +856,14 @@ fn connect_or_start(spec: &Spec) -> Result<UnixStream> {
     unsafe {
         use std::os::unix::process::CommandExt;
         cmd.pre_exec(move || {
-            if libc::dup2(fd, CONTROL_FD) < 0 {
+            // Either descriptor may already be 3 or 4: move both out of the way first.
+            let a = libc::fcntl(fd, libc::F_DUPFD, 10);
+            let b = libc::fcntl(lfd, libc::F_DUPFD, 10);
+            if a < 0 || b < 0 || libc::dup2(a, CONTROL_FD) < 0 || libc::dup2(b, LOCK_FD) < 0 {
                 return Err(std::io::Error::last_os_error());
             }
             libc::setsid();
-            libc::syscall(libc::SYS_close_range, 4u32, u32::MAX, 0u32);
+            libc::syscall(libc::SYS_close_range, 5u32, u32::MAX, 0u32);
             Ok(())
         });
     }
@@ -844,6 +886,7 @@ fn connect_or_start(spec: &Spec) -> Result<UnixStream> {
         let _ = child.wait();
     });
     drop(listener);
+    drop(router_lock);
     Ok(stream)
 }
 

@@ -81,6 +81,36 @@ fn close_from_3() {
     }
 }
 
+/// The `XDG_DATA_DIRS` to give `xdg-open` when the stub's own is empty or missing, or None to leave the environment as it is. In order: the one of the
+/// stub (the launch environment, which is the user's session when started from the menu); the one of the user's systemd manager (a start from a unit or a
+/// terminal without it); the defaults of the specification with the folders where Flatpak and Snap export their applications. On Bluefin the only browser
+/// is a Flatpak, and without those folders `xdg-open` ended with "Not Found" (defect 55).
+fn data_dirs_for_open(own: Option<String>, home: Option<String>, manager: impl FnOnce() -> Option<String>) -> Option<String> {
+    if own.as_deref().is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    if let Some(v) = manager().filter(|v| !v.is_empty()) {
+        return Some(v);
+    }
+    let mut dirs = Vec::new();
+    if let Some(h) = home.filter(|h| !h.is_empty()) {
+        dirs.push(format!("{h}/.local/share/flatpak/exports/share"));
+        dirs.push(format!("{h}/.local/share"));
+    }
+    dirs.extend(["/var/lib/flatpak/exports/share", "/var/lib/snapd/desktop", "/usr/local/share", "/usr/share"].map(String::from));
+    Some(dirs.join(":"))
+}
+
+/// `XDG_DATA_DIRS` from `systemctl --user show-environment`, if the manager is there and sets it.
+fn user_manager_data_dirs() -> Option<String> {
+    let exe = ["/usr/bin/systemctl", "/bin/systemctl", "/run/current-system/sw/bin/systemctl"].into_iter().find(|p| Path::new(p).exists())?;
+    let out = Command::new(exe).args(["--user", "show-environment"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).lines().find_map(|l| l.strip_prefix("XDG_DATA_DIRS=")).map(|v| v.trim_matches('\'').to_string())
+}
+
 impl Target for SystemXdgOpen {
     /// Start `xdg-open` and say what happened: its exit status if it ends within `OPEN_WAIT` (it normally hands the address to the browser and
     /// ends), "started" if it is still running then (a browser that was started by it is not waited for). An app and a user are not told "done" for
@@ -93,16 +123,8 @@ impl Target for SystemXdgOpen {
         let mut cmd = Command::new(&self.program);
         // The address starts with http:, https: or mailto:, so it cannot be taken for an option.
         cmd.arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
-        // Started from a minimal environment (a user unit, a test) there is no XDG_DATA_DIRS, and the default of the specification does not list the
-        // folders where Flatpak exports its applications: on Bluefin the only browser is a Flatpak, and xdg-open ended with "Not Found" (defect 55).
-        if std::env::var_os("XDG_DATA_DIRS").is_none_or(|v| v.is_empty()) {
-            let home = std::env::var("HOME").unwrap_or_default();
-            let mut dirs = Vec::new();
-            if !home.is_empty() {
-                dirs.push(format!("{home}/.local/share/flatpak/exports/share"));
-            }
-            dirs.extend(["/var/lib/flatpak/exports/share", "/usr/local/share", "/usr/share"].map(String::from));
-            cmd.env("XDG_DATA_DIRS", dirs.join(":"));
+        if let Some(v) = data_dirs_for_open(std::env::var("XDG_DATA_DIRS").ok(), std::env::var("HOME").ok(), user_manager_data_dirs) {
+            cmd.env("XDG_DATA_DIRS", v);
         }
         // SAFETY: the closure calls only setsid and close_range/close (async-signal-safe).
         unsafe {
@@ -606,6 +628,21 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&prog, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         prog
+    }
+
+    #[test]
+    fn data_dirs_for_xdg_open_come_from_the_launch_then_the_manager_then_the_defaults() {
+        let home = Some("/h".to_string());
+        // The launch environment has it: nothing is changed.
+        assert_eq!(data_dirs_for_open(Some("/a:/b".into()), home.clone(), || panic!("not asked")), None);
+        // Empty or missing: the user's manager, when it knows.
+        assert_eq!(data_dirs_for_open(None, home.clone(), || Some("/m1:/m2".into())), Some("/m1:/m2".into()));
+        assert_eq!(data_dirs_for_open(Some(String::new()), home.clone(), || Some("/m1".into())), Some("/m1".into()));
+        // Nothing else: the defaults with Flatpak and Snap.
+        let d = data_dirs_for_open(None, home, || None).unwrap();
+        assert!(d.starts_with("/h/.local/share/flatpak/exports/share:/h/.local/share:/var/lib/flatpak/exports/share:/var/lib/snapd/desktop:"), "{d}");
+        assert!(d.ends_with(":/usr/local/share:/usr/share"));
+        assert!(!data_dirs_for_open(None, None, || None).unwrap().starts_with(':'));
     }
 
     #[test]

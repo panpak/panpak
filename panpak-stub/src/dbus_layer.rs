@@ -248,7 +248,7 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
     }
     let args = dbus::proxy_args(&BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref() });
     let rc = dbus::router_config(&man.app.id, man.permissions.as_ref());
-    let spec = crate::busrouter::Spec { app_dir: app_dir.clone(), portal_id: rc.portal_id, mpris_alias: rc.mpris_alias, open_uri: rc.open_uri, debug: panpak_core::debug_enabled() };
+    let spec = crate::busrouter::Spec { app_dir: app_dir.clone(), portal_id: rc.portal_id, mpris_alias: rc.mpris_alias, open_uri: rc.open_uri, debug: panpak_core::debug_enabled(), end_pause_ms: std::env::var("PANPAK_ROUTER_END_PAUSE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0) };
     crate::stage("dbus: checks done");
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
     let (scope_tx, scope_rx) = std::sync::mpsc::channel::<bool>();
