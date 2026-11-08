@@ -114,6 +114,10 @@ elif mode == "portal":
     res["path_matches"] = path in r
     res["register"] = call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.host.portal.Registry", "Register", ("org.mozilla.firefox", {}), "(sa{sv})")
 elif mode == "link":
+    # As GTK does it: a proxy with its properties, which resolves the portal's name and then talks to the owner's unique name.
+    px = Gio.DBusProxy.new_sync(c, Gio.DBusProxyFlags.NONE, None, "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.OpenURI", None)
+    v = px.get_cached_property("version")
+    res["proxy_version"] = v.unpack() if v is not None else None
     res["links"] = {}
     res["props"] = [call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.DBus.Properties", "Get", ("org.freedesktop.portal.OpenURI", "version"), "(ss)")[:60],
                     call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.DBus.Properties", "Get", ("org.freedesktop.portal.FileChooser", "version"), "(ss)")[:60]]
@@ -396,6 +400,7 @@ def scenario_identity(lab):
 def scenario_links(lab):
     r = lab.run('org.panpaktest.Portal', 'link', '-')
     need(r['props'][0].startswith('ok') and '3' in r['props'][0], f"L: the version of OpenURI: {r['props'][0]}")
+    need(r['proxy_version'] == 3, f"L: a proxy with properties (as GTK) read the version {r['proxy_version']}")
     need(not r['props'][1].startswith('ok'), f"L: the app read a property of the file chooser: {r['props'][1]}")
     want = {'https://example.org/a': 0, 'mailto:a@b.org': 0, 'https://example.org/fail': 2, 'mailto:a@b.org?attach=/etc/passwd': 2, 'file:///etc/passwd': 2}
     for uri, code in want.items():

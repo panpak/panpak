@@ -628,7 +628,7 @@ impl<F> Router<F> {
                 }
                 // GTK reads the version of the OpenURI interface before it uses the portal (without it, a click on a link does nothing). The router answers
                 // for that one interface; every other interface stays with the host (where the rules refuse it), so the file chooser is not reached.
-                if iface == "org.freedesktop.DBus.Properties" && self.cfg.open_uri && dest.as_deref() == Some(PORTAL) && m.path.as_deref() == Some(PORTAL_PATH) {
+                if iface == "org.freedesktop.DBus.Properties" && self.cfg.open_uri && self.is_portal(c, dest.as_deref()) && m.path.as_deref() == Some(PORTAL_PATH) {
                     if let Some(raw) = self.openuri_properties(c, &m, &msg) {
                         outs.push(app(c, raw));
                         return outs;
@@ -861,6 +861,15 @@ impl<F> Router<F> {
     }
 
     /// The opener answered. `Ok` means the address was handed to the system; `Err(text)` says why not.
+    /// The destination is the portal: its well-known name, or the unique name of its owner (a GDBusProxy resolves the name once and then uses the owner).
+    fn is_portal(&self, c: ClientId, dest: Option<&str>) -> bool {
+        match dest {
+            Some(PORTAL) => true,
+            Some(d) => self.clients.get(&c).and_then(|cl| cl.portal_owner.as_deref()) == Some(d),
+            None => false,
+        }
+    }
+
     /// `Properties.Get` and `GetAll` of `org.freedesktop.portal.OpenURI`: `version` is 3. None for anything else.
     fn openuri_properties(&mut self, c: ClientId, m: &Message, msg: &Msg<F>) -> Option<Vec<u8>> {
         let member = m.member.as_deref()?;
