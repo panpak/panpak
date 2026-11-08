@@ -230,7 +230,10 @@ pub struct Permissions {
     pub notifications: Option<bool>,
     /// A tray icon (StatusNotifierItem).
     pub tray: Option<bool>,
-    /// Extra names the app may own on the session bus, besides its own id (at most 8, no wildcards).
+    /// A media player the shell and the media keys can see (MPRIS): the app's `org.mpris.MediaPlayer2.*` name gets an alias with its id on the session bus.
+    pub mpris: Option<bool>,
+    /// Extra names for the app on its private bus (at most 8, no wildcards). Since step 13p every name is the app's own on its private bus, so the list has no effect;
+    /// it is still checked, so that an old package stays valid.
     pub dbus_own: Option<Vec<String>>,
 }
 /// A user folder the app asks for (PANPAK-FORMAT.md §3.1.4).
@@ -439,7 +442,7 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
     const LAUNCH: &[&str] = &["args", "env"];
     const APP: &[&str] = &["id", "name", "version", "entry"];
     const ABI: &[&str] = &["glibc_min", "needs", "prefer_host", "allow_missing"];
-    const PERM: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal", "notifications", "tray", "dbus_own"];
+    const PERM: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal", "notifications", "tray", "mpris", "dbus_own"];
     const HOME_PATH: &[&str] = &["path", "access"];
     const PORTAL: &[&str] = &["files", "camera"];
     const RUNTIME: &[&str] = &["min_runtime", "stub_hash"];

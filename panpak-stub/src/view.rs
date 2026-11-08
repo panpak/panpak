@@ -57,6 +57,18 @@ pub struct DbusWait {
     /// What the app gets instead in that case: no bus.
     pub on_failure_set: Vec<(String, String)>,
     pub on_failure_remove: Vec<String>,
+    /// The accessibility bus (a second proxy): the app is pointed at it by a variable that is taken away when the proxy cannot be made.
+    #[serde(default)]
+    pub a11y: Option<A11yWait>,
+}
+
+/// The socket of the filtered accessibility bus, as the view shows it, and the file that says it could not be made.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub struct A11yWait {
+    pub socket: PathBuf,
+    pub failed: PathBuf,
+    /// `AT_SPI_BUS_ADDRESS`
+    pub env: String,
 }
 
 /// How long the inner stub waits for the proxy at most. The scope and the proxy take 20 to 30 ms.
@@ -83,9 +95,32 @@ impl DbusWait {
             job_env_set.extend(self.on_failure_set.iter().cloned());
             job_env_remove.extend(self.on_failure_remove.iter().cloned());
         }
+        // The accessibility bus has its own proxy, which starts at the same time: wait a little for it, then do without (the app has no screen reader
+        // support, as before) rather than hold the start.
+        if ok {
+            if let Some(a) = &self.a11y {
+                let end = std::time::Instant::now() + A11Y_WAIT;
+                let up = loop {
+                    if std::os::unix::net::UnixStream::connect(&a.socket).is_ok() {
+                        break true;
+                    }
+                    if a.failed.exists() || std::time::Instant::now() >= end {
+                        break false;
+                    }
+                    std::thread::sleep(std::time::Duration::from_micros(500));
+                };
+                if !up {
+                    job_env_set.retain(|(k, _)| *k != a.env);
+                    job_env_remove.push(a.env.clone());
+                }
+            }
+        }
         ok
     }
 }
+
+/// How long the inner stub waits for the accessibility proxy at most.
+const A11Y_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 pub const JOB_VERSION: u32 = 1;
 
@@ -764,6 +799,7 @@ mod tests {
             link: dir.join("link"),
             on_failure_set: vec![("DBUS_SESSION_BUS_ADDRESS".into(), "disabled:".into())],
             on_failure_remove: vec!["GTK_USE_PORTAL".into()],
+            a11y: None,
         };
         // The socket comes up a little later: the wait ends as soon as it answers, the environment is untouched.
         let sock = dir.join("bus");

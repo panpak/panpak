@@ -13,6 +13,7 @@ use std::{
 };
 
 #[cfg(target_arch = "x86_64")]
+mod busrouter;
 mod dbus_layer;
 mod opener;
 mod probe;
@@ -1120,6 +1121,10 @@ fn real_main() -> Result<()> {
     // The receiver of the open channel (see receiver.rs): started by the outer stub with its two sockets.
     if args.get(1).map(|s| s.as_str()) == Some(receiver::FLAG) {
         return receiver::main_receiver();
+    }
+    // The router of the private bus of an app (see busrouter.rs): started by the stub of the first copy with the control listener.
+    if args.get(1).map(|s| s.as_str()) == Some(busrouter::FLAG) {
+        return busrouter::main_router(&args[2..]);
     }
     // Inside the isolated view: the outer stub already verified the package (see view.rs).
     if args.get(1).map(|s| s.as_str()) == Some("--panpak-inner") {

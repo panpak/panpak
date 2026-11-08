@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The filtered session bus of an app in the view (PANPAK-FORMAT.md §9.5).
+//! The private session bus of an app in the view (PANPAK-FORMAT.md §9.5, docs/PRIVATE-BUS.md).
 //!
 //! Outside the sandbox, before bubblewrap: put the stub in its own systemd scope (so that the
 //! portal knows the app as `panpak.<id>`), start one `xdg-dbus-proxy` for this start in the same
-//! scope, and give the view the proxy's socket as the session bus plus the app's folder of the
+//! scope (the filter towards the host bus, on a socket the app cannot see), attach to the router of the
+//! app (`busrouter.rs`, started by the first copy), which owns the app's own names and sits between
+//! the app and the proxy, and start a second proxy for the accessibility bus. The view gets the
+//! router's socket as the session bus, the accessibility socket, and the app's folder of the
 //! document portal. When any step cannot be done the app gets no bus, as before, and the reason is
 //! printed once.
 
@@ -12,6 +15,7 @@ use anyhow::{bail, ensure, Context, Result};
 use panpak_core::dbus::{self, BusNeeds, Connection};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -62,13 +66,28 @@ struct Guard {
     dir: PathBuf,
     /// Read end of the pipe the proxy writes to: closing it (end of this process) stops the proxy.
     _sync: OwnedFd,
+    /// The attachment to the router of the app and the proxy of the accessibility bus, ended before the main proxy.
+    attachment: Option<crate::busrouter::Attachment>,
+    a11y: Option<Box<Guard>>,
+    /// More folders to remove (the one the app sees).
+    also: Vec<PathBuf>,
+    /// Remove `dir` when this guard goes (not for the accessibility proxy, whose socket is in the folder the app sees).
+    remove_dir: bool,
 }
 
 impl Drop for Guard {
     fn drop(&mut self) {
+        // The router first (it lets go of the copy's listener and connections), then the proxies, then the folders.
+        self.attachment.take();
+        self.a11y.take();
         let _ = self.child.kill();
         let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.dir);
+        if self.remove_dir {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+        for d in &self.also {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 }
 
@@ -149,11 +168,11 @@ fn wait_ready(fd: RawFd, ms: i32) -> bool {
 }
 
 /// Start the proxy; it is not waited for (see `await_proxy`).
-fn spawn_proxy(proxy: &Path, bus: &Path, dir: &Path, args: &[String]) -> Result<Guard> {
+fn spawn_proxy(proxy: &Path, address: &str, dir: &Path, socket: &str, args: &[String]) -> Result<Guard> {
     let (r, w) = pipe()?;
     let wfd = w.as_raw_fd();
     let mut cmd = Command::new(proxy);
-    cmd.arg(format!("--fd={wfd}")).arg(format!("unix:path={}", bus.display())).arg(dir.join("bus")).args(args);
+    cmd.arg(format!("--fd={wfd}")).arg(address).arg(dir.join(socket)).args(args);
     cmd.env_clear().stdin(Stdio::null());
     // For diagnosis: `PANPAK_DBUS_LOG=/absolute/file` makes the proxy log what it forwards and what it filters.
     if let Some(log) = std::env::var_os("PANPAK_DBUS_LOG").map(PathBuf::from).filter(|p| p.is_absolute()) {
@@ -175,17 +194,27 @@ fn spawn_proxy(proxy: &Path, bus: &Path, dir: &Path, args: &[String]) -> Result<
     }
     let child = cmd.spawn().with_context(|| format!("cannot run {}", proxy.display()))?;
     drop(w);
-    Ok(Guard { child, dir: dir.to_path_buf(), _sync: r })
+    Ok(Guard { child, dir: dir.to_path_buf(), _sync: r, attachment: None, a11y: None, also: Vec::new(), remove_dir: true })
 }
 
 /// Wait until the proxy says it listens.
-fn await_proxy(g: &mut Guard) -> Result<()> {
+fn await_proxy(g: &mut Guard, socket: &str) -> Result<()> {
     if !wait_ready(g._sync.as_raw_fd(), 5000) {
         let st = g.child.try_wait().ok().flatten();
         bail!("the proxy did not become ready ({})", st.map_or("still running".to_string(), |s| format!("exited with {s}")));
     }
-    ensure!(g.dir.join("bus").exists(), "the proxy made no socket");
+    ensure!(g.dir.join(socket).exists(), "the proxy made no socket");
     Ok(())
+}
+
+/// The address of the accessibility bus, from the session bus. `None` when there is no such bus (no assistive technology is installed).
+fn a11y_address(bus: &Path) -> Option<String> {
+    let mut c = Connection::open(bus, Duration::from_secs(2)).ok()?;
+    let r = c.call("org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus", "GetAddress", Vec::new(), Vec::new()).ok()?;
+    match r.body.first() {
+        Some(dbus::Value::Str(a)) if a.starts_with("unix:") && a.len() < 512 && !a.contains(['\n', '\0']) => Some(a.clone()),
+        _ => None,
+    }
 }
 
 /// Build the layer. The checks and the folder are done here; the systemd scope and the proxy are made on a thread,
@@ -210,13 +239,20 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
         return Err(Quiet("no user bus: this system has no systemd user manager".into()).into());
     }
     let n = token()?;
-    let dir = req.runtime_dir.join("panpak").join(&man.app.id).join(format!("dbus-{n}"));
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let app_dir = req.runtime_dir.join("panpak").join(&man.app.id);
+    // `dir` is what the app sees (its sockets only); `proxy_dir` is the proxy's socket, which the app must not see.
+    let dir = app_dir.join(format!("dbus-{n}"));
+    let proxy_dir = app_dir.join(format!("proxy-{n}"));
+    for d in [&dir, &proxy_dir] {
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(d).with_context(|| format!("cannot create {}", d.display()))?;
+    }
     let args = dbus::proxy_args(&BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref() });
+    let rc = dbus::router_config(&man.app.id, man.permissions.as_ref());
+    let spec = crate::busrouter::Spec { app_dir: app_dir.clone(), portal_id: rc.portal_id, mpris_alias: rc.mpris_alias, open_uri: rc.open_uri, debug: panpak_core::debug_enabled() };
     crate::stage("dbus: checks done");
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
     let (scope_tx, scope_rx) = std::sync::mpsc::channel::<bool>();
-    let (runtime_dir, app_id, work_dir) = (req.runtime_dir.to_path_buf(), man.app.id.clone(), dir.clone());
+    let (runtime_dir, app_id, work_dir, pdir) = (req.runtime_dir.to_path_buf(), man.app.id.clone(), dir.clone(), proxy_dir.clone());
     // When the desktop started the app in a scope that already gives it its identity, the stub stays in that scope: no
     // scope is made, the proxy and the app are in it.
     let own_scope = current_unit().is_some_and(|u| unit_gives_id(&u, &app_id));
@@ -225,13 +261,43 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
         let _ = scope_tx.send(scope.is_ok());
         crate::stage(if own_scope { "dbus: already in the scope of the app" } else { "dbus: scope made" });
         let made = scope.and_then(|()| {
-            let mut guard = spawn_proxy(&proxy, &bus, &work_dir, &args)?;
-            await_proxy(&mut guard)?;
-            crate::stage("dbus: proxy ready");
+            // Both proxies start at once (neither is waited for yet), then the router: its start overlaps with theirs.
+            let mut guard = spawn_proxy(&proxy, &format!("unix:path={}", bus.display()), &pdir, "real", &args)?;
+            guard.also.push(work_dir.clone());
+            let mut a11y_ok = false;
+            if let Some(addr) = a11y_address(&bus) {
+                match spawn_proxy(&proxy, &addr, &work_dir, "a11y", &dbus::a11y_proxy_args()) {
+                    Ok(mut g2) => {
+                        g2.remove_dir = false;
+                        guard.a11y = Some(Box::new(g2));
+                        a11y_ok = true;
+                    }
+                    Err(e) => eprintln!("panpak: WARNING: no accessibility bus for the app: {}", panpak_core::err_text(&e)),
+                }
+            }
+            if !a11y_ok {
+                let _ = std::fs::write(work_dir.join(A11Y_FAILED), "");
+            }
+            // The socket the app will connect to: made under another name, and put in place when everything behind it is ready.
+            let pending = work_dir.join(".bus");
+            let _ = std::fs::remove_file(&pending);
+            let listener = UnixListener::bind(&pending).with_context(|| format!("cannot make {}", pending.display()))?;
+            std::fs::set_permissions(&pending, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+            guard.attachment = Some(crate::busrouter::attach(&spec, listener, pdir.join("real"))?);
+            await_proxy(&mut guard, "real")?;
+            if let Some(g2) = guard.a11y.as_mut() {
+                if let Err(e) = await_proxy(g2, "a11y") {
+                    eprintln!("panpak: WARNING: no accessibility bus for the app: {}", panpak_core::err_text(&e));
+                    guard.a11y = None;
+                    let _ = std::fs::write(work_dir.join(A11Y_FAILED), "");
+                }
+            }
+            std::fs::rename(&pending, work_dir.join("bus")).context("cannot put the bus socket in place")?;
+            crate::stage("dbus: router attached, proxy ready");
             Ok(guard)
         });
         match made {
-            // Held until the app is over (the sender is dropped), then the proxy ends and its folder goes.
+            // Held until the app is over (the sender is dropped), then the router lets go, the proxies end and the folders go.
             Ok(guard) => {
                 let _ = stopped.recv();
                 drop(guard);
@@ -243,20 +309,27 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
                 let _ = std::fs::write(work_dir.join(FAILED), panpak_core::err_text(&e));
                 let _ = stopped.recv();
                 let _ = std::fs::remove_dir_all(&work_dir);
+                let _ = std::fs::remove_dir_all(&pdir);
             }
         }
     })?;
     let in_view = req.runtime_dir.join("panpak/dbus");
     let view_bus = req.runtime_dir.join("bus");
     let mut mounts = vec![Mount::ro(dir.clone(), in_view.clone())];
-    let landlock_sockets = vec![in_view.join("bus")];
+    let landlock_sockets = vec![in_view.join("bus"), in_view.join("a11y")];
     // The app's folder of the document portal (empty until the stub grants a document).
     let by_app = req.runtime_dir.join("doc/by-app");
     if by_app.is_dir() {
         mounts.push(Mount { src: by_app.join(format!("panpak.{}", man.app.id)), dest: req.runtime_dir.join("doc"), rw: true });
     }
     let launch_env = |k: &str| man.launch.as_ref().and_then(|l| l.env.as_ref()).is_some_and(|e| e.contains_key(k));
-    let mut env = vec![("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", view_bus.display())), ("GTK_USE_PORTAL", "1".to_string())];
+    // AT_SPI_BUS_ADDRESS points the toolkits at the filtered accessibility bus (as Flatpak does), so that they do not ask the session bus; the inner stub takes it away
+    // again if that bus could not be made.
+    let mut env = vec![
+        ("DBUS_SESSION_BUS_ADDRESS", format!("unix:path={}", view_bus.display())),
+        ("GTK_USE_PORTAL", "1".to_string()),
+        ("AT_SPI_BUS_ADDRESS", format!("unix:path={}", in_view.join("a11y").display())),
+    ];
     let set_back = vec![("DBUS_SESSION_BUS_ADDRESS".to_string(), "disabled:".to_string())];
     let mut remove_back = vec!["GTK_USE_PORTAL".to_string()];
     if !launch_env("QT_QPA_PLATFORMTHEME") {
@@ -268,7 +341,14 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
         symlinks: vec![(PathBuf::from("panpak/dbus/bus"), view_bus.clone())],
         env,
         landlock_sockets,
-        wait: crate::view::DbusWait { socket: in_view.join("bus"), failed: in_view.join(FAILED), link: view_bus.clone(), on_failure_set: set_back, on_failure_remove: remove_back },
+        wait: crate::view::DbusWait {
+            socket: in_view.join("bus"),
+            failed: in_view.join(FAILED),
+            link: view_bus.clone(),
+            on_failure_set: set_back,
+            on_failure_remove: remove_back,
+            a11y: Some(crate::view::A11yWait { socket: in_view.join("a11y"), failed: in_view.join(A11Y_FAILED), env: "AT_SPI_BUS_ADDRESS".into() }),
+        },
         scope: Some(scope_rx),
         stop: Some(stop),
         worker: Some(worker),
@@ -277,6 +357,8 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
 
 /// The file the worker leaves in the proxy folder when it could not make the scope or start the proxy.
 const FAILED: &str = "failed";
+/// The file the worker leaves when there is no accessibility bus or its proxy could not be made.
+const A11Y_FAILED: &str = "a11y-failed";
 
 pub fn describe_status(s: &dbus::ProxyStatus) -> String {
     use dbus::ProxyStatus::*;

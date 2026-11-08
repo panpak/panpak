@@ -125,7 +125,20 @@ pub struct BusNeeds<'a> {
     pub perms: Option<&'a Permissions>,
 }
 
+/// The name on the host bus that the app's media player name gets: `org.mpris.MediaPlayer2.panpak.<id>`.
+pub fn mpris_alias_for(app_id: &str) -> String {
+    super::route::mpris_alias(app_id)
+}
+
+/// What the router of the app is told about it (see `route`): the identity for the portal, the alias if the app may have one, and links.
+pub fn router_config(app_id: &str, perms: Option<&Permissions>) -> super::route::Config {
+    super::route::Config { portal_id: Some(format!("panpak.{app_id}")), mpris_alias: perms.is_some_and(|p| p.mpris == Some(true)).then(|| mpris_alias_for(app_id)), open_uri: true }
+}
+
 /// The arguments for the session bus part of `xdg-dbus-proxy`, after `ADDRESS PATH`.
+///
+/// The names of the app (its id, `dbus_own`) are **not** here: they live on the private bus of the app, in the router, and the host bus is never
+/// asked for them. The one name the app can have on the host bus is the alias of a media player (permission `mpris`).
 pub fn proxy_args(n: &BusNeeds<'_>) -> Vec<String> {
     let mut a = vec!["--filter".to_string()];
     let call = |a: &mut Vec<String>, name: &str, rule: &str, path: &str| a.push(format!("--call={name}={rule}@{path}"));
@@ -139,20 +152,12 @@ pub fn proxy_args(n: &BusNeeds<'_>) -> Vec<String> {
     call(&mut a, PORTAL, "org.freedesktop.portal.Session.*", "/org/freedesktop/portal/desktop/session/*");
     bcast(&mut a, PORTAL, "org.freedesktop.portal.Session.Closed", "/org/freedesktop/portal/desktop/session/*");
     bcast(&mut a, PORTAL, "org.freedesktop.portal.Inhibit.StateChanged", "/org/freedesktop/portal/desktop/session/*");
-    let mut own: Vec<String> = Vec::new();
-    // Single instance: the app's own id (the name GTK and KDE applications register), when it is allowed.
-    if id_own_problem(n.app_id, n.app_name, n.entry).is_none() {
-        own.push(n.app_id.to_string());
-    }
-    for name in n.perms.and_then(|p| p.dbus_own.as_ref()).into_iter().flatten() {
-        if own_name_problem(name, n.app_id, n.app_name, n.entry).is_none() && !own.contains(name) {
-            own.push(name.clone());
-        }
-    }
-    for name in &own {
-        a.push(format!("--own={name}"));
-        a.push(format!("--talk={name}"));
-    }
+    // The identity: the router registers `panpak.<id>` on each connection, as its first call. The app's own calls to the registry never get here
+    // (the router refuses them), so this rule is for the router only.
+    call(&mut a, PORTAL, "org.freedesktop.host.portal.Registry.Register", PORTAL_PATH);
+    // GTK and Qt read the version of a portal interface before they use it.
+    call(&mut a, PORTAL, "org.freedesktop.DBus.Properties.Get", PORTAL_PATH);
+    call(&mut a, PORTAL, "org.freedesktop.DBus.Properties.GetAll", PORTAL_PATH);
     if n.perms.is_some_and(|p| p.notifications == Some(true)) {
         call(&mut a, PORTAL, "org.freedesktop.portal.Notification.*", PORTAL_PATH);
         for m in ["Notify", "CloseNotification", "GetCapabilities", "GetServerInformation"] {
@@ -165,7 +170,30 @@ pub fn proxy_args(n: &BusNeeds<'_>) -> Vec<String> {
     if n.perms.is_some_and(|p| p.tray == Some(true)) {
         a.push(format!("--talk={TRAY_WATCHER}"));
     }
+    // A media player: one alias that carries the id of the package, never a name of another player.
+    if n.perms.is_some_and(|p| p.mpris == Some(true)) {
+        a.push(format!("--own={}", mpris_alias_for(n.app_id)));
+    }
     a
+}
+
+/// The arguments for the proxy on the accessibility (AT-SPI) bus, after `ADDRESS PATH`: the rules Flatpak uses
+/// (`flatpak_run_add_a11y_dbus_args`, Flatpak 1.16.1) **without** `NotifyListenersSync` and `NotifyListenersAsync`, which let an app tell a screen
+/// reader that a key was pressed. The app can register with the registry and be read; it cannot read or command the other applications.
+pub fn a11y_proxy_args() -> Vec<String> {
+    const REG: &str = "org.a11y.atspi.Registry";
+    const DEC: &str = "/org/a11y/atspi/registry/deviceeventcontroller";
+    vec![
+        "--filter".into(),
+        "--sloppy-names".into(),
+        format!("--broadcast={REG}.EventListenerRegistered=@/org/a11y/atspi/registry"),
+        format!("--broadcast={REG}.EventListenerDeregistered=@/org/a11y/atspi/registry"),
+        format!("--call={REG}=org.a11y.atspi.Socket.Embed@/org/a11y/atspi/accessible/root"),
+        format!("--call={REG}=org.a11y.atspi.Socket.Unembed@/org/a11y/atspi/accessible/root"),
+        format!("--call={REG}=org.a11y.atspi.Registry.GetRegisteredEvents@/org/a11y/atspi/registry"),
+        format!("--call={REG}=org.a11y.atspi.DeviceEventController.GetKeystrokeListeners@{DEC}"),
+        format!("--call={REG}=org.a11y.atspi.DeviceEventController.GetDeviceEventListeners@{DEC}"),
+    ]
 }
 
 #[cfg(test)]
@@ -254,13 +282,17 @@ mod tests {
             "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Request.*@/org/freedesktop/portal/desktop/request/*",
             "--broadcast=org.freedesktop.portal.Desktop=org.freedesktop.portal.Request.Response@/org/freedesktop/portal/desktop/request/*",
             "--call=org.freedesktop.portal.Desktop=org.freedesktop.portal.Session.*@/org/freedesktop/portal/desktop/session/*",
-            "--own=com.example.app",
-            "--talk=com.example.app",
+            "--call=org.freedesktop.portal.Desktop=org.freedesktop.host.portal.Registry.Register@/org/freedesktop/portal/desktop",
+            "--call=org.freedesktop.portal.Desktop=org.freedesktop.DBus.Properties.Get@/org/freedesktop/portal/desktop",
+            "--call=org.freedesktop.portal.Desktop=org.freedesktop.DBus.Properties.GetAll@/org/freedesktop/portal/desktop",
         ] {
             assert!(a.iter().any(|x| x == want), "missing {want}");
         }
+        // The names of the app are on its private bus: the host is never asked to give them.
+        assert!(a.iter().all(|x| !x.starts_with("--own=")), "{a:?}");
+        assert!(a.iter().all(|x| !x.contains("com.example.app")), "{a:?}");
         // Nothing for the permissions that are off.
-        assert!(a.iter().all(|x| !x.contains("Notification") && !x.contains("StatusNotifier")), "{a:?}");
+        assert!(a.iter().all(|x| !x.contains("Notification") && !x.contains("StatusNotifier") && !x.contains("mpris")), "{a:?}");
     }
 
     #[test]
@@ -280,17 +312,41 @@ mod tests {
     }
 
     #[test]
-    fn declared_names_are_owned_and_bad_ones_are_dropped() {
-        let a = args("dbus_own = [\"com.example.app.Second\"]\n");
-        assert!(a.iter().any(|x| x == "--own=com.example.app.Second"));
-        let a = args("dbus_own = [\"org.freedesktop.Notifications\"]\n");
-        assert!(a.iter().all(|x| !x.contains("Notifications")), "{a:?}");
+    fn declared_names_are_not_asked_of_the_host() {
+        for extra in ["dbus_own = [\"com.example.app.Second\"]\n", "dbus_own = [\"org.freedesktop.Notifications\"]\n"] {
+            let a = args(extra);
+            assert!(a.iter().all(|x| !x.starts_with("--own=") && !x.contains("Second") && !x.contains("Notifications")), "{a:?}");
+        }
     }
 
     #[test]
-    fn an_id_in_a_service_family_does_not_own_its_own_id() {
-        let p = perms("");
-        let a = proxy_args(&BusNeeds { app_id: "org.freedesktop.Piper", app_name: "Piper", entry: "bin/piper", perms: Some(&p) });
-        assert!(a.iter().all(|x| !x.starts_with("--own=")), "{a:?}");
+    fn a_media_player_gets_one_alias_with_the_id() {
+        assert!(args("").iter().all(|x| !x.contains("mpris")));
+        let a = args("mpris = true\n");
+        let own: Vec<&String> = a.iter().filter(|x| x.starts_with("--own=")).collect();
+        assert_eq!(own, ["--own=org.mpris.MediaPlayer2.panpak.com_example_app"]);
+        assert!(a.iter().all(|x| !x.starts_with("--talk=org.mpris")));
+        // The names of other players stay unavailable for dbus_own.
+        assert!(own_name_problem("org.mpris.MediaPlayer2.vlc", "com.example.app", "App", "bin/app").is_some());
+    }
+
+    #[test]
+    fn the_router_is_told_the_identity_and_the_alias() {
+        let p = perms("mpris = true\n");
+        let c = router_config("com.example.app", Some(&p));
+        assert_eq!(c.portal_id.as_deref(), Some("panpak.com.example.app"));
+        assert_eq!(c.mpris_alias.as_deref(), Some("org.mpris.MediaPlayer2.panpak.com_example_app"));
+        assert!(c.open_uri);
+        assert_eq!(router_config("com.example.app", None).mpris_alias, None);
+    }
+
+    #[test]
+    fn the_accessibility_rules_are_flatpaks_without_the_key_notifications() {
+        let a = a11y_proxy_args();
+        assert_eq!(a[0], "--filter");
+        assert_eq!(a.iter().filter(|x| x.starts_with("--call=")).count(), 5);
+        assert_eq!(a.iter().filter(|x| x.starts_with("--broadcast=")).count(), 2);
+        assert!(a.iter().all(|x| !x.contains("NotifyListeners") && !x.contains("RegisterEvent") && !x.contains("GetChildren") && !x.contains("--talk") && !x.contains("--own")), "{a:?}");
+        assert!(a.iter().all(|x| x.starts_with("--filter") || x.starts_with("--sloppy") || x.contains("org.a11y.atspi.Registry")));
     }
 }

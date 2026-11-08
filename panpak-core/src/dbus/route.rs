@@ -203,6 +203,10 @@ struct Client {
     serial: u32,
     /// Serials of calls the router made itself on behalf of this connection: their replies are not passed to the app.
     swallow: HashSet<u32>,
+    /// The call that asks who owns the portal's name, and the answer: answers from the router carry the owner's unique name, as the portal's do (toolkits
+    /// subscribe to the portal's signals by its name, which they resolve to the owner).
+    owner_query: Option<u32>,
+    portal_owner: Option<String>,
     opens: usize,
 }
 
@@ -533,6 +537,18 @@ impl<F> Router<F> {
         {
             let Some(cl) = self.clients.get_mut(&c) else { return outs };
             if let (RETURN | ERROR, Some(rs)) = (m.kind, m.reply_serial) {
+                if cl.owner_query == Some(rs) {
+                    cl.owner_query = None;
+                    if m.kind == RETURN {
+                        if let Ok(full) = parse_message(&msg.raw, 0, &self.lim) {
+                            if let Some(Value::Str(o)) = full.body.first() {
+                                if valid_unique(o) {
+                                    cl.portal_owner = Some(o.clone());
+                                }
+                            }
+                        }
+                    }
+                }
                 if cl.swallow.remove(&rs) {
                     if m.kind == ERROR {
                         outs.push(Out::Log(format!("a call of the router failed: {}", m.error_name.as_deref().unwrap_or("?"))));
@@ -558,6 +574,14 @@ impl<F> Router<F> {
                     if let Some(id) = self.cfg.portal_id.clone() {
                         let body = vec![Value::str(&id), Value::Array("{sv}".into(), Vec::new())];
                         if let Some(raw) = self.own_call(c, PORTAL, PORTAL_PATH, REGISTRY_IFACE, "Register", "sa{sv}", body) {
+                            outs.push(up(c, raw));
+                        }
+                    }
+                    if self.cfg.open_uri {
+                        if let Some(raw) = self.own_call(c, BUS, BUS_PATH, BUS, "GetNameOwner", "s", vec![Value::str(PORTAL)]) {
+                            if let (Some(cl), Ok(h)) = (self.clients.get_mut(&c), parse_head(&raw, 0, &self.lim)) {
+                                cl.owner_query = Some(h.msg.serial);
+                            }
                             outs.push(up(c, raw));
                         }
                     }
@@ -834,11 +858,12 @@ impl<F> Router<F> {
         let Some(cl) = self.clients.get_mut(&c) else { return outs };
         cl.opens = cl.opens.saturating_sub(1);
         let unique = cl.unique.clone();
+        let from = cl.portal_owner.clone().unwrap_or_else(|| PORTAL.to_string());
         // The method return: the handle of the request.
         let mut r = new_message(RETURN, cl.next_serial());
         r.reply_serial = Some(serial);
         r.destination = unique.clone();
-        r.sender = Some(PORTAL.into());
+        r.sender = Some(from.clone());
         r.signature = "o".into();
         r.body = vec![Value::Path(handle.clone())];
         if let Ok(raw) = encode_message(&r) {
@@ -850,7 +875,7 @@ impl<F> Router<F> {
         s.interface = Some("org.freedesktop.portal.Request".into());
         s.member = Some("Response".into());
         s.destination = unique;
-        s.sender = Some(PORTAL.into());
+        s.sender = Some(from);
         s.signature = "ua{sv}".into();
         s.body = vec![Value::U32(if result.is_ok() { 0 } else { 2 }), Value::Array("{sv}".into(), Vec::new())];
         if let Ok(raw) = encode_message(&s) {
@@ -931,6 +956,13 @@ mod tests {
         assert_eq!(ups(&outs, c).len(), 1);
         let outs = r.from_up(c, msg(reply_to(1, &format!(":1.{n}"), "s", vec![Value::str(&format!(":1.{n}"))])));
         assert!(!apps(&outs, c).is_empty());
+        // The router asked who owns the portal; the host answers (it is not for the app).
+        for raw in ups(&outs, c) {
+            let m = parsed(&raw);
+            if m.member.as_deref() == Some("GetNameOwner") {
+                assert!(apps(&r.from_up(c, msg(reply_to(m.serial, &format!(":1.{n}"), "s", vec![Value::str(":1.74")]))), c).is_empty());
+            }
+        }
         assert_eq!(r.unique_of(c), Some(format!(":1.{n}").as_str()));
         c
     }
@@ -952,8 +984,8 @@ mod tests {
         let outs = r.from_app(c, msg(hello.clone()));
         assert_eq!(ups(&outs, c), vec![hello], "Hello goes to the host unchanged");
         let outs = r.from_up(c, msg(reply_to(1, ":1.9", "s", vec![Value::str(":1.9")])));
-        // First the call to the portal, then the reply to the app.
-        assert!(matches!(outs[0], Out::Up(..)) && matches!(outs[1], Out::App(..)), "{outs:?}");
+        // First the calls of the router (the identity, and who owns the portal), then the reply to the app.
+        assert!(matches!(outs[0], Out::Up(..)) && matches!(outs[1], Out::Up(..)) && matches!(outs[2], Out::App(..)), "{outs:?}");
         let reg = parsed(&ups(&outs, c)[0]);
         assert_eq!((reg.destination.as_deref(), reg.interface.as_deref(), reg.member.as_deref()), (Some(PORTAL), Some(REGISTRY_IFACE), Some("Register")));
         assert_eq!(reg.body[0], Value::str("panpak.org.example.App"));
@@ -1131,6 +1163,8 @@ mod tests {
         let outs = r.open_done(token, Ok(()));
         let got = apps(&outs, c);
         assert_eq!(got[0].kind, RETURN);
+        assert_eq!(got[0].sender.as_deref(), Some(":1.74"), "answers carry the unique name of the portal's owner");
+        assert_eq!(got[1].sender.as_deref(), Some(":1.74"));
         assert_eq!(got[0].body[0], Value::Path("/org/freedesktop/portal/desktop/request/1_5/tk1".into()));
         assert_eq!((got[1].member.as_deref(), got[1].path.as_deref()), (Some("Response"), Some("/org/freedesktop/portal/desktop/request/1_5/tk1")));
         assert_eq!(got[1].body[0], Value::U32(0));
