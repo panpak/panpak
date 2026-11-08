@@ -352,7 +352,208 @@ What this means:
 3. **Not run:** MPRIS on a real shell, Orca on KDE (no GTK app runs there), notifications with a correct `app_id`, a real Plasma tray with
    Plasma's own icons for the alias, the 25 AppImages on the prototype.
 
-## 10. What the owner decides
+## 11. Phase 1b: one agent for the app, against router + proxy
+
+The question: instead of our router in front of one `xdg-dbus-proxy` for each copy (design A), one process of ours for each app that also does
+the filtering towards the session bus, with one connection to the host for each copy (design B, "the agent"). The agent would also hold the receiver
+of the opener channel and, later, the file chooser, and would be the one that registers the identity with the portal. `xdg-dbus-proxy` stays in the
+tests as the judge.
+
+Prototype for the numbers: the Rust skeleton of section 6 got an `--agent` mode: no proxy, one connection to the host bus for each app connection,
+and a filter for the `--call` and `--broadcast` rules of the product (method calls checked against name, method and path pattern; broadcast
+signals against interface and path; replies and unicast signals pass). It is a skeleton: no descriptors, no `SEE` policy, no match-rule validation.
+The shared router (`router3.py`) got a "direct" mode (it connects to the host bus itself) to test the connections and the identity. All of it on a
+private lab bus or on the two VMs; nothing was run on the bus of the owner.
+
+### 11.1 Measure 1: what the proxy costs
+
+Fixed cost of a start (script that exits at once, the same stub, 40 runs for each variant in blocks of ten, medians; "over direct" is the
+difference to the same script started directly in the same wrapper):
+
+| Variant | From a terminal (the stub makes its scope) | From the menu (inside an `app-gnome-...` scope) |
+|---|---|---|
+| no bus layer at all | 25.4 ms (+24.6 over direct) | 34.6 ms (+15.2) |
+| layer with `xdg-dbus-proxy` | 38.6 ms (+37.8) | 35.0 ms (+15.6) |
+| layer with the Rust router + proxy | 39.0 ms (+38.2) | 34.9 ms (+15.4) |
+| layer with the Rust agent (no proxy) | 37.5 ms (+36.7) | 34.6 ms (+15.2) |
+
+(The menu column includes about 10 ms of `systemd-run` that wraps every variant; the differences are what counts.) Reading: **the proxy costs
+about 0.4 ms from the menu** (its start is hidden behind the setup of the view) and the whole layer 13 ms from a terminal, which is the
+transient scope, not the proxy. The three variants are inside the noise of a run (about 1.5 ms between repeats of the same variant: the earlier
+section 6 run gave +0.3 for the router, this one +0.4). Neither design changes the cost of a start.
+
+Memory of the layer for one running copy (proportional set size; resident size in brackets): proxy 0.48 MB (6.0 MB); router + proxy 1.03 MB
+(router 0.59 + proxy 0.44); agent 0.52 MB (0.52 MB). With three copies: proxy alone 3 x 0.48; router + proxy 0.59 + 3 x 0.44 = 1.9 MB; agent 0.52 plus
+a thread and a socket for each copy (not measured, thousands of bytes).
+
+Latency of a call through the layer (`Ping`, 1000 calls on one connection, three runs, medians): no layer 22 to 24 us; proxy 54 to 58 us (+32);
+agent 33 to 39 us (+11 to +16); router + proxy 69 to 76 us (+47 to +52); Python router + proxy 119 to 125 us. The agent number is for calls to the
+bus itself, which the skeleton does not filter, so it is a floor.
+
+### 11.2 Measure 2: connections, scopes, identity
+
+The portal knows a caller by the cgroup of the process that owns the connection. The two designs were run with the real portal and the fake backend,
+with a probe that asks the portal (`Inhibit`, which makes a request and an answer) and listens to the `Response`:
+
+Two copies, the first started first and ended before the second asks the portal (8 s later):
+
+| | A: shared router + a proxy for each copy | B: shared agent, one connection to the host for each copy |
+|---|---|---|
+| processes of the layer while copy 2 waits | the router and the proxy of copy 2 | the agent (it lives in the scope of copy 1) |
+| the portal's `app_id` for copy 1 and for copy 2 | `panpak.<id>` for both | `panpak.<id>` for both |
+| request path of copy 2 | `.../request/1_8/c2`, equal to the path the copy builds from its unique name | the same |
+| `Response` delivered to the right copy | yes (copy 1 and copy 2) | yes |
+
+In B the agent stays inside the scope that copy 1 made; when copy 1 ends, the scope stays alive because the agent is in it, which is why the portal
+still knows copy 2. That is a detail to settle in the product: the agent should have a scope of its own (named after the app) so that its life does not
+depend on the first copy. In A, each copy's own scope is what the portal reads, as today. **Not run yet: the same with the real file chooser of
+Text Editor on GNOME** (two copies started with `--standalone`, the first closed before the second opens a file); see 11.6.
+
+### 11.3 Measure 3: accessibility without opening a window on the other apps
+
+How Flatpak does it (source of Flatpak 1.16.1, `common/flatpak-run-dbus.c`, function `flatpak_run_add_a11y_dbus_args`):
+
+1. It does **not** put `org.a11y.Bus` on the filtered session bus at all. It asks the real session bus for the address of the AT-SPI bus (or takes
+   `AT_SPI_BUS_ADDRESS`), starts a second `xdg-dbus-proxy` on that bus with `--filter --sloppy-names`, binds its socket into the sandbox
+   (`/run/flatpak/at-spi-bus`) and sets `AT_SPI_BUS_ADDRESS` in the app's environment. Toolkits then skip the question to the session bus.
+2. The rules are two broadcasts (`org.a11y.atspi.Registry.EventListenerRegistered` and `EventListenerDeregistered`, path
+   `/org/a11y/atspi/registry`) and seven calls to the name `org.a11y.atspi.Registry`: `Socket.Embed` and `Socket.Unembed` (path
+   `/org/a11y/atspi/accessible/root`), `Registry.GetRegisteredEvents` (path `/org/a11y/atspi/registry`), and under
+   `/org/a11y/atspi/registry/deviceeventcontroller`: `GetKeystrokeListeners`, `GetDeviceEventListeners`, `NotifyListenersSync`,
+   `NotifyListenersAsync`. For an app that is not a sub-sandbox it adds `--call=<id>.Sandboxed.*=org.a11y.atspi.Socket.Embedded`.
+3. Nothing else: no call on the root object of the desktop, no listener registration, no call to other applications.
+
+This replaces the idea of section 5.2 (the router answering `GetAddress`, `NameHasOwner` and the status properties); that was needed only because the
+app was not told where the bus is. With the variable, **Qt works without any answer on the session bus**: qBittorrent (KDE VM) was listed on the
+AT-SPI bus with `AT_SPI_BUS_ADDRESS` alone. The stub already sets the environment of the view (`DBUS_SESSION_BUS_ADDRESS`), so this is one more variable
+and one more socket in the same folder; the outer stub (which already talks to the session bus to make the scope) asks for the address and starts the proxy.
+
+Proposed rule for the agent or the second proxy: the Flatpak list, **minus `NotifyListenersSync` and `NotifyListenersAsync`** unless a toolkit is
+found that needs them (they let an app tell the listeners, a screen reader for example, that a key was pressed: an app could make a screen reader react
+to keys that were never pressed), and **plus** nothing. Tested with the Flatpak list (all of it), a GTK app (Text Editor, lab) and a Qt app
+(qBittorrent, KDE VM), a screen-reader-like client on the host (Atspi) and a probe inside the sandbox on the filtered bus:
+
+| What | Result |
+|---|---|
+| the host client lists the apps | Text Editor listed, with its window and its role (`frame`); qBittorrent listed |
+| the probe calls `GetRegisteredEvents` | allowed (empty list) |
+| the probe calls `GetKeystrokeListeners` | allowed (empty list; it would show which tools listen to keys) |
+| the probe calls `GetChildren` on the desktop root (it would list all applications) | refused |
+| the probe registers for events (`RegisterEvent`) | refused |
+| the probe calls `GetChildren` on every connection `:1.1` to `:1.79` (other apps) | refused, 79 of 79, in the lab and on KDE |
+| the probe calls `ListNames` | allowed: it shows a few unique names (`:1.1`, `:1.3`) and `org.a11y.atspi.Registry`, but the connections cannot be called |
+
+So: the app can register and be read; it cannot read or command the other apps. What it can learn is that other connections exist and which listeners
+are registered. Orca on the GNOME VM spoke the text and the buttons of Text Editor through this chain (the filtered bus, in the first design); menus were
+silent once and spoken in a second run of the same setup. Not tested: Orca with the variable and without the answers on the session bus (the GNOME VM was
+off when the variable was found); that is part of 11.6.
+
+### 11.4 Investigation 4: empty `app_id` on Fedora, `xdg-desktop-portal` 1.22.1
+
+Cause, from the source (tags 1.20.3, 1.21.0, 1.22.1; function `get_app_from_pid` in `src/xdp-app-info-host.c`):
+
+- Up to 1.20 the portal took the application id from the name of the systemd scope of the caller
+  (`app[-<launcher>]-<id>-<random>.scope`, `_xdp_app_info_host_parse_app_id_from_unit_name`) and returned it, whatever the id was.
+- From **1.21.0** ("Improve the heuristic to detect the App ID for host apps", #1595) it accepts the id from the scope **only if a file
+  `<id>.desktop` exists** for it (`g_desktop_app_info_new (<id>.desktop)` in the data folders of the **portal's** process); otherwise the id is empty.
+  A host application registered with `org.freedesktop.host.portal.Registry.Register` (since 1.19.4) goes through the same rule
+  (`XDP_APP_INFO_FLAG_REQUIRE_GAPPINFO`).
+
+So the empty id was **an effect of my test, not a regression for users**: the test installed into an isolated HOME, so `panpak.<id>.desktop` was in a
+folder the portal does not read. Verified on the KDE VM (portal 1.22.1-2, `AddNotification` with the backend watched): entry only in the isolated HOME:
+`app_id ""`; the same entry also in the real data folder (what a real install writes): `panpak.org.panpaktest.NotifyProbe`, with and without the router.
+On Ubuntu 26.04 (portal 1.21.1) the lab had always worked because it points the portal's data folder at the lab's home. The panpak scope name
+(`app-panpak.<id>-<token>.scope`) is read correctly by the 1.22 regular expression.
+
+`Register`, tested from a host process on the KDE VM (portal 1.22.1-2): at path `/org/freedesktop/portal/desktop`, interface
+`org.freedesktop.host.portal.Registry`, same bus name as the other portals (not a name of its own). Without a `.desktop` file: `Register` fails
+("App info not found"), `app_id ""`. With the file: `Register("panpak.<id>", {})` is accepted, and the next `AddNotification` of the same connection arrives
+with `app_id "panpak.<id>"`, even from a process that is **not** in an `app-...scope` (without `Register` it is `""`). A connection can register once, and only
+before its first portal call ("Registered too late"). Consequences:
+
+- It works on 1.20, 1.21 and 1.22 (the interface is there since 1.19.4), but it cannot replace the `.desktop` file: `panpak install` already writes
+  `panpak.<id>.desktop` into the user's data folder; on a system with a portal older than 1.19.4 only the scope name works.
+- It makes the identity independent of how the scope is named or whether the copy is in one (menu, terminal, service), which is the fragile part of
+  `docs/DESKTOP-INTEGRATION.md`.
+- **It must be called only by us.** A call from the app could claim any id that has a `.desktop` file (another app's) and take its portal permissions.
+  In design B the agent calls it first on each connection and never forwards the app's own call. In design A the proxy rule has to allow the call (it is
+  the same connection), so the router must drop the call from the app and inject its own, which puts the protection in the router instead of in a rule.
+  The router already reads the header of every message; the extra code is a few lines, and it is the kind of rule that needs its own test.
+- The call is not in the closed list that `tests/dbus_filter.py` checks (it expects it refused for a proxy started with the product rules); the test would
+  change to "refused for the app, done by the stub".
+
+### 11.5 Investigation 5: GTK 4.18 of the Debian image crashes on Fedora 45 KDE
+
+Reproduced outside the sandbox (the tree's `gnome-text-editor` started by hand with the stub's library path): `SIGSEGV`, so it is not the sandbox,
+not the Wayland security context (also off) and not the bus.
+
+- **Where.** Backtrace of the core dump (thread 1): `libgtk-4.so.1 + 0x47d730`, called by `ffi_call`/`wl_closure_invoke` of the host `libwayland-client`
+  (1.26.0, Fedora, `SYSTEM_WINS`), from `dispatch_event` while GTK opens the display (`gdk_display_manager_open_display`,
+  `gtk_init`). Disassembly of the tree's `libgtk-4.so.1` at that address: a small callback of the Wayland display code that does
+  `g_ptr_array_add (data->X->array, data->pending)` and clears `data->pending`; the dereference of `data->X` (offset 0x30) faults. The neighbouring
+  function uses `munmap` of a mapped table. This is the shape of the handler of `zwp_linux_dmabuf_feedback_v1.tranche_done` (the table is the
+  `format_table`).
+- **What the compositor sent last** (`WAYLAND_DEBUG=1`): `zwp_linux_dmabuf_feedback_v1#26.format_table(fd, 2432)`, `tranche_target_device`,
+  `tranche_formats`, `tranche_flags`, **`tranche_done()`**, then the crash. KWin 6.8.2 on a virtio GPU (the VM).
+- **Versions.** Package: GTK 4.18.6 (Debian 13), libadwaita 1.7.6, Pango and GLib of Debian 13. Host: GTK 4.24.1, wayland 1.26.0, Mesa 26.2.6,
+  KWin 6.8.2. The host's own GTK 4.24 apps run on the same compositor.
+- **Not the fix:** `GDK_DISABLE=dmabuf` (and with `vulkan`) and `GSK_RENDERER=cairo` do not change it (the feedback object is created while the display
+  is opened); `[launch] env` of the manifest was not needed to see that, the variable was set on the process itself.
+- **A library from the host?** Putting only the host's `libgtk-4.so.1` (4.24.1) in front of the tree's libraries fails at once:
+  `undefined symbol: pango_font_description_set_width` (the host GTK needs a Pango newer than the tree's). So GTK can come from the host only with its whole
+  stack (GLib, Pango, Cairo, GdkPixbuf, Graphene, HarfBuzz, and libadwaita rebuilt or taken too): the "graphics family" of `SYSTEM_WINS` would have to
+  grow from Wayland and Mesa to the GTK stack, which defeats the purpose of carrying the app's own GTK. The honest choices are: build the GTK apps with a
+  GTK that has the fix (the image of step 13b with a newer base or a GTK from a backport), or accept that the oldest GTK in an image sets the oldest
+  compositor it can run on. The crash was seen on one VM with a virtio GPU and one compositor version; a real GPU was not tried.
+
+### 11.6 Comparison
+
+| | A: router + `xdg-dbus-proxy` for each copy | B: one agent |
+|---|---|---|
+| Processes for an app with N copies | 1 router + N proxies (+ 1 proxy for the accessibility bus for each copy) | 1 agent (+ the accessibility filter inside it) |
+| Hops for a message | app, router, proxy, bus: 3 | app, agent, bus: 2 |
+| Fixed cost of a start | menu 34.9 ms, terminal 39.0 ms (inside the noise of the proxy-only 35.0 / 38.6) | menu 34.6 ms, terminal 37.5 ms |
+| Memory, 1 copy / 3 copies (PSS) | 1.03 MB / 1.9 MB | 0.52 MB / about 0.55 MB |
+| Latency of a call (floor) | +47 to +52 us | +11 to +16 us |
+| Host requirement | `xdg-dbus-proxy` 0.1.5 or newer at a fixed path (as today; KL-5) | none |
+| Code of ours (estimate) | router: 1,000 to 1,400 lines of Rust; the filter stays in a program that is used and tested by others (3,269 lines of C plus 433 of command line) | router 1,000 to 1,400 + the filter, all of the policy of the proxy that we need: policy levels, visibility of names (`ListNames`, `NameOwnerChanged`, `GetNameOwner`), reply tracking by serial, validation of `AddMatch`, `StartServiceByName` for talk names: 2,000 to 2,800 lines more |
+| Where the permissions are decided | the proxy (as today) | our code |
+| Effect of a bug in the new code | the router loses or delays messages, or lets a message for a local name go local: an availability or logic bug; what reaches the host is still filtered by the proxy | a hole in the filter is a hole in the sandbox |
+| Identity with the portal | scope name, as today; `Register` possible with a drop-and-inject rule in the router | `Register` natural (the agent is the only caller) |
+| Opener receiver and future file chooser | separate processes as now (the receiver can be moved into the router) | in the same process |
+| Tests | the existing closed list works unchanged; new tests for the router | the closed list and the direct checks of `tests/dbus_filter.py` run through the agent too (the judge) |
+
+The judge, run on the skeleton (`tests/dbus_filter.py` with `PANPAK_TEST_PROXY` pointing at the agent): the closed list (102 portal methods of 30
+interfaces, with and without the optional permissions: 6 and 8 allowed) gives **the same allowed and refused methods as `xdg-dbus-proxy`**, the control
+calls to the other services (secrets, systemd, the shell, the keyring, dconf, the login manager...) are refused alike, and `SettingChanged` crosses. The one
+difference is the wanted one: a name the app asks to own is granted (on its private bus), where the proxy refused it.
+
+### 11.7 Recommendation
+
+**Keep design A for step 13p (router + `xdg-dbus-proxy`), build the router so that the filter can move into it later, and take the agent as a
+second step only if a reason appears that the numbers do not show today.**
+
+Reasons:
+
+1. **The numbers do not separate the designs**: fixed cost, memory and latency differ by less than the noise of a run or by a few tens of microseconds.
+   Nothing about speed or size argues for the agent.
+2. **The difference is in code and in risk.** The agent adds 2,000 to 2,800 lines of filter on the security boundary, in place of a program that Flatpak
+   uses and others test. The judge shows that the agent can reach the same answers on the cases we have, which is a strong argument that it is *possible*,
+   not that it is *as safe*: the proxy has years of cases that the closed list does not. A first release is the wrong time to carry that.
+3. **What the agent would add is available in A**: the identity with `Register` (router drops the app's call and injects its own: a few lines and a
+   test), the accessibility socket (started by the outer stub, as Flatpak does), and the opener receiver (moved into the router if the number of processes
+   matters; each is a process of ours with no rights).
+4. **What the agent would remove is the dependency on `xdg-dbus-proxy`** (KL-5: a host package at a fixed path, version 0.1.5 or newer). On the two Fedora
+   VMs and on Ubuntu it is installed and current (0.1.7 and 0.1.9), so today it is a cost on paper. The day a target system has no package for it, or an
+   audit asks for one policy engine in one language, the agent becomes the work to do, behind the same router and the same judge test.
+
+What I would build in A, in this order, with the findings of this study: the router with names and delivery between copies; `AT_SPI_BUS_ADDRESS` with a
+second filtered proxy started by the outer stub (Flatpak's list without the two `NotifyListeners*` calls until a toolkit needs them); `Register` injected by
+the router with the app's own call dropped; links through the opener; the media alias; the router as the first user of `tests/dbus_filter.py` run as judge for
+every later change. The small corrections found on the way are noted, not made: the opener that returns 0 without opening anything on Bluefin, and
+`StartupWMClass` in the desktop entries of the test packages.
+
+## 10. What the owner decides (phase 1; see 11.7 for phase 1b)
 
 1. Router of our own, shared by the copies, in Rust (recommended), or a `dbus-daemon` with a bridge (not recommended).
 2. Links through the opener channel (recommended) or through the portal.
