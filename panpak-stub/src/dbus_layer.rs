@@ -77,10 +77,14 @@ struct Guard {
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        // The router first (it lets go of the copy's listener and connections), then the proxies, then the folders.
+        // The router first (it lets go of the copy's listener and connections), then both proxies are stopped together (the waits come after the
+        // kills: one after the other cost a millisecond or two at every exit), then the folders.
         self.attachment.take();
-        self.a11y.take();
+        if let Some(a) = self.a11y.as_mut() {
+            let _ = a.child.kill();
+        }
         let _ = self.child.kill();
+        self.a11y.take();
         let _ = self.child.wait();
         if self.remove_dir {
             let _ = std::fs::remove_dir_all(&self.dir);

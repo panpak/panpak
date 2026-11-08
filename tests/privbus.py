@@ -147,6 +147,44 @@ elif mode == "lat":
             c.call_sync(dest, path, iface, member, args, None, Gio.DBusCallFlags.NONE, 3000, None)
         lat[label] = round((time.perf_counter() - t0) / n * 1e6, 1)
     res["lat_us"] = lat
+elif mode == "rawlat":
+    # The bench of the study (~/panpak-dogfood/privbus/lat.py): 1000 pings to the bus daemon over a raw socket, so that no client library is measured.
+    import socket, struct, statistics
+    def msg(serial, member, iface="org.freedesktop.DBus.Peer", path="/org/freedesktop/DBus", dest="org.freedesktop.DBus"):
+        f = b""
+        def fld(code, sig, val):
+            nonlocal f
+            while len(f) % 8: f += b"\0"
+            f += bytes([code, 1]) + sig.encode() + b"\0"
+            while len(f) % 4: f += b"\0"
+            f += struct.pack("<I", len(val)) + val.encode() + b"\0"
+        fld(1, "o", path); fld(2, "s", iface); fld(3, "s", member); fld(6, "s", dest)
+        h = struct.pack("<BBBBIII", ord("l"), 1, 0, 1, 0, serial, len(f)) + f
+        while len(h) % 8: h += b"\0"
+        return h
+    time.sleep(secs)
+    sk = socket.socket(socket.AF_UNIX); sk.connect(os.environ["XDG_RUNTIME_DIR"] + "/bus")
+    sk.sendall(b"\0AUTH EXTERNAL " + str(os.getuid()).encode().hex().encode() + b"\r\nNEGOTIATE_UNIX_FD\r\nBEGIN\r\n" + msg(1, "Hello", "org.freedesktop.DBus", "/org/freedesktop/DBus"))
+    buf = b""
+    def read_msg():
+        global buf
+        while True:
+            if b"AGREE_UNIX_FD\r\n" in buf: buf = buf.split(b"AGREE_UNIX_FD\r\n", 1)[1]
+            if len(buf) >= 16 and buf[:1] == b"l":
+                n_ = 16 + (-(-struct.unpack_from("<I", buf, 12)[0] // 8) * 8) + struct.unpack_from("<I", buf, 4)[0]
+                if len(buf) >= n_:
+                    m = buf[:n_]; buf = buf[n_:]; return m
+            buf += sk.recv(65536)
+    read_msg()
+    ts = []
+    for i in range(1100):
+        t = time.perf_counter(); sk.sendall(msg(10 + i, "Ping"))
+        while True:
+            m = read_msg()
+            if m[1] in (2, 3): break
+        ts.append((time.perf_counter() - t) * 1e6)
+    res["median_us"] = round(statistics.median(ts[100:]), 1)
+    res["p99_us"] = round(sorted(ts[100:])[int(1000 * 0.99)], 1)
 elif mode == "mpris":
     res["codes"] = [request_name("org.mpris.MediaPlayer2.vlc", 4), request_name("org.mpris.MediaPlayer2.other", 4)]
     serve(secs)

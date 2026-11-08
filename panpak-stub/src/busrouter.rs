@@ -260,6 +260,8 @@ struct Process {
     uid: u32,
     t0: Instant,
     end_pause_ms: i32,
+    /// One buffer for every read (a buffer made for each read cost a map and an unmap of 64 KiB and the page faults of zeroing it, for each message).
+    rbuf: Vec<u8>,
 }
 
 impl Process {
@@ -333,9 +335,9 @@ impl Process {
     }
 
     fn read_app(&mut self, id: ClientId) {
-        let mut buf = vec![0u8; 65536];
         let Some(c) = self.conns.get_mut(&id) else { return };
-        match recv_with_fds(c.app.as_raw_fd(), &mut buf, &mut c.a.infds, 32) {
+        let buf = &mut self.rbuf;
+        match recv_with_fds(c.app.as_raw_fd(), buf, &mut c.a.infds, 32) {
             Ok(0) => return self.drop_conn(id),
             Ok(n) => c.a.inbuf.extend_from_slice(&buf[..n]),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return,
@@ -390,11 +392,11 @@ impl Process {
     }
 
     fn read_up(&mut self, id: ClientId) {
-        let mut buf = vec![0u8; 65536];
         let lim = self.lim;
         let Some(c) = self.conns.get_mut(&id) else { return };
         let Some(up) = c.up.as_ref() else { return };
-        match recv_with_fds(up.as_raw_fd(), &mut buf, &mut c.u.infds, 32) {
+        let buf = &mut self.rbuf;
+        match recv_with_fds(up.as_raw_fd(), buf, &mut c.u.infds, 32) {
             Ok(0) => return self.drop_conn(id),
             Ok(n) => c.u.inbuf.extend_from_slice(&buf[..n]),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return,
@@ -752,6 +754,7 @@ pub fn main_router(args: &[String]) -> Result<()> {
         uid,
         t0: Instant::now(),
         end_pause_ms,
+        rbuf: vec![0u8; 65536],
     };
     p.run(ctl)
 }
@@ -813,10 +816,9 @@ pub struct Attachment {
 
 impl Drop for Attachment {
     fn drop(&mut self) {
+        // The thread ends by itself when the socket is shut; the process is about to end, so it is not waited for (the wait cost about 2 ms at every exit).
         let _ = self.ctl.shutdown(std::net::Shutdown::Both);
-        if let Some(t) = self.thread.take() {
-            let _ = t.join();
-        }
+        self.thread.take();
     }
 }
 

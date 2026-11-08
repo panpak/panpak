@@ -646,15 +646,32 @@ What runs (tests in `tests/privbus.py`, `tests/dbus_filter.py`, unit tests of `p
   `gir1.2-gtk-4.0`, `libgtk-4-media-gstreamer`); only `gtk-4-examples`, which no image installs, differed. The text for the upstream report is
   not in the repository (it names versions of the author's machines); the cause is in section 10.
 
-Measures (this machine, release build, `tests/startup_budget.py --runs 30`, `tests/privbus.py` probe `lat`):
+Measures. Machine: the author's workstation, release build, medians; every comparison with the prototype or with `main` was run in the same series.
 
-| | no bus layer | router and proxies |
-|---|---|---|
-| fixed cost of a start from a terminal | 25.6 ms | 41.7 ms (budget 45 ms) |
-| memory: router | | 2.3 MB resident (one for all copies of an app) |
-| memory: proxy | | 6.3 MB resident for each copy (two copies: 12.6 MB) |
-| round trip of a portal call (`Settings.ReadOne`, fake backend in Python) | 486 us | 843 to 959 us |
+| What | Method | Study (prototype) | First product build | Product now |
+|---|---|---|---|---|
+| Round trip of a call through the layer, bus daemon `Ping` over a raw socket (no client library) | the bench of the study (`lat.py`: 1000 pings, three alternating runs), the product measured by the same messages from a probe inside the sandbox (`tests/privbus.py`, mode `rawlat`) | prototype router and proxy 66 to 70 us, proxy alone 56, no layer 22 (same series) | 170 to 240 us | 77 to 83 us (+55 to 60 us over no layer, +10 over the prototype) |
+| Portal call through the layer (`Settings.ReadOne`, Python fake backend, GDBus client) | `tests/privbus.py`, mode `lat`, 2000 calls | no layer 486 to 506 us | 843 to 959 us | 650 to 700 us (+150 to 200 us) |
+| Memory of the router | `Pss` and `Rss` of `/proc/<pid>/smaps_rollup` (the router was run dumpable only for this measure) | PSS 0.55 MB (1.03 for router and proxy together) | RSS 2.3 MB | PSS 0.9 to 1.15 MB, RSS 2.3 MB, anonymous 0.38 MB |
+| Memory of one proxy | same | PSS 0.48 MB | RSS 6.3 MB | PSS 0.48 MB, RSS 6.0 MB |
+| Fixed cost, from a terminal (the stub makes its own scope), D-Bus layer | `tests/startup_budget.py --dbus --runs 30`, two rounds, `main` and the branch alternating | 36 to 37 ms (another day) | 41.7 ms | `main` 40.5 to 41.0 ms, branch 41.0 to 41.8 ms (+0.5 to 0.8) |
+| Fixed cost, from the menu (the launcher is in a scope the portal reads as the app: `systemd-run --user --scope --unit app-panpak.org.example.budget-<n>.scope` around the script) | same, inside that scope | 34.6 to 35.0 ms (study setup) | not measured | `main` 26.9 to 27.3 ms, branch 27.5 to 27.6 ms (+0.3 to 0.6); no layer 25 ms |
 
-The round trip adds 360 to 470 us in this lab, more than the 47 to 52 us measured for the prototype; the lab's backend and the client are Python programs, each hop
-(router, proxy) costs a process wake-up, and a real app makes few calls (settings, one inhibit, one notification). Not measured: the cost with a real portal. The
-router stays alive 1.5 s after the last copy; it no longer holds the caller's error output open (a script that read it waited 1.5 s; found by the budget test).
+Where the differences come from:
+
+- Memory. RSS counts every page of a process that is in memory, including the pages of files it maps and shares with other processes. The proxy maps GLib and
+  the other libraries: 6 MB of RSS, of which only 0.48 MB is its own (PSS divides shared pages by the number of processes that share them). The router is the stub
+  itself (3.5 MB of static program, shared with the stub and the receiver): 2.3 MB of RSS, 0.38 MB of its own memory (anonymous), and a PSS of 0.9 to 1.15 MB that
+  depends on how many other processes have the stub mapped at that moment. The prototype was a smaller binary. The router stays at 0.38 MB of its own memory
+  with a read buffer of 64 KiB; two copies of an app share one router, so the cost of a second copy is one proxy (0.48 MB PSS).
+- Round trip. Profiling the first build with `strace` (the router run under it, dumpable for the measure) showed two system calls for every message beyond the
+  minimum of `poll`, `recvmsg` and `sendmsg`: a map and an unmap of 64 KiB, the buffer made again for each read, with the page faults of zeroing it. One buffer
+  for the life of the router removed them; the sequence is now `poll`, `recvmsg`, `sendmsg` for each message in each direction. `perf` is not allowed here
+  (`perf_event_paranoid` is 4), so the rest was not profiled in more detail; the remaining +10 us over the prototype is the parse of the header, the
+  state machine and the allocation of the message, and the seccomp filter of the client in the sandbox.
+- Start. The stages printed by `PANPAK_DEBUG` are the same in `main` and in the branch up to the proxy being ready (20.5 ms against 20.7 ms: the router adds 0.2 ms, because
+  its start is done by the worker thread in parallel with the proxy). The rest was in the exit: the stub waited for the thread that serves the router's requests and killed the
+  two proxies one after the other (2 to 3 ms). They are now stopped together and the thread is not waited for. The 36 to 37 ms of the study from a terminal are not
+  reproduced today by either `main` or the branch (40.5 to 41.8 ms): the difference is the machine on the day, not the layer. The budget of 45 ms with the layer is
+  unchanged.
+- The router stays alive 1.5 s after the last copy; it no longer holds the caller's error output open (a script that read it waited 1.5 s; found by the budget test).
