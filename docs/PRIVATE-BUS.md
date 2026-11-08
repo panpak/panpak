@@ -7,8 +7,8 @@ Status of the evidence, so that nothing is read as more than it is:
 
 - **Measured on this machine** (Ubuntu 26.04, kernel 7.0, GNOME session; every D-Bus and Wayland test on a private bus and a
   headless Sway, never on the session of the user): sections 2, 4, 5 and 6.
-- **Not run yet**: the tests on a real GNOME desktop (the VM with Bluefin) and on KDE Plasma (the Fedora KDE VM), including the
-  Wayland security context on KWin. Section 8 lists exactly what they will check; the results go there.
+- **Measured on two real desktops** (VMs: Bluefin with GNOME on Fedora 44, kernel 7.2.11; Fedora 45 KDE with Plasma, kernel 7.2.15; apps run in an isolated HOME on the
+  VM's own session): section 9, with checks by eye by the owner.
 - The router of the prototype is Python (it shows what is needed and that it works). The cost numbers come from a Rust skeleton
   of the same shape (150 lines, no file descriptors, no delivery between copies). A full Rust router is not written.
 
@@ -183,6 +183,9 @@ for the media alias, to the alias. A process of the user cannot call the app by 
 | Security surface | a C daemon of the host, written for trust between peers, in front of an untrusted app | the same | our parser, fuzzed, in a process with no rights |
 | Activation of services (case C) | must be switched off by the config (no service directories) | the same | none: there is nothing to activate |
 
+On the two VMs (Fedora with `dbus-broker`) `dbus-daemon` is also installed, so the bridge variant would run there; it is dropped for the
+reason in 3.1, not for availability.
+
 Alternatives discarded: a private `dbus-daemon` with a per-name bridge (unique name problem, extra daemon on every host);
 `dbus-broker` (cannot be started for one app); a router that also filters (option 2 of the old design: it is not needed because
 the proxy keeps filtering).
@@ -217,7 +220,11 @@ that Flatpak uses (Flatpak's rule set, recalled from its source, not checked aga
 `--call` for `org.a11y.atspi.Socket.Embed`, `Unembed`, `Registry.GetRegisteredEvents` and four methods of
 `DeviceEventController` (`GetKeystrokeListeners`, `GetDeviceEventListeners`, `NotifyListenersSync`, `NotifyListenersAsync`).
 Result: before, the app logs "Unable to acquire the address of the accessibility bus" and a client sees `[]`; after, the client
-lists `['gnome-text-editor']`. What the app does not get: the ability to register an event listener for keys or to see other
+lists `['gnome-text-editor']` (in the lab, and on the real GNOME session). **Qt needs more**: qBittorrent did not register until the
+router also answered `NameHasOwner("org.a11y.Bus")` (Qt asks whether the name exists first) and the properties of `org.a11y.Status`
+(`IsEnabled`, `ScreenReaderEnabled`); then it was listed on KDE. The prototype answered "enabled" for both, which is only a test;
+the product has to ask the real bus and pass on the changes (`PropertiesChanged` when a screen reader starts), or apps started before the
+screen reader would never register. What the app does not get: the ability to register an event listener for keys or to see other
 applications' widgets through the registry (those calls are not in the rules). The test checked that the app appears; it did not run a screen reader and did not
 try the refused calls one by one. Orca on the GNOME VM and a refusal check are in section 8.
 
@@ -303,24 +310,47 @@ Risks of the design:
    `org.freedesktop.Application.ActivateAction` on the app id. Today's callbacks do not work either (section 3.3); after the
    change a click starts the launcher, and single instance among copies does the rest. To check on GNOME and KDE.
 
-VM checklist (the owner turns each VM on; one at a time; back to the clean snapshot afterwards). The kit (binaries of the
-prototype, the packages, `vm_tests.py`) is prepared; it runs in an isolated HOME on the VM's own session:
+Risks 9 and 10, found on the VMs:
 
-- **GNOME (Bluefin VM).** `env`: versions, whether `dbus-daemon` is installed on a Fedora-based system with `dbus-broker`,
-  Landlock level. `lab`: A, B, C with the kit's stub on a private bus. `session`: Text Editor, qBittorrent, Ghostty with and without
-  the router: alive after 14 s, no registration error, the app id absent from the session bus, portal calls seen, tray item
-  registered with the watcher and a host-style `Activate` on it. `a11y`: the accessibility list with the real AT-SPI bus.
-  By eye (the owner): window visible, tray icon present and clickable if the AppIndicator extension is on, a notification, Orca
-  speaking in the Text Editor window.
-- **KDE (Fedora KDE VM).** The same, plus: the Wayland security context on KWin (the stub's "Wayland context" stage, the window
-  appears and the app does not get the compositor's privileged protocols), the Plasma tray (native) and Plasma's media widget with
-  the MPRIS alias.
-
-Results of both VMs are added to section 9 when run.
+9. **Qt applications need more than `GetAddress`** for accessibility (section 5.2): they ask whether the name `org.a11y.Bus`
+   exists and read `org.a11y.Status`. The router must answer both from the real bus and follow changes (`PropertiesChanged`
+   when a screen reader starts). Only a fixed "enabled" answer was tried.
+10. **The portal does not know the app on Fedora** (section 9, found with the notification test): independent of the private bus,
+    but the identity `panpak.<id>` is the base of notifications, permissions and the document portal.
 
 ## 9. Results on real desktops
 
-Not run yet.
+Method: the kit (binaries of the prototype, packages, `vm_tests.py`) copied to the VM; the parts `env`, `lab` (A, B, C on a private
+bus), `session` (the three apps on the VM's own session), `a11y`; then checks by eye by the owner, one at a time. Router: `router3.py`
+(shared) for the apps, `router2.py` for the accessibility, links and media parts. The VMs went back to a clean state.
+
+| Check | GNOME (Bluefin, Fedora 44) | KDE (Fedora 45, Plasma) |
+|---|---|---|
+| Bus on the host | `dbus-broker`; `dbus-daemon` binary also installed; `xdg-dbus-proxy` 0.1.9; portal 1.22.1; Landlock V9 | the same (`dbus-broker`, `dbus-daemon` installed, proxy 0.1.9, portal 1.22.1-2, Landlock V9) |
+| A, B, C (stub and sandbox of the kit) | before `ok ok ok` / squatter answers / native started; after `error error error` / `ServiceUnknown`, 0 received / not started | the same numbers |
+| Text Editor | alive after 14 s with and without the router; id `org.gnome.TextEditor` owned on the real bus (`:1.140`) before, none after; by eye: window, correct icon, light and dark follow | **crashes with and without the router** (SIGSEGV in `libgtk-4`, from a Wayland event at display open; also with the security context off) |
+| qBittorrent | alive; tray item registered with the watcher, properties readable, `Activate` answered, with and without the router; by eye: tray icon and menu | alive; tray items registered; by eye: tray icon right, click shows or hides the window, right click opens the menu |
+| Ghostty | alive with the router; by eye: window with a shell, new window with `Ctrl+Shift+N` in the same instance | **crashes** (same SIGSEGV; stack of Text Editor only) |
+| Wayland security context | none: Mutter has no protocol (the stub says so) | used; the sandboxed app sees 61 globals against 68 on the full socket; hidden: `org_kde_kwin_fake_input`, `org_kde_plasma_window_management`, `zkde_screencast_unstable_v1`, `ext_data_control_manager_v1`, `kde_lockscreen_overlay_v1`, `org_kde_plasma_activation_feedback` and the security context manager |
+| Accessibility, GTK | applications on the AT-SPI bus: without the router the app is absent; with it `gnome-text-editor` is listed. By eye with Orca: text and buttons are spoken; menus were silent in the first run and spoken in a second run with the same setup | not run (Text Editor crashes) |
+| Accessibility, Qt | not run | with only `GetAddress` served: the app does not appear. After also answering `NameHasOwner("org.a11y.Bus")` and the status properties: `qBittorrent` is listed |
+| Notification through the portal | the backend gets `AddNotification` with an empty `app_id`, with and without the router; no notification shown | the same: empty `app_id` |
+| Links | the shim `xdg-open` in the view answers 0; the address reaches the system `xdg-open` (seen on the bus); no browser tab (with an isolated HOME and with the real data folders). The same `xdg-open` run directly opens Firefox | not run |
+| Media player widget (MPRIS alias) | not run on the desktop (lab only) | not run |
+
+What this means:
+
+1. **The private bus works on both desktops for what could be run** (names, tray, portal calls, accessibility for GTK and Qt).
+   Tray callbacks from the real GNOME and KDE hosts pass through, with the unique name kept.
+2. **Four findings that are not caused by the private bus** (the same without the router), to be handled apart:
+   - the portal 1.22.1 of Fedora 44 and 45 reports an empty `app_id` for the panpak scope (the portal of Ubuntu 26.04 reported `panpak.<id>`);
+     notifications are accepted and then dropped;
+   - GTK 4.18 apps from the Debian 13 image crash at display open on Fedora 45 KDE;
+   - the application icon in the task bar is a gear or another app's icon for qBittorrent (GNOME and KDE) and Ghostty (GNOME), because the
+     desktop entry has no `StartupWMClass` in the test packages; Text Editor is right (F24);
+   - the opener channel returns 0 and nothing opens on the Fedora GNOME VM (F29 stays open; cause not found).
+3. **Not run:** MPRIS on a real shell, Orca on KDE (no GTK app runs there), notifications with a correct `app_id`, a real Plasma tray with
+   Plasma's own icons for the alias, the 25 AppImages on the prototype.
 
 ## 10. What the owner decides
 
