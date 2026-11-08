@@ -34,7 +34,7 @@ want() {
   fi
 }
 
-# Scheduled runs continue only on the first Monday of the month.
+# Scheduled runs continue only on Monday.
 all=true
 if [ "$EVENT" = schedule ] && [ "${MONDAY_RUN:-}" != true ]; then
   all=false

@@ -3,7 +3,7 @@
 # No secrets (only the default read-only token), no publish.
 #
 # Where each job runs (the minutes budget is the reason for this split):
-#   - always (pull request, push to main, manual and monthly runs): the fast
+#   - always (pull request, push to main, manual and weekly runs): the fast
 #     checks clippy, licenses (with cargo-deny), secrets and, on a pull request or
 #     a push, DCO.
 #   - pull_request: the heavy jobs (build-test with conformance, fuzz-smoke, repro,
@@ -12,12 +12,11 @@
 #     REPRODUCIBLE-HASHES.md always starts repro.
 #   - push to main: only the fast checks. main receives only fast-forwards of
 #     commits that already passed every job in their pull request.
-#   - workflow_dispatch and the monthly schedule: everything, with a longer fuzz
+#   - workflow_dispatch and the weekly schedule: everything, with a longer fuzz
 #     run on the schedule. This catches new advisories, new nightly toolchains
 #     and drift in the base images even when nobody opens a pull request.
-#     The schedule is monthly, not weekly, only while the repository is private
-#     (every minute is billed): make it weekly again when the repository goes
-#     public, where Actions minutes are free.
+#     The schedule is weekly (Monday): the repository is public, where Actions
+#     minutes are free.
 #   - gate: always the last job. It fails when a job that had to run did not
 #     succeed, and also when a job that had to run was skipped
 #     (scripts/ci-gate.sh). Require this job, not the others, in the branch rules.
@@ -33,10 +32,8 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    # First Monday of the month, 03:17 UTC. Cron cannot say that: with both a
-    # day of the month and a weekday, it fires when either matches. So the
-    # trigger fires on days 1 to 7 and the monday job below lets only Monday through.
-    - cron: "17 3 1-7 * *"
+    # Every Monday, 03:17 UTC.
+    - cron: "17 3 * * 1"
 
 # One run per ref: a new push cancels the previous run of the same branch or pull
 # request. The scheduled and manual runs have their own group, so a push to main
@@ -63,16 +60,17 @@ env:
 
 jobs:
   monday:
-    # Scheduled runs only: continue on the first Monday of the month, stop on the
-    # other days 1 to 7. Every other job lists this one in needs and starts unless
-    # the answer is exactly "false" (the job is skipped on other events, which
-    # leaves the answer empty).
+    # Scheduled runs only: continue on Monday, stop on any other day (the cron
+    # fires on Mondays only; this is a second check, and keeps the shape that the
+    # other jobs depend on). Every other job lists this one in needs and starts
+    # unless the answer is exactly "false" (the job is skipped on other events,
+    # which leaves the answer empty).
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
     outputs:
       run: ${{ steps.monday.outputs.run }}
     steps:
-      - name: First Monday of the month
+      - name: Monday
         id: monday
         run: |
           if [ "$(date -u +%u)" = 1 ]; then run=true; else run=false; fi
