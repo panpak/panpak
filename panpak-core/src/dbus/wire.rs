@@ -503,9 +503,21 @@ pub fn message_len(head: &[u8; 16], lim: &Limits) -> Result<usize> {
     }
 }
 
-/// Parse a whole message. `avail_fds` is how many descriptors are waiting; the message says how
-/// many of them are its own (`unix_fds`), and it is refused if it claims more than are waiting.
-pub fn parse_message(buf: &[u8], avail_fds: usize, lim: &Limits) -> Result<Message> {
+/// A message whose header was read and whose body was only measured: what a router needs for a message it passes on.
+#[derive(Debug, Clone)]
+pub struct Head {
+    /// The header fields; `body` is empty.
+    pub msg: Message,
+    /// Offset of the body in the buffer, and its length.
+    pub body_start: usize,
+    pub body_len: usize,
+    pub big: bool,
+}
+
+/// Parse the fixed header and the header fields of a whole message and check the body only for its length. `avail_fds` is how many
+/// descriptors are waiting; the message says how many of them are its own (`unix_fds`), and it is refused if it claims more than
+/// are waiting. The body is not read: its bytes are for the caller to pass on (or to parse with `parse_message`).
+pub fn parse_head(buf: &[u8], avail_fds: usize, lim: &Limits) -> Result<Head> {
     ensure!(buf.len() >= 16, "message shorter than its fixed header");
     let head: [u8; 16] = buf[..16].try_into().unwrap();
     let total = message_len(&head, lim)?;
@@ -576,14 +588,22 @@ pub fn parse_message(buf: &[u8], avail_fds: usize, lim: &Limits) -> Result<Messa
     }
     ensure!(m.unix_fds as usize <= lim.max_fds, "message announces {} descriptors, limit is {}", m.unix_fds, lim.max_fds);
     ensure!(m.unix_fds as usize <= avail_fds, "message announces {} descriptors, {avail_fds} arrived", m.unix_fds);
+    check_signature(&m.signature)?;
+    ensure!(m.signature.is_empty() == (body_len == 0), "body and signature disagree");
+    Ok(Head { msg: m, body_start: 16 + fields_len.div_ceil(8) * 8, body_len, big })
+}
+
+/// Parse a whole message. `avail_fds` is how many descriptors are waiting; the message says how
+/// many of them are its own (`unix_fds`), and it is refused if it claims more than are waiting.
+pub fn parse_message(buf: &[u8], avail_fds: usize, lim: &Limits) -> Result<Message> {
+    let h = parse_head(buf, avail_fds, lim)?;
+    let mut m = h.msg;
     let nfds = m.unix_fds as usize;
-    let body_start = 16 + fields_len.div_ceil(8) * 8;
-    let mut r = Reader::new(&buf[..body_start + body_len], body_start, big, nfds, *lim);
+    let mut r = Reader::new(&buf[..h.body_start + h.body_len], h.body_start, h.big, nfds, *lim);
     for t in split_signature(&m.signature)? {
         m.body.push(r.value(t, 0)?);
     }
-    ensure!(r.pos() == body_start + body_len, "bytes left over after the body");
-    ensure!(m.signature.is_empty() == (body_len == 0), "body and signature disagree");
+    ensure!(r.pos() == h.body_start + h.body_len, "bytes left over after the body");
     Ok(m)
 }
 
@@ -598,6 +618,14 @@ pub fn encode_message(m: &Message) -> Result<Vec<u8>> {
         ensure!(v.signature() == *s, "body value has signature {} instead of {s}", v.signature());
         body.value(v)?;
     }
+    encode_with_body(m, &body.buf)
+}
+
+/// Encode the header of `m` (little endian) in front of `body`, which is already in wire form (its alignment is relative to a start at a
+/// multiple of 8, as a body always is). The values in `m.body` are not used. This is how a router puts a new sender on a message whose body it
+/// does not read.
+pub fn encode_with_body(m: &Message, body: &[u8]) -> Result<Vec<u8>> {
+    check_signature(&m.signature)?;
     let mut fields = Vec::new();
     let mut field = |code: u8, v: Value| fields.push(Value::Struct(vec![Value::Byte(code), Value::variant(v)]));
     if let Some(s) = &m.path {
@@ -618,6 +646,9 @@ pub fn encode_message(m: &Message) -> Result<Vec<u8>> {
     if let Some(s) = &m.destination {
         field(6, Value::Str(s.clone()));
     }
+    if let Some(s) = &m.sender {
+        field(7, Value::Str(s.clone()));
+    }
     if !m.signature.is_empty() {
         field(8, Value::Sig(m.signature.clone()));
     }
@@ -626,11 +657,11 @@ pub fn encode_message(m: &Message) -> Result<Vec<u8>> {
     }
     let mut w = Writer::new();
     w.buf.extend_from_slice(&[b'l', m.kind, m.flags, 1]);
-    w.buf.extend_from_slice(&(body.buf.len() as u32).to_le_bytes());
+    w.buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
     w.buf.extend_from_slice(&m.serial.to_le_bytes());
     w.value(&Value::Array("(yv)".into(), fields))?;
     w.pad(8);
-    w.buf.extend_from_slice(&body.buf);
+    w.buf.extend_from_slice(body);
     Ok(w.buf)
 }
 
