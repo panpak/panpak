@@ -123,16 +123,20 @@ def add_permissions(src, dst, extra, seed):
     Path(dst).chmod(0o755)
 
 
-def bad_links(path):
-    """Symbolic links of the AppImage that the runtime refuses (absolute, or leaving the root), read with `unsquashfs -ll`. Empty without squashfs-tools."""
-    if not shutil.which("unsquashfs"):
-        return []
+def squashfs_offset(path):
+    """Where the squashfs of an AppImage starts: the end of its ELF section headers."""
     with open(path, "rb") as f:
         h = f.read(64)
     shoff, = struct.unpack_from("<Q", h, 0x28)
     shentsize, shnum = struct.unpack_from("<HH", h, 0x3A)
-    off = shoff + shentsize * shnum
-    out = sh(["unsquashfs", "-o", off, "-ll", path], timeout=1200).stdout
+    return shoff + shentsize * shnum
+
+
+def bad_links(path):
+    """Symbolic links of the AppImage that the runtime refuses (absolute, or leaving the root), read with `unsquashfs -ll`. Empty without squashfs-tools."""
+    if not shutil.which("unsquashfs"):
+        return []
+    out = sh(["unsquashfs", "-o", squashfs_offset(path), "-ll", path], timeout=1200).stdout
     bad = []
     for ln in out.splitlines():
         m = re.match(r"^l\S+\s+\S+\s+\d+\s+\S+\s+\S+\s+squashfs-root/(.*) -> (.*)$", ln)
@@ -145,17 +149,58 @@ def bad_links(path):
     return bad
 
 
+def without_bad_links(ctx, src, bad):
+    """A copy of the AppImage without the links the runtime refuses (`fixed-<name>` next to the download, made once): the harness tests the app, not the
+    way its authors packed a man page. `panpak convert` takes such an AppImage and the package then stops at the start with PANPAK-E2000 (symlink
+    escapes root), so the harness removes them, as the one of step 13a did."""
+    fixed = src.with_name("fixed-" + src.name)
+    if fixed.exists():
+        return fixed
+    off = squashfs_offset(src)
+    tmp = ctx.work / "fix-extract"
+    shutil.rmtree(tmp, ignore_errors=True)
+    sq = ctx.work / "fixed.sqfs"
+    try:
+        sh(["nice", "-n", "19", "unsquashfs", "-o", off, "-f", "-d", tmp, src], timeout=2400)
+        for p, _ in bad:
+            try:
+                os.unlink(tmp / p)
+            except OSError:
+                pass
+        sq.unlink(missing_ok=True)
+        r = sh(["nice", "-n", "19", "mksquashfs", tmp, sq, "-comp", "zstd", "-noappend", "-quiet", "-no-progress"], timeout=3000)
+        if r.returncode != 0:
+            raise StepError("mksquashfs failed: " + (r.stdout + r.stderr).strip()[-300:])
+        part = fixed.with_name(fixed.name + ".part")
+        part.write_bytes(src.read_bytes()[:off] + sq.read_bytes())
+        part.chmod(0o755)
+        part.rename(fixed)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        sq.unlink(missing_ok=True)
+    return fixed
+
+
+def max_allow():
+    """How many libraries nothing provides the harness allows, one by one, before it stops (HCAP, default 60: a Qt 6 AppImage can lack a dozen modules)."""
+    try:
+        return max(1, int(os.environ.get("HCAP", "60")))
+    except ValueError:
+        return 60
+
+
 def convert(ctx, app, key, fetched):
     """AppImage to package: `convert`, then the permissions of the app, then `doctor`; a library that nothing provides is allowed by name and the conversion runs again
-    (up to 8 times), as a packager would. `fetched` is what `fetch` returned. Returns (package path, notes)."""
+    (up to HCAP times, 60 by default), as a packager would. `fetched` is what `fetch` returned. Returns (package path, notes)."""
     src, _digest, notes = fetched
     links = bad_links(src)
     if links:
-        raise StepError(f"{src.name} has symbolic links that the runtime refuses ({len(links)}, for example {links[0][0]} -> {links[0][1]}): remove them from the AppImage first")
+        src = without_bad_links(ctx, src, links)
+        notes.append(f"removed {len(links)} symbolic link(s) with an absolute or outside target that the runtime refuses, for example {links[0][0]} -> {links[0][1]}")
     pkg = ctx.pkgs / f"{app.name}-{key}.panpak"
     base = ctx.pkgs / f"{app.name}-{key}.base"
     allow = []
-    for _ in range(8):
+    for _ in range(max_allow()):
         cmd = [ctx.panpak, "convert", src, "--id", app.id, "--stub", ctx.stub, "--secret-file", ctx.keyfile, "-o", base] + app.convert_opts + [x for a in allow for x in ("--allow-missing", a)]
         r = sh(cmd, env={**BASE_ENV, "HOME": str(ctx.work)})
         if r.returncode != 0:

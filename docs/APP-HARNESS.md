@@ -46,8 +46,8 @@ python3 tests/apps/run.py --apps LIST.toml [--full] [--group qt,gtk] [--list] [-
 
 The tools needed are `bwrap`, `xdg-dbus-proxy` (for apps with D-Bus
 permissions), `curl`, `xwininfo` and `Xvfb` for X11 apps, `sway` 1.9 or newer
-for Wayland apps, and `unsquashfs` (optional, to refuse AppImages with symbolic
-links that the runtime does not accept). Python 3.11 or newer is needed (TOML).
+for Wayland apps, and `unsquashfs` (optional; with it the harness makes a copy of an AppImage without the symbolic
+links that the runtime refuses, `fixed-<name>` next to the download). Python 3.11 or newer is needed (TOML).
 A build of a recipe needs network access to the registry and to the Debian
 snapshot service, and the memory the recipe declares.
 
