@@ -53,16 +53,16 @@ to the local server; the content is not changed. One run per app: the number of 
 
 | App | Old to new | New AppImage | New package | Fetched by `update` | Share of the package | Chunks new / total | Requests |
 |---|---|---:|---:|---:|---:|---:|---:|
-| AppImageLauncher Lite | 2.2.0 to 3.0.0-beta-3 | 36,542,968 | 43,862,052 | 39,504,170 | 90.1% | 1,293 / 1,366 | 40 |
-| QOwnNotes | 26.10.8 to 26.10.9 | 62,347,768 | 68,304,440 | 5,280,412 | 7.7% | 151 / 3,200 | 6 |
-| Simplenote | 2.27.0 to 2.27.1 | 147,197,267 | 156,373,909 | 1,731,647 | 1.1% | 78 / 5,419 | 12 |
+| AppImageLauncher Lite | 2.2.0 to 3.0.0-beta-3 | 36,542,968 | 44,585,107 | 39,504,718 | 88.6% | 1,293 / 1,372 | 40 |
+| QOwnNotes | 26.10.8 to 26.10.9 | 62,347,768 | 68,977,143 | 5,280,308 | 7.7% | 151 / 3,201 | 6 |
+| Simplenote | 2.27.0 to 2.27.1 | 147,197,267 | 157,216,344 | 1,732,034 | 1.1% | 78 / 5,424 | 12 |
 
 Where Panpak does worse:
 
 - When most of the app changes, an update saves almost nothing: AppImageLauncher between these two
-  versions fetches 90.1% of the package.
-- The package is larger than the AppImage it comes from: 20% for AppImageLauncher, 9.6% for QOwnNotes,
-  6.2% for Simplenote. For AppImageLauncher the update (39.5 MB) is larger than the new AppImage
+  versions fetches 88.6% of the package.
+- The package is larger than the AppImage it comes from: 22% for AppImageLauncher, 10.6% for QOwnNotes,
+  6.8% for Simplenote. For AppImageLauncher the update (39.5 MB) is larger than the new AppImage
   (36.5 MB). An AppImage user who updates with a delta tool such as zsync was not measured.
 
 ## Start time
@@ -89,19 +89,19 @@ Medians in milliseconds (minimum to maximum in brackets):
 
 | App | `install` | Panpak, first start | Panpak, later, warm | Panpak, later, cold | AppImage, warm | AppImage, cold |
 |---|---:|---:|---:|---:|---:|---:|
-| AppImageLauncher Lite | 38 | 295 (286-303) | 42 (41-53) | 224 (40-262) | 19 (18-27) | 61 (58-68) |
-| QOwnNotes | 49 | 577 (546-600) | 50 (47-62) | 243 (48-254) | 203 (188-227) | 293 (277-306) |
-| PrusaSlicer | 63 | 701 (654-709) | 87 (78-94) | 195 (112-210) | 315 (298-326) | 434 (414-457) |
+| AppImageLauncher Lite | 103 | 309 (305-314) | 38 (36-42) | 217 (37-225) | 20 (19-25) | 20 (18-25) |
+| QOwnNotes | 93 | 595 (578-606) | 47 (43-60) | 234 (56-250) | 213 (204-236) | 293 (279-297) |
+| PrusaSlicer | 102 | 706 (690-830) | 81 (76-85) | 180 (82-188) | 314 (302-319) | 437 (379-458) |
 
 What the numbers show:
 
-- **The first start extracts the app.** It takes 0.3 to 0.7 s here, 7 to 12 times a later warm start.
+- **The first start extracts the app.** It takes 0.3 to 0.7 s here, 8 to 13 times a later warm start.
   An AppImage has no such step. The time depends on the size of the app and on the disk.
-- **A later warm start is fast.** For QOwnNotes and PrusaSlicer it is 4 and 3.6 times faster than the
+- **A later warm start is fast.** For QOwnNotes and PrusaSlicer it is 4.5 and 3.9 times faster than the
   AppImage, which mounts its image through FUSE at every start.
-- **For a very small program Panpak is slower**: `ail-cli --help` takes 42 ms against 19 ms.
-- **A cold later start is slow and uneven.** The medians are 195 to 243 ms and the ranges are wide (for
-  AppImageLauncher 40 to 262 ms). The spread was not investigated.
+- **For a very small program Panpak is slower**: `ail-cli --help` takes 38 ms against 20 ms.
+- **A cold later start is slow and uneven.** The medians are 180 to 234 ms and the ranges are wide (for
+  AppImageLauncher 37 to 225 ms). The spread was not investigated.
 
 The time to the first window of real GUI apps, with a first start and later starts, is in
 [COMPATIBILITY.md](COMPATIBILITY.md) (one first start and the median of five later starts, measured by a
@@ -148,6 +148,20 @@ gives and a bare test runner does not. The rows are in [`bench-data/startup-budg
 | this branch | yes, started in the desktop's scope (`app-gnome-panpak.<id>-<n>.scope`) | 0.9 ms | 26.7 ms | 25.8 ms |
 | step 7b (desktop integration) | yes, the stub makes its own scope | 1.0 ms | 41.3 ms | 40.3 ms |
 | step 7b (desktop integration) | yes, started in the desktop's scope | 0.9 ms | 26.2 ms | 25.3 ms |
+| main after step 13p (cdfc28f) | no | 1.0 ms | 26.6 ms | 25.6 ms |
+| main after step 13p (cdfc28f) | yes, the stub makes its own scope (terminal) | 1.0 ms | 42.3 ms | 41.4 ms |
+| main after step 13p (cdfc28f) | yes, started in the app's scope (menu) | 1.0 ms | 30.1 ms | 29.1 ms |
+
+Rows for step 13p (the private bus: a router process for each app and two proxies) were measured on another day than the rows above, and the
+machine was slower that day: in the same series (`main` before and after the step, alternating, two rounds) the step adds 0.3 to 0.8 ms
+(terminal 40.5-41.0 against 41.0-41.8 ms; menu 26.9-27.3 against 27.5-27.6 ms). Four runs of the final build gave 40.9 to 42.5 ms from a terminal and 28.5 to
+29.4 ms from the menu. The menu rows run the script inside a scope that the portal reads as the app, as the desktop does when it starts an app:
+
+```sh
+python3 tests/startup_budget.py --runs 40 --dbus                 # from a terminal: the stub makes its own scope
+systemd-run --user --scope --unit app-panpak.org.example.budget-0000a001.scope \
+    python3 tests/startup_budget.py --runs 40 --dbus             # as the menu starts it (change the number for each run)
+```
 
 What was done: the two `gsettings` queries start with the process and are read at the end of the preparation; the
 D-Bus layer (scope and proxy) is built on another thread from the moment the package is verified, the proxy starts while
@@ -199,6 +213,50 @@ is part of it and is not timed on its own.
 
 The cache saves the work, not the checks: the signature, the pin, the index, the stub and Landlock are
 checked at every start whether or not the cache is used (see `STARTUP-CACHE.md`).
+
+## Time to the window of apps built from source
+
+Method: `tests/apps/run.py --full` with the list of `tests/apps/apps.example.toml` (headless Sway, an isolated HOME for each app, the package built by
+`panpak build` in the pinned image): the first start, then five starts, and the median of the five is the time from the start of the launcher to the first
+window of the app. Measured on the final build of step 13p: Text Editor 0.37 s, qBittorrent 0.16 s, Ghostty 0.27 s. The recipe of the README (Text Editor
+with `xdg_dirs`) gave 0.42 s with the same method.
+
+```sh
+python3 tests/apps/run.py --apps tests/apps/apps.example.toml --full --group source
+```
+
+## Start of a command-line program
+
+Neovim 0.12 converted from its AppImage, `--version`, later start (the tree is built), `HOME` isolated, 40 runs after 5 discarded: median 31.6 ms, 90th percentile
+37.0 ms. The harness gives the same package (`python3 tests/apps/run.py --apps LIST.toml --full neovim`, 32 ms to the first output); the 40 runs are
+`subprocess.run([launcher, "--version"])` around a monotonic clock, as in the start-time table above.
+
+## Chunks shared by two apps built in the same image
+
+Method: `bench/shared_chunks.py` reads the chunk table of two packages (`panpak dump-index`) and compares the chunks by hash. The packages are the ones
+`tests/apps/run.py` builds from `tests/apps/apps.example.toml` on the final build of step 13p. Text Editor (49.2 MB stored) and Ghostty (53.3 MB), both
+GTK 4: 2,755 chunks in common, 32.7 MB, which is 67% of Text Editor and 61% of Ghostty by stored bytes; each chunk stored once, the two take 69.8 MB
+instead of 102.5 MB (32% less). The gain exists because both were built in one pinned image; an AppImage conversion would rarely share. Nothing in the
+runtime stores chunks once yet: this is what a shared store (on the roadmap) could save.
+
+```sh
+python3 tests/apps/run.py --apps tests/apps/apps.example.toml --group source   # builds the packages in target/apps-harness/pkg
+python3 bench/shared_chunks.py target/apps-harness/pkg/text-editor-*.panpak target/apps-harness/pkg/ghostty-*.panpak
+```
+
+## Sources of the comparison table in the README
+
+The table compares properties, not speed. Each box rests on the official documentation (read on 2026-11-09); where a page could not be read in full or says
+nothing, the box says less.
+
+| Box | Panpak | AppImage | Flatpak | Snap |
+|---|---|---|---|---|
+| One file you can copy | the package, with the libraries it needs; the runtime is installed from it | the file; needs FUSE 2 or extraction ([FUSE](https://docs.appimage.org/user-guide/troubleshooting/fuse.html)) | a single-file bundle exists, "don't include dependencies" (the runtime comes from a repository) ([bundles](https://docs.flatpak.org/en/latest/single-file-bundles.html)) | a `.snap` file; needs snapd and its base snap ([bases](https://snapcraft.io/core22)) |
+| Checked | signature and pinned key at every start; every chunk when the tree is made; the tree is not rehashed at every start ([THREAT-MODEL.md](../THREAT-MODEL.md), KL-18) | signing is optional and "an external tool ... needs to be used" to validate; no check when it runs ([signatures](https://docs.appimage.org/packaging-guide/optional/signatures.html)) | repositories are signed with a GPG key that the remote carries ([hosting](https://docs.flatpak.org/en/latest/hosting-a-repository.html)); the pages read do not describe when the client checks | signed assertions that carry the `snap-sha3-384` hash of each snap; the page read does not say when snapd checks it ([assertions](https://snapcraft.io/docs/explanation/security/assertions/)) |
+| Sandbox | layered, always on in the isolated view; Landlock alone without bubblewrap | none | "can only access the contents of its sandbox" unless permissions are granted; apps can ask for wide permissions ([basic concepts](https://docs.flatpak.org/en/latest/basic-concepts.html)) | strict confinement is sandboxed; classic and devmode snaps are not ([confinement](https://snapcraft.io/docs/snap-confinement), seen through a search result) |
+| Shared runtime to download | none; libraries come from the package and the system | none | yes: "runtimes provide the basic dependencies", installed on the host | base snaps are installed on demand, one copy of each ([core22](https://snapcraft.io/core22)) |
+| Root or daemon | none of its own; needs bubblewrap, and xdg-dbus-proxy for the bus (usually there with Flatpak) | none, but FUSE 2 (or extraction) | no daemon of its own for user installs; uses bubblewrap and systemd ([under the hood](https://docs.flatpak.org/en/latest/under-the-hood.html)) | snapd, a background service that must run ([system architecture](https://snapcraft.io/docs/system-architecture)) |
+| Delta updates | chunks, measured above | only if the author embeds update information; AppImageUpdate then fetches the missing data with zsync ([updates](https://docs.appimage.org/packaging-guide/optional/updates.html)) | static deltas, if the repository publishes them (`--generate-static-deltas`) ([hosting](https://docs.flatpak.org/en/latest/hosting-a-repository.html)) | store-made deltas, applied with xdelta3 when snapd finds it ([forum](https://forum.snapcraft.io/t/state-of-snap-delta-vs-full-downloads-in-2020/15499)) |
 
 ## Limits of these measurements
 

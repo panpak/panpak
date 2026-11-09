@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **README rewritten** around what Panpak is for (a secure and fast format for desktop and command-line apps, good for atomic distributions); the requirements moved to
+  `docs/REQUIREMENTS.md`; every number has a command and a date in `docs/BENCHMARKS.md`, which now also holds the sources of the comparison table and
+  `bench/shared_chunks.py`. The benchmark data of updates and starts were measured again on the final build of step 13p (the packages are larger by the icon caches).
+
 - **A private bus for each app (step 13p).** The names of an app (its id and any name it takes) are on a bus of its own, in a router process shared by all copies of
   that app (started by the first, ended after the last), and never on the host bus. A native program with the same D-Bus name no longer meets the copy (KL-31 closed:
   Ghostty, F22 and F23). The router registers the identity `panpak.<id>` with the portal itself (the app cannot), answers `OpenURI` through the address-opening channel

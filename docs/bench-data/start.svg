@@ -16,38 +16,38 @@
 <text class="muted" x="16" y="46" font-size="12">Median of 5 first starts and of 10 later starts per bar; AppImage through userspace FUSE</text>
 <line class="grid" x1="215" y1="62" x2="215" y2="466"/>
 <text class="fg" x="205" y="127" font-size="13" text-anchor="end">ail</text>
-<rect class="s0" x="215" y="70" width="183.2" height="18" rx="2"/>
-<text class="fg" x="404.2" y="83" font-size="12">295 ms</text>
-<rect class="s1" x="215" y="92" width="26.1" height="18" rx="2"/>
-<text class="fg" x="247.1" y="105" font-size="12">42 ms</text>
-<rect class="s2" x="215" y="114" width="139.2" height="18" rx="2"/>
-<text class="fg" x="360.2" y="127" font-size="12">224 ms</text>
-<rect class="s3" x="215" y="136" width="11.5" height="18" rx="2"/>
-<text class="fg" x="232.5" y="149" font-size="12">19 ms</text>
-<rect class="s4" x="215" y="158" width="37.8" height="18" rx="2"/>
-<text class="fg" x="258.8" y="171" font-size="12">61 ms</text>
+<rect class="s0" x="215" y="70" width="190.5" height="18" rx="2"/>
+<text class="fg" x="411.5" y="83" font-size="12">309 ms</text>
+<rect class="s1" x="215" y="92" width="23.6" height="18" rx="2"/>
+<text class="fg" x="244.6" y="105" font-size="12">38 ms</text>
+<rect class="s2" x="215" y="114" width="133.9" height="18" rx="2"/>
+<text class="fg" x="354.9" y="127" font-size="12">217 ms</text>
+<rect class="s3" x="215" y="136" width="12.6" height="18" rx="2"/>
+<text class="fg" x="233.6" y="149" font-size="12">20 ms</text>
+<rect class="s4" x="215" y="158" width="12.5" height="18" rx="2"/>
+<text class="fg" x="233.5" y="171" font-size="12">20 ms</text>
 <text class="fg" x="205" y="255" font-size="13" text-anchor="end">qownnotes</text>
-<rect class="s0" x="215" y="198" width="358.1" height="18" rx="2"/>
-<text class="fg" x="579.1" y="211" font-size="12">577 ms</text>
-<rect class="s1" x="215" y="220" width="30.9" height="18" rx="2"/>
-<text class="fg" x="251.9" y="233" font-size="12">50 ms</text>
-<rect class="s2" x="215" y="242" width="150.6" height="18" rx="2"/>
-<text class="fg" x="371.6" y="255" font-size="12">243 ms</text>
-<rect class="s3" x="215" y="264" width="126.0" height="18" rx="2"/>
-<text class="fg" x="347.0" y="277" font-size="12">203 ms</text>
-<rect class="s4" x="215" y="286" width="181.5" height="18" rx="2"/>
-<text class="fg" x="402.5" y="299" font-size="12">293 ms</text>
+<rect class="s0" x="215" y="198" width="366.3" height="18" rx="2"/>
+<text class="fg" x="587.3" y="211" font-size="12">595 ms</text>
+<rect class="s1" x="215" y="220" width="29.0" height="18" rx="2"/>
+<text class="fg" x="250.0" y="233" font-size="12">47 ms</text>
+<rect class="s2" x="215" y="242" width="144.3" height="18" rx="2"/>
+<text class="fg" x="365.3" y="255" font-size="12">234 ms</text>
+<rect class="s3" x="215" y="264" width="131.3" height="18" rx="2"/>
+<text class="fg" x="352.3" y="277" font-size="12">213 ms</text>
+<rect class="s4" x="215" y="286" width="180.2" height="18" rx="2"/>
+<text class="fg" x="401.2" y="299" font-size="12">293 ms</text>
 <text class="fg" x="205" y="383" font-size="13" text-anchor="end">prusaslicer</text>
 <rect class="s0" x="215" y="326" width="435.0" height="18" rx="2"/>
-<text class="fg" x="656.0" y="339" font-size="12">701 ms</text>
-<rect class="s1" x="215" y="348" width="54.1" height="18" rx="2"/>
-<text class="fg" x="275.1" y="361" font-size="12">87 ms</text>
-<rect class="s2" x="215" y="370" width="121.1" height="18" rx="2"/>
-<text class="fg" x="342.1" y="383" font-size="12">195 ms</text>
-<rect class="s3" x="215" y="392" width="195.2" height="18" rx="2"/>
-<text class="fg" x="416.2" y="405" font-size="12">315 ms</text>
-<rect class="s4" x="215" y="414" width="269.5" height="18" rx="2"/>
-<text class="fg" x="490.5" y="427" font-size="12">434 ms</text>
+<text class="fg" x="656.0" y="339" font-size="12">706 ms</text>
+<rect class="s1" x="215" y="348" width="50.0" height="18" rx="2"/>
+<text class="fg" x="271.0" y="361" font-size="12">81 ms</text>
+<rect class="s2" x="215" y="370" width="110.7" height="18" rx="2"/>
+<text class="fg" x="331.7" y="383" font-size="12">180 ms</text>
+<rect class="s3" x="215" y="392" width="193.3" height="18" rx="2"/>
+<text class="fg" x="414.3" y="405" font-size="12">314 ms</text>
+<rect class="s4" x="215" y="414" width="268.9" height="18" rx="2"/>
+<text class="fg" x="489.9" y="427" font-size="12">437 ms</text>
 <rect class="s0" x="16" y="478" width="12" height="12" rx="2"/>
 <text class="fg" x="34" y="489" font-size="12">Panpak, first start</text>
 <rect class="s1" x="189" y="478" width="12" height="12" rx="2"/>
@@ -58,5 +58,5 @@
 <text class="fg" x="567" y="489" font-size="12">AppImage warm</text>
 <rect class="s4" x="16" y="498" width="12" height="12" rx="2"/>
 <text class="fg" x="34" y="509" font-size="12">AppImage cold</text>
-<text class="muted" x="16" y="536" font-size="11">AMD Ryzen 7 7735HS, Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic, 2026-10-31</text>
+<text class="muted" x="16" y="536" font-size="11">AMD Ryzen 7 7735HS, Ubuntu 26.04.1 LTS, kernel 7.0.0-42-generic, 2026-11-09</text>
 </svg>

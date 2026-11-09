@@ -700,9 +700,10 @@ Status of the project: pre-beta.
   KNotification) are shown, but a click or an action button does not reach the app. Apps that use the portal are not
   affected, and GTK apps use it because the layer sets `GTK_USE_PORTAL=1`. Which apps lose actions is derived from the
   toolkit, not measured with each app.
-- **KL-27 The single-instance name is the upstream id.** The app owns its own `app.id` on the session bus, as GTK and KDE
-  applications do for single instance. A Flatpak or a distribution package of the same program that runs on the same bus competes for the
-  name, and a request from one can reach the other. Other programs cannot own or talk to that name unless the user runs them.
+- **KL-27 The single-instance name is the upstream id, on the app's own bus.** The app owns its `app.id` on its private bus
+  (step 13p), as GTK and KDE applications do for single instance, so the copies of the app find each other through the router. A Flatpak or a
+  distribution package of the same program on the host bus no longer competes for the name (before 13p it could, see KL-31). The portals know the
+  app as `panpak.<app.id>`, which is not the upstream id.
 - **KL-28 No Wayland activation token for a second start.** When the user starts an app that is already running, the
   second copy hands its request to the first one (for example through the single-instance socket of the toolkit) and
   exits. A compositor lets the first copy raise its window only with an activation token (`xdg_activation_v1`) from the
