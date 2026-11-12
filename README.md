@@ -102,9 +102,10 @@ first build makes the image: several minutes). See [docs/SOURCE-BUILD.md](docs/S
 ### Any distribution, and perfect for atomic ones
 
 Panpak never touches the system: apps, their data and the runtime live in your home folder. The same
-package runs on distributions with a recent enough kernel and glibc (the same package starts in the CI's
-containers of Debian 12, Ubuntu 24.04 and Fedora 43; on Alpine only packages that carry their own glibc do; real
-apps are tested on Ubuntu, on Fedora with KDE and on Bluefin).
+package runs on distributions with a recent enough kernel and glibc. The CI starts the runtime in containers of Debian 12,
+Ubuntu 24.04, Fedora 43 and Alpine; test packages were run by hand on the first three (on Alpine only packages that carry
+their own glibc run, see [distro-matrix.md](distro-matrix.md)); real apps are tested on Ubuntu, on Fedora with KDE and on
+Bluefin.
 
 On atomic, image-based systems (Fedora Silverblue and Kinoite, Bluefin and Aurora, openSUSE Aeon) this
 matters even more:

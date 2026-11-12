@@ -18,16 +18,18 @@ git commit -q -m base
 base=$(git rev-parse HEAD)
 
 fail=0
-# expect <name> <heavy> <repro>: the last commit is compared with $base.
+# expect <name> <heavy> <hashes>: the last commit is compared with $base, without and with the full level. Without it only
+# build-test and private-bus (heavy) run, and repro runs only for a change of the reference hashes; with it fuzz and distro
+# run when heavy, and repro when heavy or the hashes changed.
 expect() {
-  local out
+  local out want or=false
+  if [ "$2" = true ] || [ "$3" = true ]; then or=true; fi
   out=$("$here/scripts/ci-changes.sh" "$base" HEAD)
-  if [ "$out" != $'heavy='"$2"$'\nrepro='"$3" ]; then
-    echo "FAIL $1: got $(tr '\n' ' ' <<<"$out")"
-    fail=1
-  else
-    echo "ok   $1"
-  fi
+  want=$'heavy='"$2"$'\nfuzz=false\ndistro=false\nrepro='"$3"
+  if [ "$out" != "$want" ]; then echo "FAIL $1: got $(tr '\n' ' ' <<<"$out")"; fail=1; else echo "ok   $1"; fi
+  out=$("$here/scripts/ci-changes.sh" "$base" HEAD true)
+  want=$'heavy='"$2"$'\nfuzz='"$2"$'\ndistro='"$2"$'\nrepro='"$or"
+  if [ "$out" != "$want" ]; then echo "FAIL $1 (full): got $(tr '\n' ' ' <<<"$out")"; fail=1; else echo "ok   $1 (full)"; fi
 }
 reset() { git reset -q --hard "$base"; }
 
@@ -36,26 +38,26 @@ expect "docs only" false false
 reset; echo b >REPRODUCIBLE-HASHES.md; git add -A; git commit -q -m t
 expect "reference hashes only" false true
 reset; echo b >src/lib.rs; git add -A; git commit -q -m t
-expect "code" true true
+expect "code" true false
 reset; echo b >README.md; echo b >src/lib.rs; git add -A; git commit -q -m t
-expect "docs and code" true true
+expect "docs and code" true false
 reset; git mv src/lib.rs src/lib.md; git add -A; git commit -q -m t
-expect "code renamed to .md" true true
+expect "code renamed to .md" true false
 reset; git commit -q --allow-empty -m t
-expect "empty change list" true true
+expect "empty change list" true false
 reset; mkdir -p .github/workflows; echo b >.github/workflows/ci.yml; git add -A; git commit -q -m t
-expect "workflow" true true
+expect "workflow" true false
 reset; mkdir -p docs; echo b >docs/deep.md; mkdir -p src/notes; echo b >src/notes/n.md; git add -A; git commit -q -m t
 expect "markdown in a source directory" false false
 
 for f in bench/make_charts.py tests/view.py fuzz/fuzz_targets/x.rs scripts/repro-build.sh conformance/run.py tools/requirements-zig.txt newdir/file.txt; do
   reset; mkdir -p "$(dirname "$f")"; echo b >"$f"; git add -A; git commit -q -m t
-  expect "$f" true true
+  expect "$f" true false
 done
 reset; mkdir -p docs/bench-data; echo b >docs/bench-data/delta.svg; echo b >docs/bench-data/a.csv; git add -A; git commit -q -m t
 expect "docs/bench-data only" false false
 reset; mkdir -p docs/bench-data bench; echo b >docs/bench-data/a.csv; echo b >bench/inputs.py; git add -A; git commit -q -m t
-expect "bench data and bench code" true true
+expect "bench data and bench code" true false
 
 # The CI case: a pull request that changes only a workflow. The job checks the repository out
 # with full history (fetch-depth 0) in a fresh clone and passes the base and head commits of the
@@ -68,7 +70,7 @@ ci="$tmp-ci"
 git clone -q --no-local "$tmp" "$ci"
 out=$(cd "$ci" && "$here/scripts/ci-changes.sh" "$base" "$head")
 rm -rf "$ci"
-if [ "$out" = $'heavy=true\nrepro=true' ]; then echo "ok   pull request with a changed workflow, fresh full clone"; else echo "FAIL pull request with a changed workflow: got $(tr '\n' ' ' <<<"$out")"; fail=1; fi
+if [ "$out" = $'heavy=true\nfuzz=false\ndistro=false\nrepro=false' ]; then echo "ok   pull request with a changed workflow, fresh full clone"; else echo "FAIL pull request with a changed workflow: got $(tr '\n' ' ' <<<"$out")"; fail=1; fi
 reset
 
 if "$here/scripts/ci-changes.sh" nosuchrev HEAD 2>/dev/null; then
@@ -77,4 +79,6 @@ if "$here/scripts/ci-changes.sh" nosuchrev HEAD 2>/dev/null; then
 else
   echo "ok   unknown revision refused"
 fi
+# Not a pull request: nothing to compare, everything on for the full level.
+[ "$("$here/scripts/ci-changes.sh" "" "" true)" = $'heavy=true\nfuzz=true\ndistro=true\nrepro=true' ] && echo "ok   push or manual run" || { echo "FAIL push or manual run"; fail=1; }
 exit "$fail"
