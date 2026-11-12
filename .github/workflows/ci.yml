@@ -232,6 +232,7 @@ jobs:
           PANPAK_LAB_LOG: ${{ runner.temp }}/lab2.log
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          python3 tests/privbus.py --diagnose || true
           python3 tests/privbus.py || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
       - name: Filtered session bus against a private bus (advisory)
         continue-on-error: true

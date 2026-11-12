@@ -534,6 +534,9 @@ def main():
         only = set(args[1].split(','))
         args = args[2:]
     want = lambda k: only is None or k in only
+    diagnose = args[:1] == ['--diagnose']
+    if diagnose:
+        args = args[1:]
     why = dbus_lab.missing()
     if why:
         return skip(why)
@@ -548,6 +551,14 @@ def main():
     try:
         lab.install('org.panpaktest.Squat')
         lab.install('org.panpaktest.Portal', '[permissions]\nnotifications = true\n')
+        if diagnose:
+            # What a start of the portal probe prints with the debug output of the runtime and the router (for a machine that cannot be watched).
+            lab.env['PANPAK_DEBUG'] = '1'
+            p = lab.start('org.panpaktest.Portal', 'portal', '-', 0)
+            print(p.communicate(timeout=90)[0][-6000:])
+            f = lab.report_path('org.panpaktest.Portal', 'portal')
+            print('report:', f.read_text() if f.exists() else 'none')
+            return
         smoke = lab.run('org.panpaktest.Squat', 'call', 'org.example.Nobody')
         if 'connect_error' in smoke or not smoke.get('unique'):
             # Say why: the start again with the debug output of the runtime.
