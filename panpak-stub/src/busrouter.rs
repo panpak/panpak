@@ -903,18 +903,25 @@ fn connect_upstream(path: &Path) -> Result<UnixStream> {
     s.set_write_timeout(Some(Duration::from_secs(2)))?;
     // SAFETY: getuid cannot fail.
     let hex: String = unsafe { libc::getuid() }.to_string().bytes().map(|b| format!("{b:02x}")).collect();
-    s.write_all(format!("\0AUTH EXTERNAL {hex}\r\nNEGOTIATE_UNIX_FD\r\nBEGIN\r\n").as_bytes())?;
-    let mut got = Vec::new();
-    let mut b = [0u8; 128];
-    while !got.windows(15).any(|w| w == b"AGREE_UNIX_FD\r\n") {
-        ensure!(got.len() < 512, "the proxy does not agree to pass descriptors");
-        let n = s.read(&mut b)?;
-        ensure!(n > 0, "the proxy closed the connection during the handshake");
-        got.extend_from_slice(&b[..n]);
-        ensure!(!got.starts_with(b"REJECTED"), "the proxy refused the authentication");
-    }
-    // Nothing may be left over: the proxy says nothing before the first message.
-    ensure!(got.ends_with(b"AGREE_UNIX_FD\r\n"), "unexpected bytes after the handshake");
+    // One line at a time, as every client does: xdg-dbus-proxy 0.1.5 (Debian 12, Ubuntu 24.04) closes the connection when the lines of the handshake
+    // come in one write. A line is read byte by byte, so that nothing of what follows is taken.
+    let line = |s: &mut UnixStream, send: &[u8]| -> Result<String> {
+        s.write_all(send)?;
+        let mut got = Vec::new();
+        let mut one = [0u8; 1];
+        while !got.ends_with(b"\r\n") {
+            ensure!(got.len() < 256, "the proxy sent a line that is too long during the handshake");
+            let n = s.read(&mut one)?;
+            ensure!(n > 0, "the proxy closed the connection during the handshake");
+            got.push(one[0]);
+        }
+        Ok(String::from_utf8_lossy(&got[..got.len() - 2]).into_owned())
+    };
+    let reply = line(&mut s, format!("\0AUTH EXTERNAL {hex}\r\n").as_bytes())?;
+    ensure!(reply.starts_with("OK "), "the proxy refused the authentication: {reply}");
+    let reply = line(&mut s, b"NEGOTIATE_UNIX_FD\r\n")?;
+    ensure!(reply == "AGREE_UNIX_FD", "the proxy does not agree to pass descriptors: {reply}");
+    s.write_all(b"BEGIN\r\n")?;
     s.set_read_timeout(None)?;
     s.set_write_timeout(None)?;
     Ok(s)
