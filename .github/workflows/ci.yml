@@ -226,15 +226,14 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
           python3 tests/privbus.py --only A,B,C,F || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
-      - name: Private bus, the other scenarios (advisory; the portal of the runner is older than the one the identity needs)
+      - name: Private bus, all scenarios (advisory until they have passed on the runners for a while; the portal here is 1.18, older than the one the identity needs)
         continue-on-error: true
         env:
           PANPAK_LAB_LOG: ${{ runner.temp }}/lab2.log
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          python3 tests/privbus.py --diagnose || true
           python3 tests/privbus.py || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
-      - name: Filtered session bus against a private bus (advisory)
+      - name: Filtered session bus against a private bus (advisory; the lab portal of 1.18 does not export Settings with the fake backend)
         continue-on-error: true
         env:
           PANPAK_LAB_LOG: ${{ runner.temp }}/lab3.log

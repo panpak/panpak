@@ -675,3 +675,12 @@ Where the differences come from:
   reproduced today by either `main` or the branch (40.5 to 41.8 ms): the difference is the machine on the day, not the layer. The budget of 45 ms with the layer is
   unchanged.
 - The router stays alive 1.5 s after the last copy; it no longer holds the caller's error output open (a script that read it waited 1.5 s; found by the budget test).
+
+### xdg-dbus-proxy 0.1.5
+
+Found by the CI, which runs the tests for real on Ubuntu 24.04 (xdg-dbus-proxy 0.1.5, portal 1.18.4); the development machines had 0.1.7. Two behaviors of the older proxy broke the router
+(the app had a bus that closed at once): the handshake (`AUTH`, `NEGOTIATE_UNIX_FD`, `BEGIN`) must come one line at a time, and the serials of the messages on a connection must grow
+("Versions older than 0.1.6 required monotonically increasing serials", `flatpak-proxy.c`). The router's own messages (the identity, the owner of the portal) used a range of their own and so came
+between the app's. Now every message that goes to the host side is numbered by the router, in order, and a reply gets the number of its sender back; the fuzz target and a unit test check that the
+serials grow. On that runner all the scenarios of `tests/privbus.py` pass; the closed list of `tests/dbus_filter.py` does not run there (the 1.18 portal with the lab's fake backend exports no
+Settings).

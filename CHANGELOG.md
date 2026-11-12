@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **The private bus works with xdg-dbus-proxy 0.1.5** (Debian 12, Ubuntu 24.04), found when the tests first ran for real in CI. The router talked to the proxy with the whole handshake in one write and
+  mixed its own messages between the app's, and 0.1.5 closes a connection in both cases: the app had no bus. The handshake goes one line at a time and every message to the host side gets the next serial
+  (replies get the sender's number back). `tests/privbus.py` runs in CI against a systemd user manager started for the runner; A, B, C, F11, F22 and F23 are required there.
+
 - **README rewritten** around what Panpak is for (a secure and fast format for desktop and command-line apps, good for atomic distributions); the requirements moved to
   `docs/REQUIREMENTS.md`; every number has a command and a date in `docs/BENCHMARKS.md`, which now also holds the sources of the comparison table and
   `bench/shared_chunks.py`. The benchmark data of updates and starts were measured again on the final build of step 13p (the packages are larger by the icon caches).

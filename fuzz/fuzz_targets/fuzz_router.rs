@@ -6,8 +6,9 @@ use panpak_core::dbus::{message_len, parse_head, ClientId, Limits, Msg, Out, Rou
 // The router of the private bus, fed with what an app and the host can send: a sequence of events, each made of a tag, a connection
 // number and a message that is not trusted. It must never panic, and:
 // - everything it sends is a message that reads back (header);
-// - a message it sends to the host for a call of the app is either the app's own bytes or a call of the router itself (serial in
-//   the router's range);
+// - a message it sends to the host for a call of the app is either the app's own bytes (but for the serial, which the router numbers)
+//   or a call of the router itself (to the bus daemon or the portal);
+// - the serials of the messages it sends up grow for each connection (xdg-dbus-proxy 0.1.5 closes a connection whose serials do not);
 // - a call for a name that the app owns here is never sent to the host;
 // - a call to the host registry from the app is never sent to the host.
 fuzz_target!(|data: &[u8]| {
@@ -19,6 +20,7 @@ fuzz_target!(|data: &[u8]| {
     let lim = Limits { max_message: 1 << 20, ..Limits::default() };
     let mut ids: Vec<ClientId> = Vec::new();
     let mut tokens: Vec<u64> = Vec::new();
+    let mut last_up: std::collections::HashMap<ClientId, u32> = std::collections::HashMap::new();
     let mut p = data;
     let mut steps = 0;
     while p.len() >= 4 && steps < 64 {
@@ -48,8 +50,10 @@ fuzz_target!(|data: &[u8]| {
                         for o in &outs {
                             if let Out::Up(_, m) = o {
                                 let sent = parse_head(&m.raw, m.fds.len(), &Limits { max_message: usize::MAX >> 4, ..lim }).expect("a message sent to the host reads back");
-                                if m.raw != raw {
-                                    assert!(sent.msg.serial > 0x4000_0000, "a message to the host that is neither the app's nor the router's");
+                                let unnumbered = |b: &[u8]| -> Vec<u8> { let mut v = b.to_vec(); if v.len() >= 12 { v[8..12].fill(0); } v };
+                                if unnumbered(&m.raw) != unnumbered(&raw) {
+                                    let to_bus = matches!(sent.msg.destination.as_deref(), Some("org.freedesktop.DBus") | Some("org.freedesktop.portal.Desktop"));
+                                    assert!(sent.msg.kind == 1 && to_bus, "a message to the host that is neither the app's nor the router's");
                                 }
                                 if let Some(d) = &h.msg.destination {
                                     if h.msg.kind == 1 && local_before.contains(d) {
@@ -60,6 +64,15 @@ fuzz_target!(|data: &[u8]| {
                                     assert!(m.raw != raw, "the app's call to the registry went to the host");
                                 }
                             }
+                        }
+                    }
+                }
+                for o in &outs {
+                    if let Out::Up(id, m) = o {
+                        if let Ok(sent) = parse_head(&m.raw, m.fds.len(), &Limits { max_message: usize::MAX >> 4, ..lim }) {
+                            let last = last_up.entry(*id).or_insert(0);
+                            assert!(sent.msg.serial > *last, "the serials to the host do not grow: {} after {}", sent.msg.serial, last);
+                            *last = sent.msg.serial;
                         }
                     }
                 }
