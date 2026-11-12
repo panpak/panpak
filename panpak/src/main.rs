@@ -3279,7 +3279,17 @@ mod tests {
         let dest = d.join("panpak-stub");
         fs::copy("/bin/sleep", &dest).unwrap();
         fs::set_permissions(&dest, fs::Permissions::from_mode(0o755)).unwrap();
-        let mut running = std::process::Command::new(&dest).arg("30").spawn().unwrap();
+        // Another test that forks while the file was open for writing makes the first exec fail with ETXTBSY: try again.
+        let mut running = (0..50)
+            .find_map(|_| match std::process::Command::new(&dest).arg("30").spawn() {
+                Ok(c) => Some(c),
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    None
+                }
+                Err(e) => panic!("{e}"),
+            })
+            .expect("the program starts");
         // Writing into the file in use fails; the rename does not.
         assert!(fs::OpenOptions::new().write(true).open(&dest).is_err(), "the test needs a busy file");
         let new = d.join("new");
