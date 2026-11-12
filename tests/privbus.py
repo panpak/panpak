@@ -550,6 +550,11 @@ def main():
         lab.install('org.panpaktest.Portal', '[permissions]\nnotifications = true\n')
         smoke = lab.run('org.panpaktest.Squat', 'call', 'org.example.Nobody')
         if 'connect_error' in smoke or not smoke.get('unique'):
+            # Say why: the start again with the debug output of the runtime.
+            lab.env['PANPAK_DEBUG'] = '1'
+            p = lab.start('org.panpaktest.Squat', 'call', 'org.example.Nobody')
+            print('--- the start again, with PANPAK_DEBUG=1:')
+            print(p.communicate(timeout=60)[0][-3000:])
             return skip(f'the app got no bus here (no systemd user session for its scope, or no xdg-dbus-proxy): {smoke}')
         for key, fn in (('A', scenario_a), ('B', scenario_b), ('C', scenario_c), ('F', scenario_f22_f23_f11), ('S', scenario_single_instance),
                         ('R', scenario_lifecycle), ('E', scenario_end_race), ('I', scenario_identity), ('L', scenario_links), ('M', scenario_mpris)):
