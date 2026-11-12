@@ -270,6 +270,9 @@ def main():
     why = dbus_lab.missing()
     if why:
         print(f'skipped: {why}')
+        if dbus_lab.required():
+            print('FAIL: the lab is required here (PANPAK_REQUIRE_LAB=1)')
+            sys.exit(1)
         return
     work = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / 'target/dbus-filter-test'
     if work.exists():

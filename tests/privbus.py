@@ -518,12 +518,26 @@ def scenario_a11y(lab):
     print('X   the app finds the accessibility bus and cannot read or command other applications: ok')
 
 
+def skip(why):
+    """The lab cannot run here: a message and success, unless the job requires it (PANPAK_REQUIRE_LAB=1)."""
+    print(f'skipped: {why}')
+    if dbus_lab.required():
+        print('FAIL: the lab is required here (PANPAK_REQUIRE_LAB=1)')
+        sys.exit(1)
+
+
 def main():
+    # `--only A,B,C,F` runs those scenarios: A, B, C, F (F11, F22 and F23), S, R (life cycle), E, I, L, M, X. Default: all.
+    args = sys.argv[1:]
+    only = None
+    if args[:1] == ['--only']:
+        only = set(args[1].split(','))
+        args = args[2:]
+    want = lambda k: only is None or k in only
     why = dbus_lab.missing()
     if why:
-        print(f'skipped: {why}')
-        return
-    work = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / 'target/privbus-test'
+        return skip(why)
+    work = Path(args[0]).resolve() if args else ROOT / 'target/privbus-test'
     if work.exists():
         isolation.require_inside(work, work.parent, 'work')
         subprocess.run(['chmod', '-R', 'u+w', str(work)], check=True)
@@ -536,31 +550,25 @@ def main():
         lab.install('org.panpaktest.Portal', '[permissions]\nnotifications = true\n')
         smoke = lab.run('org.panpaktest.Squat', 'call', 'org.example.Nobody')
         if 'connect_error' in smoke or not smoke.get('unique'):
-            print('skipped: the app got no bus here (no systemd user session for its scope, or no xdg-dbus-proxy):', smoke)
-            return
-        scenario_a(lab)
-        scenario_b(lab)
-        scenario_c(lab)
-        scenario_f22_f23_f11(lab)
-        scenario_single_instance(lab)
-        scenario_lifecycle(lab)
-        scenario_end_race(lab)
-        scenario_identity(lab)
-        scenario_links(lab)
-        scenario_mpris(lab)
+            return skip(f'the app got no bus here (no systemd user session for its scope, or no xdg-dbus-proxy): {smoke}')
+        for key, fn in (('A', scenario_a), ('B', scenario_b), ('C', scenario_c), ('F', scenario_f22_f23_f11), ('S', scenario_single_instance),
+                        ('R', scenario_lifecycle), ('E', scenario_end_race), ('I', scenario_identity), ('L', scenario_links), ('M', scenario_mpris)):
+            if want(key):
+                fn(lab)
     finally:
         lab.sess.close()
-    if Path('/usr/libexec/at-spi-bus-launcher').exists():
-        (work / 'two').mkdir()
-        lab = Lab(work / 'two', fake=False, atspi=True)
-        try:
-            lab.install('org.panpaktest.Portal')
-            scenario_a11y(lab)
-        finally:
-            lab.sess.close()
-    else:
-        print('X   at-spi-bus-launcher is not installed: skipped')
-    print('all private bus tests passed')
+    if want('X'):
+        if Path('/usr/libexec/at-spi-bus-launcher').exists():
+            (work / 'two').mkdir()
+            lab = Lab(work / 'two', fake=False, atspi=True)
+            try:
+                lab.install('org.panpaktest.Portal')
+                scenario_a11y(lab)
+            finally:
+                lab.sess.close()
+        else:
+            print('X   at-spi-bus-launcher is not installed: skipped')
+    print('all private bus tests passed' if only is None else f'private bus tests passed: {",".join(sorted(only))}')
 
 
 if __name__ == '__main__':

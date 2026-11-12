@@ -159,21 +159,6 @@ jobs:
         run: python3 tests/stale_lock_exit.py
       - name: Update with icons (changed, removed, new sizes, none)
         run: python3 tests/update_icons.py
-      - name: Private bus of each app (router, portal identity, filtered accessibility bus; advisory until it has run on the runners)
-        # Needs a systemd user manager for the scope of the app. The runner has none by default: the step starts one
-        # (linger) and the tests print "skipped" and succeed when there is still no user bus.
-        continue-on-error: true
-        run: |
-          sudo apt-get install -y -qq dbus-daemon dbus-user-session xdg-dbus-proxy xdg-desktop-portal python3-gi gir1.2-glib-2.0 libglib2.0-bin at-spi2-core
-          sudo loginctl enable-linger "$USER" || true
-          sudo systemctl start "user@$(id -u).service" || true
-          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          python3 tests/privbus.py
-      - name: Filtered session bus against a private bus (advisory; the portal of the runner may lack the Settings backend)
-        continue-on-error: true
-        run: |
-          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          python3 tests/dbus_filter.py
       - name: Wayland security context against Sway (headless, advisory)
         # Sway 1.9 on this image has the protocol. The test prints SKIP and succeeds when Sway cannot start here.
         # Advisory until it has run on the runners a few times.
@@ -191,6 +176,70 @@ jobs:
         with:
           name: panpak-stub-musl
           path: target/x86_64-unknown-linux-musl/release/panpak-stub
+
+  private-bus:
+    # The private bus of each app against a real user session: a router, two proxies, the portal of the runner with the fake backend of the lab. The
+    # tests need a systemd user manager (the app is put in a scope of its own), so the job starts one for the runner user.
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.heavy == 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache the Rust build (registry and target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: private-bus-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            private-bus-${{ env.RUST_TOOLCHAIN }}-
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
+          echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+      - name: Zig (pinned PyPI wheel, hash-checked)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zig"
+          "$RUNNER_TEMP/zig/bin/pip" install --require-hashes -r tools/requirements-zig.txt
+          "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
+      - name: Release build
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
+      - name: Packages, bubblewrap, and a systemd user manager for the runner user
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap dbus-daemon dbus-user-session xdg-dbus-proxy xdg-desktop-portal python3-gi gir1.2-glib-2.0 libglib2.0-bin at-spi2-core
+          # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile (see the build-test job).
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          for i in $(seq 1 50); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 0.2; done
+          ls -la "/run/user/$(id -u)/" || true
+          XDG_RUNTIME_DIR="/run/user/$(id -u)" systemctl --user is-system-running || true
+          xdg-desktop-portal --version || /usr/libexec/xdg-desktop-portal --version || true
+      - name: Private bus, required scenarios (A, B, C, F11, F22, F23)
+        env:
+          PANPAK_REQUIRE_LAB: "1"
+          PANPAK_LAB_LOG: ${{ runner.temp }}/lab.log
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          python3 tests/privbus.py --only A,B,C,F || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
+      - name: Private bus, the other scenarios (advisory; the portal of the runner is older than the one the identity needs)
+        continue-on-error: true
+        env:
+          PANPAK_LAB_LOG: ${{ runner.temp }}/lab2.log
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          python3 tests/privbus.py || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
+      - name: Filtered session bus against a private bus (advisory)
+        continue-on-error: true
+        env:
+          PANPAK_LAB_LOG: ${{ runner.temp }}/lab3.log
+        run: |
+          export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+          python3 tests/dbus_filter.py || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
 
   clippy:
     needs: monday
@@ -416,7 +465,7 @@ jobs:
     # event and these changed files. Runs even when a job before it failed or was
     # skipped, so a skip by mistake cannot look like a pass.
     if: ${{ always() }}
-    needs: [monday, changes, build-test, clippy, fuzz-smoke, repro, licenses, distro, dco, secrets]
+    needs: [monday, changes, build-test, private-bus, clippy, fuzz-smoke, repro, licenses, distro, dco, secrets]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -429,6 +478,7 @@ jobs:
           R_MONDAY: ${{ needs.monday.result }}
           R_CHANGES: ${{ needs.changes.result }}
           R_BUILD_TEST: ${{ needs.build-test.result }}
+          R_PRIVATE_BUS: ${{ needs.private-bus.result }}
           R_CLIPPY: ${{ needs.clippy.result }}
           R_FUZZ_SMOKE: ${{ needs.fuzz-smoke.result }}
           R_REPRO_JOB: ${{ needs.repro.result }}

@@ -20,6 +20,11 @@ IMPL = ['Settings', 'Notification', 'Inhibit', 'Access', 'Account', 'AppChooser'
         'GlobalShortcuts', 'InputCapture', 'Location', 'Lockdown', 'Print', 'RemoteDesktop', 'ScreenCast', 'Screenshot', 'Secret', 'Wallpaper']
 
 
+def required():
+    """True when the lab must run (PANPAK_REQUIRE_LAB=1, set by the CI job that is meant to run it): a skip is then a failure."""
+    return os.environ.get('PANPAK_REQUIRE_LAB') == '1'
+
+
 def missing():
     """Why the lab cannot run here, or None."""
     for exe in ('dbus-daemon', 'gdbus', '/usr/bin/xdg-dbus-proxy', '/usr/libexec/xdg-desktop-portal'):
@@ -71,7 +76,10 @@ class Session:
             self.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.StartServiceByName', 'org.freedesktop.portal.Desktop', '0')
 
     def _spawn(self, argv):
-        p = subprocess.Popen(argv, env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+        # PANPAK_LAB_LOG=<file>: the error output of the daemon, the services it starts and the fake backend goes there (for a CI that cannot be watched).
+        log = os.environ.get('PANPAK_LAB_LOG')
+        err = open(log, 'ab') if log else subprocess.DEVNULL
+        p = subprocess.Popen(argv, env=self.env, stdout=subprocess.DEVNULL, stderr=err, stdin=subprocess.DEVNULL)
         self.procs.append(p)
         return p
 
