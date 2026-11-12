@@ -15,7 +15,7 @@
 //! The router never decides what the app may do on the host bus: whatever it does not serve goes to the proxy, which filters. It never
 //! reads a body except for the calls above, so that a message it does not understand is a message it passes on.
 
-use super::wire::{encode_message, encode_with_body, parse_head, parse_message, valid_dotted_name, Head, Limits, Message, Value, CALL, ERROR, RETURN, SIGNAL};
+use super::wire::{reply_serial_offset, encode_message, encode_with_body, parse_head, parse_message, valid_dotted_name, Head, Limits, Message, Value, CALL, ERROR, RETURN, SIGNAL};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 pub type ClientId = u32;
@@ -208,7 +208,15 @@ struct Client {
     owner_query: Option<u32>,
     portal_owner: Option<String>,
     opens: usize,
+    /// Serials of the messages sent to the host side. The proxy of Debian 12 and Ubuntu 24.04 (xdg-dbus-proxy 0.1.5) closes a connection whose serials
+    /// do not grow, and the router's own messages are mixed with the app's, so every message that goes up gets the next number and the replies are
+    /// given back the number the sender used (`calls`: the new number to the old one, for the calls that expect a reply).
+    up_serial: u32,
+    calls: std::collections::BTreeMap<u32, u32>,
 }
+
+/// The most calls waiting for a reply whose numbers are remembered for a connection.
+const MAX_CALLS: usize = 4096;
 
 impl Client {
     fn next_serial(&mut self) -> u32 {
@@ -525,6 +533,48 @@ impl<F> Router<F> {
 
     /// A message from the host for this connection (through the proxy).
     pub fn from_up(&mut self, c: ClientId, msg: Msg<F>) -> Vec<Out<F>> {
+        let msg = self.give_back_serial(c, msg);
+        let outs = self.handle_up(c, msg);
+        self.number_up(outs)
+    }
+
+    /// A reply from the host side carries the number this router gave to the call: put the number of the sender back.
+    fn give_back_serial(&mut self, c: ClientId, mut msg: Msg<F>) -> Msg<F> {
+        if !matches!(msg.raw.get(1), Some(&RETURN) | Some(&ERROR)) || msg.raw.first() != Some(&b'l') {
+            return msg;
+        }
+        let (Some(cl), Some(at)) = (self.clients.get_mut(&c), reply_serial_offset(&msg.raw)) else { return msg };
+        let Some(bytes) = msg.raw.get(at..at + 4) else { return msg };
+        let now = u32::from_le_bytes(bytes.try_into().unwrap());
+        if let Some(old) = cl.calls.remove(&now) {
+            msg.raw[at..at + 4].copy_from_slice(&old.to_le_bytes());
+        }
+        msg
+    }
+
+    /// Give the messages that go to the host side their numbers, in the order they go.
+    fn number_up(&mut self, mut outs: Vec<Out<F>>) -> Vec<Out<F>> {
+        for o in outs.iter_mut() {
+            let Out::Up(c, m) = o else { continue };
+            let Some(cl) = self.clients.get_mut(c) else { continue };
+            if m.raw.len() < 16 || m.raw[0] != b'l' {
+                continue;
+            }
+            let old = u32::from_le_bytes(m.raw[8..12].try_into().unwrap());
+            cl.up_serial += 1;
+            let new = cl.up_serial;
+            m.raw[8..12].copy_from_slice(&new.to_le_bytes());
+            if m.raw[1] == CALL && m.raw[2] & 1 == 0 {
+                cl.calls.insert(new, old);
+                if cl.calls.len() > MAX_CALLS {
+                    cl.calls.pop_first();
+                }
+            }
+        }
+        outs
+    }
+
+    fn handle_up(&mut self, c: ClientId, msg: Msg<F>) -> Vec<Out<F>> {
         let mut outs = Vec::new();
         let h = match parse_head(&msg.raw, msg.fds.len(), &self.lim) {
             Ok(h) => h,
@@ -595,6 +645,11 @@ impl<F> Router<F> {
 
     /// A message from the app on this connection.
     pub fn from_app(&mut self, c: ClientId, msg: Msg<F>) -> Vec<Out<F>> {
+        let outs = self.handle_app(c, msg);
+        self.number_up(outs)
+    }
+
+    fn handle_app(&mut self, c: ClientId, msg: Msg<F>) -> Vec<Out<F>> {
         let mut outs = Vec::new();
         if !self.clients.contains_key(&c) {
             return outs;
@@ -898,6 +953,11 @@ impl<F> Router<F> {
     }
 
     pub fn open_done(&mut self, token: u64, result: Result<(), String>) -> Vec<Out<F>> {
+        let outs = self.open_done_inner(token, result);
+        self.number_up(outs)
+    }
+
+    fn open_done_inner(&mut self, token: u64, result: Result<(), String>) -> Vec<Out<F>> {
         let mut outs = Vec::new();
         let Some((c, serial, handle)) = self.opens.remove(&token) else { return outs };
         let Some(cl) = self.clients.get_mut(&c) else { return outs };
@@ -938,6 +998,11 @@ mod tests {
     use super::*;
 
     type R = Router<()>;
+
+    /// The messages with the serial field set to 0: the router gives its own numbers to what goes to the host side.
+    fn unnumbered(v: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        v.into_iter().map(|mut m| { m[8..12].fill(0); m }).collect()
+    }
 
     fn msg(raw: Vec<u8>) -> Msg<()> {
         Msg { raw, fds: Vec::new() }
@@ -1046,7 +1111,7 @@ mod tests {
         let c = connect(&mut r, 5);
         let raw = call(9, PORTAL, PORTAL_PATH, "org.freedesktop.portal.Settings", "ReadOne", "ss", vec![Value::str("org.freedesktop.appearance"), Value::str("color-scheme")]);
         let outs = r.from_app(c, msg(raw.clone()));
-        assert_eq!(ups(&outs, c), vec![raw]);
+        assert_eq!(unnumbered(ups(&outs, c)), unnumbered(vec![raw]));
         assert_eq!(outs.len(), 1);
         // And what comes back is passed to the app unchanged.
         let back = reply_to(9, ":1.5", "s", vec![Value::str("x")]);
@@ -1137,14 +1202,14 @@ mod tests {
         let (a, b) = (connect(&mut r, 5), connect(&mut r, 6));
         let add = bus_call(2, "AddMatch", "s", vec![Value::str("type='signal',interface='com.example.I',member='Changed',arg0='yes'")]);
         let outs = r.from_app(b, msg(add.clone()));
-        assert_eq!(ups(&outs, b), vec![add], "the host gets the rule too");
+        assert_eq!(unnumbered(ups(&outs, b)), unnumbered(vec![add]), "the host gets the rule too");
         let hit = signal(3, "/x", "com.example.I", "Changed", "s", vec![Value::str("yes")]);
         let miss = signal(4, "/x", "com.example.I", "Changed", "s", vec![Value::str("no")]);
         let other = signal(5, "/x", "com.example.J", "Changed", "s", vec![Value::str("yes")]);
         let outs = r.from_app(a, msg(hit.clone()));
         assert_eq!(apps(&outs, b).len(), 1);
         assert_eq!(apps(&outs, b)[0].sender.as_deref(), Some(":1.5"));
-        assert_eq!(ups(&outs, a), vec![hit], "a broadcast also goes to the host, which filters it");
+        assert_eq!(unnumbered(ups(&outs, a)), unnumbered(vec![hit]), "a broadcast also goes to the host, which filters it");
         for raw in [miss, other] {
             let outs = r.from_app(a, msg(raw));
             assert!(apps(&outs, b).is_empty());
@@ -1193,6 +1258,30 @@ mod tests {
         let c2 = connect(&mut r2, 5);
         let (_, outs) = request(&mut r2, c2, 2, "org.mpris.MediaPlayer2.vlc", 0);
         assert!(ups(&outs, c2).is_empty());
+    }
+
+    #[test]
+    fn serials_toward_the_host_grow_and_replies_get_the_number_of_the_sender() {
+        // xdg-dbus-proxy 0.1.5 closes a connection whose serials do not grow; the router's own messages (the identity, the owner of the portal) come between the app's.
+        let mut r = R::new(config());
+        let c = connect(&mut r, 5);
+        let mut last = 0;
+        let mut ups_seen = Vec::new();
+        for (serial, member) in [(2u32, "Ping"), (3, "Ping"), (9, "Ping")] {
+            let raw = call(serial, "org.example.Other", "/", "org.freedesktop.DBus.Peer", member, "", vec![]);
+            for raw in ups(&r.from_app(c, msg(raw)), c) {
+                let m = parsed(&raw);
+                assert!(m.serial > last, "serial {} after {last}", m.serial);
+                last = m.serial;
+                ups_seen.push((serial, m.serial));
+            }
+        }
+        // The reply to the call the app numbered 9 comes back with the router's number and reaches the app with 9.
+        let (_, up9) = *ups_seen.last().unwrap();
+        let outs = r.from_up(c, msg(reply_to(up9, ":1.5", "", vec![])));
+        let got = apps(&outs, c);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].reply_serial, Some(9));
     }
 
     #[test]
@@ -1248,7 +1337,7 @@ mod tests {
         let mut r2 = R::new(Config { open_uri: false, ..config() });
         let c2 = connect(&mut r2, 5);
         let raw = call(23, PORTAL, PORTAL_PATH, OPENURI_IFACE, "OpenURI", "ssa{sv}", vec![Value::str(""), Value::str("https://example.org"), Value::Array("{sv}".into(), vec![])]);
-        assert_eq!(ups(&r2.from_app(c2, msg(raw.clone())), c2), vec![raw]);
+        assert_eq!(unnumbered(ups(&r2.from_app(c2, msg(raw.clone())), c2)), unnumbered(vec![raw]));
     }
 
     #[test]
@@ -1298,6 +1387,6 @@ mod tests {
         let c = connect(&mut r, 5);
         // The host may answer a call to a unique name that is not ours (an error, or a reply to a call from the host).
         let raw = reply_to(3, ":1.77", "", vec![]);
-        assert_eq!(ups(&r.from_app(c, msg(raw.clone())), c), vec![raw]);
+        assert_eq!(unnumbered(ups(&r.from_app(c, msg(raw.clone())), c)), unnumbered(vec![raw]));
     }
 }

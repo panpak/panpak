@@ -514,6 +514,44 @@ pub struct Head {
     pub big: bool,
 }
 
+/// Where the reply serial (header field 5) is in a little-endian message that `parse_head` accepted, so that a router can change it in place. None if there is none.
+pub fn reply_serial_offset(buf: &[u8]) -> Option<usize> {
+    let fields_len = u32::from_le_bytes(buf.get(12..16)?.try_into().ok()?) as usize;
+    let end = 16usize.checked_add(fields_len)?;
+    let align = |p: usize, n: usize| p.div_ceil(n) * n;
+    let mut p = 16;
+    while p < end {
+        p = align(p, 8);
+        if p >= end {
+            break;
+        }
+        let code = *buf.get(p)?;
+        let sig_len = *buf.get(p + 1)? as usize;
+        let sig = buf.get(p + 2..p + 2 + sig_len)?;
+        let mut v = p + 2 + sig_len + 1; // after the signature and its nul
+        match sig {
+            b"u" => {
+                v = align(v, 4);
+                if code == 5 {
+                    return Some(v);
+                }
+                p = v + 4;
+            }
+            b"s" | b"o" => {
+                v = align(v, 4);
+                let n = u32::from_le_bytes(buf.get(v..v + 4)?.try_into().ok()?) as usize;
+                p = v + 4 + n + 1;
+            }
+            b"g" => {
+                let n = *buf.get(v)? as usize;
+                p = v + 1 + n + 1;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// Parse the fixed header and the header fields of a whole message and check the body only for its length. `avail_fds` is how many
 /// descriptors are waiting; the message says how many of them are its own (`unix_fds`), and it is refused if it claims more than
 /// are waiting. The body is not read: its bytes are for the caller to pass on (or to parse with `parse_message`).
@@ -667,6 +705,23 @@ pub fn encode_with_body(m: &Message, body: &[u8]) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_reply_serial_is_found_in_place() {
+        use super::*;
+        let mut m = Message { kind: RETURN, flags: 1, serial: 7, reply_serial: Some(0x11223344), destination: Some(":1.5".into()), sender: Some("org.x.Y".into()), signature: "s".into(), body: vec![Value::str("hi")], ..Default::default() };
+        let mut raw = encode_message(&m).unwrap();
+        let at = reply_serial_offset(&raw).expect("offset");
+        assert_eq!(u32::from_le_bytes(raw[at..at + 4].try_into().unwrap()), 0x11223344);
+        raw[at..at + 4].copy_from_slice(&9u32.to_le_bytes());
+        assert_eq!(parse_head(&raw, 0, &Limits::default()).unwrap().msg.reply_serial, Some(9));
+        m.reply_serial = None;
+        m.kind = SIGNAL;
+        m.path = Some("/a".into());
+        m.interface = Some("a.B".into());
+        m.member = Some("C".into());
+        assert_eq!(reply_serial_offset(&encode_message(&m).unwrap()), None);
+    }
+
     use super::*;
 
     fn rt(v: Value) {
