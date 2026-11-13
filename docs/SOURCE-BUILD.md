@@ -244,7 +244,7 @@ snapshot = "20261107T000000Z"
 | Command | What it does |
 |---|---|
 | `panpak init [folder]` | Looks at the folder (`meson.build`, `CMakeLists.txt`, `build.zig`, a desktop entry, a D-Bus service file, an SVG icon, the git remote and the commit that is checked out) and writes a recipe with the holes marked `TODO`, and `panpak.lock`. Runs nothing of the project; does not overwrite |
-| `panpak build [folder] --secret-file <f> [--stub <stub>] [-o <out>] [--update-lock]` | The lock; the memory plan; the image (made once, kept in the cache); the source (git commit or hashed tarball); the build in the image; the collection; the manifest; `pack`. Prints the peak memory and, if the recipe does not say or says too little, the `build.memory` to write |
+| `panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out>] [--update-lock]` (without `--secret-file` the personal key of `~/.config/panpak/secret.key`, made the first time; without `--stub` the runtime that comes with `panpak`, installed if missing) | The lock; the memory plan; the image (made once, kept in the cache); the source (git commit or hashed tarball); the build in the image; the collection; the manifest; `pack`. Prints the peak memory and, if the recipe does not say or says too little, the `build.memory` to write |
 | `panpak pack` | As before, plus: refuses an `[env]` path that is not in the tree, writes `glibc_min`, warns about a shell script as the entry and about a Qt tree without its plugins |
 
 **Defaults.** `build.image` is `debian-13`; `desktop.sizes` is `[256, 128, 64, 48, 32]`; `build.jobs` is the number of processors (lowered by the memory); `build.network` is `none`.

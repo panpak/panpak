@@ -1,8 +1,9 @@
 # Panpak QUICKSTART: from a folder to a signed `.panpak` in 5 commands
 
-Prerequisites: `panpak` + `panpak-stub` built (`cargo build --release
---target x86_64-unknown-linux-musl`; the stub lives in
-`target/x86_64-unknown-linux-musl/release/`).
+Prerequisites: `panpak` + `panpak-stub` built (`./build.sh`; both are in
+`target/x86_64-unknown-linux-musl/release/`, which is best put on the `PATH`).
+`panpak build`, `convert` and `install` use the `panpak-stub` that is beside `panpak`; `--stub` names another one, and `pack`
+always needs `--stub` (below).
 
 ## 1. Prepare the tree
 
@@ -79,11 +80,14 @@ every chunk are checked *before* running anything. The app runs in a
 Landlock sandbox (read-only tree; private data
 folders under `~/.local/share/panpak/userdata/org.example.hello`, see `panpak data path`).
 
+`panpak install-runtime <stub> --allow-unsigned` (a build of your own) and `panpak install-runtime <release.tar.gz> --release-key ...` (a signed
+release) stay for the other cases: a runtime installed that way is not replaced by the one beside `panpak` when both have the same ABI.
+
 ## Then: install and update
 
 ```sh
-panpak install-runtime ./target/x86_64-unknown-linux-musl/release/panpak-stub --allow-unsigned   # your own build, not verified
-panpak install hello.panpak               # TOFU: confirm with y/yes to pin the key
+panpak install hello.panpak               # puts the runtime that comes with panpak in your home if it is missing or older (one line);
+                                          # TOFU: confirm with y/yes to pin the key
 # panpak install --yes hello.panpak       # explicit non-interactive confirmation
 ~/.local/bin/org.example.hello       # launcher on the installed runtime
 ```
@@ -151,8 +155,8 @@ limits), `distro-matrix.md` (multi-distro tests).
 ## Convert an AppImage (notes)
 
 ```sh
-panpak convert Etcher.AppImage --id io.example.app \
-  --stub .../panpak-stub --secret-file app.key -o app.panpak
+panpak convert Etcher.AppImage --id io.example.app -o app.panpak
+# the key is the personal one of ~/.config/panpak/secret.key, made the first time (--secret-file uses another)
 ```
 
 The manifest declares `[origin]` (file, version, SHA-256, never signed
@@ -165,7 +169,7 @@ Pinned toolchain in `rust-toolchain.toml` (Rust 1.99.1) and `Cargo.lock`
 (`cargo build --locked`). C compiler and linker: Zig, installed from the
 `ziglang` wheel on PyPI with the version and hash pinned in
 `tools/requirements-zig.txt`
-(`pip install --require-hashes -r tools/requirements-zig.txt`). The musl
+(`pip install --require-hashes -r tools/requirements-zig.txt`; `./build.sh` does it). The musl
 targets use it through `scripts/zig-cc` and `scripts/zig-ar`
 (`.cargo/config.toml`); CI builds, tests and lints with the same Zig.
 

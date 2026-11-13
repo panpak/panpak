@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **A simpler Quick start.** `./build.sh` prepares Zig (the pinned wheel, hashes checked), adds the Rust target and builds, and says what is missing if something is. `panpak build` and `panpak install` install the runtime that comes with `panpak` (the file `panpak-stub` beside it) when there is none or it is older, with one line; `install-runtime` stays for a signed release or another build. The first `panpak build` or `convert` without a key makes a personal one in `~/.config/panpak/secret.key` (mode 0600) and says so with its fingerprint. README, QUICKSTART.md and docs/REQUIREMENTS.md follow.
+
 - **`install` is about 25 ms faster** (96 to 71 ms for a 44 MB package): the icons are written without a sync of the file and of the folder each (14 syncs of about 2 ms were the difference with the 38 ms of before the desktop integration); the package copy and its sync are what remains.
 - **Zig is taken from `ziglang==0.17.0.post0`**: 0.17.0 was yanked on PyPI because of a partial upload (wheels missing), and the post release is the complete one. The Zig executable is byte for byte the same, and the build is reproducible with the same hashes.
 

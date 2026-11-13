@@ -8,6 +8,10 @@ The tests and the distributions behind these statements are in [COMPATIBILITY.md
 
 ## To run apps
 
+- The runtime (`panpak-stub`) comes with `panpak`: the release tarball and `target/<triple>/release` hold both files. `panpak build` and `panpak install` put the one
+  beside the running `panpak` in `~/.local/share/panpak/runtimes/` when there is none or the installed one has an older ABI, and say so in one line. Nothing is
+  installed as root.
+
 - **Architecture:** x86-64 Linux. The runtime is a static musl binary built for `x86_64-unknown-linux-musl`; other
   architectures are not supported yet.
 - **Kernel, with Landlock enabled** (`landlock` among the active security modules). Linux 5.13 is the minimum (Landlock 1,
@@ -47,8 +51,10 @@ The tests and the distributions behind these statements are in [COMPATIBILITY.md
 
 ## To build Panpak
 
-- Rust 1.99.1 (`rust-toolchain.toml`) with the target `x86_64-unknown-linux-musl`, and Zig 0.17.0 as C compiler and linker, installed from
-  the pinned wheel (`pip install --require-hashes -r ../tools/requirements-zig.txt`). `scripts/repro-build.sh` builds twice and compares the bytes; the
+- `build.sh` (run as ./build.sh) does everything below and says what is missing. It needs `rustup` (the Rust toolchain of `rust-toolchain.toml`, 1.99.1, and the target
+  `x86_64-unknown-linux-musl` are installed by it), `python3` with `venv` (Debian and Ubuntu: `python3-venv`) and network access (PyPI for Zig,
+  `static.rust-lang.org` for the toolchain, crates.io). It prepares Zig 0.17.0, the C compiler and linker, from the pinned wheel in `target/zig-venv`
+  (`pip install --require-hashes -r ../tools/requirements-zig.txt`). `scripts/repro-build.sh` builds twice and compares the bytes; the
   reference hashes are in [../REPRODUCIBLE-HASHES.md](../REPRODUCIBLE-HASHES.md).
 
 ## To build an app from source (`panpak build`)

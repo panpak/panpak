@@ -381,3 +381,40 @@ fn elf_needing(name: &str) -> Vec<u8> {
     b.extend_from_slice(&strtab);
     b
 }
+
+#[test]
+fn convert_without_a_key_makes_a_personal_one_once_and_says_so() {
+    let l = lab("own-key");
+    let src = l.home.join("app.AppImage");
+    fs::write(&src, appimage(real_layout())).unwrap();
+    let out = l.home.join("converted.panpak");
+    let run = || {
+        let o = Command::new(env!("CARGO_BIN_EXE_panpak"))
+            .args(["convert", src.to_str().unwrap(), "--id", ID, "--stub", l.stub.to_str().unwrap(), "-o", out.to_str().unwrap()])
+            .current_dir(&l.home)
+            .env("HOME", &l.home)
+            .env("XDG_CONFIG_HOME", l.home.join(".config"))
+            .env("XDG_DATA_HOME", l.home.join(".local/share"))
+            .env("XDG_RUNTIME_DIR", l.home.join("run"))
+            .env_remove("PANPAK_SECRET_FILE")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        let _ = fs::remove_file(&out);
+        o
+    };
+    let key = l.home.join(".config/panpak/secret.key");
+    assert!(!key.exists());
+    let o = run();
+    let t = text(&o);
+    assert!(o.status.success(), "{t}");
+    assert!(t.contains("made your key") && t.contains("secret.key") && t.contains("fingerprint"), "{t}");
+    assert_eq!(fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(fs::metadata(key.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    let first = fs::read_to_string(&key).unwrap();
+    // The second time the same key is used, in silence.
+    let o = run();
+    let t = text(&o);
+    assert!(o.status.success() && !t.contains("made your key"), "{t}");
+    assert_eq!(fs::read_to_string(&key).unwrap(), first);
+}

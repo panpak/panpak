@@ -29,7 +29,7 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (your own build; the file, not a folder)
+    "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
@@ -448,6 +448,15 @@ fn cmd_licenses(pkg: Option<&Path>) -> Result<()> {
 }
 
 fn cmd_keygen(out: &Path) -> Result<()> {
+    let (vk, _) = create_secret_file(out)?;
+    println!("secret key written to: {}", out.display());
+    println!("key:    ed25519:{}", panpak_core::hex(vk.as_bytes()));
+    println!("fingerprint (TOFU, first 16 hex): {}", panpak_core::fingerprint(&vk));
+    Ok(())
+}
+
+/// Make a new key in `out` (O_EXCL, 0600 from the start: never overwrites, never world-readable). Returns the public key and the fingerprint.
+fn create_secret_file(out: &Path) -> Result<(ed25519_dalek::VerifyingKey, String)> {
     use ed25519_dalek::SigningKey;
     use std::io::Read;
     use std::os::unix::fs::OpenOptionsExt;
@@ -455,7 +464,6 @@ fn cmd_keygen(out: &Path) -> Result<()> {
     File::open("/dev/urandom")?.read_exact(&mut panpak)?;
     let sk = SigningKey::from_bytes(&panpak);
     let vk = sk.verifying_key();
-    // O_EXCL + 0600 from creation: never overwrites, never world-readable.
     let mut f = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -464,10 +472,29 @@ fn cmd_keygen(out: &Path) -> Result<()> {
         .with_context(|| format!("create secret file {} (it must not exist)", out.display()))?;
     writeln!(f, "{}", panpak_core::hex(&panpak))?;
     f.sync_all()?;
-    println!("secret key written to: {}", out.display());
-    println!("key:    ed25519:{}", panpak_core::hex(vk.as_bytes()));
-    println!("fingerprint (TOFU, first 16 hex): {}", panpak_core::fingerprint(&vk));
-    Ok(())
+    let fp = panpak_core::fingerprint(&vk);
+    Ok((vk, fp))
+}
+
+/// Where the key of the person who builds is kept when no other is given: `$XDG_CONFIG_HOME/panpak/secret.key`.
+fn default_secret_path() -> Result<PathBuf> {
+    Ok(dirs::config_dir().context("no config folder (set XDG_CONFIG_HOME or HOME)")?.join("panpak").join("secret.key"))
+}
+
+/// Like `load_secret`, but without a key given the personal key is used, and made the first time (one line says so, with the fingerprint).
+fn load_or_make_secret(flag: Option<&str>) -> Result<String> {
+    if flag.is_some() || std::env::var_os("PANPAK_SECRET_FILE").is_some_and(|v| !v.is_empty()) {
+        return load_secret(flag);
+    }
+    let path = default_secret_path()?;
+    if !path.exists() {
+        let dir = path.parent().context("key folder")?;
+        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        let (_, fp) = create_secret_file(&path)?;
+        eprintln!("panpak: made your key {} (fingerprint {fp}); it signs the packages you build: keep it, and back it up. --secret-file uses another key", path.display());
+    }
+    panpak_core::read_secret_file(&path)
 }
 
 /// Secret from `--secret-file` or, if absent, `PANPAK_SECRET_FILE` (a path,
@@ -947,6 +974,38 @@ fn best_runtime(store: &Path) -> Result<(u32, PathBuf)> {
     best.context("no installed runtime: run `panpak install-runtime <stub>` first")
 }
 
+/// The runtime that comes with this program: the file `panpak-stub` in the folder of the running `panpak` (the release tarball holds both, and so does
+/// `target/<triple>/release`). It is installed when there is none, and replaced when the installed one has an older ABI, or the same ABI and was put here
+/// by this function and differs (a program rebuilt). One line says it. The trust is the one of the program that is running: both files came together. A runtime
+/// that was installed with `install-runtime` (a signed release, or a chosen build) is never replaced by one of the same ABI.
+fn ensure_own_runtime() -> Result<()> {
+    let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) else { return Ok(()) };
+    let own = exe.with_file_name("panpak-stub");
+    let store = store_dir()?;
+    if !own.is_file() || own.starts_with(&store) {
+        return Ok(());
+    }
+    let Ok(own_abi) = stub_abi(&own) else { return Ok(()) };
+    let origin = |abi: u32| fs::read_to_string(store.join("runtimes").join(abi.to_string()).join("origin")).unwrap_or_default();
+    let sha = |p: &Path| -> Option<String> {
+        use sha2::Digest;
+        fs::read(p).ok().map(|b| panpak_core::hex(&sha2::Sha256::digest(b)))
+    };
+    let what = match best_runtime(&store) {
+        Err(_) => "installed",
+        Ok((abi, _)) if abi < own_abi => "updated",
+        Ok((abi, p)) if abi == own_abi && origin(abi).trim() == "auto" && sha(&p) != sha(&own) => "updated",
+        _ => return Ok(()),
+    };
+    let dest = store.join("runtimes").join(own_abi.to_string());
+    fs::create_dir_all(&dest)?;
+    install_file_atomically(&own, &dest.join("panpak-stub"), 0o755)?;
+    fs::write(dest.join("origin"), "auto\n")?;
+    stable_stub_link(&store)?;
+    eprintln!("panpak: runtime {own_abi} {what} from {} (it comes with this program)", own.display());
+    Ok(())
+}
+
 /// Install a runtime. Two forms: release tarball
 /// (`panpak-X.Y.Z-<target>.tar.gz` + sidecar .sha256 + .sig), with
 /// SHA-256 and Ed25519 signature with the release key (argument or
@@ -1086,6 +1145,7 @@ fn install_runtime_stub(stub: &Path, store: &Path) -> Result<()> {
     let dest = store.join("runtimes").join(abi.to_string());
     fs::create_dir_all(&dest)?;
     install_file_atomically(stub, &dest.join("panpak-stub"), 0o755)?;
+    let _ = fs::remove_file(dest.join("origin")); // put here by hand: `ensure_own_runtime` does not replace it by a runtime of the same ABI
     stable_stub_link(store)?;
     println!("runtime {abi} installed from {} (NOT verified)", stub.display());
     Ok(())
@@ -2041,6 +2101,9 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     // A removal that was interrupted is finished first: it must not delete what this install writes.
     remove::recover();
     let store = store_dir()?;
+    if runtime_opt.is_none() {
+        ensure_own_runtime()?;
+    }
     if let Some(rt) = runtime_opt {
         // --runtime points at a local build: like --allow-unsigned (warning included).
         eprintln!("panpak: --runtime accepts an unverified local build (use only in development)");
@@ -2702,13 +2765,14 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                 }
             }
             let dir = dir.unwrap_or_else(|| PathBuf::from("."));
-            let secret = load_secret(secret_file.as_deref())?;
-            // The stub to embed: the one given, or the stable link of the store.
+            let secret = load_or_make_secret(secret_file.as_deref())?;
+            // The stub to embed: the one given, or the runtime of the store (the one that comes with this program, installed if it is missing).
             let stub = match stub {
                 Some(s) => s,
                 None => {
+                    ensure_own_runtime()?;
                     let l = store_dir()?.join("bin").join("panpak-stub");
-                    ensure_code!(l.exists(), ErrorCode::E5002, "build needs the runtime to embed: --stub <file>, or install one first (`panpak install-runtime`)");
+                    ensure_code!(l.exists(), ErrorCode::E5002, "build needs the runtime to embed: --stub <file>, or the file panpak-stub next to the panpak program, or install one (`panpak install-runtime`)");
                     l
                 }
             };
@@ -2741,7 +2805,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                     x => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
                 }
             }
-            let secret = load_secret(secret_file.as_deref())?;
+            let secret = load_or_make_secret(secret_file.as_deref())?;
             cmd_convert(ConvertArgs {
                 src: Path::new(src),
                 id: id.ok_or_else(|| coded(ErrorCode::E5002, "missing --id"))?,

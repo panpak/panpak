@@ -237,33 +237,29 @@ Where Panpak does worse today:
 
 ## Quick start
 
-Build Panpak:
+Build Panpak (it prepares Zig and the Rust target by itself, and says what is missing if something is):
 
 ```sh
-python3 -m venv .venv-zig
-.venv-zig/bin/pip install --require-hashes -r tools/requirements-zig.txt
-export PANPAK_ZIG="$(.venv-zig/bin/python -c 'import os, ziglang; print(os.path.join(os.path.dirname(ziglang.__file__), "zig"))')"
-rustup target add x86_64-unknown-linux-musl
-cargo build --release --target x86_64-unknown-linux-musl
+./build.sh
 export PATH="$PWD/target/x86_64-unknown-linux-musl/release:$PATH"
 ```
 
-Build an app from its recipe, install it, run it. `panpak build` takes the folder that holds `panpak.toml`
-(the recipe above), and needs a runtime to embed, so install yours first:
+Build an app from its recipe (the folder that holds `panpak.toml`, the one above), install it, run it:
 
 ```sh
-panpak install-runtime target/x86_64-unknown-linux-musl/release/panpak-stub --allow-unsigned
-panpak keygen -o my.key
-panpak build path/to/recipe-folder --secret-file my.key -o app.panpak
-panpak install app.panpak          # shows the fingerprint of the key and the permissions, and asks
+panpak build path/to/recipe-folder      # writes org.gnome.TextEditor.panpak in that folder
+panpak install path/to/recipe-folder/org.gnome.TextEditor.panpak
 ~/.local/bin/org.gnome.TextEditor
 panpak list
 panpak remove org.gnome.TextEditor
 ```
 
-The first build makes the build image (a few minutes and about 1 GB; it needs network access to the registry and to the
-Debian snapshot service). `panpak install` asks you to confirm the key; in a script, `--yes` confirms it after you have
-checked the fingerprint. `panpak doctor` shows what the system lacks.
+Nothing else is needed. The first `panpak build` makes your personal key in `~/.config/panpak/secret.key` and says so with its
+fingerprint (`--secret-file` uses another one), and `build` and `install` put the runtime that comes with `panpak` (the file
+`panpak-stub` beside it) in your home, one line each time. The first build also makes the build image (a few minutes and about
+1 GB; it needs network access to the registry and to the Debian snapshot service). `panpak install` shows the fingerprint of the
+key and the permissions and asks; in a script, `--yes` confirms after you have checked the fingerprint. `panpak doctor` shows
+what the system lacks.
 
 To try Panpak with apps you already have, `panpak convert` turns an AppImage into a package signed by
 you: see [QUICKSTART.md](QUICKSTART.md).
