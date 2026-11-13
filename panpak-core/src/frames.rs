@@ -159,6 +159,18 @@ pub fn parse_response(buf: &[u8]) -> Result<Option<(Response, usize)>, FrameErro
 
 /// What the actor does with a request. The actor does not trust the receiver: the address is checked again, and
 /// the rate limit is its own. A kind that is not done yet is `Unsupported`.
+/// At most `MAX_TEXT` bytes, cut at a character (an error message may repeat the scheme of an address, which can be 2 KiB).
+fn bounded(mut text: String) -> String {
+    if text.len() > MAX_TEXT {
+        let mut end = MAX_TEXT;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text
+}
+
 pub fn act(req: &Request, limit: &mut RateLimit, now: Instant, target: &mut dyn Target) -> Response {
     match req.kind {
         KIND_OPEN_URI => {
@@ -167,7 +179,7 @@ pub fn act(req: &Request, limit: &mut RateLimit, now: Instant, target: &mut dyn 
             }
             let Ok(url) = std::str::from_utf8(&req.payload) else { return Response { status: Status::Refused, text: "the address is not UTF-8".into() } };
             if let Err(e) = check_url(url) {
-                return Response { status: Status::Refused, text: e.to_string().replace(['\n', '\r'], " ") };
+                return Response { status: Status::Refused, text: bounded(e.to_string().replace(['\n', '\r'], " ")) };
             }
             match target.open(url) {
                 Ok(()) => Response { status: Status::Done, text: String::new() },
@@ -189,6 +201,18 @@ mod tests {
             self.0.push(url.to_string());
             Ok(())
         }
+    }
+
+    #[test]
+    fn an_error_text_is_bounded_even_when_it_repeats_a_long_scheme() {
+        let url = format!("{}:x", "a".repeat(2000));
+        let mut limit = RateLimit::new(Instant::now());
+        let r = act(&Request { kind: KIND_OPEN_URI, payload: url.into_bytes() }, &mut limit, Instant::now(), &mut Rec(Vec::new()));
+        assert_eq!(r.status, Status::Refused);
+        assert!(r.text.len() <= MAX_TEXT && r.text.starts_with("scheme aaaa"), "{} bytes", r.text.len());
+        assert!(bounded("é".repeat(300)).len() <= MAX_TEXT);
+        // And it encodes: a text above the limit would not.
+        assert!(!encode_response(r.status, &r.text).is_empty());
     }
 
     #[test]
