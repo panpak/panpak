@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`install` is about 25 ms faster** (96 to 71 ms for a 44 MB package): the icons are written without a sync of the file and of the folder each (14 syncs of about 2 ms were the difference with the 38 ms of before the desktop integration); the package copy and its sync are what remains.
+- **Zig is taken from `ziglang==0.17.0.post0`**: 0.17.0 was yanked on PyPI because of a partial upload (wheels missing), and the post release is the complete one. The Zig executable is byte for byte the same, and the build is reproducible with the same hashes.
+
 - **Symbolic links that point outside the package (defect 57).** `convert` leaves out a link of the AppImage whose target is absolute or climbs above the root, lists them in a note, and stops with a clear error when the entry or a library that a program of the tree asks for is such a link. `pack` and `build` refuse such a link and name it, with the way to correct it. The app harness no longer makes `fixed-` copies of AppImages (GIMP and MuseScore convert and start as they are).
 - **`panpak doctor <package>` counts the libraries the package carries** before the first start (the tree is not on the disk then; it called every library of the package missing).
 
