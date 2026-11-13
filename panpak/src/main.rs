@@ -975,9 +975,9 @@ fn best_runtime(store: &Path) -> Result<(u32, PathBuf)> {
 }
 
 /// The runtime that comes with this program: the file `panpak-stub` in the folder of the running `panpak` (the release tarball holds both, and so does
-/// `target/<triple>/release`). It is installed when there is none, and replaced when the installed one has an older ABI, or the same ABI and was put here
-/// by this function and differs (a program rebuilt). One line says it. The trust is the one of the program that is running: both files came together. A runtime
-/// that was installed with `install-runtime` (a signed release, or a chosen build) is never replaced by one of the same ABI.
+/// `target/<triple>/release`). It is installed when there is none, and replaced when the installed one has an older ABI, or the same ABI and other bytes (a program
+/// rebuilt). One line says it. The trust is the one of the program that is running: both files came together. A runtime that was verified as a signed
+/// release (`install-runtime <release.tar.gz> --release-key`) is never replaced by one of the same ABI.
 fn ensure_own_runtime() -> Result<()> {
     let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) else { return Ok(()) };
     let own = exe.with_file_name("panpak-stub");
@@ -994,7 +994,7 @@ fn ensure_own_runtime() -> Result<()> {
     let what = match best_runtime(&store) {
         Err(_) => "installed",
         Ok((abi, _)) if abi < own_abi => "updated",
-        Ok((abi, p)) if abi == own_abi && origin(abi).trim() == "auto" && sha(&p) != sha(&own) => "updated",
+        Ok((abi, p)) if abi == own_abi && origin(abi).trim() != "release" && sha(&p) != sha(&own) => "updated",
         _ => return Ok(()),
     };
     let dest = store.join("runtimes").join(own_abi.to_string());
@@ -1091,6 +1091,7 @@ fn cmd_install_runtime(src: &Path, release_key: Option<&str>, allow_unsigned: bo
     let dest = store.join("runtimes").join(abi.to_string());
     fs::create_dir_all(&dest)?;
     install_file_atomically(&stub, &dest.join("panpak-stub"), 0o755)?;
+    fs::write(dest.join("origin"), "release\n")?; // verified with the release key: `ensure_own_runtime` does not replace it by one of the same ABI
     // The stable stub link, then the stable `panpak` (the release has both binaries): launchers and the menu action use these.
     stable_stub_link(&store)?;
     match find_in(&stage, "panpak") {
@@ -1145,7 +1146,7 @@ fn install_runtime_stub(stub: &Path, store: &Path) -> Result<()> {
     let dest = store.join("runtimes").join(abi.to_string());
     fs::create_dir_all(&dest)?;
     install_file_atomically(stub, &dest.join("panpak-stub"), 0o755)?;
-    let _ = fs::remove_file(dest.join("origin")); // put here by hand: `ensure_own_runtime` does not replace it by a runtime of the same ABI
+    let _ = fs::remove_file(dest.join("origin")); // put here by hand (a build of your own): `ensure_own_runtime` may replace it
     stable_stub_link(store)?;
     println!("runtime {abi} installed from {} (NOT verified)", stub.display());
     Ok(())

@@ -113,15 +113,22 @@ fn install_puts_the_runtime_that_comes_with_the_program_and_updates_it() {
 }
 
 #[test]
-fn a_runtime_installed_by_hand_is_not_replaced_by_one_of_the_same_abi() {
+fn a_runtime_installed_by_hand_follows_the_program_but_a_release_is_kept() {
     let l = Lab::new("hand");
     let pkg = l.package();
     let mine = l.home.join("mine-stub");
     stub_script(&mine, 1, "by hand");
     let o = l.cli(&["install-runtime", mine.to_str().unwrap(), "--allow-unsigned"]);
     assert!(o.status.success(), "{}", text(&o));
+    // A build of your own, put there by hand: the program that is run now brings its own, and it is the one that stays.
     stub_script(&l.bin.join("panpak-stub"), 1, "beside the program");
     let t = l.install(&pkg);
+    assert!(t.contains("panpak: runtime 1 updated from"), "{t}");
+    assert!(l.stored_note(1).contains("# beside the program"));
+    // A runtime verified as a release (its folder says so) is not replaced by one of the same ABI.
+    fs::write(l.home.join(".local/share/panpak/runtimes/1/origin"), "release\n").unwrap();
+    stub_script(&l.bin.join("panpak-stub"), 1, "another build");
+    let t = l.install(&pkg);
     assert!(!t.contains("panpak: runtime"), "{t}");
-    assert!(l.stored_note(1).contains("# by hand"));
+    assert!(l.stored_note(1).contains("# beside the program"));
 }

@@ -81,7 +81,7 @@ Landlock sandbox (read-only tree; private data
 folders under `~/.local/share/panpak/userdata/org.example.hello`, see `panpak data path`).
 
 `panpak install-runtime <stub> --allow-unsigned` (a build of your own) and `panpak install-runtime <release.tar.gz> --release-key ...` (a signed
-release) stay for the other cases: a runtime installed that way is not replaced by the one beside `panpak` when both have the same ABI.
+release) stay for the other cases: a runtime verified as a release is not replaced by the one beside `panpak` when both have the same ABI (one installed by hand from a build of your own is: the program that runs brings its own).
 
 ## Then: install and update
 
