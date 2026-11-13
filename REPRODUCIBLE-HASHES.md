@@ -19,11 +19,11 @@ Toolchain (everything that can change the bytes is pinned):
 - `SOURCE_DATE_EPOCH=1700000000` and path remapping for the sources and the
   cargo registry.
 
-Sizes: `panpak-stub` 3,613,024 bytes, `panpak` 7,528,616 bytes.
+Sizes: `panpak-stub` 3,613,024 bytes, `panpak` 7,519,016 bytes.
 
 ```
 6afd8dbfdec940badb2db5dc8a90d74abf2307387b52916327b591fa4d48e327  panpak-stub
-a1b33a6964efd0befb1f0f16a304e0ae4424ee99eb80b4a1b669286722e97bd6  panpak
+6b8e00dcf972af667ffebda5fc54f65b45939f3b069d48cf88b707320d2841a7  panpak
 ```
 
 ## Reproduce
