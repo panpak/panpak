@@ -5,6 +5,9 @@ msgstr ""
 "Language: it\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
+msgid "A file you open with this app (Open with, a double click, the command line) is given to it, and only that file."
+msgstr "Un file che apri con questa app (Apri con, un doppio clic, la riga di comando) le viene dato, e solo quel file."
+
 msgid "A place in your home folder that belongs to you, not to the app, is open to it for reading and writing."
 msgstr "Un posto della tua cartella personale che è tuo, non dell'app, è aperto all'app in lettura e scrittura."
 
@@ -85,6 +88,12 @@ msgstr "Non può osservare le altre app né leggere ciò che scrivi in esse."
 
 msgid "Normal"
 msgstr "Normale"
+
+msgid "Open and save the files you choose in the file window of your desktop"
+msgstr "Aprire e salvare i file che scegli nella finestra dei file del tuo desktop"
+
+msgid "Open the files you start it with"
+msgstr "Aprire i file con cui la avvii"
 
 msgid "Open the links that start with {subject}:"
 msgstr "Aprire i link che iniziano con {subject}:"
@@ -175,6 +184,9 @@ msgstr "Cosa può fare:"
 
 msgid "What it cannot do:"
 msgstr "Cosa non può fare:"
+
+msgid "When the app asks to open or save a file, your desktop shows its own window. The app gets only the files and folders you pick there, and keeps them until it is removed."
+msgstr "Quando l'app chiede di aprire o salvare un file, il tuo desktop mostra la sua finestra. L'app riceve solo i file e le cartelle che scegli lì, e li mantiene finché non viene rimossa."
 
 msgid "X11 has no walls between apps: this app can read the windows and the keyboard input of the others."
 msgstr "X11 non ha muri tra le app: questa app può leggere le finestre e la tastiera delle altre."

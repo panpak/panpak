@@ -649,6 +649,15 @@ pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
     let mut kept: Vec<String> = Vec::new();
     let mut problems: Vec<String> = Vec::new();
 
+    // 0. The files the app was given through the file dialog: the first step, before anything is deleted, so that a failure stops the removal with
+    // nothing changed and the command can be run again. The user's own files are never touched.
+    match revoke_documents(id, purge) {
+        Ok(DocOutcome::Revoked(n)) if n > 0 => removed.push(format!("{n} file grants of the document portal (your files are untouched)")),
+        Ok(DocOutcome::Revoked(_)) => {}
+        Ok(DocOutcome::NoPortal(why)) => kept.push(format!("file grants of the document portal: not checked ({why})")),
+        Err(e) => return Err(coded(ErrorCode::E2002, format!("cannot take back the files that {id} was given: {e}. Nothing was removed; run the command again"))),
+    }
+
     // 1. What the desktop knows of the app.
     remove_integration(id, &mut removed, &mut kept)?;
 
@@ -816,6 +825,32 @@ fn notify(summary: &str, body: &str) -> bool {
 /// `panpak remove --ask <app-id>`: the menu action "Uninstall". Asks in a dialog (zenity or kdialog), removes the app
 /// (not its data) when the answer is yes, and tells the result in a notification. With no dialog tool it removes nothing
 /// and only explains, by notification, the command to run in a terminal.
+/// What happened to the grants of the document portal.
+enum DocOutcome {
+    Revoked(usize),
+    /// There is no session bus or no document portal here, so there is nothing that can be revoked (and nothing is said to exist).
+    NoPortal(String),
+}
+
+/// Take away every permission the app holds in the document portal (with `purge`, delete the documents nobody else holds).
+fn revoke_documents(id: &str, purge: bool) -> Result<DocOutcome> {
+    let app = format!("panpak.{id}");
+    let Ok(mut conn) = panpak_core::dbus::Connection::session(std::time::Duration::from_secs(10)) else {
+        return Ok(DocOutcome::NoPortal("no session bus".into()));
+    };
+    match panpak_core::docshare::revoke_app(&mut conn, &app, purge) {
+        Ok(n) => Ok(DocOutcome::Revoked(n)),
+        Err(e) => {
+            let missing = e.chain().any(|c| c.downcast_ref::<panpak_core::dbus::DbusError>().is_some_and(|d| d.name.ends_with("ServiceUnknown") || d.name.ends_with("NameHasNoOwner")));
+            if missing {
+                Ok(DocOutcome::NoPortal("no document portal".into()))
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 pub fn cmd_remove_ask(id: &str) -> Result<()> {
     use std::process::{Command, Stdio};
     panpak_core::validate_app_id(id)?;

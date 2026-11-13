@@ -136,7 +136,7 @@ elif mode == "link":
 elif mode == "dialog":
     # The file dialog as a toolkit asks for it: OpenFile or SaveFile with a handle token, the answer as a Response signal, then the file through the address given.
     # name is the method, secs unused; the host path the dialog was told to choose is in argv[4], and the text to write for a save in argv[5].
-    method, host = name, sys.argv[4]
+    method, host = name, sys.argv[4][2:]
     px = Gio.DBusProxy.new_sync(c, Gio.DBusProxyFlags.NONE, None, "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.FileChooser", None)
     v = px.get_cached_property("version")
     res["version"] = v.unpack() if v is not None else None
@@ -173,6 +173,18 @@ elif mode == "dialog":
             os.rename(local + ".moved", local)
         except OSError as e:
             res["rename_error"] = str(e)[:60]
+elif mode == "args":
+    # Files given at the start: the stub shares them with the portal and puts the document paths in their place.
+    args = sys.argv[4:]
+    res["argv"] = args
+    try:
+        res["first"] = open(args[0]).read() if args else None
+        if len(args) > 1:
+            with open(args[1], "w") as f:
+                f.write("written through the document\n")
+            res["wrote"] = True
+    except OSError as e:
+        res["io_error"] = str(e)[:100]
 elif mode == "lat":
     # Round trips: Settings.ReadOne at the portal (through the router and the proxy) and Peer.Ping to a name of the app itself (answered by the router).
     request_name(name, 4)
@@ -535,6 +547,9 @@ def scenario_links(lab):
     print('L   OpenURI is answered by the router and the app is told what happened: ok')
 
 
+docshare_link_message = 'the file you chose is a link: choose the original file'
+
+
 def scenario_dialog(lab):
     """D: the file dialog of the portal, from the app to the files: the real portal front end, the real document portal, a scripted backend."""
     rt = Path(lab.sess.rt)
@@ -554,7 +569,7 @@ def scenario_dialog(lab):
     uri = lambda p: 'file://' + str(p)
     # Open: the app gets an address in the document folder, reads the file through it, and does not see the path of the host.
     answer.write_text(uri(docs / 'a.txt') + '\n')
-    r = lab.run(app, 'dialog', 'OpenFile', 0, docs / 'a.txt', '')
+    r = lab.run(app, 'dialog', 'OpenFile', 0, 'h:' + str(docs / 'a.txt'), '')
     need(r.get('version') == 4, f"D: the version of FileChooser: {r}")
     need(r['answers'] and r['answers'][0][0] == 0 and 'uris' in r['answers'][0][1], f'D: the answer: {r}; the runtime said: {lab.last_out[-600:]}')
     need(r.get('in_doc_folder') and r.get('content') == 'hello from the host\n', f'D: the app read the file through the document folder: {r}')
@@ -563,19 +578,32 @@ def scenario_dialog(lab):
     need(f'OpenFile app_id=panpak.{app} parent=x11:1f' in log, f'D: what the backend was asked: {log[-400:]}')
     # The user closes the dialog.
     answer.write_text('')
-    r = lab.run(app, 'dialog', 'OpenFile', 0, docs / 'a.txt', '')
+    r = lab.run(app, 'dialog', 'OpenFile', 0, 'h:' + str(docs / 'a.txt'), '')
     need(r['answers'] == [[1, []]], f"D: a closed dialog: {r['answers']}")
     # Save: a name that does not exist yet; the file appears on the host when the app writes.
     answer.write_text(uri(docs / 'new.txt') + '\n')
-    r = lab.run(app, 'dialog', 'SaveFile', 0, docs / 'new.txt', 'saved by the app\n')
+    r = lab.run(app, 'dialog', 'SaveFile', 0, 'h:' + str(docs / 'new.txt'), 'saved by the app\n')
     print('D   atomic save probe (rename in the document folder):', r.get('rename_error'), '| io:', r.get('io_error'))
     need(r.get('wrote') and (docs / 'new.txt').exists() and (docs / 'new.txt').read_text() == 'saved by the app\n', f'D: the save: {r}, host file: {(docs / "new.txt").exists()}')
     # A link chosen in the dialog: refused, the app is told the dialog ended.
     (docs / 'ln.txt').symlink_to(docs / 'a.txt')
     answer.write_text(uri(docs / 'ln.txt') + '\n')
-    r = lab.run(app, 'dialog', 'OpenFile', 0, docs / 'a.txt', '')
+    r = lab.run(app, 'dialog', 'OpenFile', 0, 'h:' + str(docs / 'a.txt'), '')
     need(r['answers'] and r['answers'][0][0] == 2 and 'uri' not in r, f'D: a link: {r}')
-    print('D   the file dialog: open, close, save and a refused link, through the real portal and the document folder: ok')
+    # Files given at the start (Open with, a double click, the command line): shared before the app runs; a link is dropped, with the message on stderr.
+    r = lab.run(app, 'args', '-', 0, docs / 'a.txt', docs / 'started.txt', docs / 'ln.txt')
+    doc = str(rt / 'doc') + '/'
+    need(len(r['argv']) == 2 and all(a.startswith(doc) for a in r['argv']), f"D: the arguments the app got: {r['argv']}")
+    need(r.get('first') == 'hello from the host\n' and r.get('wrote') and (docs / 'started.txt').read_text() == 'written through the document\n', f'D: files given at the start: {r}')
+    need(docshare_link_message in lab.last_out, f'D: the link was dropped without a word: {lab.last_out[-300:]}')
+    # Removing the app takes the grants back and leaves the user's files alone.
+    listing = lambda: lab.sess.call('org.freedesktop.portal.Documents', '/org/freedesktop/portal/documents', 'org.freedesktop.portal.Documents.List', f'panpak.{app}')[1]
+    need(not listing().endswith('{},)'), f'D: the portal holds nothing for the app before the removal: {listing()}')
+    out = lab.cli('remove', app).stdout
+    need('file grants of the document portal' in out, f'D: remove says nothing about the grants: {out}')
+    need(listing().endswith('{},)'), f'D: the grants are still there after the removal: {listing()}')
+    need((docs / 'a.txt').read_text() == 'hello from the host\n' and (docs / 'new.txt').exists(), 'D: the files of the user were touched by the removal')
+    print('D   the file dialog: open, close, save and a refused link, through the real portal and the document folder; remove takes the grants back: ok')
 
 
 def scenario_mpris(lab):

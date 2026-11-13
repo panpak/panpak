@@ -11,6 +11,7 @@ pub mod chooserhost;
 pub mod docshare;
 pub mod filechooser;
 pub mod i18n;
+pub mod startfiles;
 pub mod permissions;
 pub mod pkgenv;
 mod errors;

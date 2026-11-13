@@ -95,6 +95,10 @@ pub static ROWS: &[Row] = &[
         "A place in your home folder that belongs to you, not to the app, is open to it for reading. The app cannot change it.", ""),
     row("socket", Level::Attention, "network-server-symbolic", "\u{2301}", "Talk to the local service {subject}",
         "It can connect to this Unix socket, and so to the program that listens on it.", ""),
+    row("files-chosen", Level::Normal, "document-open-symbolic", "\u{25a4}", "Open and save the files you choose in the file window of your desktop",
+        "When the app asks to open or save a file, your desktop shows its own window. The app gets only the files and folders you pick there, and keeps them until it is removed.", ""),
+    row("launch-files", Level::Normal, "document-open-symbolic", "\u{25a4}", "Open the files you start it with",
+        "A file you open with this app (Open with, a double click, the command line) is given to it, and only that file.", ""),
     row("url-scheme", Level::Normal, "emblem-symbolic-link", "\u{2197}", "Open the links that start with {subject}:",
         "The links of this kind, in your browser or in other apps, are given to this app.", ""),
     row("notifications", Level::Normal, "preferences-system-notifications-symbolic", "\u{25d4}", "Show notifications",
@@ -159,9 +163,27 @@ fn ports(v: &Option<Vec<u16>>) -> Vec<String> {
     v.iter().flatten().map(u16::to_string).collect()
 }
 
-/// What a manifest asks for, in the language of the environment, the most serious first.
+/// True if this system has the document portal's folder, which the file dialog and the files given at the start need (the same test the runtime makes).
+pub fn documents_available() -> bool {
+    std::env::var_os("XDG_RUNTIME_DIR").is_some_and(|r| std::path::Path::new(&r).join("doc/by-app").is_dir())
+}
+
+/// What a manifest asks for, in the language of the environment, the most serious first, with the permissions that every app has where this system keeps
+/// them: the files chosen in the dialog and the files given at the start.
 pub fn items(man: &Manifest) -> Vec<Item> {
-    items_in(i18n::current(), man)
+    items_with(i18n::current(), man, documents_available())
+}
+
+/// `items_in`, and the two file permissions when `documents` says that the system serves them.
+pub fn items_with(lang: Option<&Catalog>, man: &Manifest, documents: bool) -> Vec<Item> {
+    let mut out = items_in(lang, man);
+    if documents {
+        out.push(item(lang, "files-chosen", vec![]));
+        out.push(item(lang, "launch-files", vec![]));
+        let pos = |id: &str| ROWS.iter().position(|r| r.id == id).unwrap_or(usize::MAX);
+        out.sort_by(|a, b| b.level.cmp(&a.level).then(pos(a.id).cmp(&pos(b.id))));
+    }
+    out
 }
 
 /// What a manifest asks for. Within a level the order of the table is kept.
@@ -407,8 +429,8 @@ pub fn render_item(lang: Option<&Catalog>, style: Style, it: &Item) -> String {
 }
 
 /// The whole block for a manifest: the summary, what the app can do, and what it cannot. Lines are not indented.
-pub fn render_block(lang: Option<&Catalog>, style: Style, man: &Manifest, enf: Enforced) -> Vec<String> {
-    let its = items_in(lang, man);
+pub fn render_block(lang: Option<&Catalog>, style: Style, man: &Manifest, enf: Enforced, documents: bool) -> Vec<String> {
+    let its = items_with(lang, man, documents);
     let mut out = vec![summary(lang, &its)];
     if its.is_empty() {
         out.push(tr_in(lang, "It asks for nothing beyond its own private folders.").into_owned());
@@ -555,6 +577,18 @@ mod tests {
         assert_eq!(summary(None, &plain), "Full isolation");
         let secret = items_in(None, &man("[permissions]\n[[permissions.home_paths]]\npath=\".ssh\"\naccess=\"ro\"\n"));
         assert_eq!(summary(None, &secret), "Partial isolation: it reaches passwords, keys or startup files");
+    }
+
+    #[test]
+    fn the_file_permissions_are_listed_where_the_system_serves_them() {
+        let m = man("[permissions]\nnotifications=true\n");
+        let with = items_with(None, &m, true);
+        let ids: Vec<_> = with.iter().map(|i| (i.id, i.level)).collect();
+        assert_eq!(ids, [("files-chosen", Level::Normal), ("launch-files", Level::Normal), ("notifications", Level::Normal)]);
+        assert_eq!(items_with(None, &m, false).iter().map(|i| i.id).collect::<Vec<_>>(), ["notifications"]);
+        // They never make the isolation partial, and an update never "adds" them.
+        assert_eq!(summary(None, &with), "Full isolation");
+        assert!(added(&man(""), &m).iter().all(|i| !i.id.ends_with("-files") && i.id != "files-chosen" && i.id != "launch-files"));
     }
 
     #[test]
@@ -727,7 +761,7 @@ mod tests {
     fn the_table_is_translated_into_italian_and_levels_stay_in_words() {
         let it = i18n::catalogs().iter().find(|c| c.name == "it");
         let m = man("[permissions]\nx11=true\nnotifications=true\n");
-        let lines = render_block(it, Style::PLAIN, &m, Enforced { view: true, abi: Some(ABI::V9) });
+        let lines = render_block(it, Style::PLAIN, &m, Enforced { view: true, abi: Some(ABI::V9) }, false);
         let (partial, high, normal) = (tr_in(it, "Partial isolation:"), tr_in(it, "High risk"), tr_in(it, "Normal"));
         assert!(partial != "Partial isolation:" && lines[0].starts_with(&*partial), "{lines:?}");
         assert!(lines.iter().any(|l| l.contains(&format!("[!!] {high}"))), "{lines:?}");

@@ -207,6 +207,23 @@ fn the_dialog_shares_what_the_user_chose_and_only_that() {
     }
     lab.take_log();
 
+    // 8b. Files given at the start: shared before the app runs, and the document paths take their place. Words, options and addresses stay; a link is dropped.
+    lab.take_log();
+    let args: Vec<String> =
+        ["--new-window", "a b.txt", "./new2.txt", &uri_of(&ro), "word", "https://example.org/x.txt", "notes.txt"].iter().map(|s| s.to_string()).collect();
+    let shared = panpak_core::startfiles::share(&args, &d, "panpak.org.example.App", "/run/user/1000", &[], || Connection::session(Duration::from_secs(10)));
+    assert_eq!(shared.args.len(), 6, "{:?}", shared.args);
+    assert_eq!((shared.args[0].as_str(), shared.args[4].as_str(), shared.args[5].as_str()), ("--new-window", "word", "https://example.org/x.txt"));
+    assert!(shared.args[1].starts_with("/run/user/1000/doc/") && shared.args[1].ends_with("/a b.txt"), "a path stays a path: {:?}", shared.args);
+    assert!(shared.args[2].starts_with("/run/user/1000/doc/") && shared.args[2].ends_with("/new2.txt"), "{:?}", shared.args);
+    assert!(shared.args[3].starts_with("file:///run/user/1000/doc/") && shared.args[3].ends_with("/ro.txt"), "an address stays an address: {:?}", shared.args);
+    assert!(shared.args.iter().all(|a| !a.contains(d.to_string_lossy().as_ref())), "no path of the host reaches the app: {:?}", shared.args);
+    assert_eq!(shared.dropped, [format!("notes.txt: {}", docshare::LINK_MESSAGE)]);
+    assert!(!d.join("new2.txt").exists(), "the new file appears when the app writes");
+    let log = lab.take_log();
+    assert_eq!(calls(&log, "AddFull").len(), 2, "one call for the writable file and one for the read-only one: {log:?}");
+    assert_eq!(calls(&log, "AddNamedFull").len(), 1);
+
     // 9. Taking the grants back: `remove` revokes every document of the app, and with the purge deletes those that nobody else holds.
     let mut conn = Connection::session(Duration::from_secs(10)).unwrap();
     let n = docshare::revoke_app(&mut conn, "panpak.org.example.App", false).unwrap();

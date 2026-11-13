@@ -792,6 +792,11 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
         eprintln!("panpak: WARNING: {note}");
     }
 
+    // A GTK or Qt app that asks for a user folder with write access may not need it: the dialog of the desktop gives it the files the user chooses.
+    if let Some(note) = file_dialog_note(payload.iter().map(|p| p.entry.path.as_path()), man.permissions.as_ref()) {
+        eprintln!("panpak: note: {note}");
+    }
+
     // A graphical app whose window class is not declared: the desktop matches the window to `panpak.<id>.desktop` by the class, and without it the task
     // bar and the dock may show a gear or another program's icon (the window of a Qt or GTK app is named by its own application id, not by ours).
     if man.desktop.as_ref().and_then(|d| d.wm_class.as_ref()).is_none() && payload.iter().any(|p| p.entry.path.starts_with("share/applications")) {
@@ -2020,7 +2025,7 @@ fn perm_style() -> panpak_core::permissions::Style {
 
 /// Print what the package may do and may not do, from the table of permissions, then how it is isolated and its extra start arguments.
 fn print_permissions(man: &panpak_core::Manifest) {
-    for l in panpak_core::permissions::render_block(panpak_core::i18n::current(), perm_style(), man, panpak_core::permissions::Enforced::detect()) {
+    for l in panpak_core::permissions::render_block(panpak_core::i18n::current(), perm_style(), man, panpak_core::permissions::Enforced::detect(), panpak_core::permissions::documents_available()) {
         println!("{l}");
     }
     print_isolation(man);
@@ -2061,7 +2066,7 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
     let key = man.update.as_ref().map(|u| u.key.clone()).unwrap_or_default();
     let fp = panpak_core::parse_pubkey(&key).map(|vk| panpak_core::fingerprint(&vk)).unwrap_or_else(|_| "?".into());
     let (lang, style) = (panpak_core::i18n::current(), perm_style());
-    let items = perms::items_in(lang, &man);
+    let items = perms::items_with(lang, &man, perms::documents_available());
     if json {
         let q = |s: &str| format!("{s:?}");
         println!(
@@ -2081,7 +2086,7 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
         println!("converted from {} (NOT verified by the author; signed by the converter, not upstream)", o.converted_from);
     }
     println!();
-    let lines = perms::render_block(lang, style, &man, perms::Enforced::detect());
+    let lines = perms::render_block(lang, style, &man, perms::Enforced::detect(), perms::documents_available());
     let mut shown = items.iter();
     for l in &lines {
         println!("{l}");
@@ -2365,6 +2370,12 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
             Broken { path, why } => println!("NOTE D-Bus filter: {} does not work ({why}); apps get no session bus", path.display()),
         }
     }
+    // The file dialog and the files given at the start need the folder of the document portal (xdg-document-portal, started by the desktop's portal).
+    if panpak_core::permissions::documents_available() {
+        println!("OK   file dialog: the document portal folder is there; apps open and save the files you choose in the dialog of your desktop, and get the files they are started with");
+    } else {
+        println!("NOTE file dialog: no document portal folder ($XDG_RUNTIME_DIR/doc/by-app); apps use their own dialog, which sees only the folders they were granted");
+    }
     // User namespaces (needed by containers/tooling, not the stub).
     match fs::read_to_string("/proc/sys/user/max_user_namespaces") {
         Ok(v) if v.trim().parse::<u64>().unwrap_or(0) > 0 => line(true, &format!("user namespaces: max {}", v.trim())),
@@ -2577,6 +2588,20 @@ fn icon_theme_notes<'a>(paths: impl Iterator<Item = &'a Path>) -> Vec<String> {
         .difference(&with_cache)
         .map(|t| format!("the icon theme folder {t} has no icon-theme.cache: Qt will look up each icon file by file at the start (tens of thousands of failed lookups, about 0.1 s); make it with `gtk-update-icon-cache -f -t -i {t}`"))
         .collect()
+}
+
+/// A note for the author of a GTK or Qt app that asks for a user folder with `rw`: the file dialog of the desktop (step 11) gives the app the files and
+/// folders the user chooses, so the folder may not be needed. `None` when the app asks for none, or has neither toolkit.
+fn file_dialog_note<'a>(paths: impl Iterator<Item = &'a Path>, perms: Option<&panpak_core::Permissions>) -> Option<String> {
+    let folders: Vec<&str> = perms?.xdg_dirs.as_deref()?.iter().filter(|d| d.access == "rw").map(|d| d.name.as_str()).collect();
+    if folders.is_empty() {
+        return None;
+    }
+    let toolkit = paths.into_iter().any(|p| {
+        let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        n.starts_with("libgtk-4.so") || n.starts_with("libgtk-3.so") || n.starts_with("libQt6Core.so") || n.starts_with("libQt5Core.so")
+    });
+    toolkit.then(|| format!("the file dialog of the desktop can give this app the files the user chooses; consider removing xdg_dirs = [{}] unless the app reads the folder on its own (indexer, project folder, file manager)", folders.join(", ")))
 }
 
 /// What a Qt tree lacks of the plugins that Qt finds only by loading them. Empty for a tree without Qt, and for a Qt tree that has them.
@@ -3118,6 +3143,20 @@ mod tests {
         assert!(notes(&["share/icons/hicolor/index.theme", "share/icons/a.png"]).is_empty());
         // An AppImage layout (usr/share/icons) counts as well.
         assert_eq!(notes(&["usr/share/icons/hicolor/32x32/apps/a.png"]).len(), 1);
+    }
+
+    #[test]
+    fn the_file_dialog_note_needs_a_toolkit_and_a_writable_user_folder() {
+        let perms = |t: &str| -> panpak_core::Permissions { toml::from_str(t).unwrap() };
+        let rw = perms("[[xdg_dirs]]\nname=\"documents\"\naccess=\"rw\"\n");
+        let ro = perms("[[xdg_dirs]]\nname=\"documents\"\naccess=\"ro\"\n");
+        let note = |files: &[&str], p: Option<&panpak_core::Permissions>| file_dialog_note(files.iter().map(|s| Path::new(*s)), p);
+        let gtk = ["lib/libgtk-4.so.1", "bin/app"];
+        assert!(note(&gtk, Some(&rw)).is_some_and(|n| n.contains("xdg_dirs = [documents]")));
+        assert!(note(&["lib/libQt6Core.so.6"], Some(&rw)).is_some());
+        assert!(note(&gtk, Some(&ro)).is_none(), "a read-only folder is not the case the note is about");
+        assert!(note(&["bin/terminal"], Some(&rw)).is_none(), "no toolkit, no note");
+        assert!(note(&gtk, None).is_none());
     }
 
     #[test]

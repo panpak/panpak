@@ -51,10 +51,6 @@ wm_class = "org.gnome.TextEditor"
 [permissions]
 dbus_own = ["org.gnome.TextEditor"]
 
-[[permissions.xdg_dirs]]
-name = "documents"
-access = "rw"
-
 [license]
 spdx = "GPL-3.0-or-later"
 files = ["COPYING"]

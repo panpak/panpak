@@ -4,6 +4,9 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
+msgid "A file you open with this app (Open with, a double click, the command line) is given to it, and only that file."
+msgstr ""
+
 msgid "A place in your home folder that belongs to you, not to the app, is open to it for reading and writing."
 msgstr ""
 
@@ -83,6 +86,12 @@ msgid "It cannot watch other apps or read what you type in them."
 msgstr ""
 
 msgid "Normal"
+msgstr ""
+
+msgid "Open and save the files you choose in the file window of your desktop"
+msgstr ""
+
+msgid "Open the files you start it with"
 msgstr ""
 
 msgid "Open the links that start with {subject}:"
@@ -173,6 +182,9 @@ msgid "What it can do:"
 msgstr ""
 
 msgid "What it cannot do:"
+msgstr ""
+
+msgid "When the app asks to open or save a file, your desktop shows its own window. The app gets only the files and folders you pick there, and keeps them until it is removed."
 msgstr ""
 
 msgid "X11 has no walls between apps: this app can read the windows and the keyboard input of the others."

@@ -180,6 +180,8 @@ below is printed by `panpak permissions --markdown`, and a test fails when it is
 | \[!\] Attention | Read, change and delete *x* in your home folder | A place in your home folder that belongs to you, not to the app, is open to it for reading and writing. |
 | \[!\] Attention | Read *x* in your home folder | A place in your home folder that belongs to you, not to the app, is open to it for reading. The app cannot change it. |
 | \[!\] Attention | Talk to the local service *x* | It can connect to this Unix socket, and so to the program that listens on it. |
+| \[ \] Normal | Open and save the files you choose in the file window of your desktop | When the app asks to open or save a file, your desktop shows its own window. The app gets only the files and folders you pick there, and keeps them until it is removed. |
+| \[ \] Normal | Open the files you start it with | A file you open with this app (Open with, a double click, the command line) is given to it, and only that file. |
 | \[ \] Normal | Open the links that start with *x*: | The links of this kind, in your browser or in other apps, are given to this app. |
 | \[ \] Normal | Show notifications | It can show messages in the notification area of your desktop, also while it works in the background. |
 | \[ \] Normal | Put an icon in the notification area | It can show an icon and a menu there, and it sees which icons are there. |

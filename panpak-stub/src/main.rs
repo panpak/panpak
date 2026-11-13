@@ -1017,6 +1017,26 @@ fn split_stub_flags(args: Vec<String>) -> Result<StubFlags> {
     Ok((allow_unfiltered, open_file, app_args))
 }
 
+/// Files and folders among the arguments (a double click, "Open with", the command line) are shared with the app through the document portal, and the
+/// document paths take their place (docs/FILE-CHOOSER.md, section 3.9). An argument that cannot be shared is dropped, with a line on standard error and a
+/// notification; the app starts with the others.
+fn share_start_files(args: Vec<String>, app_id: &str, runtime_dir: Option<&Path>, writable_roots: &[PathBuf]) -> Vec<String> {
+    let (Some(rt), Ok(cwd)) = (runtime_dir, std::env::current_dir()) else { return args };
+    if !rt.join("doc/by-app").is_dir() || !panpak_core::startfiles::any_file(&args, &cwd) {
+        return args;
+    }
+    let shared = panpak_core::startfiles::share(&args, &cwd, &format!("panpak.{app_id}"), &rt.to_string_lossy(), writable_roots, || {
+        panpak_core::dbus::Connection::session(std::time::Duration::from_secs(10))
+    });
+    for d in &shared.dropped {
+        eprintln!("panpak: {d}");
+    }
+    if !shared.dropped.is_empty() {
+        panpak_core::chooserhost::notify("Panpak: a file was not opened", &shared.dropped.join("\n"));
+    }
+    shared.args
+}
+
 /// When the stub started, for the timing lines of `PANPAK_DEBUG`.
 /// The lazy update of the menu entry and the launcher (docs/DESKTOP-INTEGRATION.md, section 3): when the entry is older
 /// than the template of this runtime, it is rewritten. Usually this reads 128 bytes and goes on. A failure is only
@@ -1159,6 +1179,9 @@ fn real_main() -> Result<()> {
         .filter(|p| p.is_absolute() && view_usable)
         .map(|rt| dbus_layer::start(&dbus_layer::Request { man: &man, runtime_dir: &rt, writable_roots: writable_roots.clone() }));
 
+    // The D-Bus layer is the one that mounts the document folder of the app, so the files given at the start are shared only when it is there.
+    let layer_ok = matches!(dbus_early, Some(Ok(_)));
+
     let store = dirs::data_dir().context("no data dir")?.join("panpak");
     // TOFU (spec §3.2): if the app is installed (pinned key), the signature
     // must match the pin; on direct run show the fingerprint.
@@ -1289,6 +1312,7 @@ fn real_main() -> Result<()> {
     if let Some(theme) = dark_theme {
         cmd.env("GTK_THEME", theme);
     }
+    let app_args = if layer_ok && installed_mode { share_start_files(app_args, &man.app.id, runtime_dir.as_deref(), access.rw.as_slice()) } else { app_args };
     cmd.args(&launch_args)
         .args(&app_args)
         .env("PANPAK_APP_ID", &man.app.id)
