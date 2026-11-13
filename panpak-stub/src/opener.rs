@@ -544,6 +544,10 @@ mod tests {
         use frames::Status::*;
         assert_eq!(st, [Done, Refused, Refused, Unsupported, Unsupported, Unsupported]);
         assert_eq!(*sent.lock().unwrap(), vec!["https://example.org/x".to_string()]);
+        // A file dialog request with the token of the router, and no chooser here: ended (status 4, code 2), so that the router answers the app.
+        let r = ask(&req(2, &panpak_core::filechooser::request_payload(41, b"call")));
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].status, panpak_core::filechooser::parse_response_text(&r[0].text)), (frames::Status::Chooser, Some((41, 2, None))));
         // Garbage ends the conversation without an answer; so does a frame cut short; a frame after garbage is not read.
         assert!(ask(b"hello hello hello").is_empty());
         assert!(ask(&req(1, b"https://example.org/")[..12]).is_empty());
