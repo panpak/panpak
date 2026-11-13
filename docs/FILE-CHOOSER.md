@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 # The desktop's file dialog for sandboxed apps (step 11): design
 
-Status: design, no product code. Base: branch `privbus-1` (step 13p), because the 13p has not been merged yet; this branch MUST be rebased on
-`main` after that merge. Source read: xdg-desktop-portal 1.20.3, 1.21.0 and 1.22.1 (`src/file-chooser.c`, `src/xdp-documents.c`,
+Status: design, updated with the decisions of the owner (section 8) and with the table of permissions (section 9); no product code. Base: `main` after the
+merge of the step 13p, the CI levels and cleanup-2. Source read: xdg-desktop-portal 1.20.3, 1.21.0 and 1.22.1 (`src/file-chooser.c`, `src/xdp-documents.c`,
 `document-portal/document-portal.c`, `document-portal/document-portal-fuse.c`, `data/org.freedesktop.portal.Documents.xml`). Marks:
 **[source]** read in the code, **[tested]** run in an earlier step (PORTALS-STUDY.md section 2, PRIVATE-BUS.md section 9), **[to test]** not yet run,
 **[estimate]** a number not measured.
@@ -161,7 +161,9 @@ Qt's `xdgdesktopportal` platform theme plugin (collected by `pack` since step 13
 
 ### 3.7 Properties on the portal
 
-GTK asks `org.freedesktop.DBus.Properties.Get(org.freedesktop.portal.FileChooser, version)` before it uses the portal (PRIVATE-BUS.md section 9). The
+Since the 13p the router already answers `Properties.Get` and `GetAll` of `org.freedesktop.portal.OpenURI` itself (version 3; GTK does nothing on a link
+without it, found on Bluefin), also for a call that goes to the unique name of the portal's owner, and every other `Properties` call goes to the host and
+is refused. Step 11 adds `org.freedesktop.portal.FileChooser` to what the router answers (the version found by the actor, at most 4). GTK asks `org.freedesktop.DBus.Properties.Get(org.freedesktop.portal.FileChooser, version)` before it uses the portal (PRIVATE-BUS.md section 9). The
 design asks the router to answer `Get` and `GetAll` for the `FileChooser` interface (the version the actor found, at most 4) and to refuse the other
 interfaces, instead of reopening the rule `Properties.Get/GetAll` on the portal's object. Reason: the rule would pass the properties of every portal
 interface to the app, and the answer for `FileChooser` has to come from the host side that actually serves the dialog (no document portal, no dialog).
@@ -279,7 +281,7 @@ invalidation of its FUSE cache **[estimate: 1 to 5 ms]**, and the first access t
 call, more for many small files]**. Measured in the code phase on both VMs: `AddFull` latency, open/read of a document against the same file on the disk,
 and a large file transfer in a document folder.
 
-## 8. Decisions for the owner (before the code)
+## 8. Decisions of the owner (taken)
 
 1. The actor, not the router, calls the portal (2 and 3.2). It costs one more host-side module; it keeps the router out of the decision about files.
 2. `FileChooser` properties are answered by the router (3.7), not passed from the portal.
@@ -289,3 +291,96 @@ and a large file transfer in a document folder.
 Answers (owner): 1 and 2 yes; 3 yes, with the message `the file you chose is a link: choose the original file` (user-facing text in the language of the
 desktop is the job of step 10b; the English text is the source); 4 `panpak grants` is postponed (the grants will be shown in the Panpak app, step 10b);
 5 file arguments at the start are part of step 11 (3.9). qBittorrent keeps `xdg_dirs = download`; Text Editor has no `xdg_dirs`; `pack` prints a note, not an error.
+6 (added later) the table of permissions of section 9 is part of step 11, with `dbus_own` taken out of the install text.
+
+## 9. One table of permissions (part of step 11)
+
+### 9.1 Why
+
+The words that tell the user what an app may do are written in three places today: `describe_permissions` (the text of `install` and `update`), `added_permissions` (what an
+update adds) and the documents (PANPAK-FORMAT.md 3.1, the README). They drift, they are English only, they do not say how serious a permission is, and they are technical
+("the PipeWire and PulseAudio sockets of your session"). One of the lines is wrong: `dbus_own` ("the app can own X on your session bus") has had no effect since the private
+bus. Step 11 adds the permission that matters most to a user ("the files you choose"), so the wording is made once, here.
+
+### 9.2 The table
+
+A new module of the core, `panpak_core::permissions`, holds a table. Each row has a stable `id`, a level, an icon, a sentence in plain words (the message id for gettext),
+a longer sentence for "what this means", and the function that says which rows a manifest turns on and with which values (ports, folder, access, path, scheme).
+The result for a manifest is a list of items `{ id, level, icon, text, detail }` in the language of the user; nothing else formats a permission.
+
+Levels (names for the user: Normal, Attention, High risk; in code `Normal`, `Attention`, `High`): **Normal** is what a well-behaved app does and costs the user nothing
+in privacy; **Attention** gives the app something of the user's (data, a device, the network); **High risk** gives it a power over other programs or over the whole
+session. The level can depend on the values (a folder read-only or read-write, a home path that is a secret).
+
+Proposed rows (the owner decides the levels; the sentences are the English source of the translation):
+
+| id | Level | Icon | Sentence |
+|---|---|---|---|
+| `files-chosen` | Normal | file | Open and save the files you choose in the file window of your desktop |
+| `launch-files` | Normal | file | Open the files you start it with (Open with, double click, command line) |
+| `notifications` | Normal | bell | Show notifications |
+| `tray` | Normal | pin | Put an icon in the notification area |
+| `media-keys` | Normal | music | Be controlled by the media keys of your desktop |
+| `url-scheme` | Normal | link | Open the links that start with `{scheme}:` |
+| `network-connect` | Attention | globe | Use the network: connect to the ports {ports} |
+| `network-listen` | Attention | globe | Accept connections from the network on the ports {ports} |
+| `audio` | Attention | microphone | Play sound and use the microphone |
+| `folder-read` | Attention | folder | Read the files in your {folder} folder |
+| `folder-write` | Attention | folder | Read, change and delete the files in your {folder} folder |
+| `home-path-read` | Attention | home | Read {path} in your home folder |
+| `home-path-write` | Attention, High risk for a secret place (`.ssh`, `.gnupg`, shell start files, `.local/bin`, autostart, user services) | home | Read, change and delete {path} in your home folder |
+| `socket` | Attention | plug | Talk to the local service {socket} |
+| `desktop-bus` | High risk | warning | Use the message bus of your whole desktop: it can talk to every service of your session |
+| `x11` | High risk | window | See what the other apps show and what you type in them (it uses X11) |
+
+`files-chosen` is shown for an app that gets the portal's file window (always, once step 11 is in); `launch-files` for an app whose menu entry takes files (a `%U`/`%F`
+entry or a MIME type). Nothing is shown for what every app has (its own folders, the private bus, the sandbox itself) or for what has no effect (`dbus_own`). The
+manifest keeps accepting `dbus_own` (old packages) and the format document says that it has no effect; it is no longer a permission that `update` asks about.
+
+Icons: each row has the name of a symbolic icon of the freedesktop theme (for the Panpak app of step 10b) and a glyph for the terminal and the README (a Unicode
+symbol; plain ASCII when the locale is not UTF-8 or `TERM` is `dumb`). The level has its own mark: `[ ]` Normal, `[!]` Attention, `[!!]` High risk in ASCII, and a colored dot
+in a terminal that has colors (`NO_COLOR` is honored).
+
+### 9.3 Where it is used
+
+- `panpak install` and `update`: the list, High risk first, one line each (`mark icon sentence`), then the questions as now. For an update only what is new, or what went to a
+  higher level, is listed ("This update asks for more"). The lines about `dbus_own` are gone.
+- `panpak list`: a column PERMISSIONS with the highest level and the number of items (`Attention, 4`); `--json` gets `permissions: [{ "id", "level", "params" }]` (ids and values,
+  not sentences: they do not change with the language).
+- `panpak inspect <package or app id>` (new): verifies the package (as `doctor` does), says the name, version, key fingerprint and origin, lists the permissions with their `detail`
+  sentence, and shows the layers of isolation; `--json` as above.
+- README and QUICKSTART: a section "What an app can ask for" is the table rendered as Markdown by `panpak permissions --markdown`; a test fails when the README differs from the
+  table, so the README cannot drift.
+
+### 9.4 Translation with gettext
+
+The message ids are the English sentences. Code marks them with `tr!("...")` and `trn!("...", "...", n)` (plural), which `xgettext --keyword=tr --keyword=trn:1,2` understands, so
+translators use the usual tools (`msgmerge`, Poedit, Weblate). The files are `po/panpak.pot` (the template) and `po/it.po` (Italian); English needs no catalog.
+
+No C library and no `.mo` files at run time: the runtime is a static musl program. A `build.rs` of the core reads the `.po` files and generates a table in the binary
+(sorted ids, binary search; plural forms `nplurals=2; plural=(n != 1)` supported, any other plural rule falls back to English). The language is the first of `LANGUAGE`
+(a list), `LC_ALL`, `LC_MESSAGES`, `LANG`; `it_IT.UTF-8` and `it` select Italian, anything unknown selects English. Placeholders are named (`{ports}`), and a test checks that a translation has
+the same placeholders as its source.
+
+Tests: every row of the table has a sentence in `po/panpak.pot` and in `po/it.po` (a missing Italian sentence fails the test); the template matches the sentences found in the source
+(no external tool needed); the README section matches the table; `install` prints the same items in English and in Italian (`LANG=it_IT.UTF-8`); the level of each row follows the values.
+
+Scope: the table, the words around it in `install`, `update`, `list` and `inspect`, and the names of the levels. The rest of the command line stays English until someone translates
+it; the machinery is general, and a message is translated by marking it.
+
+One point for the owner and for AGENTS.md: `po/it.po` holds Italian text, which the rule "nothing in Italian in the repository" does not allow. It is the one place meant to have it; the
+check for Italian words must skip `po/*.po`.
+
+### 9.5 Cost
+
+No cost at run time worth saying: the table is a few kilobytes in the binary (about 3 KB for Italian), and `install` already prints these lines. The build does the parse of
+two small files.
+
+## 10. Order of the work
+
+Two pull requests, in this order, so that each is small to review:
+
+1. **Step 11a, the table of permissions** (section 9) with `install`, `update`, `list`, `inspect`, the README section and the Italian catalog. It changes no sandbox
+   behavior. It comes first because the file window needs a sentence to show.
+2. **Step 11b, the file window** (sections 1 to 8): the router answers the properties of `FileChooser`; the actor calls the portal and the document portal; the files given at the start;
+   the revocation by `remove`; the tests of section 6; the VM tests (Bluefin and KDE), which the owner starts one at a time.
