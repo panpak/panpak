@@ -16,16 +16,18 @@ fuzz_target!(|data: &[u8]| {
         portal_id: Some("panpak.org.example.App".into()),
         mpris_alias: Some("org.mpris.MediaPlayer2.panpak.org_example_App".into()),
         open_uri: true,
+        file_chooser: Some(4),
     });
     let lim = Limits { max_message: 1 << 20, ..Limits::default() };
     let mut ids: Vec<ClientId> = Vec::new();
     let mut tokens: Vec<u64> = Vec::new();
+    let mut dialogs: Vec<u64> = Vec::new();
     let mut last_up: std::collections::HashMap<ClientId, u32> = std::collections::HashMap::new();
     let mut p = data;
     let mut steps = 0;
     while p.len() >= 4 && steps < 64 {
         steps += 1;
-        let (tag, who, len) = (p[0] % 6, p[1] as usize, (u16::from_le_bytes([p[2], p[3]]) as usize) % 4096);
+        let (tag, who, len) = (p[0] % 7, p[1] as usize, (u16::from_le_bytes([p[2], p[3]]) as usize) % 4096);
         let body_end = (4 + len).min(p.len());
         let payload = p[4..body_end].to_vec();
         p = &p[body_end..];
@@ -83,6 +85,15 @@ fuzz_target!(|data: &[u8]| {
                 let t = tokens.pop().unwrap_or(1);
                 r.open_done(t, if payload.first().is_some_and(|b| b % 2 == 0) { Ok(()) } else { Err("no".into()) })
             }
+            5 => {
+                // The answer of the actor for a file dialog: a token, a code and a dictionary that the router checks again.
+                let t = dialogs.pop().unwrap_or(1);
+                let text = String::from_utf8_lossy(&payload).into_owned();
+                match panpak_core::filechooser::parse_response_text(&text) {
+                    Some((_, code, dict)) => r.choose_done(t, code, dict),
+                    None => r.choose_done(t, payload.first().map_or(2, |b| (*b % 3) as u32), None),
+                }
+            }
             _ => Vec::new(),
         };
         for o in &outs {
@@ -95,6 +106,10 @@ fuzz_target!(|data: &[u8]| {
                     parse_head(&m.raw, m.fds.len(), &Limits { max_message: usize::MAX >> 4, ..lim }).expect("the router sent a message that does not read");
                 }
                 Out::Open { token, .. } => tokens.push(*token),
+                Out::Choose { token, call, .. } => {
+                    assert!(call.len() <= panpak_core::filechooser::MAX_CALL, "a call too large for the frame went to the actor");
+                    dialogs.push(*token);
+                }
                 Out::Close(id, _) => {
                     let _ = r.client_gone(*id);
                     ids.retain(|x| x != id);

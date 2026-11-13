@@ -94,3 +94,7 @@ path = "fuzz_targets/fuzz_icon.rs"
 [[bin]]
 name = "fuzz_router"
 path = "fuzz_targets/fuzz_router.rs"
+
+[[bin]]
+name = "fuzz_chooser"
+path = "fuzz_targets/fuzz_chooser.rs"
