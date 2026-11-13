@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Symbolic links that point outside the package (defect 57).** `convert` leaves out a link of the AppImage whose target is absolute or climbs above the root, lists them in a note, and stops with a clear error when the entry or a library that a program of the tree asks for is such a link. `pack` and `build` refuse such a link and name it, with the way to correct it. The app harness no longer makes `fixed-` copies of AppImages (GIMP and MuseScore convert and start as they are).
+- **`panpak doctor <package>` counts the libraries the package carries** before the first start (the tree is not on the disk then; it called every library of the package missing).
+
 - **The private bus works with xdg-dbus-proxy 0.1.5** (Debian 12, Ubuntu 24.04), found when the tests first ran for real in CI. The router talked to the proxy with the whole handshake in one write and
   mixed its own messages between the app's, and 0.1.5 closes a connection in both cases: the app had no bus. The handshake goes one line at a time and every message to the host side gets the next serial
   (replies get the sender's number back). `tests/privbus.py` runs in CI against a systemd user manager started for the runner; A, B, C, F11, F22 and F23 are required there.

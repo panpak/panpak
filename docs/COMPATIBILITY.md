@@ -16,7 +16,7 @@ Flatpak" phase. Inkscape's site was unreachable, so it was not added.
 
 | App | Type | Result | Window first / later | Notes |
 |---|---|---|---|---|
-| MuseScore Studio 4.7.6 | Qt 6 | works | 0.46 s / 0.48 s | needs `--entry bin/mscore4portable`; absolute symlink in the image had to be removed by hand; has an internal AppImage updater; no sound server in the lab (ALSA error) |
+| MuseScore Studio 4.7.6 | Qt 6 | works | 0.46 s / 0.48 s | needs `--entry bin/mscore4portable`; an absolute symlink in the image (a man page) had to be removed by hand, now `convert` leaves it out and says so; has an internal AppImage updater; no sound server in the lab (ALSA error) |
 | PCSX2 2.8.2 | Qt 6, Vulkan/GL | works (setup wizard) | 1.25 s / 0.32 s | no game or BIOS tried |
 | qBittorrent 5.3.0 | Qt 6, tray | works | 1.36 s / 0.42 s | legal notice pre-accepted in config; stale `lockfile` after a kill (fixed in round 2: 10 kills, 10 starts); a second copy given a `magnet:` address handed it over and exited 0 |
 | Krita 6.0.4 | Qt 6 | works | 6.06 s / 1.1 s | |
@@ -89,7 +89,7 @@ Fixed, one commit each:
 
 Open, in the converter unless noted:
 
-- Medium: absolute symlinks accepted by convert and refused by the stub at first start.
+- Fixed (defect 57): a symbolic link that points outside the AppImage (absolute, or climbing above the root) is left out by `convert` and listed in a note; `convert` stops with a clear error when it is the entry or a library that a program of the tree asks for. `pack` and `build` refuse such a link and say which one and how to correct it.
 - Medium: libraries in directories that only `AppRun` adds to `LD_LIBRARY_PATH`, or `$ORIGIN` neighbours (`libffmpeg.so`), reported missing.
 - Medium: DwarFS AppImages unsupported; entry taken from `usr/bin` only, symlinks not followed.
 - Medium: `AppRun` as entry loses `APPDIR` (Bitwarden, Simplenote).

@@ -213,7 +213,8 @@ fn a_usr_link_to_a_folder_outside_the_tree_is_never_written_through_or_read() {
     let (o, pkg) = l.convert(&image, &[]);
     assert!(o.status.success(), "{}", text(&o));
     let t = text(&o);
-    assert!(t.contains("points outside the tree"), "{t}");
+    // The links that lead out are not taken at all, and the conversion says so.
+    assert!(t.contains("3 symbolic link(s) point outside the AppImage and were not taken"), "{t}");
     assert!(t.contains("WARNING: no usable PNG icon"), "{t}");
     assert_eq!(snapshot(&outside), before, "a file was written outside the tree");
     assert_eq!(fs::read_to_string(outside.join("victim")).unwrap(), "keep");
@@ -281,4 +282,102 @@ fn only_a_dir_icon_link_is_enough() {
     assert!(l.manifest(&pkg).contains("icons = [\".panpak/icons/32.png\"]"), "{}", l.manifest(&pkg));
     assert!(l.install(&pkg).status.success());
     assert_eq!(l.icons_installed(), [32]);
+}
+
+#[test]
+fn a_link_that_points_outside_the_appimage_is_left_out_and_listed() {
+    let l = lab("link-dropped");
+    let mut nodes = real_layout();
+    // Like the man page of MuseScore (a path of the build machine) and the sitecustomize.py of the Python of GIMP (a file of /etc).
+    nodes.push(Node::Link("share/man/man1/app.1.gz", "/home/runner/work/App/App/build/app.1.gz"));
+    nodes.push(Node::Link("lib/python3/sitecustomize.py", "/etc/python3/sitecustomize.py"));
+    nodes.push(Node::Link("lib/up.so", "../../../elsewhere/up.so"));
+    let (o, pkg) = l.convert(&appimage(nodes), &[]);
+    let t = text(&o);
+    assert!(o.status.success(), "{t}");
+    assert!(t.contains("3 symbolic link(s) point outside the AppImage and were not taken"), "{t}");
+    assert!(t.contains("share/man/man1/app.1.gz -> /home/runner/work/App/App/build/app.1.gz"), "{t}");
+    // The package installs, and the links are not in it (the index holds the path of every entry).
+    let o = l.install(&pkg);
+    assert!(o.status.success(), "{}", text(&o));
+    let idx = l.home.join("index.raw");
+    let o = cli(&l.home, &["dump-index", pkg.to_str().unwrap(), idx.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    let raw = fs::read(idx).unwrap();
+    let has = |needle: &str| raw.windows(needle.len()).any(|w| w == needle.as_bytes());
+    assert!(has("bin/app"), "the program is in the package");
+    assert!(!has("app.1.gz") && !has("sitecustomize.py") && !has("up.so"), "a link that points outside is in the package");
+}
+
+#[test]
+fn an_entry_that_is_a_link_outside_the_appimage_stops_the_conversion_with_a_clear_error() {
+    let l = lab("entry-link");
+    let image = appimage(vec![
+        Node::File("app.desktop", desktop_file()),
+        Node::Link("usr/bin/app", "/opt/app/bin/app"),
+    ]);
+    let (o, _) = l.convert(&image, &[]);
+    let t = text(&o);
+    assert!(!o.status.success(), "{t}");
+    assert!(t.contains("usr/bin/app") && t.contains("outside the AppImage") && t.contains("--entry"), "{t}");
+}
+
+#[test]
+fn a_library_that_is_a_link_outside_the_appimage_and_is_asked_for_stops_the_conversion() {
+    let l = lab("lib-link");
+    // A program that asks for libgone.so.1 (a minimal ELF64 with DT_NEEDED), and the library only as a link out of the tree.
+    let elf = elf_needing("libgone.so.1");
+    let image = appimage(vec![
+        Node::File("app.desktop", desktop_file()),
+        Node::File("bin/app", elf),
+        Node::Link("lib/libgone.so.1", "/usr/lib/x86_64-linux-gnu/libgone.so.1"),
+    ]);
+    let (o, _) = l.convert(&image, &[]);
+    let t = text(&o);
+    assert!(!o.status.success(), "{t}");
+    assert!(t.contains("libgone.so.1") && t.contains("outside the AppImage") && t.contains("asks for it"), "{t}");
+}
+
+/// A minimal little-endian ELF64 shared object whose only dynamic entry is DT_NEEDED `name` (enough for the DT_NEEDED reader).
+fn elf_needing(name: &str) -> Vec<u8> {
+    let mut strtab = vec![0u8];
+    let off = strtab.len() as u64;
+    strtab.extend_from_slice(name.as_bytes());
+    strtab.push(0);
+    // Layout: ELF header (64), one PT_LOAD and one PT_DYNAMIC program header (2 * 56), then the dynamic section and the strings.
+    let ph_off = 64u64;
+    let dyn_off = ph_off + 2 * 56;
+    let dyn_size = 4 * 16u64; // NEEDED, STRTAB, STRSZ, NULL
+    let str_off = dyn_off + dyn_size;
+    let total = str_off + strtab.len() as u64;
+    let mut b = Vec::new();
+    b.extend_from_slice(b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0");
+    b.extend_from_slice(&3u16.to_le_bytes()); // ET_DYN
+    b.extend_from_slice(&62u16.to_le_bytes()); // x86-64
+    b.extend_from_slice(&1u32.to_le_bytes());
+    b.extend_from_slice(&0u64.to_le_bytes()); // entry
+    b.extend_from_slice(&ph_off.to_le_bytes());
+    b.extend_from_slice(&0u64.to_le_bytes()); // no section headers
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b.extend_from_slice(&64u16.to_le_bytes());
+    b.extend_from_slice(&56u16.to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&64u16.to_le_bytes());
+    b.extend_from_slice(&0u16.to_le_bytes());
+    b.extend_from_slice(&0u16.to_le_bytes());
+    let ph = |b: &mut Vec<u8>, ty: u32, off: u64, size: u64| {
+        b.extend_from_slice(&ty.to_le_bytes());
+        b.extend_from_slice(&5u32.to_le_bytes());
+        for v in [off, off, off, size, size, 8u64] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+    };
+    ph(&mut b, 1, 0, total); // PT_LOAD
+    ph(&mut b, 2, dyn_off, dyn_size); // PT_DYNAMIC
+    for (tag, val) in [(1u64, off), (5, str_off), (10, strtab.len() as u64), (0, 0)] {
+        b.extend_from_slice(&tag.to_le_bytes());
+        b.extend_from_slice(&val.to_le_bytes());
+    }
+    b.extend_from_slice(&strtab);
+    b
 }

@@ -1028,6 +1028,33 @@ pub fn safe_path(s: &str) -> Result<PathBuf> {
     Ok(p)
 }
 
+/// Does the symbolic link at `link` (a path inside the tree) point outside the tree? The target is read from the folder of the link, so `../share/x` in
+/// `usr/bin` stays inside and `../../x` does not; an absolute or an empty target always escapes, and so does a target that uses anything but plain names, `.` and `..`.
+/// Chains of links are checked later, when the tree is made.
+pub fn link_escapes(link: &std::path::Path, target: &str) -> bool {
+    if target.is_empty() {
+        return true;
+    }
+    let t = std::path::Path::new(target);
+    if t.is_absolute() {
+        return true;
+    }
+    let mut norm = link.parent().unwrap_or(std::path::Path::new("")).to_path_buf();
+    for c in t.components() {
+        match c {
+            Component::Normal(x) => norm.push(x),
+            Component::ParentDir => {
+                if !norm.pop() {
+                    return true;
+                }
+            }
+            Component::CurDir => {}
+            _ => return true,
+        }
+    }
+    false
+}
+
 /// Reject symlink targets escaping the root (spec §5.5).
 /// Pure lexical check: absolutes always rejected, `..` climbing above
 /// the root rejected. Chain resolution happens in materialize.
@@ -1512,6 +1539,19 @@ mod tests {
         let id_off = 4 + 88 + 4 + 2 + 9 + 1 + 4 + 8 + 4;
         raw[id_off] = 99;
         assert!(parse_index(&raw).is_err());
+    }
+
+    #[test]
+    fn a_link_is_read_from_its_own_folder() {
+        let l = |p: &str, t: &str| link_escapes(std::path::Path::new(p), t);
+        assert!(!l("usr/bin/x", "../share/y"));
+        assert!(!l("a", "b/c"));
+        assert!(!l("usr/lib/liba.so", "liba.so.1"));
+        assert!(l("a", "../b"));
+        assert!(l("usr/bin/x", "../../../etc"));
+        assert!(l("a", "/etc/passwd"));
+        assert!(l("a", ""));
+        assert!(l("python/sitecustomize.py", "/etc/python3.13/sitecustomize.py"));
     }
 
     #[test]
@@ -2009,6 +2049,62 @@ pub mod abi {
                     map.entry(name)
                         .or_insert_with(|| p.strip_prefix(tree).unwrap().to_path_buf());
                 }
+            }
+        }
+        map
+    }
+
+    /// The same inventory as `bundled_libs`, from the entries of a package (its index) instead of a folder: for an app that has not been installed
+    /// or started yet, whose tree is not on disk. A link to a library is registered under its own name, as above.
+    pub fn bundled_libs_from_entries(entries: &[crate::Entry]) -> HashMap<String, PathBuf> {
+        use crate::Kind;
+        let by_path: HashMap<&Path, &Kind> = entries.iter().map(|e| (e.path.as_path(), &e.kind)).collect();
+        let wanted = |name: &str| (name.starts_with("lib") && name.contains(".so")) || name.starts_with("ld-linux") || name == "ld.so";
+        // Where a path ends up, following links inside the tree (a few steps).
+        let resolve = |start: &Path| -> Option<PathBuf> {
+            let mut cur = start.to_path_buf();
+            for _ in 0..8 {
+                match by_path.get(cur.as_path())? {
+                    Kind::File { .. } => return Some(cur),
+                    Kind::Link(t) => {
+                        let mut next = cur.parent().unwrap_or(Path::new("")).to_path_buf();
+                        for c in Path::new(t).components() {
+                            match c {
+                                std::path::Component::Normal(x) => next.push(x),
+                                std::path::Component::ParentDir => {
+                                    if !next.pop() {
+                                        return None;
+                                    }
+                                }
+                                std::path::Component::CurDir => {}
+                                _ => return None,
+                            }
+                        }
+                        cur = next;
+                    }
+                    Kind::Dir => return None,
+                }
+            }
+            None
+        };
+        let mut map = HashMap::new();
+        let mut sorted: Vec<&crate::Entry> = entries.iter().collect();
+        sorted.sort_by(|a, b| a.path.cmp(&b.path));
+        for e in sorted {
+            let Some(name) = e.path.file_name().and_then(|n| n.to_str()) else { continue };
+            if !wanted(name) {
+                continue;
+            }
+            match &e.kind {
+                Kind::File { .. } => {
+                    map.entry(name.to_string()).or_insert_with(|| e.path.clone());
+                }
+                Kind::Link(_) => {
+                    if let Some(real) = resolve(&e.path) {
+                        map.entry(name.to_string()).or_insert(real);
+                    }
+                }
+                Kind::Dir => {}
             }
         }
         map

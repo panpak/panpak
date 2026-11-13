@@ -202,6 +202,16 @@ pub fn entry_version(head: &[u8]) -> Option<u32> {
 /// rename it over `path` and sync the folder, so that a crash leaves the old file or the new one. The rename
 /// replaces a link itself and never follows it.
 pub fn write_file_atomic(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> {
+    write_file_with(path, data, mode, true)
+}
+
+/// The same without the two syncs (the file, then the folder): for files that can be made again, such as the icons of an app. The new file replaces the old
+/// one in one step all the same, but after a crash it may be empty. Each sync costs about 2 ms, and an install writes six icons.
+pub fn write_file_lazy(path: &Path, data: &[u8], mode: u32) -> std::io::Result<()> {
+    write_file_with(path, data, mode, false)
+}
+
+fn write_file_with(path: &Path, data: &[u8], mode: u32, durable: bool) -> std::io::Result<()> {
     let dir = path.parent().ok_or_else(|| std::io::Error::other("destination without a folder"))?;
     let name = path.file_name().ok_or_else(|| std::io::Error::other("destination without a file name"))?.to_string_lossy();
     let tmp = dir.join(format!(".{name}.panpak-tmp-{}", std::process::id()));
@@ -210,10 +220,14 @@ pub fn write_file_atomic(path: &Path, data: &[u8], mode: u32) -> std::io::Result
         let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(mode).custom_flags(libc::O_NOFOLLOW).open(&tmp)?;
         f.set_permissions(fs::Permissions::from_mode(mode))?;
         f.write_all(data)?;
-        f.sync_all()?;
+        if durable {
+            f.sync_all()?;
+        }
         fs::rename(&tmp, path)?;
         // The entry is already in place; a folder that cannot be synced is not an error.
-        let _ = fs::File::open(dir).and_then(|d| d.sync_all());
+        if durable {
+            let _ = fs::File::open(dir).and_then(|d| d.sync_all());
+        }
         Ok(())
     })();
     if res.is_err() {

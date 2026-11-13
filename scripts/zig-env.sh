@@ -8,7 +8,8 @@
 # Its caches live inside the build tree: $ZIG_GLOBAL_CACHE_DIR and
 # $ZIG_LOCAL_CACHE_DIR if set, else <repo>/target/zig-cache.
 PANPAK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PANPAK_ZIG_PINNED="$(sed -n 's/^ziglang==\([0-9][0-9.]*\).*/\1/p' "$PANPAK_ROOT/tools/requirements-zig.txt")"
+# The version of Zig itself: the three numbers of the wheel's version ("0.17.0.post0" is a re-upload of Zig 0.17.0).
+PANPAK_ZIG_PINNED="$(sed -n 's/^ziglang==\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' "$PANPAK_ROOT/tools/requirements-zig.txt")"
 : "${ZIG_GLOBAL_CACHE_DIR:=$PANPAK_ROOT/target/zig-cache/global}"
 : "${ZIG_LOCAL_CACHE_DIR:=$PANPAK_ROOT/target/zig-cache/local}"
 export ZIG_GLOBAL_CACHE_DIR ZIG_LOCAL_CACHE_DIR

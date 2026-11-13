@@ -668,11 +668,12 @@ Status of the project: pre-beta.
   programs, run there. The isolated view is tested on Ubuntu (AppArmor profile for `bwrap`)
   and Fedora (SELinux enforcing); other combinations are not tested. See §4 and
   `distro-matrix.md`.
-- **KL-22 Conversion of AppImages has gaps.** Absolute symbolic links, libraries found
+- **KL-22 Conversion of AppImages has gaps.** Libraries found
   through a directory that only `AppRun` adds to `LD_LIBRARY_PATH`, DwarFS images and
   images that rely on system libraries that are absent are not handled or are reported
   late. In practice: some AppImages do not convert or do not start. See
-  `docs/COMPATIBILITY.md` (Defects).
+  `docs/COMPATIBILITY.md` (Defects). A symbolic link that points outside the AppImage is left out of the package and listed (it would point at the machine that
+  made the AppImage, and the runtime refuses it).
 
 - **KL-23 No input methods through the bus.** `org.freedesktop.portal.IBus`, `org.ibus` and `org.fcitx` are not given. In
   practice: apps in the view cannot use IBus or Fcitx, so typing Chinese, Japanese or Korean (and other languages

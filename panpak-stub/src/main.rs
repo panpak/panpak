@@ -222,31 +222,7 @@ fn materialize(
     // ../share/... == usr/share/...). A purely lexical check on the
     // lone target would give false positives; chains stay verified
     // later (pass 3).
-    fn escaped(link: &Path, target: &str) -> bool {
-        use std::path::Component::*;
-        if target.is_empty() {
-            return true;
-        }
-        let t = PathBuf::from(target);
-        if t.is_absolute() {
-            return true;
-        }
-        let base = link.parent().unwrap_or(Path::new(""));
-        let mut norm = base.to_path_buf();
-        for c in t.components() {
-            match c {
-                Normal(x) => norm.push(x),
-                ParentDir => {
-                    if !norm.pop() {
-                        return true;
-                    }
-                }
-                CurDir => {}
-                _ => return true,
-            }
-        }
-        false
-    }
+    use panpak_core::link_escapes as escaped;
     let mut links: HashMap<PathBuf, String> = HashMap::new();
     for e in entries {
         if let Kind::Link(t) = &e.kind {

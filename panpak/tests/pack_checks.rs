@@ -207,3 +207,96 @@ fn pack_checks_the_env_table_and_the_entry() {
     let (o, _) = l.pack("notscript", &[app], "");
     assert!(!text(&o).contains("shell script"), "{}", text(&o));
 }
+
+#[test]
+fn pack_refuses_a_link_that_points_outside_the_tree_and_says_which_and_how_to_fix_it() {
+    let l = lab("outsidelink");
+    let (o, _) = l.pack("outsidelink", &[("bin/app", b"\x7fELF".to_vec())], "");
+    assert!(o.status.success(), "{}", text(&o));
+    let tree = l.home.join("tree-outsidelink");
+    let out = l.home.join("again.panpak");
+    let pack = || cli(&l.home, &["pack", tree.to_str().unwrap(), "--stub", l.stub.to_str().unwrap(), "--secret-file", l.keyfile.to_str().unwrap(), "-o", out.to_str().unwrap()]);
+    // Links that stay inside, in the folder of the link, are fine.
+    std::os::unix::fs::symlink("app", tree.join("bin/app2")).unwrap();
+    std::os::unix::fs::symlink("../bin/app", tree.join("bin/app3")).unwrap();
+    assert!(pack().status.success());
+    for (name, target) in [("etc-link", "/etc/passwd"), ("up-link", "../../../elsewhere")] {
+        std::os::unix::fs::symlink(target, tree.join("bin").join(name)).unwrap();
+        let o = pack();
+        let t = text(&o);
+        assert!(!o.status.success(), "{target}: {t}");
+        assert!(t.contains(&format!("bin/{name}")) && t.contains(target) && t.contains("outside the package") && t.contains("ln -sfn"), "{t}");
+        fs::remove_file(tree.join("bin").join(name)).unwrap();
+    }
+}
+
+#[test]
+fn doctor_on_a_package_counts_the_libraries_it_carries_before_the_first_start() {
+    let l = lab("doctorlibs");
+    let app = ("bin/app", elf_needing("libcarried.so.1"));
+    // The library is in the package: nothing is missing, although the tree is not on the disk yet (the app was never started).
+    let (o, pkg) = l.pack("withlib", &[app.clone(), ("lib/libcarried.so.1", b"\x7fELF-not-read".to_vec())], "");
+    assert!(o.status.success(), "{}", text(&o));
+    let t = text(&cli(&l.home, &["doctor", pkg.to_str().unwrap()]));
+    assert!(t.contains("verified package") && !t.contains("unresolved libraries"), "{t}");
+    // Through a link, as sonames usually are.
+    let (o, pkg) = l.pack("withlink", &[app.clone(), ("lib/libcarried.so.1.2", b"\x7fELF-not-read".to_vec())], "");
+    assert!(o.status.success());
+    let tree = l.home.join("tree-withlink");
+    std::os::unix::fs::symlink("libcarried.so.1.2", tree.join("lib/libcarried.so.1")).unwrap();
+    let again = l.home.join("again.panpak");
+    let o = cli(&l.home, &["pack", tree.to_str().unwrap(), "--stub", l.stub.to_str().unwrap(), "--secret-file", l.keyfile.to_str().unwrap(), "-o", again.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    let t = text(&cli(&l.home, &["doctor", again.to_str().unwrap()]));
+    assert!(!t.contains("unresolved libraries"), "{t}");
+    let _ = pkg;
+    // The library is nowhere: the app cannot start, and doctor says which library.
+    let (o, pkg) = l.pack("withoutlib", &[app], "");
+    assert!(o.status.success(), "{}", text(&o));
+    let t = text(&cli(&l.home, &["doctor", pkg.to_str().unwrap()]));
+    assert!(t.contains("unresolved libraries: libcarried.so.1 missing on the host and not included in the tree"), "{t}");
+}
+
+/// A minimal little-endian ELF64 shared object whose only dynamic entry is DT_NEEDED `name` (enough for the DT_NEEDED reader).
+fn elf_needing(name: &str) -> Vec<u8> {
+    let mut strtab = vec![0u8];
+    let off = strtab.len() as u64;
+    strtab.extend_from_slice(name.as_bytes());
+    strtab.push(0);
+    // Layout: ELF header (64), one PT_LOAD and one PT_DYNAMIC program header (2 * 56), then the dynamic section and the strings.
+    let ph_off = 64u64;
+    let dyn_off = ph_off + 2 * 56;
+    let dyn_size = 4 * 16u64; // NEEDED, STRTAB, STRSZ, NULL
+    let str_off = dyn_off + dyn_size;
+    let total = str_off + strtab.len() as u64;
+    let mut b = Vec::new();
+    b.extend_from_slice(b"\x7fELF\x02\x01\x01\0\0\0\0\0\0\0\0\0");
+    b.extend_from_slice(&3u16.to_le_bytes()); // ET_DYN
+    b.extend_from_slice(&62u16.to_le_bytes()); // x86-64
+    b.extend_from_slice(&1u32.to_le_bytes());
+    b.extend_from_slice(&0u64.to_le_bytes()); // entry
+    b.extend_from_slice(&ph_off.to_le_bytes());
+    b.extend_from_slice(&0u64.to_le_bytes()); // no section headers
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b.extend_from_slice(&64u16.to_le_bytes());
+    b.extend_from_slice(&56u16.to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&64u16.to_le_bytes());
+    b.extend_from_slice(&0u16.to_le_bytes());
+    b.extend_from_slice(&0u16.to_le_bytes());
+    let ph = |b: &mut Vec<u8>, ty: u32, off: u64, size: u64| {
+        b.extend_from_slice(&ty.to_le_bytes());
+        b.extend_from_slice(&5u32.to_le_bytes());
+        for v in [off, off, off, size, size, 8u64] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+    };
+    ph(&mut b, 1, 0, total); // PT_LOAD
+    ph(&mut b, 2, dyn_off, dyn_size); // PT_DYNAMIC
+    for (tag, val) in [(1u64, off), (5, str_off), (10, strtab.len() as u64), (0, 0)] {
+        b.extend_from_slice(&tag.to_le_bytes());
+        b.extend_from_slice(&val.to_le_bytes());
+    }
+    b.extend_from_slice(&strtab);
+    b
+}

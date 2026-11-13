@@ -69,7 +69,7 @@ pub fn install(app_id: &str, icons: &[Checked]) -> Result<Vec<PathBuf>> {
     for i in icons {
         let path = path_of(app_id, i.side)?;
         fs::create_dir_all(path.parent().unwrap())?;
-        panpak_core::desktop::write_file_atomic(&path, &i.data, 0o644).with_context(|| format!("write icon {}", path.display()))?;
+        panpak_core::desktop::write_file_lazy(&path, &i.data, 0o644).with_context(|| format!("write icon {}", path.display()))?;
         written.push(path);
     }
     let keep: Vec<u32> = icons.iter().map(|i| i.side).collect();

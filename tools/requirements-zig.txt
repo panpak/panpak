@@ -1,5 +1,8 @@
 # Zig (C compiler and linker for the musl targets), from the ziglang wheel on
 # PyPI. Install with: pip install --require-hashes -r tools/requirements-zig.txt
 # The hash is for the Linux x86_64 wheel (manylinux_2_12 / musllinux_1_1).
-ziglang==0.17.0 \
-    --hash=sha256:97079827064a7492cce5541ceb438ae8003ce1e54e399676da2d62fb7a5dc08b
+# 0.17.0 was yanked on PyPI ("partial upload due to hitting a PyPI limit": some wheels were missing); 0.17.0.post0 is the complete re-upload.
+# Its zig executable is byte for byte the one of 0.17.0 (sha256 7c61539af19fa4082c94848f1c2b57b89e76dc6cfd5bd4c57764c3caf8f82272) and so is the
+# rest of the package; `zig version` prints 0.17.0 (scripts/zig-env.sh compares it with the version without the ".postN").
+ziglang==0.17.0.post0 \
+    --hash=sha256:c9528d6a2cdf56a701bb8cafbc9967f59d88ecc8bb42b87ec2f9693418f69ce3

@@ -556,6 +556,10 @@ fn walk_tree(root: &Path) -> Result<Vec<PayloadEntry>> {
             } else if meta.file_type().is_symlink() {
                 let t = fs::read_link(&abs)?;
                 let t = t.to_str().context("non-UTF-8 symlink target")?.to_string();
+                ensure!(
+                    !panpak_core::link_escapes(&path, &t),
+                    "the link {rel_s} points to {t:?}, outside the package, and the runtime refuses such a link: replace it with a copy of the file or with a relative link inside the tree (for example `ln -sfn ../lib/x {rel_s}`), or delete it"
+                );
                 out.push(PayloadEntry {
                     entry: Entry { path, mode: mode & 0o777, kind: Kind::Link(t) },
                     source: None,
@@ -1208,6 +1212,7 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     let tree = tmp.path().to_path_buf();
     let mut tw = treewriter::TreeWriter::new(&tree)?;
     let mut desktop: Option<PathBuf> = None;
+    let mut dropped_links: Vec<(PathBuf, String)> = Vec::new();
     for node in fs.files() {
         let rel = node.fullpath.strip_prefix("/").unwrap_or(&node.fullpath);
         if rel.as_os_str().is_empty() {
@@ -1220,7 +1225,15 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
                 let mut r = fs.file(h).reader();
                 tw.write_from(rel, &mut r, node.header.permissions as u32 & 0o7777)?;
             }
-            backhand::InnerNode::Symlink(s) => tw.symlink(rel, &s.link)?,
+            backhand::InnerNode::Symlink(s) => {
+                // A link that points outside the tree (absolute, or climbing above the root) is not taken: the runtime refuses it, and it would point at
+                // the files of the machine the AppImage was made on. It is listed below, and it stops the conversion when the app cannot do without it.
+                if panpak_core::link_escapes(rel, &s.link.to_string_lossy()) {
+                    dropped_links.push((rel.to_path_buf(), s.link.to_string_lossy().into_owned()));
+                } else {
+                    tw.symlink(rel, &s.link)?
+                }
+            }
             _other => eprintln!("convert: skipping special node {}", node.fullpath.display()),
         }
         if desktop.is_none()
@@ -1282,10 +1295,27 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
                 break;
             }
         }
+        if found.is_none() {
+            if let Some((p, t)) = dropped_links.iter().find(|(p, _)| p.to_str().is_some_and(|p| p == cand || p == format!("usr/bin/{cand}") || p == format!("bin/{cand}"))) {
+                anyhow::bail!("the entry {} (Exec={e}) is a link to {t:?}, outside the AppImage: it points at a file of the machine that made it; use --entry with the real program", p.display());
+            }
+        }
         found.with_context(|| format!("entry not found for Exec={e} (use --entry)"))?
     } else {
         anyhow::bail!("Exec not found in .desktop (use --entry)");
     };
+    if !dropped_links.is_empty() {
+        let shown: Vec<String> = dropped_links.iter().take(10).map(|(p, t)| format!("{} -> {t}", p.display())).collect();
+        println!(
+            "convert: NOTE: {} symbolic link(s) point outside the AppImage and were not taken (the runtime refuses them): {}{}",
+            dropped_links.len(),
+            shown.join(", "),
+            if dropped_links.len() > 10 { ", ..." } else { "" }
+        );
+        if let Some(why) = indispensable_dropped_link(&tree, &dropped_links, &entry)? {
+            anyhow::bail!("{why}");
+        }
+    }
     // Non-ELF entry (typically AppRun): wrapper emulating the AppImage
     // runtime environment (APPDIR/APPIMAGE/ARGV0/OWD), otherwise the
     // AppRun scripts fail looking for absolute paths.
@@ -1509,6 +1539,45 @@ fn toml_str(s: &str) -> String {
 
 /// Conservative evidence: a script forcing QT_QPA_PLATFORM=xcb or
 /// xcb plugins with no Wayland plugin at all. Do not infer from mere Qt use.
+/// The links of an AppImage that `convert` did not take (they point outside the tree), and what the converted app cannot do without: its entry, and a library
+/// that a program of the tree asks for by name and nothing else in the tree provides. Returns the message of the first indispensable one.
+fn indispensable_dropped_link(tree: &Path, dropped: &[(PathBuf, String)], entry: &str) -> Result<Option<String>> {
+    if let Some((p, t)) = dropped.iter().find(|(p, _)| p.to_str() == Some(entry)) {
+        return Ok(Some(format!("the entry {} is a link to {t:?}, outside the AppImage: it points at a file of the machine that made it; use --entry with the real program", p.display())));
+    }
+    let libs: Vec<&(PathBuf, String)> = dropped.iter().filter(|(p, _)| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("lib") && n.contains(".so"))).collect();
+    if libs.is_empty() {
+        return Ok(None);
+    }
+    let mut provided = std::collections::HashSet::new();
+    let mut asked: HashMap<String, PathBuf> = HashMap::new();
+    let mut stack = vec![tree.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for e in fs::read_dir(dir)? {
+            let e = e?;
+            let kind = e.file_type()?;
+            if kind.is_dir() {
+                stack.push(e.path());
+                continue;
+            }
+            provided.insert(e.file_name().to_string_lossy().into_owned());
+            if kind.is_file() && e.metadata()?.len() >= 64 {
+                for n in elf_needs(&e.path()).unwrap_or_default() {
+                    asked.entry(n).or_insert_with(|| e.path());
+                }
+            }
+        }
+    }
+    for (p, t) in libs {
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        if let (false, Some(who)) = (provided.contains(&name), asked.get(&name)) {
+            let who = who.strip_prefix(tree).unwrap_or(who);
+            return Ok(Some(format!("the library {name} ({}) is a link to {t:?}, outside the AppImage, and {} asks for it", p.display(), who.display())));
+        }
+    }
+    Ok(None)
+}
+
 fn detects_xcb_only(tree: &Path) -> Result<bool> {
     let mut stack = vec![tree.to_path_buf()];
     let (mut xcb, mut wayland) = (false, false);
@@ -2231,7 +2300,7 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         let mut f = File::open(pkg).with_context(|| format!("open {}", pkg.display()))?;
         let checked = panpak_core::read_footer(&mut f).and_then(|ft| {
             panpak_core::verify(&mut f, &ft).and_then(|(man, raw)| {
-                panpak_core::parse_index(&raw).and_then(|(chunks, _)| {
+                panpak_core::parse_index(&raw).and_then(|(chunks, entries)| {
                     let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
                     panpak_core::verify_stub_range(&mut f, stub_len, &man)?;
                     let (mut dec, mut raw) = (panpak_core::ChunkDecoder::new()?, Vec::new());
@@ -2240,12 +2309,12 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                         dec.decode(&comp, c.raw as u64, &mut raw)?;
                         panpak_core::verify_chunk(c, &raw)?;
                     }
-                    Ok((ft, man))
+                    Ok((ft, man, entries))
                 })
             })
         });
         match checked {
-            Ok((ft, man)) => {
+            Ok((ft, man, entries)) => {
                 line(true, &format!("verified package: {} {} (root {})", man.app.id, man.app.version, &panpak_core::hex(&ft.root)[..16]));
                 if let Ok(locks) = panpak_core::stalelocks::find_for_app(&man.app.id) {
                     if !locks.is_empty() {
@@ -2256,11 +2325,13 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                 let prefer: Vec<String> = man.abi.as_ref().and_then(|a| a.prefer_host.clone()).unwrap_or_default();
                 let allowed: Vec<String> = man.abi.as_ref().and_then(|a| a.allow_missing.clone()).unwrap_or_default();
                 let tree = store.join("trees").join(panpak_core::hex(&ft.root));
-                let bundled = panpak_core::abi::bundled_libs(&tree);
+                let installed = tree.join(&man.app.entry).exists();
+                // The libraries the package carries: from the tree when it is on disk (the app has been started), else from the index of the package
+                // (before the first start the tree does not exist: reading the folder would call every library of the package missing).
+                let bundled = if installed { panpak_core::abi::bundled_libs(&tree) } else { panpak_core::abi::bundled_libs_from_entries(&entries) };
                 let host = panpak_core::abi::host_libs();
                 // The same resolution as the stub does: the rules, then the symbol check. Without the
                 // tree (the app is not installed yet) only the rules can be applied.
-                let installed = tree.join(&man.app.entry).exists();
                 let resolved = if installed {
                     panpak_core::abi::resolve_consistent(&mut panpak_core::abi::InfoCache::default(), &tree, &man.app.entry, &need, &prefer, &allowed, &host, &bundled).map(Some)
                 } else {
