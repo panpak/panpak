@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The file dialog of the desktop for apps (step 11).** Where the desktop has the document portal, an app that asks for a file gets the dialog of the desktop: the
+  router of the app serves `OpenFile`, `SaveFile` and `SaveFiles` of the portal, the outer stub shows the dialog as a client of the session bus, opens what the user chose
+  (a final link is refused: "the file you chose is a link: choose the original file") and shares it with the app through the document portal (`read`, and `write` where the user
+  can write; never `grant-permissions` or `delete`). The app gets `$XDG_RUNTIME_DIR/doc/<id>/<name>` paths and never a path of the host, so Text Editor no longer needs the
+  `documents` folder. One dialog at a time per copy and five a minute. Files given at the start (Open with, a double click, the command line) are shared the same way before the app
+  runs. `panpak remove` takes the grants back (`--purge-data` also deletes the documents that no other app holds). `panpak doctor` says whether it is served; `panpak pack` notes a GTK or
+  Qt app that asks for a user folder with `rw`. New frame kind and fuzz target (`fuzz_chooser`), the lab scenario D with the real portal and a fake portal for the unit tests.
+  Design and what differs from it: docs/FILE-CHOOSER.md.
+- **The table of permissions, corrected.** High risk is the whole home folder (also read-only) and the secret places (passwords, keys, browser and keyring data, startup files); a
+  sub-folder of the home is Attention, read or write. The sentences about what an app cannot do are shown only where this system keeps them (without the isolated view the
+  claims about the network, other apps and the desktop services are shorter or left out). New rows: the files you choose in the dialog, and the files you start the app with.
 - **One table of permissions** (`panpak_core::permissions`): the words, the level (Normal, Attention, High risk), the icon and the longer sentence of each permission are written once, and `install`, `update`, `list`, the new `panpak inspect` and the README use them. The summary says "Full isolation" or "Partial isolation" and why; the list also says what the app cannot do; an update lists only the permissions that are new or higher, and says that without a yes the current version stays. Every home path is High risk. The line about `dbus_own` is gone (it has had no effect since the private bus). The text is translated with gettext catalogs in `po/` (English, Italian): a language is added with a `po/<language>.po` file and no code; the catalogs are compiled into the program. `panpak list` has a PERMISSIONS column and `--json` has `permissions`.
 
 - **A simpler Quick start.** `./build.sh` prepares Zig (the pinned wheel, hashes checked), adds the Rust target and builds, and says what is missing if something is. `panpak build` and `panpak install` install the runtime that comes with `panpak` (the file `panpak-stub` beside it) when there is none or it is older, with one line; `install-runtime` stays for a signed release or another build. The first `panpak build` or `convert` without a key makes a personal one in `~/.config/panpak/secret.key` (mode 0600) and says so with its fingerprint. README, QUICKSTART.md and docs/REQUIREMENTS.md follow.

@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 # The desktop's file dialog for sandboxed apps (step 11): design
 
-Status: design, updated with the decisions of the owner (section 8) and with the table of permissions (section 9); no product code. Base: `main` after the
-merge of the step 13p, the CI levels and cleanup-2. Source read: xdg-desktop-portal 1.20.3, 1.21.0 and 1.22.1 (`src/file-chooser.c`, `src/xdp-documents.c`,
+Status: built (step 11b; section 10 lists where the code differs from this text and what is not tested yet). The table of permissions (section 9) was built in step 11a.
+Base: `main` after the merge of the step 13p, the CI levels, cleanup-2 and step 11a. Source read: xdg-desktop-portal 1.20.3, 1.21.0 and 1.22.1 (`src/file-chooser.c`, `src/xdp-documents.c`,
 `document-portal/document-portal.c`, `document-portal/document-portal-fuse.c`, `data/org.freedesktop.portal.Documents.xml`). Marks:
 **[source]** read in the code, **[tested]** run in an earlier step (PORTALS-STUDY.md section 2, PRIVATE-BUS.md section 9), **[to test]** not yet run,
 **[estimate]** a number not measured.
@@ -376,11 +376,46 @@ check for Italian words must skip `po/*.po`.
 No cost at run time worth saying: the table is a few kilobytes in the binary (about 3 KB for Italian), and `install` already prints these lines. The build does the parse of
 two small files.
 
-## 10. Order of the work
+## 10. Built: where the code differs from the design, and what is tested
 
-Two pull requests, in this order, so that each is small to review:
+**Where it differs** (the text above is the design; these are the decisions of the code phase):
 
-1. **Step 11a, the table of permissions** (section 9) with `install`, `update`, `list`, `inspect`, the README section and the Italian catalog. It changes no sandbox
-   behavior. It comes first because the file window needs a sentence to show.
-2. **Step 11b, the file window** (sections 1 to 8): the router answers the properties of `FileChooser`; the actor calls the portal and the document portal; the files given at the start;
-   the revocation by `remove`; the tests of section 6; the VM tests (Bluefin and KDE), which the owner starts one at a time.
+1. The router answers the call with the handle **at once** and sends the `Response` when the user has chosen. The design said "like OpenURI"; a toolkit gives up on a method
+   call after about 25 seconds, and a dialog takes longer.
+2. `Request.Close` on the handle of a dialog: the router answers it and drops the result. The dialog of the desktop stays open until the user closes it (the actor does not
+   close it).
+3. `SaveFiles` shares each name with `AddNamedFull`, as `SaveFile` does; it does not make a directory document for the folder. The app can write the names it was given, not
+   others in that folder.
+4. The router answers the `version` property of `FileChooser` with 4 when the folder `$XDG_RUNTIME_DIR/doc/by-app` exists at the start of the app (the same test that mounts
+   the app's document folder), and leaves the interface to the host otherwise. The actor reads the real version when a dialog is asked and ends a `SaveFiles` on a portal older
+   than 4. The document portal must be version 2 for `AddFull`, 3 for `AddNamedFull`, 4 for a folder; there is no fallback to `Add` and `GrantPermissions`: the dialog ends
+   with a line on standard error.
+5. The document portal refuses a descriptor opened with `O_NOFOLLOW` (`Invalid fd passed`, found with the real portal). The actor opens the name with `O_PATH | O_NOFOLLOW`,
+   checks it (a link is refused), and gives the portal a second `O_PATH` descriptor made from the first through `/proc/self/fd`, so no name is looked up twice.
+6. The files are shared with `write` when the user can write them, and the app may lower that with the option `writable = false`; a folder the same way.
+7. A link in a parent folder is refused only when the folder that holds the link is under a place the app can write (its own folders, `rw` home paths and user folders). The
+   outer stub fills the list in before the app starts.
+8. A refused link, and a file that cannot be shared, also show a notification of the desktop with the message; the line goes to standard error too.
+9. **Files given at the start.** An argument is a file when it names something that exists, is written as a `file:` address, or is a path (has a `/`) that does not exist in a
+   folder that does (a new file). A bare word that does not exist (`new.txt`, `org.example.App`, `1.2.3`) is left to the app: it could be anything. So
+   `gnome-text-editor ./new.txt` makes a new file and `gnome-text-editor new.txt` does not. More than 64 files: the rest is dropped with a line. The menu entry that `install`
+   writes has `%U` and no `MimeType`, so a file manager offers the app under "Open with" > "Other application", not as the default for a type.
+10. The table of permissions has the rows `files-chosen` and `launch-files` for every app, shown where this system has the document portal's folder.
+11. `panpak doctor` says whether the dialog is served on this system. `panpak pack` prints a note for a GTK or Qt app that asks for a user folder with `rw`. The Text Editor recipe
+    of the test harness no longer asks for `documents`.
+
+**Tested**
+
+- Unit tests: the call parser and its option filter, the addresses, the frames and the answer text (`panpak-core/src/filechooser.rs`), the safe open and the link rules
+  (`docshare.rs`), the router (`panpak-core/src/dbus/route.rs`: handle at once, one dialog at a time, Close, bad calls and bad answers), the actor (`panpak-stub/src/chooser.rs`: filtering, token,
+  busy, five a minute), the arguments of a start (`startfiles.rs`).
+- A fake desktop portal on a private bus (`tests/fake_portal_files.py`, `panpak-core/tests/chooserhost.rs`): what is asked of the portal, the permissions of each kind of file,
+  the order of several files, a folder, a new file, a closed dialog, a link, an address that is not a file, the files at the start, the revoke and the purge, and a portal that is not there.
+- The whole path with the real portal front end and the real document portal (FUSE) in `tests/privbus.py` scenario D: the app reads a file through its document path and does not see
+  the host path, saves a new file that appears on the host, renames inside the document folder (atomic save), gets `Response` 2 for a link; files given at the start; `panpak remove`
+  takes the grants back and leaves the files.
+- Fuzz: `fuzz_chooser` (call, answer text, addresses, frames, start arguments) and `fuzz_router` with the dialog.
+
+**Not tested yet** (needs the desktops; the owner starts the VMs one at a time): the dialogs of GNOME and KDE as the user sees them, Text Editor and qBittorrent with the real
+dialogs, a large transfer in a document folder, "Open with" and a double click from the file managers, the second launch while the first copy runs, and the list of grants in the
+settings panels of the desktops.

@@ -149,7 +149,8 @@ The only list is in the proxy, where it already is. (One exception on purpose: t
 | `org.freedesktop.portal.OpenURI` | app to portal | served by the router, to the opener, section 5.3 |
 | `org.a11y.Bus` and the AT-SPI bus | app to a11y bus | section 5.2 |
 | `org.gtk.Application`, `org.gtk.Actions`, `org.freedesktop.Application` | app to app (copies) | local to the router |
-| `org.freedesktop.portal.FileChooser`, `Documents` and others | app to portal | not given today (KL-7); no change. The document portal is used by the outer stub, not by the app |
+| `org.freedesktop.portal.FileChooser` | app to portal | served by the router, to the outer stub, which shows the dialog and shares the files (step 11, docs/FILE-CHOOSER.md); its `version` property is answered by the router |
+| `org.freedesktop.portal.Documents` and others | app to portal | not given. The document portal is used by the outer stub, not by the app |
 | `ca.desrt.dconf`, `org.gtk.vfs`, secrets, the shell | app to services | refused as today |
 
 Calls from the real bus *to the app* are only the ones to its unique name (replies, `Response`, tray and menu callbacks) and,

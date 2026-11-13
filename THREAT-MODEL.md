@@ -567,7 +567,7 @@ Status of the project: pre-beta.
   session bus (§3, "The filtered session bus") needs the isolated view, a systemd user manager, and
   `xdg-dbus-proxy` 0.1.5 or newer at a fixed path. Without one of them, or with a manifest that lists the
   bus socket in `sockets_allow`, the app has no bus (or the whole bus, the second case), so notifications, tray icons and the
-  appearance portal are missing. Since 13p the app also needs the router (a process of the stub itself, no extra package). Not mediated yet: the file chooser (KL-7), the clipboard, global menus. `doctor` says
+  appearance portal are missing. Since 13p the app also needs the router (a process of the stub itself, no extra package). Not mediated yet: the clipboard (KL-7), global menus. `doctor` says
   which part is missing. See `docs/COMPATIBILITY.md` (D-Bus summary), `PORTAL-DESIGN.md`, `docs/PORTALS-STUDY.md`.
 - **KL-31 An app could talk to a native app that has the same D-Bus name (closed in step 13p).** The proxy rules `--own=NAME` and `--talk=NAME` could not
   tell the app's own name from the same name owned outside the sandbox (found with Ghostty: F22 and F23). Since 13p the names of an app are on a bus of its
@@ -579,11 +579,13 @@ Status of the project: pre-beta.
   expose every password of the user's keyring. In practice: apps that store a password
   there (Bitwarden and Obsidian ask for it in the tests) start without a keyring, and the
   feature that uses it is not available. See `docs/COMPATIBILITY.md` (D-Bus summary).
-- **KL-7 The file chooser and the clipboard are not mediated.** They travel over Wayland
-  or D-Bus, which the app can reach. In practice: the clipboard is not protected, and the app
-  does not get the system (portal) file chooser; `panpak open` and `xdg_dirs` grant files and
-  folders instead. See §4 and
-  `PORTAL-DESIGN.md`.
+- **KL-7 The clipboard is not mediated (the file chooser is, since step 11).** The clipboard travels
+  over Wayland, which the app can reach: it is not protected. The file chooser of the desktop is given
+  through the router and the outer stub (docs/FILE-CHOOSER.md): the app gets the files the user
+  chooses as document-portal paths, never a path of the host. Residual: a dialog the user confirms for a
+  folder gives the app that folder until the grant is taken back (`panpak remove` does it); an app can
+  label a dialog badly, as in Flatpak; the dialog of the desktop stays open when the app closes its
+  request. Without the document portal the app keeps its toolkit's own dialog.
 - **KL-8 Opening addresses is a channel to the user's programs.** An app can make the user's
   browser or mail client open any `http`, `https` or `mailto` address, up to 5 a second at
   first. In practice: it can show a deceptive page; it cannot open files or attach them.

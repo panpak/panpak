@@ -215,8 +215,10 @@ builds for the example recipes. Main limits now (all listed in
 - GNOME's compositor does not offer a Wayland security context yet; there the app has the normal
   Wayland socket. X11 apps are not isolated from each other.
 - The audio permission includes the microphone.
-- The file chooser of the desktop portal is not wired yet: apps use their toolkit's own dialog on the
-  folders they were granted. The clipboard is not mediated, and there is no keyring.
+- Where the desktop has the document portal, apps use the file dialog of the desktop: they get the files you
+  choose (and the files you open them with) as document-portal paths, and nothing else of your folders. Without it
+  they use their toolkit's own dialog on the folders they were granted. The clipboard is not mediated, and there is
+  no keyring.
 - The seccomp filter is a deny list, and the internal sandbox of Electron and Chromium is not available.
 - The first key of a package is trusted on first use.
 - Panpak is not a store: there is no catalogue or review, and no shared runtime. You get a `.panpak` file from its

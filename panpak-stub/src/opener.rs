@@ -371,7 +371,8 @@ fn act_loop(mut sock: UnixStream, target: Option<impl Target>, chooser: Option<c
             match frames::parse_request(&pending) {
                 Ok(Some((req, used))) => {
                     pending.drain(..used);
-                    if req.kind == frames::KIND_FILE_CHOOSER {
+                    // A dialog request has the token of the router in front; one without it is not one (the answer is the old "not done").
+                    if req.kind == frames::KIND_FILE_CHOOSER && panpak_core::filechooser::parse_request_payload(&req.payload).is_some() {
                         match &chooser {
                             Some(c) => c.request(&req.payload, writer.clone()),
                             None => crate::chooser::answer_ended(&writer, &req.payload, "this system has no file dialog for the app"),

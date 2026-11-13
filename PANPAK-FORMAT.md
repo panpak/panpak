@@ -1155,11 +1155,16 @@ used to read the bytes of the app itself. It is now two pieces:
   receiver could not be trusted (the address check and its own rate limit), and acts. It never sees the app's bytes.
   A frame that is not a frame (bad magic or version, a length over the limit) ends the conversation.
 
-A request frame is `"PKRQ"`, a version byte (1), a kind byte, a 16-bit length in big-endian order (at most 4096) and
-that many bytes. Kind 1 is "open an address" (the payload is the address); kinds 2 (file chooser) and 3 (browser for a sign-in)
-are reserved and answered `unsupported` until they are defined; every other kind is `unsupported`. A response frame
-is `"PKRS"`, the version, a status byte (0 done, 1 refused, 2 failed, 3 unsupported), a 16-bit length (at most 256) and
-printable ASCII text. The actor answers each request with one response, in order. No frame carries a descriptor.
+A request frame is `"PKRQ"`, a version byte (1), a kind byte, a 16-bit length in big-endian order (at most 4096, 24580 for kind 2) and
+that many bytes. Kind 1 is "open an address" (the payload is the address). Kind 2 is "show a file dialog": the payload is a token of
+the router (4 bytes) and the call of the app (`OpenFile`, `SaveFile` or `SaveFiles` of `org.freedesktop.portal.FileChooser`) as a D-Bus message of at
+most 24 KiB; the actor parses it again and keeps only the options it knows (docs/FILE-CHOOSER.md). Kind 3 (browser for a sign-in) is reserved and
+answered `unsupported` until it is defined; every other kind is `unsupported`, and so is a kind 2 whose payload has no token. A response frame
+is `"PKRS"`, the version, a status byte (0 done, 1 refused, 2 failed, 3 unsupported, 4 file dialog), a 16-bit length (at most 256, and at most
+60000 for status 4) and printable ASCII text. The actor answers each request of kind 1 with one response, in order. The answer to a file dialog is
+status 4, sent when the user has chosen (so out of order), and its text is `<token> <code> [<hex>]`: the token of the request, the code of the
+`Response` (0 done, 1 the user closed the dialog, 2 anything else) and, for code 0, the `a{sv}` of the answer in D-Bus encoding as hexadecimal
+digits (the document addresses, and `choices` and `current_filter` when the portal gave them). The router checks the dictionary again. No frame carries a descriptor.
 
 ### 9.8 System calls (seccomp) [NORMATIVE for the policy; the program is INFORMATIVE]
 
