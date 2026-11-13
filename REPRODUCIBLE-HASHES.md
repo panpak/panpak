@@ -13,17 +13,17 @@ Toolchain (everything that can change the bytes is pinned):
 
 - Rust 1.99.1 (`rust-toolchain.toml`), target `x86_64-unknown-linux-musl`,
   `Cargo.lock` with `--locked`, `[profile.release] strip = "symbols"`.
-- Zig 0.17.0 as C compiler and linker (`tools/requirements-zig.txt`, wheel
+- Zig 0.17.0 (wheel 0.17.0.post0, the complete re-upload of the yanked 0.17.0, with the same executable) as C compiler and linker (`tools/requirements-zig.txt`, wheel
   hash checked by `pip --require-hashes`); `scripts/repro-build.sh` refuses
   any other version.
 - `SOURCE_DATE_EPOCH=1700000000` and path remapping for the sources and the
   cargo registry.
 
-Sizes: `panpak-stub` 3,612,880 bytes, `panpak` 7,499,240 bytes.
+Sizes: `panpak-stub` 3,613,024 bytes, `panpak` 7,528,616 bytes.
 
 ```
-3ef35fb7d27f0c485d917827eae90e13d85e70aa1790584fa7799047fdd6b7d2  panpak-stub
-39bb257f9b1775fec6cb55abbe262b7c228b3aa3c9b41cb05307b857511d91e6  panpak
+6afd8dbfdec940badb2db5dc8a90d74abf2307387b52916327b591fa4d48e327  panpak-stub
+a1b33a6964efd0befb1f0f16a304e0ae4424ee99eb80b4a1b669286722e97bd6  panpak
 ```
 
 ## Reproduce
