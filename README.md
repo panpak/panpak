@@ -167,14 +167,18 @@ below is printed by `panpak permissions --markdown`, and a test fails when it is
 |---|---|---|
 | \[!!\] High risk | See what other apps show and what you type in them (X11) | X11 has no walls between apps: this app can read the windows and the keyboard input of the others. |
 | \[!!\] High risk | Use the message bus of your whole desktop | It can talk to every service of your session, also to start programs and to read what other apps publish. The sandbox does not isolate it any more. |
-| \[!!\] High risk | Read, change and delete *x* in your home folder | A place in your home folder that belongs to you, not to the app, is open to it for writing. |
-| \[!!\] High risk | Read *x* in your home folder | A place in your home folder that belongs to you, not to the app, is open to it for reading. |
+| \[!!\] High risk | Read, change and delete everything in your home folder | The whole home folder is open to it, with your documents, settings and everything other programs keep there. |
+| \[!!\] High risk | Read everything in your home folder | The whole home folder is open to it for reading: your documents, settings and everything other programs keep there. |
+| \[!!\] High risk | Read, change and delete *x* in your home folder, a place of passwords, keys or startup files | This place holds passwords, keys, browser data or files that run at login. Changing it can give the app control of your account. |
+| \[!!\] High risk | Read *x* in your home folder, a place of passwords, keys or startup files | This place holds passwords, keys, browser data or files that run at login. The app can read them. |
 | \[!\] Attention | Connect to the network on the ports *x* | It can reach any computer on these TCP ports, also on the internet. The filter is by port, not by address. |
 | \[!\] Attention | Accept connections from the network on the ports *x* | Other computers can connect to this app on these TCP ports. |
 | \[!\] Attention | Use the network | It can use the network. The ports are not listed by the package. |
 | \[!\] Attention | Play sound and use the microphone | It can use the sound system of your session: play sounds and record from the microphone. |
 | \[!\] Attention | Read, change and delete the files in your *x* folder | The folder is the one of your user-dirs.dirs, not a copy. |
 | \[!\] Attention | Read the files in your *x* folder | The folder is the one of your user-dirs.dirs. The app cannot change it. |
+| \[!\] Attention | Read, change and delete *x* in your home folder | A place in your home folder that belongs to you, not to the app, is open to it for reading and writing. |
+| \[!\] Attention | Read *x* in your home folder | A place in your home folder that belongs to you, not to the app, is open to it for reading. The app cannot change it. |
 | \[!\] Attention | Talk to the local service *x* | It can connect to this Unix socket, and so to the program that listens on it. |
 | \[ \] Normal | Open the links that start with *x*: | The links of this kind, in your browser or in other apps, are given to this app. |
 | \[ \] Normal | Show notifications | It can show messages in the notification area of your desktop, also while it works in the background. |

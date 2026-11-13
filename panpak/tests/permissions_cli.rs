@@ -99,15 +99,16 @@ fn install_shows_the_summary_the_levels_in_words_and_what_it_cannot_do() {
     let l = Lab::new("install");
     let pkg = l.package("rich", RICH);
     let t = text(&l.cli("C", &["install", "--yes", pkg.to_str().unwrap()]));
-    assert!(t.contains("Partial isolation: it can watch other apps (X11); it reaches your home folder"), "{t}");
+    assert!(t.contains("Partial isolation: it can watch other apps (X11)\n"), "{t}");
     assert!(t.contains("[!!] High risk") && t.contains("[!] Attention") && t.contains("[ ] Normal"), "{t}");
-    assert!(t.contains("What it cannot do:") && t.contains("It cannot record sound."), "{t}");
     assert!(!t.contains("It cannot use the internet"), "an app with the network must not say that it cannot use it: {t}");
     // No color and no Unicode symbols when the output is not a terminal and the locale is not UTF-8.
     assert!(!t.contains('\x1b') && !t.contains('\u{26a0}'), "{t}");
     let plain = l.package("plain", "");
     let t = text(&l.cli("C", &["inspect", plain.to_str().unwrap()]));
     assert!(t.contains("Full isolation") && t.contains("It asks for nothing beyond its own private folders."), "{t}");
+    // The file rules of Landlock are always on, so this sentence is true on every system that runs apps.
+    assert!(t.contains("What it cannot do:") && t.contains("It cannot see your documents, photos or other personal files."), "{t}");
 }
 
 #[test]
@@ -116,7 +117,10 @@ fn the_language_comes_from_the_environment_and_english_is_the_fallback() {
     let pkg = l.package("rich", RICH);
     let it_out = text(&l.cli("it_IT.UTF-8", &["inspect", pkg.to_str().unwrap()]));
     let (partial, high, cannot) = (self::it("Partial isolation:"), self::it("High risk"), self::it("What it cannot do:"));
-    assert!(partial != "Partial isolation:" && it_out.contains(&partial) && it_out.contains(&format!("[!!] {high}")) && it_out.contains(&cannot), "{it_out}");
+    assert!(partial != "Partial isolation:" && it_out.contains(&partial) && it_out.contains(&format!("[!!] {high}")), "{it_out}");
+    let plain = l.package("plain", "");
+    let plain_out = text(&l.cli("it_IT.UTF-8", &["inspect", plain.to_str().unwrap()]));
+    assert!(plain_out.contains(&cannot) && plain_out.contains(&self::it("It cannot see your documents, photos or other personal files.")), "{plain_out}");
     assert!(it_out.contains('\u{26a0}'), "a UTF-8 locale gets the symbols: {it_out}");
     let xx = text(&l.cli("xx_YY.UTF-8", &["inspect", pkg.to_str().unwrap()]));
     assert!(xx.contains("Partial isolation:") && xx.contains("[!!] High risk"), "{xx}");

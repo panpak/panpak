@@ -5,14 +5,17 @@ msgstr ""
 "Language: it\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
-msgid "A place in your home folder that belongs to you, not to the app, is open to it for reading."
-msgstr "Un posto della tua cartella personale che è tuo, non dell'app, è aperto all'app in lettura."
+msgid "A place in your home folder that belongs to you, not to the app, is open to it for reading and writing."
+msgstr "Un posto della tua cartella personale che è tuo, non dell'app, è aperto all'app in lettura e scrittura."
 
-msgid "A place in your home folder that belongs to you, not to the app, is open to it for writing."
-msgstr "Un posto della tua cartella personale che è tuo, non dell'app, è aperto all'app in scrittura."
+msgid "A place in your home folder that belongs to you, not to the app, is open to it for reading. The app cannot change it."
+msgstr "Un posto della tua cartella personale che è tuo, non dell'app, è aperto all'app in lettura. L'app non può modificarlo."
 
 msgid "Accept connections from the network on the ports {subject}"
 msgstr "Accettare connessioni dalla rete sulle porte {subject}"
+
+msgid "Accept them?"
+msgstr "Li accetti?"
 
 msgid "Attention"
 msgstr "Attenzione"
@@ -28,6 +31,9 @@ msgstr "Isolamento completo"
 
 msgid "High risk"
 msgstr "Rischio alto"
+
+msgid "If you do not accept, you stay on the current version."
+msgstr "Se non accetti, resti sulla versione attuale."
 
 msgid "It asks for nothing beyond its own private folders."
 msgstr "Non chiede nulla oltre alle proprie cartelle private."
@@ -55,6 +61,9 @@ msgstr "Può usare il sistema audio della tua sessione: riprodurre suoni e regis
 
 msgid "It cannot control your other apps or the services of your desktop."
 msgstr "Non può controllare le altre app né i servizi del tuo desktop."
+
+msgid "It cannot open TCP connections to the network."
+msgstr "Non può aprire connessioni TCP verso la rete."
 
 msgid "It cannot read your passwords, keys or the saved logins of other programs."
 msgstr "Non può leggere le tue password, le chiavi o gli accessi salvati di altri programmi."
@@ -92,17 +101,29 @@ msgstr "Riprodurre l'audio e usare il microfono"
 msgid "Put an icon in the notification area"
 msgstr "Mettere un'icona nell'area di notifica"
 
+msgid "Read everything in your home folder"
+msgstr "Leggere tutto nella tua cartella personale"
+
 msgid "Read the files in your {subject} folder"
 msgstr "Leggere i file nella tua cartella {subject}"
 
 msgid "Read {subject} in your home folder"
 msgstr "Leggere {subject} nella tua cartella personale"
 
+msgid "Read {subject} in your home folder, a place of passwords, keys or startup files"
+msgstr "Leggere {subject} nella tua cartella personale, un posto di password, chiavi o file di avvio"
+
+msgid "Read, change and delete everything in your home folder"
+msgstr "Leggere, modificare ed eliminare tutto nella tua cartella personale"
+
 msgid "Read, change and delete the files in your {subject} folder"
 msgstr "Leggere, modificare ed eliminare i file nella tua cartella {subject}"
 
 msgid "Read, change and delete {subject} in your home folder"
 msgstr "Leggere, modificare ed eliminare {subject} nella tua cartella personale"
+
+msgid "Read, change and delete {subject} in your home folder, a place of passwords, keys or startup files"
+msgstr "Leggere, modificare ed eliminare {subject} nella tua cartella personale, un posto di password, chiavi o file di avvio"
 
 msgid "See what other apps show and what you type in them (X11)"
 msgstr "Vedere cosa mostrano le altre app e cosa scrivi in esse (X11)"
@@ -125,6 +146,24 @@ msgstr "I link di questo tipo, nel browser o in altre app, vengono dati a questa
 msgid "The shell of your desktop and the media keys of your keyboard can play, pause and skip in it."
 msgstr "La shell del tuo desktop e i tasti multimediali della tastiera possono avviare, mettere in pausa e saltare brani al suo interno."
 
+msgid "The whole home folder is open to it for reading: your documents, settings and everything other programs keep there."
+msgstr "L'intera cartella personale è aperta all'app in lettura: i tuoi documenti, le impostazioni e tutto ciò che gli altri programmi vi tengono."
+
+msgid "The whole home folder is open to it, with your documents, settings and everything other programs keep there."
+msgstr "L'intera cartella personale è aperta all'app, con i tuoi documenti, le impostazioni e tutto ciò che gli altri programmi vi tengono."
+
+msgid "This package asks for more than the version you have:"
+msgstr "Questo pacchetto chiede più della versione che hai:"
+
+msgid "This place holds passwords, keys, browser data or files that run at login. Changing it can give the app control of your account."
+msgstr "Questo posto contiene password, chiavi, dati del browser o file che partono all'accesso. Modificarlo può dare all'app il controllo del tuo account."
+
+msgid "This place holds passwords, keys, browser data or files that run at login. The app can read them."
+msgstr "Questo posto contiene password, chiavi, dati del browser o file che partono all'accesso. L'app può leggerli."
+
+msgid "This update asks for more than the version you have:"
+msgstr "Questo aggiornamento chiede più della versione che hai:"
+
 msgid "Use the message bus of your whole desktop"
 msgstr "Usare il bus di messaggi di tutto il tuo desktop"
 
@@ -146,8 +185,11 @@ msgstr "può parlare con ogni servizio del tuo desktop"
 msgid "it can watch other apps (X11)"
 msgstr "può osservare le altre app (X11)"
 
-msgid "it reaches your home folder"
-msgstr "raggiunge la tua cartella personale"
+msgid "it reaches passwords, keys or startup files"
+msgstr "raggiunge password, chiavi o file di avvio"
+
+msgid "it reaches your whole home folder"
+msgstr "raggiunge l'intera tua cartella personale"
 
 msgid "none"
 msgstr "nessuno"
@@ -156,15 +198,3 @@ msgid "{n} permission"
 msgid_plural "{n} permissions"
 msgstr[0] "{n} permesso"
 msgstr[1] "{n} permessi"
-
-msgid "This update asks for more than the version you have:"
-msgstr "Questo aggiornamento chiede più della versione che hai:"
-
-msgid "This package asks for more than the version you have:"
-msgstr "Questo pacchetto chiede più della versione che hai:"
-
-msgid "If you do not accept, you stay on the current version."
-msgstr "Se non accetti, resti sulla versione attuale."
-
-msgid "Accept them?"
-msgstr "Li accetti?"

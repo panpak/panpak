@@ -69,10 +69,14 @@ pub static ROWS: &[Row] = &[
     row("desktop-bus", Level::High, "dialog-warning-symbolic", "\u{26a0}", "Use the message bus of your whole desktop",
         "It can talk to every service of your session, also to start programs and to read what other apps publish. The sandbox does not isolate it any more.",
         "it can talk to every service of your desktop"),
-    row("home-path-write", Level::High, "user-home-symbolic", "\u{2302}", "Read, change and delete {subject} in your home folder",
-        "A place in your home folder that belongs to you, not to the app, is open to it for writing.", "it reaches your home folder"),
-    row("home-path-read", Level::High, "user-home-symbolic", "\u{2302}", "Read {subject} in your home folder",
-        "A place in your home folder that belongs to you, not to the app, is open to it for reading.", "it reaches your home folder"),
+    row("home-all-write", Level::High, "user-home-symbolic", "\u{2302}", "Read, change and delete everything in your home folder",
+        "The whole home folder is open to it, with your documents, settings and everything other programs keep there.", "it reaches your whole home folder"),
+    row("home-all-read", Level::High, "user-home-symbolic", "\u{2302}", "Read everything in your home folder",
+        "The whole home folder is open to it for reading: your documents, settings and everything other programs keep there.", "it reaches your whole home folder"),
+    row("home-secret-write", Level::High, "dialog-password-symbolic", "\u{2302}", "Read, change and delete {subject} in your home folder, a place of passwords, keys or startup files",
+        "This place holds passwords, keys, browser data or files that run at login. Changing it can give the app control of your account.", "it reaches passwords, keys or startup files"),
+    row("home-secret-read", Level::High, "dialog-password-symbolic", "\u{2302}", "Read {subject} in your home folder, a place of passwords, keys or startup files",
+        "This place holds passwords, keys, browser data or files that run at login. The app can read them.", "it reaches passwords, keys or startup files"),
     row("network-connect", Level::Attention, "network-wireless-symbolic", "\u{21c4}", "Connect to the network on the ports {subject}",
         "It can reach any computer on these TCP ports, also on the internet. The filter is by port, not by address.", ""),
     row("network-listen", Level::Attention, "network-wireless-symbolic", "\u{21c4}", "Accept connections from the network on the ports {subject}",
@@ -85,6 +89,10 @@ pub static ROWS: &[Row] = &[
         "The folder is the one of your user-dirs.dirs, not a copy.", ""),
     row("folder-read", Level::Attention, "folder-symbolic", "\u{25a3}", "Read the files in your {subject} folder",
         "The folder is the one of your user-dirs.dirs. The app cannot change it.", ""),
+    row("home-path-write", Level::Attention, "user-home-symbolic", "\u{2302}", "Read, change and delete {subject} in your home folder",
+        "A place in your home folder that belongs to you, not to the app, is open to it for reading and writing.", ""),
+    row("home-path-read", Level::Attention, "user-home-symbolic", "\u{2302}", "Read {subject} in your home folder",
+        "A place in your home folder that belongs to you, not to the app, is open to it for reading. The app cannot change it.", ""),
     row("socket", Level::Attention, "network-server-symbolic", "\u{2301}", "Talk to the local service {subject}",
         "It can connect to this Unix socket, and so to the program that listens on it.", ""),
     row("url-scheme", Level::Normal, "emblem-symbolic-link", "\u{2197}", "Open the links that start with {subject}:",
@@ -126,6 +134,24 @@ fn item(lang: Option<&Catalog>, id: &'static str, subjects: Vec<String>) -> Item
         text: fill(&tr_in(lang, r.text), &[("subject", subject.clone())]),
         detail: fill(&tr_in(lang, r.detail), &[("subject", subject)]),
         subjects,
+    }
+}
+
+enum HomeClass {
+    /// The home folder itself.
+    Whole,
+    /// A place the manifest check refuses: passwords, keys, browser data, files that run at login.
+    Secret,
+    Plain,
+}
+
+fn home_class(path: &str) -> HomeClass {
+    if path.is_empty() || path == "." || path == "~" {
+        HomeClass::Whole
+    } else if crate::validate::home_rel_problem(path).is_some() {
+        HomeClass::Secret
+    } else {
+        HomeClass::Plain
     }
 }
 
@@ -193,8 +219,14 @@ fn from_permissions(lang: Option<&Catalog>, p: &Permissions) -> Vec<Item> {
         out.push(item(lang, id, vec![d.name.clone()]));
     }
     for h in p.home_paths.iter().flatten() {
-        let id = if h.access == "rw" { "home-path-write" } else { "home-path-read" };
-        out.push(item(lang, id, vec![h.path.clone()]));
+        let rw = h.access == "rw";
+        let id = match home_class(&h.path) {
+            HomeClass::Whole => if rw { "home-all-write" } else { "home-all-read" },
+            HomeClass::Secret => if rw { "home-secret-write" } else { "home-secret-read" },
+            HomeClass::Plain => if rw { "home-path-write" } else { "home-path-read" },
+        };
+        let subjects = if id.starts_with("home-all") { vec![] } else { vec![h.path.clone()] };
+        out.push(item(lang, id, subjects));
     }
     out
 }
@@ -204,6 +236,8 @@ fn covered_by(id: &str) -> Option<&'static str> {
     match id {
         "folder-read" => Some("folder-write"),
         "home-path-read" => Some("home-path-write"),
+        "home-secret-read" => Some("home-secret-write"),
+        "home-all-read" => Some("home-all-write"),
         _ => None,
     }
 }
@@ -260,8 +294,36 @@ pub fn summary(lang: Option<&Catalog>, items: &[Item]) -> String {
     }
 }
 
-/// What the app cannot do, in short sentences, from the permissions it does not have.
-pub fn cannot(lang: Option<&Catalog>, man: &Manifest) -> Vec<String> {
+/// What the sandbox of this system enforces: the isolated view (bubblewrap) and the Landlock version. A sentence about what an app cannot do is shown only
+/// when this system keeps it (see THREAT-MODEL.md, section on socket isolation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Enforced {
+    pub view: bool,
+    pub abi: Option<landlock::ABI>,
+}
+
+impl Enforced {
+    /// The layers of this system.
+    pub fn detect() -> Enforced {
+        Enforced { view: crate::view_status().usable(), abi: crate::detect_abi().ok() }
+    }
+    /// A local socket that is not on the app's list cannot be reached: by the view (which holds no such path) or by Landlock V9 (rules for path sockets).
+    fn paths_blocked(self) -> bool {
+        self.view || self.abi.is_some_and(|a| a >= landlock::ABI::V9)
+    }
+    /// Abstract Unix sockets outside the sandbox cannot be reached (Landlock V6 scope; `x11 = true` turns it off).
+    fn abstract_blocked(self, x11: bool) -> bool {
+        !x11 && self.abi.is_some_and(|a| a >= landlock::ABI::V6)
+    }
+    /// Landlock V4 filters TCP connect and bind.
+    fn tcp_filtered(self) -> bool {
+        self.abi.is_some_and(|a| a >= landlock::ABI::V4)
+    }
+}
+
+/// What the app cannot do, in short sentences, from the permissions it does not have, and only what this system enforces. Landlock alone does not
+/// block UDP, local sockets or the abstract sockets of an older kernel, so without the isolated view some sentences are shorter or left out.
+pub fn cannot(lang: Option<&Catalog>, man: &Manifest, enf: Enforced) -> Vec<String> {
     let p = man.permissions.clone();
     let has = |f: &dyn Fn(&Permissions) -> bool| p.as_ref().is_some_and(f);
     let list = |v: &Option<Vec<String>>| v.as_ref().is_some_and(|l| !l.is_empty());
@@ -270,23 +332,33 @@ pub fn cannot(lang: Option<&Catalog>, man: &Manifest) -> Vec<String> {
     let dirs = has(&|p| p.xdg_dirs.as_ref().is_some_and(|d| !d.is_empty()));
     let socks = has(&|p| list(&p.sockets_allow));
     let bus = has(&|p| p.sockets_allow.iter().flatten().any(|s| crate::is_bus_socket(s)));
+    let x11 = has(&|p| p.x11 == Some(true));
+    let audio = has(&|p| p.audio == Some(true));
+    // Path sockets and abstract sockets both closed: the session bus, the X server and the agents are out of reach.
+    let sockets_closed = enf.paths_blocked() && enf.abstract_blocked(x11);
     let mut out = Vec::new();
     if !net {
-        out.push("It cannot use the internet or the network.");
+        // The view puts the app in a network namespace of its own, so nothing leaves. Landlock alone filters TCP only.
+        if enf.view {
+            out.push("It cannot use the internet or the network.");
+        } else if enf.tcp_filtered() {
+            out.push("It cannot open TCP connections to the network.");
+        }
     }
     if !homes {
+        // The file rules of Landlock are always on: the runtime does not start an app without them.
         out.push(if dirs { "It cannot see your files outside the folders above." } else { "It cannot see your documents, photos or other personal files." });
     }
-    if !has(&|p| p.x11 == Some(true)) {
+    if !x11 && sockets_closed {
         out.push("It cannot watch other apps or read what you type in them.");
     }
-    if !bus {
+    if !bus && sockets_closed {
         out.push("It cannot control your other apps or the services of your desktop.");
     }
-    if !has(&|p| p.audio == Some(true)) {
+    if !audio && enf.paths_blocked() {
         out.push("It cannot record sound.");
     }
-    if !homes && !socks {
+    if !homes && !socks && sockets_closed {
         out.push("It cannot read your passwords, keys or the saved logins of other programs.");
     }
     out.into_iter().map(|s| tr_in(lang, s).into_owned()).collect()
@@ -335,7 +407,7 @@ pub fn render_item(lang: Option<&Catalog>, style: Style, it: &Item) -> String {
 }
 
 /// The whole block for a manifest: the summary, what the app can do, and what it cannot. Lines are not indented.
-pub fn render_block(lang: Option<&Catalog>, style: Style, man: &Manifest) -> Vec<String> {
+pub fn render_block(lang: Option<&Catalog>, style: Style, man: &Manifest, enf: Enforced) -> Vec<String> {
     let its = items_in(lang, man);
     let mut out = vec![summary(lang, &its)];
     if its.is_empty() {
@@ -344,7 +416,7 @@ pub fn render_block(lang: Option<&Catalog>, style: Style, man: &Manifest) -> Vec
         out.push(tr_in(lang, "What it can do:").into_owned());
         out.extend(its.iter().map(|i| format!("  {}", render_item(lang, style, i))));
     }
-    let no = cannot(lang, man);
+    let no = cannot(lang, man, enf);
     if !no.is_empty() {
         out.push(tr_in(lang, "What it cannot do:").into_owned());
         out.extend(no.iter().map(|s| format!("  - {s}")));
@@ -409,6 +481,7 @@ pub fn msgids() -> Vec<&'static str> {
         "none",
         "{n} permission",
         "It cannot use the internet or the network.",
+        "It cannot open TCP connections to the network.",
         "It cannot see your files outside the folders above.",
         "It cannot see your documents, photos or other personal files.",
         "It cannot watch other apps or read what you type in them.",
@@ -454,16 +527,42 @@ mod tests {
         let ids: Vec<_> = its.iter().map(|i| (i.id, i.level)).collect();
         assert_eq!(
             ids,
-            [("x11", Level::High), ("home-path-read", Level::High), ("folder-write", Level::Attention), ("notifications", Level::Normal)]
+            [("x11", Level::High), ("folder-write", Level::Attention), ("home-path-read", Level::Attention), ("notifications", Level::Normal)]
         );
+    }
+
+    #[test]
+    fn home_levels_follow_the_place() {
+        let level_of = |path: &str, access: &str| {
+            let m = man(&format!("[permissions]\n[[permissions.home_paths]]\npath=\"{path}\"\naccess=\"{access}\"\n"));
+            let it = items_in(None, &m).remove(0);
+            (it.id, it.level)
+        };
+        // A plain sub-folder: Attention, and only the sentence changes between read and write.
+        assert_eq!(level_of("Notes", "ro"), ("home-path-read", Level::Attention));
+        assert_eq!(level_of("Notes", "rw"), ("home-path-write", Level::Attention));
+        assert_eq!(level_of("Documents/work", "ro"), ("home-path-read", Level::Attention));
+        // The whole home, also read-only: High risk.
+        assert_eq!(level_of(".", "ro"), ("home-all-read", Level::High));
+        assert_eq!(level_of(".", "rw"), ("home-all-write", Level::High));
+        // Places with passwords, keys, startup files, browser and keyring data: High risk.
+        for secret in [".ssh", ".gnupg", ".bashrc", ".zshrc", ".profile", ".mozilla", ".config/google-chrome", ".local/share/keyrings", ".password-store", ".config/autostart/x"] {
+            assert_eq!(level_of(secret, "ro"), ("home-secret-read", Level::High), "{secret}");
+            assert_eq!(level_of(secret, "rw"), ("home-secret-write", Level::High), "{secret}");
+        }
+        // A secret place is a reason for partial isolation; a plain folder is not.
+        let plain = items_in(None, &man("[permissions]\n[[permissions.home_paths]]\npath=\"Notes\"\naccess=\"rw\"\n"));
+        assert_eq!(summary(None, &plain), "Full isolation");
+        let secret = items_in(None, &man("[permissions]\n[[permissions.home_paths]]\npath=\".ssh\"\naccess=\"ro\"\n"));
+        assert_eq!(summary(None, &secret), "Partial isolation: it reaches passwords, keys or startup files");
     }
 
     #[test]
     fn summary_is_full_or_partial_with_the_reason() {
         let ok = items_in(None, &man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n"));
         assert_eq!(summary(None, &ok), "Full isolation");
-        let bad = items_in(None, &man("[permissions]\nx11=true\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n[[permissions.home_paths]]\npath=\"b\"\naccess=\"ro\"\n"));
-        assert_eq!(summary(None, &bad), "Partial isolation: it can watch other apps (X11); it reaches your home folder");
+        let bad = items_in(None, &man("[permissions]\nx11=true\n[[permissions.home_paths]]\npath=\".\"\naccess=\"rw\"\n[[permissions.home_paths]]\npath=\".ssh\"\naccess=\"ro\"\n"));
+        assert_eq!(summary(None, &bad), "Partial isolation: it can watch other apps (X11); it reaches your whole home folder; it reaches passwords, keys or startup files");
     }
 
     #[test]
@@ -474,17 +573,67 @@ mod tests {
         assert_eq!(ids, ["desktop-bus", "socket"]);
     }
 
+    use landlock::ABI;
+
+    const NET: &str = "It cannot use the internet or the network.";
+    const TCP: &str = "It cannot open TCP connections to the network.";
+    const FILES: &str = "It cannot see your documents, photos or other personal files.";
+    const FILES_OUTSIDE: &str = "It cannot see your files outside the folders above.";
+    const APPS: &str = "It cannot watch other apps or read what you type in them.";
+    const DESKTOP: &str = "It cannot control your other apps or the services of your desktop.";
+    const MIC: &str = "It cannot record sound.";
+    const SECRETS: &str = "It cannot read your passwords, keys or the saved logins of other programs.";
+
+    fn said(extra: &str, view: bool, abi: Option<ABI>) -> Vec<String> {
+        cannot(None, &man(extra), Enforced { view, abi })
+    }
+
+    /// An app with no permission, on every system: the table is written out by hand from THREAT-MODEL.md, not computed.
     #[test]
-    fn cannot_lines_come_from_the_missing_permissions() {
-        let none = cannot(None, &man(""));
-        assert_eq!(none.len(), 6, "{none:?}");
-        let all = cannot(
-            None,
-            &man("[permissions]\nx11=true\naudio=true\nnetwork=true\nsockets_allow=[\"$XDG_RUNTIME_DIR/bus\"]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n"),
-        );
-        assert!(all.is_empty(), "{all:?}");
-        let dirs = cannot(None, &man("[permissions]\n[[permissions.xdg_dirs]]\nname=\"music\"\naccess=\"ro\"\n"));
-        assert!(dirs.iter().any(|s| s.contains("outside the folders above")));
+    fn what_an_app_without_permissions_cannot_do_on_each_system() {
+        let all = [NET, FILES, APPS, DESKTOP, MIC, SECRETS];
+        // With the isolated view: no network namespace traffic, and the path sockets are not there. Abstract sockets need Landlock V6.
+        for abi in [None, Some(ABI::V1), Some(ABI::V3), Some(ABI::V4), Some(ABI::V5)] {
+            assert_eq!(said("", true, abi), [NET, FILES, MIC], "view, {abi:?}");
+        }
+        for abi in [ABI::V6, ABI::V7, ABI::V8, ABI::V9] {
+            assert_eq!(said("", true, Some(abi)), all, "view, {abi:?}");
+        }
+        // Landlock alone: files always; TCP from V4; local sockets only from V9 (path sockets), and then the abstract ones from V6 are closed too.
+        for abi in [None, Some(ABI::V1), Some(ABI::V2), Some(ABI::V3)] {
+            assert_eq!(said("", false, abi), [FILES], "no view, {abi:?}");
+        }
+        for abi in [ABI::V4, ABI::V5, ABI::V6, ABI::V7, ABI::V8] {
+            assert_eq!(said("", false, Some(abi)), [TCP, FILES], "no view, {abi:?}");
+        }
+        assert_eq!(said("", false, Some(ABI::V9)), [TCP, FILES, APPS, DESKTOP, MIC, SECRETS]);
+    }
+
+    /// Each permission takes away exactly the sentences it contradicts, on a system that enforces everything (view and Landlock V9), and on one that does not.
+    #[test]
+    fn each_permission_removes_its_own_sentences() {
+        let full = |extra: &str| said(extra, true, Some(ABI::V9));
+        let without = |sentences: &[&str]| -> Vec<String> {
+            [NET, FILES, APPS, DESKTOP, MIC, SECRETS].iter().filter(|s| !sentences.contains(s)).map(|s| s.to_string()).collect()
+        };
+        assert_eq!(full("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n"), without(&[NET]));
+        assert_eq!(full("[permissions]\nnetwork_bind_tcp=[8080]\n"), without(&[NET]));
+        assert_eq!(full("[permissions]\naudio=true\n"), without(&[MIC]));
+        // X11 turns the abstract-socket scope off: no claim about other apps, the desktop or the secrets any more.
+        assert_eq!(full("[permissions]\nx11=true\n"), without(&[APPS, DESKTOP, SECRETS]));
+        assert_eq!(full("[permissions]\nsockets_allow=[\"$XDG_RUNTIME_DIR/bus\"]\n"), without(&[DESKTOP, SECRETS]));
+        assert_eq!(full("[permissions]\nsockets_allow=[\"/run/x/y.sock\"]\n"), without(&[SECRETS]));
+        assert_eq!(full("[permissions]\n[[permissions.home_paths]]\npath=\"Notes\"\naccess=\"ro\"\n"), without(&[FILES, SECRETS]));
+        let dirs = full("[permissions]\n[[permissions.xdg_dirs]]\nname=\"music\"\naccess=\"ro\"\n");
+        assert_eq!(dirs, [NET, FILES_OUTSIDE, APPS, DESKTOP, MIC, SECRETS]);
+        // Everything asked for: nothing left to say.
+        let rich = "[permissions]\nx11=true\naudio=true\nnetwork=true\nsockets_allow=[\"$XDG_RUNTIME_DIR/bus\"]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n";
+        assert!(full(rich).is_empty());
+        // The same permissions on a system with Landlock V6 and no view: the claims that need the view are not made.
+        assert_eq!(said("[permissions]\naudio=true\n", false, Some(ABI::V6)), [TCP, FILES]);
+        assert_eq!(said("[permissions]\nnetwork=true\n", false, Some(ABI::V6)), [FILES]);
+        assert_eq!(said("[permissions]\nnetwork=true\n", true, Some(ABI::V1)), [FILES, MIC]);
+        assert_eq!(said("[permissions]\nx11=true\n", true, Some(ABI::V6)), [NET, FILES, MIC]);
     }
 
     #[test]
@@ -494,7 +643,7 @@ mod tests {
         assert!(added(&old, &same).is_empty());
         let more = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443, 8080]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n[[permissions.home_paths]]\npath=\"b\"\naccess=\"ro\"\n");
         let a = added(&old, &more);
-        assert_eq!(a.iter().map(|i| (i.id, i.subjects.clone())).collect::<Vec<_>>(), [("home-path-read", vec!["b".to_string()]), ("network-connect", vec!["8080".to_string()])]);
+        assert_eq!(a.iter().map(|i| (i.id, i.subjects.clone())).collect::<Vec<_>>(), [("network-connect", vec!["8080".to_string()]), ("home-path-read", vec!["b".to_string()])]);
         let from_ro = man("[permissions]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n");
         let to_rw = man("[permissions]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n");
         assert_eq!(added(&from_ro, &to_rw).len(), 1);
@@ -578,7 +727,7 @@ mod tests {
     fn the_table_is_translated_into_italian_and_levels_stay_in_words() {
         let it = i18n::catalogs().iter().find(|c| c.name == "it");
         let m = man("[permissions]\nx11=true\nnotifications=true\n");
-        let lines = render_block(it, Style::PLAIN, &m);
+        let lines = render_block(it, Style::PLAIN, &m, Enforced { view: true, abi: Some(ABI::V9) });
         let (partial, high, normal) = (tr_in(it, "Partial isolation:"), tr_in(it, "High risk"), tr_in(it, "Normal"));
         assert!(partial != "Partial isolation:" && lines[0].starts_with(&*partial), "{lines:?}");
         assert!(lines.iter().any(|l| l.contains(&format!("[!!] {high}"))), "{lines:?}");

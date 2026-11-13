@@ -2020,7 +2020,7 @@ fn perm_style() -> panpak_core::permissions::Style {
 
 /// Print what the package may do and may not do, from the table of permissions, then how it is isolated and its extra start arguments.
 fn print_permissions(man: &panpak_core::Manifest) {
-    for l in panpak_core::permissions::render_block(panpak_core::i18n::current(), perm_style(), man) {
+    for l in panpak_core::permissions::render_block(panpak_core::i18n::current(), perm_style(), man, panpak_core::permissions::Enforced::detect()) {
         println!("{l}");
     }
     print_isolation(man);
@@ -2081,7 +2081,7 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
         println!("converted from {} (NOT verified by the author; signed by the converter, not upstream)", o.converted_from);
     }
     println!();
-    let lines = perms::render_block(lang, style, &man);
+    let lines = perms::render_block(lang, style, &man, perms::Enforced::detect());
     let mut shown = items.iter();
     for l in &lines {
         println!("{l}");
