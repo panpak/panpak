@@ -20,6 +20,9 @@ pub const HEADER_LEN: usize = 8;
 pub const MAX_PAYLOAD: usize = 4096;
 /// The longest text of a response.
 pub const MAX_TEXT: usize = 256;
+/// The largest payload of a file chooser request (the token of the router and the call of the app) and the longest text of its response.
+pub const MAX_CHOOSER_PAYLOAD: usize = 4 + crate::filechooser::MAX_CALL;
+pub const MAX_CHOOSER_TEXT: usize = 60_000;
 
 /// What a request asks for. Only `OPEN_URI` is done today; the other numbers are kept for what comes
 /// next (a file chooser through the portal is 2, a browser for the sign-in of an app is 3) and are refused
@@ -39,6 +42,9 @@ pub enum Status {
     Failed = 2,
     /// The kind is not one this version does.
     Unsupported = 3,
+    /// The answer of a file chooser request (it comes when the user has chosen, not in the order of the requests): the text is
+    /// `<token> <code> [<hex of the a{sv}>]` (`filechooser::response_text`).
+    Chooser = 4,
 }
 
 impl Status {
@@ -48,6 +54,7 @@ impl Status {
             1 => Status::Refused,
             2 => Status::Failed,
             3 => Status::Unsupported,
+            4 => Status::Chooser,
             _ => return None,
         })
     }
@@ -90,8 +97,16 @@ impl std::fmt::Display for FrameError {
 
 impl std::error::Error for FrameError {}
 
+fn max_payload(kind: u8) -> usize {
+    if kind == KIND_FILE_CHOOSER {
+        MAX_CHOOSER_PAYLOAD
+    } else {
+        MAX_PAYLOAD
+    }
+}
+
 pub fn encode_request(kind: u8, payload: &[u8]) -> Result<Vec<u8>, FrameError> {
-    if payload.len() > MAX_PAYLOAD {
+    if payload.len() > max_payload(kind) {
         return Err(FrameError::Length(payload.len()));
     }
     let mut v = Vec::with_capacity(HEADER_LEN + payload.len());
@@ -111,6 +126,19 @@ pub fn encode_response(status: Status, text: &str) -> Vec<u8> {
     v.extend_from_slice(&(t.len() as u16).to_be_bytes());
     v.extend_from_slice(t.as_bytes());
     v
+}
+
+/// The answer of a file chooser request: the text is `filechooser::response_text`, not cut to printable ASCII and not limited to `MAX_TEXT`.
+pub fn encode_chooser_response(text: &str) -> Result<Vec<u8>, FrameError> {
+    if text.len() > MAX_CHOOSER_TEXT || !text.bytes().all(|b| (b' '..=b'~').contains(&b)) {
+        return Err(FrameError::Text);
+    }
+    let mut v = Vec::with_capacity(HEADER_LEN + text.len());
+    v.extend_from_slice(&RESPONSE_MAGIC);
+    v.extend_from_slice(&[VERSION, Status::Chooser as u8]);
+    v.extend_from_slice(&(text.len() as u16).to_be_bytes());
+    v.extend_from_slice(text.as_bytes());
+    Ok(v)
 }
 
 /// The header of a frame: checks the magic, the version and the length, and returns the payload length.
@@ -136,7 +164,10 @@ fn header(buf: &[u8], magic: &[u8; 4], max: usize) -> Result<Option<(u8, usize)>
 /// Take the first request off `buf`: `Ok(None)` while it is not complete, otherwise the request and the number
 /// of bytes it took.
 pub fn parse_request(buf: &[u8]) -> Result<Option<(Request, usize)>, FrameError> {
-    let Some((kind, len)) = header(buf, &REQUEST_MAGIC, MAX_PAYLOAD)? else { return Ok(None) };
+    let Some((kind, len)) = header(buf, &REQUEST_MAGIC, MAX_CHOOSER_PAYLOAD)? else { return Ok(None) };
+    if len > max_payload(kind) {
+        return Err(FrameError::Length(len));
+    }
     if buf.len() < HEADER_LEN + len {
         return Ok(None);
     }
@@ -145,8 +176,11 @@ pub fn parse_request(buf: &[u8]) -> Result<Option<(Request, usize)>, FrameError>
 
 /// Take the first response off `buf`, as `parse_request` does for a request.
 pub fn parse_response(buf: &[u8]) -> Result<Option<(Response, usize)>, FrameError> {
-    let Some((status, len)) = header(buf, &RESPONSE_MAGIC, MAX_TEXT)? else { return Ok(None) };
+    let Some((status, len)) = header(buf, &RESPONSE_MAGIC, MAX_CHOOSER_TEXT)? else { return Ok(None) };
     let status = Status::from_byte(status).ok_or(FrameError::Status(status))?;
+    if status != Status::Chooser && len > MAX_TEXT {
+        return Err(FrameError::Length(len));
+    }
     if buf.len() < HEADER_LEN + len {
         return Ok(None);
     }

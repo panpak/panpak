@@ -14,6 +14,7 @@ use std::{
 
 #[cfg(target_arch = "x86_64")]
 mod busrouter;
+mod chooser;
 mod dbus_layer;
 mod opener;
 mod probe;
@@ -1151,10 +1152,12 @@ fn real_main() -> Result<()> {
     // The filtered session bus takes 15 to 25 ms to come up (a systemd scope, the proxy): its checks are made now and
     // the rest runs on a thread while the package is verified, the view is made and the app is prepared.
     let view_usable = panpak_core::view_status().usable();
+    // Filled in below, when the folders the app can write are known; the file dialog reads it (links in those folders are not trusted).
+    let writable_roots: std::sync::Arc<std::sync::OnceLock<Vec<PathBuf>>> = Default::default();
     let dbus_early = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute() && view_usable)
-        .map(|rt| dbus_layer::start(&dbus_layer::Request { man: &man, runtime_dir: &rt }));
+        .map(|rt| dbus_layer::start(&dbus_layer::Request { man: &man, runtime_dir: &rt, writable_roots: writable_roots.clone() }));
 
     let store = dirs::data_dir().context("no data dir")?.join("panpak");
     // TOFU (spec §3.2): if the app is installed (pinned key), the signature
@@ -1202,6 +1205,7 @@ fn real_main() -> Result<()> {
     write_fonts_conf(&app_dirs)?;
     let mut access = access_for(&man, &app_dirs)?;
     let granted = xdg_grants(&man, &store, installed_mode, &mut access)?;
+    let _ = writable_roots.set(access.rw.clone());
     if !granted.is_empty() || man.permissions.as_ref().and_then(|p| p.xdg_dirs.as_ref()).is_some_and(|d| !d.is_empty()) {
         write_user_dirs(&app_dirs, &granted)?;
     }

@@ -275,7 +275,7 @@ impl Server {
         drop(listener);
         drop(theirs);
         let mut server = Server { path, receiver };
-        let spawned = std::thread::Builder::new().name("opener".into()).spawn(move || act_loop(mine, target));
+        let spawned = std::thread::Builder::new().name("opener".into()).spawn(move || act_loop(mine, Some(target), None));
         if let Err(e) = spawned {
             server.receiver.end();
             return Err(e).context("start the opener thread");
@@ -326,9 +326,14 @@ fn spawn_receiver(launch: Launch, listener: &UnixListener, theirs: &UnixStream) 
     }
 }
 
-/// Serve the frames of a router (it does what the receiver does, in the same process as the bus router): the actor on this end of a socket pair.
-pub fn serve_actor(sock: UnixStream, target: impl Target) -> std::io::Result<std::thread::JoinHandle<()>> {
-    std::thread::Builder::new().name("opener-router".into()).spawn(move || act_loop(sock, target))
+/// Serve the frames of a router (it does what the receiver does, in the same process as the bus router): the actor on this end of a socket pair, with
+/// the file dialog too: the opener (when this system has `xdg-open`) and the chooser (when it has the document portal) are both optional.
+pub fn serve_actor_with(
+    sock: UnixStream,
+    target: Option<impl Target>,
+    chooser: Option<crate::chooser::Actor>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new().name("opener-router".into()).spawn(move || act_loop(sock, target, chooser))
 }
 
 /// The program that opens addresses, found in the `PATH` of this process.
@@ -337,19 +342,45 @@ pub fn system_target() -> Option<SystemXdgOpen> {
     find_in_path("xdg-open", &path).map(SystemXdgOpen::new)
 }
 
+/// A target for an actor that has no `xdg-open`: every address fails with a message.
+struct NoOpener;
+
+impl Target for NoOpener {
+    fn open(&mut self, _url: &str) -> Result<(), String> {
+        Err("this system has no xdg-open".into())
+    }
+}
+
 /// The actor: read frames from the receiver, check each one again, act on it, answer. Ends when the receiver closes
-/// its side or sends something that is not a frame (the receiver is then not trusted any more).
-fn act_loop(mut sock: UnixStream, mut target: impl Target) {
+/// its side or sends something that is not a frame (the receiver is then not trusted any more). A file dialog request is
+/// handled on a thread of its own, because the dialog takes as long as the user takes; its answer carries the token of the request.
+fn act_loop(mut sock: UnixStream, target: Option<impl Target>, chooser: Option<crate::chooser::Actor>) {
+    let mut target: Box<dyn Target> = match target {
+        Some(t) => Box::new(t),
+        None => Box::new(NoOpener),
+    };
+    let writer = match sock.try_clone() {
+        Ok(w) => std::sync::Arc::new(std::sync::Mutex::new(w)),
+        Err(_) => return,
+    };
     let mut limit = RateLimit::new(Instant::now());
     let mut pending: Vec<u8> = Vec::new();
-    let mut chunk = [0u8; 1024];
+    let mut chunk = [0u8; 4096];
     loop {
         loop {
             match frames::parse_request(&pending) {
                 Ok(Some((req, used))) => {
                     pending.drain(..used);
-                    let resp = frames::act(&req, &mut limit, Instant::now(), &mut target);
-                    if sock.write_all(&frames::encode_response(resp.status, &resp.text)).is_err() {
+                    if req.kind == frames::KIND_FILE_CHOOSER {
+                        match &chooser {
+                            Some(c) => c.request(&req.payload, writer.clone()),
+                            None => crate::chooser::answer_ended(&writer, &req.payload, "this system has no file dialog for the app"),
+                        }
+                        continue;
+                    }
+                    let resp = frames::act(&req, &mut limit, Instant::now(), &mut *target);
+                    let ok = writer.lock().map(|mut w| w.write_all(&frames::encode_response(resp.status, &resp.text)).is_ok()).unwrap_or(false);
+                    if !ok {
                         return;
                     }
                 }
@@ -490,7 +521,7 @@ mod tests {
         let ask = |bytes: &[u8]| -> Vec<frames::Response> {
             let (mine, theirs) = UnixStream::pair().unwrap();
             let t = sent.clone();
-            let h = std::thread::spawn(move || act_loop(theirs, Rec(t)));
+            let h = std::thread::spawn(move || act_loop(theirs, Some(Rec(t)), None));
             let mut mine = mine;
             mine.write_all(bytes).unwrap();
             mine.shutdown(std::net::Shutdown::Write).unwrap();

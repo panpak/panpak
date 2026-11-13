@@ -18,6 +18,7 @@ Regression tests of the findings of docs/SOURCE-BUILD.md section 4 and docs/PRIV
   L    a link goes to the opener and the app is told what happened
   M    a media player name gets one alias on the host bus; nothing else of the family
   R    the app cannot register another identity with the portal
+  D    the file dialog: open, close, save and a refused link, through the real portal and its document folder
   X    the accessibility bus is filtered: the app is found by a screen reader, cannot read or command the other applications
 """
 import json
@@ -132,6 +133,46 @@ elif mode == "link":
             ctx.iteration(False)
             time.sleep(0.01)
         res["links"][uri] = [r[:90], [answers[path]] if path in answers else []]
+elif mode == "dialog":
+    # The file dialog as a toolkit asks for it: OpenFile or SaveFile with a handle token, the answer as a Response signal, then the file through the address given.
+    # name is the method, secs unused; the host path the dialog was told to choose is in argv[4], and the text to write for a save in argv[5].
+    method, host = name, sys.argv[4]
+    px = Gio.DBusProxy.new_sync(c, Gio.DBusProxyFlags.NONE, None, "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.FileChooser", None)
+    v = px.get_cached_property("version")
+    res["version"] = v.unpack() if v is not None else None
+    answers = []
+    path = "/org/freedesktop/portal/desktop/request/" + res["unique"][1:].replace(".", "_") + "/dlg"
+    c.signal_subscribe("org.freedesktop.portal.Desktop", "org.freedesktop.portal.Request", "Response", path, None, Gio.DBusSignalFlags.NONE, lambda *a: answers.append(a[5].unpack()))
+    opts = {"handle_token": GLib.Variant("s", "dlg"), "modal": GLib.Variant("b", True)}
+    r = call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.FileChooser", method, ("x11:1f", "Pick", opts), "(ssa{sv})", timeout=20000)
+    res["call"] = r[:120]
+    ctx = GLib.MainContext.default()
+    t0 = time.time()
+    while time.time() - t0 < 20 and not answers:
+        ctx.iteration(False)
+        time.sleep(0.01)
+    res["answers"] = [[a[0], sorted(a[1].keys())] for a in answers]
+    res["host_visible"] = os.path.exists(host)
+    if answers and answers[0][0] == 0:
+        uri = answers[0][1]["uris"][0]
+        res["uri"] = uri
+        local = uri[len("file://"):]
+        res["in_doc_folder"] = local.startswith(os.environ["XDG_RUNTIME_DIR"] + "/doc/")
+        try:
+            if method == "SaveFile":
+                with open(local, "w") as f:
+                    f.write(sys.argv[5])
+                res["wrote"] = True
+            else:
+                res["content"] = open(local).read()[:200]
+        except OSError as e:
+            res["io_error"] = str(e)[:100]
+        try:
+            os.rename(local, local + ".moved")
+            res["rename_error"] = "none"
+            os.rename(local + ".moved", local)
+        except OSError as e:
+            res["rename_error"] = str(e)[:60]
 elif mode == "lat":
     # Round trips: Settings.ReadOne at the portal (through the router and the proxy) and Peer.Ping to a name of the app itself (answered by the router).
     request_name(name, 4)
@@ -272,6 +313,7 @@ class Lab:
         except subprocess.TimeoutExpired:
             isolation.stop_group(p.pid, p, grace=5)
             need(False, f'{app_id} {mode} did not end')
+        self.last_out = out
         f = self.report_path(app_id, mode)
         need(f.exists(), f'{app_id} {mode}: no report (exit {p.returncode}): {out[-400:]}')
         return json.loads(f.read_text())
@@ -480,7 +522,9 @@ def scenario_links(lab):
     r = lab.run('org.panpaktest.Portal', 'link', '-')
     need(r['props'][0].startswith('ok') and '3' in r['props'][0], f"L: the version of OpenURI: {r['props'][0]}")
     need(r['proxy_version'] == 3, f"L: a proxy with properties (as GTK) read the version {r['proxy_version']}")
-    need(not r['props'][1].startswith('ok'), f"L: the app read a property of the file chooser: {r['props'][1]}")
+    # The file chooser is served (version 4) when the document portal is there, and left to the host (which refuses it) when it is not.
+    served = (Path(lab.sess.rt) / 'doc/by-app').is_dir()
+    need(r['props'][1].startswith('ok') == served, f"L: the app read a property of the file chooser: {r['props'][1]} (document portal {served})")
     want = {'https://example.org/a': 0, 'mailto:a@b.org': 0, 'https://example.org/fail': 2, 'mailto:a@b.org?attach=/etc/passwd': 2, 'file:///etc/passwd': 2}
     for uri, code in want.items():
         got = r['links'][uri]
@@ -489,6 +533,49 @@ def scenario_links(lab):
     opened = lab.opened.read_text().split() if lab.opened.exists() else []
     need(opened == ['https://example.org/a', 'mailto:a@b.org', 'https://example.org/fail'], f'L: the system opener got {opened}')
     print('L   OpenURI is answered by the router and the app is told what happened: ok')
+
+
+def scenario_dialog(lab):
+    """D: the file dialog of the portal, from the app to the files: the real portal front end, the real document portal, a scripted backend."""
+    rt = Path(lab.sess.rt)
+    lab.sess.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.StartServiceByName', 'org.freedesktop.portal.Documents', '0')
+    for _ in range(100):
+        if (rt / 'doc/by-app').is_dir():
+            break
+        time.sleep(0.1)
+    if not (rt / 'doc/by-app').is_dir():
+        return print('D   the document portal has no FUSE folder here: skipped')
+    app = 'org.panpaktest.Files'
+    lab.install(app)
+    docs = lab.home / 'Docs'
+    docs.mkdir(exist_ok=True)
+    (docs / 'a.txt').write_text('hello from the host\n')
+    answer = Path(str(lab.sess.log) + '.chooser')
+    uri = lambda p: 'file://' + str(p)
+    # Open: the app gets an address in the document folder, reads the file through it, and does not see the path of the host.
+    answer.write_text(uri(docs / 'a.txt') + '\n')
+    r = lab.run(app, 'dialog', 'OpenFile', 0, docs / 'a.txt', '')
+    need(r.get('version') == 4, f"D: the version of FileChooser: {r}")
+    need(r['answers'] and r['answers'][0][0] == 0 and 'uris' in r['answers'][0][1], f'D: the answer: {r}; the runtime said: {lab.last_out[-600:]}')
+    need(r.get('in_doc_folder') and r.get('content') == 'hello from the host\n', f'D: the app read the file through the document folder: {r}')
+    need(not r['host_visible'], f'D: the path of the host is visible to the app: {r}')
+    log = lab.sess.log.read_text()
+    need(f'OpenFile app_id=panpak.{app} parent=x11:1f' in log, f'D: what the backend was asked: {log[-400:]}')
+    # The user closes the dialog.
+    answer.write_text('')
+    r = lab.run(app, 'dialog', 'OpenFile', 0, docs / 'a.txt', '')
+    need(r['answers'] == [[1, []]], f"D: a closed dialog: {r['answers']}")
+    # Save: a name that does not exist yet; the file appears on the host when the app writes.
+    answer.write_text(uri(docs / 'new.txt') + '\n')
+    r = lab.run(app, 'dialog', 'SaveFile', 0, docs / 'new.txt', 'saved by the app\n')
+    print('D   atomic save probe (rename in the document folder):', r.get('rename_error'), '| io:', r.get('io_error'))
+    need(r.get('wrote') and (docs / 'new.txt').exists() and (docs / 'new.txt').read_text() == 'saved by the app\n', f'D: the save: {r}, host file: {(docs / "new.txt").exists()}')
+    # A link chosen in the dialog: refused, the app is told the dialog ended.
+    (docs / 'ln.txt').symlink_to(docs / 'a.txt')
+    answer.write_text(uri(docs / 'ln.txt') + '\n')
+    r = lab.run(app, 'dialog', 'OpenFile', 0, docs / 'a.txt', '')
+    need(r['answers'] and r['answers'][0][0] == 2 and 'uri' not in r, f'D: a link: {r}')
+    print('D   the file dialog: open, close, save and a refused link, through the real portal and the document folder: ok')
 
 
 def scenario_mpris(lab):
@@ -568,7 +655,7 @@ def main():
             print(p.communicate(timeout=60)[0][-3000:])
             return skip(f'the app got no bus here (no systemd user session for its scope, or no xdg-dbus-proxy): {smoke}')
         for key, fn in (('A', scenario_a), ('B', scenario_b), ('C', scenario_c), ('F', scenario_f22_f23_f11), ('S', scenario_single_instance),
-                        ('R', scenario_lifecycle), ('E', scenario_end_race), ('I', scenario_identity), ('L', scenario_links), ('M', scenario_mpris)):
+                        ('R', scenario_lifecycle), ('E', scenario_end_race), ('I', scenario_identity), ('L', scenario_links), ('D', scenario_dialog), ('M', scenario_mpris)):
             if want(key):
                 fn(lab)
     finally:

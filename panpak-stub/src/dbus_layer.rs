@@ -112,6 +112,8 @@ impl std::error::Error for Quiet {}
 pub struct Request<'a> {
     pub man: &'a panpak_core::Manifest,
     pub runtime_dir: &'a Path,
+    /// The folders the app can write on the host; the stub fills it in when it has worked them out, before the app starts (the file dialog uses it).
+    pub writable_roots: std::sync::Arc<std::sync::OnceLock<Vec<PathBuf>>>,
 }
 
 fn token() -> Result<String> {
@@ -252,7 +254,14 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
     }
     let args = dbus::proxy_args(&BusNeeds { app_id: &man.app.id, app_name: &man.app.name, entry: &man.app.entry, perms: man.permissions.as_ref() });
     let rc = dbus::router_config(&man.app.id, man.permissions.as_ref());
-    let spec = crate::busrouter::Spec { app_dir: app_dir.clone(), portal_id: rc.portal_id, mpris_alias: rc.mpris_alias, open_uri: rc.open_uri, debug: panpak_core::debug_enabled(), end_pause_ms: std::env::var("PANPAK_ROUTER_END_PAUSE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0) };
+    // The file dialog needs the document portal: its FUSE folder of this app is mounted in the view only when it exists (see `by_app` below).
+    let file_chooser = req.runtime_dir.join("doc/by-app").is_dir().then_some(4);
+    let chooser_ctx = file_chooser.map(|_| panpak_core::chooserhost::HostCtx {
+        app_id: format!("panpak.{}", man.app.id),
+        runtime_dir: req.runtime_dir.to_string_lossy().into_owned(),
+        writable_roots: req.writable_roots.clone(),
+    });
+    let spec = crate::busrouter::Spec { app_dir: app_dir.clone(), portal_id: rc.portal_id, mpris_alias: rc.mpris_alias, open_uri: rc.open_uri, file_chooser, debug: panpak_core::debug_enabled(), end_pause_ms: std::env::var("PANPAK_ROUTER_END_PAUSE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(0) };
     crate::stage("dbus: checks done");
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
     let (scope_tx, scope_rx) = std::sync::mpsc::channel::<bool>();
@@ -288,11 +297,18 @@ pub fn start(req: &Request<'_>) -> Result<Layer> {
             let listener = UnixListener::bind(&pending).with_context(|| format!("cannot make {}", pending.display()))?;
             std::fs::set_permissions(&pending, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
             // The opener of this copy for OpenURI: the actor (this process) is on one end of a socket pair, the router on the other.
-            let opener = crate::opener::system_target().and_then(|t| {
-                let (mine, theirs) = std::os::unix::net::UnixStream::pair().ok()?;
-                crate::opener::serve_actor(mine, t).ok()?;
-                Some(theirs)
-            });
+            let opener = {
+                let target = crate::opener::system_target();
+                let chooser = chooser_ctx.map(crate::chooser::Actor::new);
+                if target.is_none() && chooser.is_none() {
+                    None
+                } else {
+                    std::os::unix::net::UnixStream::pair().ok().and_then(|(mine, theirs)| {
+                        crate::opener::serve_actor_with(mine, target, chooser).ok()?;
+                        Some(theirs)
+                    })
+                }
+            };
             guard.attachment = Some(crate::busrouter::attach(&spec, listener, pdir.join("real"), opener)?);
             await_proxy(&mut guard, "real")?;
             if let Some(g2) = guard.a11y.as_mut() {
@@ -391,7 +407,7 @@ mod tests {
     #[test]
     fn a_manifest_that_lists_the_session_bus_gets_no_layer_and_no_warning() {
         let m = man("[permissions]\nsockets_allow = [\"$XDG_RUNTIME_DIR/bus\"]\n");
-        let e = start(&Request { man: &m, runtime_dir: Path::new("/nonexistent") }).err().expect("no layer");
+        let e = start(&Request { man: &m, runtime_dir: Path::new("/nonexistent"), writable_roots: Default::default() }).err().expect("no layer");
         assert!(e.downcast_ref::<Quiet>().is_some(), "{e:#}");
     }
 

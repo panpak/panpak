@@ -132,7 +132,7 @@ pub fn mpris_alias_for(app_id: &str) -> String {
 
 /// What the router of the app is told about it (see `route`): the identity for the portal, the alias if the app may have one, and links.
 pub fn router_config(app_id: &str, perms: Option<&Permissions>) -> super::route::Config {
-    super::route::Config { portal_id: Some(format!("panpak.{app_id}")), mpris_alias: perms.is_some_and(|p| p.mpris == Some(true)).then(|| mpris_alias_for(app_id)), open_uri: true }
+    super::route::Config { portal_id: Some(format!("panpak.{app_id}")), mpris_alias: perms.is_some_and(|p| p.mpris == Some(true)).then(|| mpris_alias_for(app_id)), open_uri: true, file_chooser: None }
 }
 
 /// The arguments for the session bus part of `xdg-dbus-proxy`, after `ADDRESS PATH`.

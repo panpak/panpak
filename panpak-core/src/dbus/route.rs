@@ -32,6 +32,7 @@ pub const PORTAL: &str = "org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 pub const REGISTRY_IFACE: &str = "org.freedesktop.host.portal.Registry";
 pub const OPENURI_IFACE: &str = "org.freedesktop.portal.OpenURI";
+const REQUEST_IFACE: &str = "org.freedesktop.portal.Request";
 pub const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
 
 /// Largest message the router passes (the protocol allows 128 MiB; apps do not send more than a few MiB on the session bus).
@@ -56,6 +57,9 @@ pub struct Config {
     pub mpris_alias: Option<String>,
     /// Serve `OpenURI` here (hand it to the opener).
     pub open_uri: bool,
+    /// Serve `FileChooser` here and answer its `version` property with this number (hand the dialog to the actor); `None` leaves the interface to the host,
+    /// where the rules refuse it.
+    pub file_chooser: Option<u32>,
 }
 
 /// `org.mpris.MediaPlayer2.panpak.<id>` with dots and dashes of the id turned into `_`.
@@ -79,6 +83,8 @@ pub enum Out<F> {
     Up(ClientId, Msg<F>),
     /// Hand an address to the opener; answer with `open_done(token, ...)`.
     Open { client: ClientId, token: u64, uri: String },
+    /// Hand the call of a file dialog (the message as the app sent it) to the actor; answer with `choose_done(token, ...)` when the user has chosen.
+    Choose { client: ClientId, token: u64, call: Vec<u8> },
     /// End this connection (the app sent something that is not D-Bus, or too much).
     Close(ClientId, String),
     /// A line for the log.
@@ -208,6 +214,8 @@ struct Client {
     owner_query: Option<u32>,
     portal_owner: Option<String>,
     opens: usize,
+    /// A file dialog of this connection is open.
+    choosing: bool,
     /// Serials of the messages sent to the host side. The proxy of Debian 12 and Ubuntu 24.04 (xdg-dbus-proxy 0.1.5) closes a connection whose serials
     /// do not grow, and the router's own messages are mixed with the app's, so every message that goes up gets the next number and the replies are
     /// given back the number the sender used (`calls`: the new number to the old one, for the calls that expect a reply).
@@ -233,6 +241,8 @@ pub struct Router<F> {
     by_unique: HashMap<String, ClientId>,
     names: HashMap<String, VecDeque<Owner>>,
     opens: HashMap<u64, (ClientId, u32, String)>,
+    /// File dialogs waiting for the user: the connection, and the handle the app was given.
+    choosers: HashMap<u64, (ClientId, String)>,
     next_client: ClientId,
     next_token: u64,
     _f: std::marker::PhantomData<F>,
@@ -245,7 +255,7 @@ fn new_message(kind: u8, serial: u32) -> Message {
 impl<F> Router<F> {
     pub fn new(cfg: Config) -> Router<F> {
         let lim = Limits { max_message: MAX_MESSAGE, max_header_fields: 4096, ..Limits::default() };
-        Router { cfg, lim, clients: HashMap::new(), by_unique: HashMap::new(), names: HashMap::new(), opens: HashMap::new(), next_client: 1, next_token: 1, _f: std::marker::PhantomData }
+        Router { cfg, lim, clients: HashMap::new(), by_unique: HashMap::new(), names: HashMap::new(), opens: HashMap::new(), choosers: HashMap::new(), next_client: 1, next_token: 1, _f: std::marker::PhantomData }
     }
 
     pub fn new_client(&mut self) -> ClientId {
@@ -681,10 +691,21 @@ impl<F> Router<F> {
                     self.open_uri(c, &h, &msg, &mut outs);
                     return outs;
                 }
+                if iface == crate::filechooser::IFACE && self.cfg.file_chooser.is_some() {
+                    self.choose(c, &h, &msg, &mut outs);
+                    return outs;
+                }
+                if iface == REQUEST_IFACE && m.member.as_deref() == Some("Close") {
+                    if let Some(path) = m.path.as_deref() {
+                        if self.close_chooser(c, &m, path, &mut outs) {
+                            return outs;
+                        }
+                    }
+                }
                 // GTK reads the version of the OpenURI interface before it uses the portal (without it, a click on a link does nothing). The router answers
                 // for that one interface; every other interface stays with the host (where the rules refuse it), so the file chooser is not reached.
-                if iface == "org.freedesktop.DBus.Properties" && self.cfg.open_uri && self.is_portal(c, dest.as_deref()) && m.path.as_deref() == Some(PORTAL_PATH) {
-                    if let Some(raw) = self.openuri_properties(c, &m, &msg) {
+                if iface == "org.freedesktop.DBus.Properties" && (self.cfg.open_uri || self.cfg.file_chooser.is_some()) && self.is_portal(c, dest.as_deref()) && m.path.as_deref() == Some(PORTAL_PATH) {
+                    if let Some(raw) = self.portal_properties(c, &m, &msg) {
                         outs.push(app(c, raw));
                         return outs;
                     }
@@ -925,18 +946,24 @@ impl<F> Router<F> {
         }
     }
 
-    /// `Properties.Get` and `GetAll` of `org.freedesktop.portal.OpenURI`: `version` is 3. None for anything else.
-    fn openuri_properties(&mut self, c: ClientId, m: &Message, msg: &Msg<F>) -> Option<Vec<u8>> {
+    /// `Properties.Get` and `GetAll` of the portal interfaces this router serves: `version` is 3 for `OpenURI` and the number in the configuration for
+    /// `FileChooser`. None for anything else (the call then goes to the host, where the rules refuse it).
+    fn portal_properties(&mut self, c: ClientId, m: &Message, msg: &Msg<F>) -> Option<Vec<u8>> {
         let member = m.member.as_deref()?;
         if member != "Get" && member != "GetAll" {
             return None;
         }
         let full = parse_message(&msg.raw, msg.fds.len(), &self.lim).ok()?;
         let Some(Value::Str(i)) = full.body.first() else { return None };
-        if i != OPENURI_IFACE || (member == "Get" && !matches!(full.body.get(1), Some(Value::Str(p)) if p == "version")) {
+        let number = match i.as_str() {
+            OPENURI_IFACE if self.cfg.open_uri => 3,
+            crate::filechooser::IFACE => self.cfg.file_chooser?,
+            _ => return None,
+        };
+        if member == "Get" && !matches!(full.body.get(1), Some(Value::Str(p)) if p == "version") {
             return None;
         }
-        let version = Value::Variant(Box::new(Value::U32(3)));
+        let version = Value::Variant(Box::new(Value::U32(number)));
         let (sig, body) = if member == "Get" {
             ("v", vec![version])
         } else {
@@ -950,6 +977,130 @@ impl<F> Router<F> {
         r.signature = sig.into();
         r.body = body;
         encode_message(&r).ok()
+    }
+
+    // ---- FileChooser -----------------------------------------------------------------------------------------------------
+
+    /// A call of `OpenFile`, `SaveFile` or `SaveFiles`: checked for its shape, answered with the handle of a request at once (the dialog takes as long as the
+    /// user takes, and a caller gives up on a method call after a while), and handed to the actor. The `Response` comes from `choose_done`.
+    fn choose(&mut self, c: ClientId, h: &Head, msg: &Msg<F>, outs: &mut Vec<Out<F>>) {
+        let m = &h.msg;
+        let known = m.member.as_deref().and_then(crate::filechooser::Method::from_name).is_some();
+        if !known {
+            if let Some(raw) = self.error_msg(c, m, "org.freedesktop.DBus.Error.NotSupported", "this runtime serves OpenFile, SaveFile and SaveFiles of the file chooser") {
+                outs.push(app(c, raw));
+            }
+            return;
+        }
+        let full = parse_message(&msg.raw, msg.fds.len(), &self.lim);
+        let token = match &full {
+            Ok(f) if f.signature == "ssa{sv}" && msg.fds.is_empty() && msg.raw.len() <= crate::filechooser::MAX_CALL => {
+                let mut tok = None;
+                if let Value::Array(_, items) = &f.body[2] {
+                    for it in items {
+                        if let Value::Entry(k, v) = it {
+                            if let (Value::Str(k), Value::Variant(v)) = (&**k, &**v) {
+                                if k == "handle_token" {
+                                    if let Value::Str(t) = &**v {
+                                        tok = Some(t.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                tok
+            }
+            _ => {
+                if let Some(raw) = self.error_msg(c, m, "org.freedesktop.DBus.Error.InvalidArgs", "the file chooser takes (parent_window, title, options)") {
+                    outs.push(app(c, raw));
+                }
+                return;
+            }
+        };
+        let unique = self.unique(c);
+        let token_s = token.filter(|t| !t.is_empty() && t.len() <= 64 && t.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')).unwrap_or_else(|| format!("panpak{}", m.serial));
+        let handle = format!("/org/freedesktop/portal/desktop/request/{}/{}", unique.trim_start_matches(':').replace('.', "_"), token_s);
+        let busy = self.clients.get(&c).is_none_or(|x| x.choosing);
+        let from = self.clients.get(&c).and_then(|cl| cl.portal_owner.clone()).unwrap_or_else(|| PORTAL.to_string());
+        // The handle first, as the portal answers.
+        if let Some(cl) = self.clients.get_mut(&c) {
+            let mut r = new_message(RETURN, cl.next_serial());
+            r.reply_serial = Some(m.serial);
+            r.destination = cl.unique.clone();
+            r.sender = Some(from);
+            r.signature = "o".into();
+            r.body = vec![Value::Path(handle.clone())];
+            if let Ok(raw) = encode_message(&r) {
+                outs.push(app(c, raw));
+            }
+        }
+        if busy {
+            // A second dialog while one is open: ended at once, with the answer of a dialog the user closed for another reason.
+            if let Some(raw) = self.response_signal(c, &handle, 2, Value::Array("{sv}".into(), Vec::new())) {
+                outs.push(app(c, raw));
+            }
+            outs.push(Out::Log("a second file dialog while one is open: refused".into()));
+            return;
+        }
+        let t = self.next_token;
+        self.next_token += 1;
+        self.choosers.insert(t, (c, handle));
+        if let Some(cl) = self.clients.get_mut(&c) {
+            cl.choosing = true;
+        }
+        outs.push(Out::Choose { client: c, token: t, call: msg.raw.clone() });
+    }
+
+    fn response_signal(&mut self, c: ClientId, handle: &str, code: u32, dict: Value) -> Option<Vec<u8>> {
+        let cl = self.clients.get_mut(&c)?;
+        let mut s = new_message(SIGNAL, cl.next_serial());
+        s.path = Some(handle.to_string());
+        s.interface = Some(REQUEST_IFACE.into());
+        s.member = Some("Response".into());
+        s.destination = cl.unique.clone();
+        s.sender = Some(cl.portal_owner.clone().unwrap_or_else(|| PORTAL.to_string()));
+        s.signature = "ua{sv}".into();
+        s.body = vec![Value::U32(code), dict];
+        encode_message(&s).ok()
+    }
+
+    /// The app closes the request of its dialog (a toolkit does when its window is destroyed): answered, and the dialog's result is not delivered. The
+    /// dialog of the desktop stays until the user closes it. False if the path is not the handle of a dialog of this connection.
+    fn close_chooser(&mut self, c: ClientId, m: &Message, path: &str, outs: &mut Vec<Out<F>>) -> bool {
+        let Some(t) = self.choosers.iter().find(|(_, (cl, h))| *cl == c && h == path).map(|(t, _)| *t) else { return false };
+        self.choosers.remove(&t);
+        if let Some(cl) = self.clients.get_mut(&c) {
+            cl.choosing = false;
+        }
+        if let Some(raw) = self.reply_msg(c, m, "", Vec::new()) {
+            outs.push(app(c, raw));
+        }
+        true
+    }
+
+    /// The actor answered: `code` 0 with the dictionary (checked), 1 for a dialog the user closed, 2 for anything else. A result for a dialog that was closed
+    /// by the app, or whose connection is gone, is dropped.
+    pub fn choose_done(&mut self, token: u64, code: u32, dict: Option<Value>) -> Vec<Out<F>> {
+        let mut outs = Vec::new();
+        let Some((c, handle)) = self.choosers.remove(&token) else { return outs };
+        let Some(cl) = self.clients.get_mut(&c) else { return outs };
+        cl.choosing = false;
+        let dict = match (code, dict.as_ref().and_then(crate::filechooser::check_result_dict)) {
+            (0, Some(d)) => d,
+            (0, None) => {
+                outs.push(Out::Log("the actor gave a file dialog answer that is not valid".into()));
+                if let Some(raw) = self.response_signal(c, &handle, 2, Value::Array("{sv}".into(), Vec::new())) {
+                    outs.push(app(c, raw));
+                }
+                return self.number_up(outs);
+            }
+            _ => Value::Array("{sv}".into(), Vec::new()),
+        };
+        if let Some(raw) = self.response_signal(c, &handle, code.min(2), dict) {
+            outs.push(app(c, raw));
+        }
+        self.number_up(outs)
     }
 
     pub fn open_done(&mut self, token: u64, result: Result<(), String>) -> Vec<Out<F>> {
@@ -1056,7 +1207,7 @@ mod tests {
     }
 
     fn config() -> Config {
-        Config { portal_id: Some("panpak.org.example.App".into()), mpris_alias: Some(mpris_alias("org.example.App")), open_uri: true }
+        Config { portal_id: Some("panpak.org.example.App".into()), mpris_alias: Some(mpris_alias("org.example.App")), open_uri: true, file_chooser: Some(4) }
     }
 
     /// A connection that said Hello and got `:1.<n>`.
@@ -1295,7 +1446,7 @@ mod tests {
             assert_eq!(apps(&outs, c).len(), 1, "{member}");
         }
         // Another interface, or another property: to the host (where it is refused).
-        for args in [vec![Value::str("org.freedesktop.portal.FileChooser"), Value::str("version")], vec![Value::str(OPENURI_IFACE), Value::str("other")]] {
+        for args in [vec![Value::str("org.freedesktop.portal.Settings"), Value::str("version")], vec![Value::str(OPENURI_IFACE), Value::str("other")]] {
             let raw = call(31, PORTAL, PORTAL_PATH, "org.freedesktop.DBus.Properties", "Get", "ss", args);
             let outs = r.from_app(c, msg(raw));
             assert!(outs.iter().any(|o| matches!(o, Out::Up(..))), "{outs:?}");
@@ -1338,6 +1489,115 @@ mod tests {
         let c2 = connect(&mut r2, 5);
         let raw = call(23, PORTAL, PORTAL_PATH, OPENURI_IFACE, "OpenURI", "ssa{sv}", vec![Value::str(""), Value::str("https://example.org"), Value::Array("{sv}".into(), vec![])]);
         assert_eq!(unnumbered(ups(&r2.from_app(c2, msg(raw.clone())), c2)), unnumbered(vec![raw]));
+    }
+
+    fn chooser_call(r: &mut R, c: ClientId, serial: u32, member: &str, token: &str) -> Vec<Out<()>> {
+        let opts = Value::Array("{sv}".into(), vec![Value::Entry(Box::new(Value::str("handle_token")), Box::new(Value::variant(Value::str(token))))]);
+        let raw = call(serial, PORTAL, PORTAL_PATH, crate::filechooser::IFACE, member, "ssa{sv}", vec![Value::str("x11:1a2b"), Value::str("Open"), opts]);
+        r.from_app(c, msg(raw))
+    }
+
+    fn dict(uris: &[&str]) -> Value {
+        crate::filechooser::result_dict(&uris.iter().map(|u| u.to_string()).collect::<Vec<_>>(), &[])
+    }
+
+    #[test]
+    fn the_version_of_the_file_chooser_is_answered_when_it_is_served() {
+        let mut r = R::new(config());
+        let c = connect(&mut r, 5);
+        let args = vec![Value::str(crate::filechooser::IFACE), Value::str("version")];
+        let outs = r.from_app(c, msg(call(30, PORTAL, PORTAL_PATH, "org.freedesktop.DBus.Properties", "Get", "ss", args.clone())));
+        assert!(ups(&outs, c).is_empty());
+        assert_eq!(apps(&outs, c)[0].body[0], Value::Variant(Box::new(Value::U32(4))));
+        // Another interface of the portal is the host's business.
+        let other = vec![Value::str("org.freedesktop.portal.Settings"), Value::str("version")];
+        assert_eq!(ups(&r.from_app(c, msg(call(31, PORTAL, PORTAL_PATH, "org.freedesktop.DBus.Properties", "Get", "ss", other))), c).len(), 1);
+        // Not served: the call goes to the host, which refuses it.
+        let mut r2 = R::new(Config { file_chooser: None, ..config() });
+        let c2 = connect(&mut r2, 5);
+        assert_eq!(ups(&r2.from_app(c2, msg(call(32, PORTAL, PORTAL_PATH, "org.freedesktop.DBus.Properties", "Get", "ss", args))), c2).len(), 1);
+    }
+
+    #[test]
+    fn a_file_dialog_gets_its_handle_at_once_and_its_answer_later() {
+        let mut r = R::new(config());
+        let c = connect(&mut r, 5);
+        let outs = chooser_call(&mut r, c, 40, "OpenFile", "tk7");
+        assert!(ups(&outs, c).is_empty(), "the dialog is not the portal's here");
+        let got = apps(&outs, c);
+        assert_eq!(got.len(), 1, "only the handle until the user has chosen");
+        assert_eq!((got[0].kind, got[0].sender.as_deref()), (RETURN, Some(":1.74")));
+        assert_eq!(got[0].body[0], Value::Path("/org/freedesktop/portal/desktop/request/1_5/tk7".into()));
+        let Some(Out::Choose { token, client, call: raw }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!("no Choose") };
+        assert_eq!(client, c);
+        assert_eq!(parse_message(&raw, 0, &Limits::default()).unwrap().member.as_deref(), Some("OpenFile"));
+        let outs = r.choose_done(token, 0, Some(dict(&["file:///run/user/1000/doc/ab12/a.txt"])));
+        let sig = &apps(&outs, c)[0];
+        assert_eq!((sig.member.as_deref(), sig.path.as_deref()), (Some("Response"), Some("/org/freedesktop/portal/desktop/request/1_5/tk7")));
+        assert_eq!(sig.body[0], Value::U32(0));
+        let Value::Array(_, e) = &sig.body[1] else { panic!() };
+        assert_eq!(e.len(), 1);
+        // The user closed the dialog: 1, no files.
+        let outs = chooser_call(&mut r, c, 41, "SaveFile", "tk8");
+        let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
+        let sig = apps(&r.choose_done(token, 1, None), c).remove(0);
+        assert_eq!((sig.body[0].clone(), sig.body[1].clone()), (Value::U32(1), Value::Array("{sv}".into(), vec![])));
+    }
+
+    #[test]
+    fn one_dialog_at_a_time_and_a_closed_request_is_not_answered() {
+        let mut r = R::new(config());
+        let c = connect(&mut r, 5);
+        let outs = chooser_call(&mut r, c, 50, "OpenFile", "a1");
+        let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
+        // A second call: the handle, and Response 2 at once; nothing goes to the actor.
+        let outs = chooser_call(&mut r, c, 51, "OpenFile", "a2");
+        assert!(!outs.iter().any(|o| matches!(o, Out::Choose { .. })));
+        let got = apps(&outs, c);
+        assert_eq!((got[0].kind, got[1].member.as_deref(), got[1].body[0].clone()), (RETURN, Some("Response"), Value::U32(2)));
+        // The app closes the first request: the call is answered, and the result that comes later is dropped.
+        let close = call(52, PORTAL, "/org/freedesktop/portal/desktop/request/1_5/a1", "org.freedesktop.portal.Request", "Close", "", vec![]);
+        let outs = r.from_app(c, msg(close));
+        assert_eq!(apps(&outs, c)[0].kind, RETURN);
+        assert!(ups(&outs, c).is_empty());
+        assert!(r.choose_done(token, 0, Some(dict(&["file:///x"]))).is_empty());
+        // The connection is free again.
+        assert!(chooser_call(&mut r, c, 53, "OpenFile", "a3").iter().any(|o| matches!(o, Out::Choose { .. })));
+        // A Close for something else goes to the host.
+        let other = call(54, PORTAL, "/org/freedesktop/portal/desktop/request/1_5/zz", "org.freedesktop.portal.Request", "Close", "", vec![]);
+        assert_eq!(ups(&r.from_app(c, msg(other)), c).len(), 1);
+    }
+
+    #[test]
+    fn a_bad_call_or_a_bad_answer_never_reaches_the_app_as_files() {
+        let mut r = R::new(config());
+        let c = connect(&mut r, 5);
+        // Wrong arguments.
+        let raw = call(60, PORTAL, PORTAL_PATH, crate::filechooser::IFACE, "OpenFile", "s", vec![Value::str("x")]);
+        assert_eq!(apps(&r.from_app(c, msg(raw)), c)[0].error_name.as_deref(), Some("org.freedesktop.DBus.Error.InvalidArgs"));
+        // A method the router does not serve.
+        let raw = call(61, PORTAL, PORTAL_PATH, crate::filechooser::IFACE, "Other", "ssa{sv}", vec![Value::str(""), Value::str(""), Value::Array("{sv}".into(), vec![])]);
+        assert_eq!(apps(&r.from_app(c, msg(raw)), c)[0].error_name.as_deref(), Some("org.freedesktop.DBus.Error.NotSupported"));
+        // An answer with a key the router does not know, or too many files, is Response 2.
+        let outs = chooser_call(&mut r, c, 62, "OpenFile", "b1");
+        let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
+        let evil = Value::Array("{sv}".into(), vec![Value::Entry(Box::new(Value::str("uris")), Box::new(Value::variant(Value::Array("s".into(), vec![])))), Value::Entry(Box::new(Value::str("writable")), Box::new(Value::variant(Value::Bool(true))))]);
+        let outs = r.choose_done(token, 0, Some(evil));
+        assert_eq!(apps(&outs, c)[0].body[0], Value::U32(2));
+        let outs = chooser_call(&mut r, c, 63, "OpenFile", "b2");
+        let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
+        let many: Vec<String> = (0..65).map(|i| format!("file:///x/{i}")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(apps(&r.choose_done(token, 0, Some(dict(&refs))), c)[0].body[0], Value::U32(2));
+        // A success without a dictionary is not a success.
+        let outs = chooser_call(&mut r, c, 64, "SaveFile", "b3");
+        let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
+        assert_eq!(apps(&r.choose_done(token, 0, None), c)[0].body[0], Value::U32(2));
+        // A connection that went away takes its dialog with it.
+        let outs = chooser_call(&mut r, c, 65, "OpenFile", "b4");
+        let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
+        r.client_gone(c);
+        assert!(r.choose_done(token, 0, Some(dict(&["file:///x"]))).is_empty());
     }
 
     #[test]

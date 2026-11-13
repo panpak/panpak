@@ -43,6 +43,11 @@ XML = '''<node>
   <method name="Inhibit"><arg type="o" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="u" direction="in"/><arg type="a{sv}" direction="in"/></method>
   <method name="CreateMonitor"><arg type="o" direction="in"/><arg type="o" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="u" direction="out"/></method>
  </interface>
+ <interface name="org.freedesktop.impl.portal.FileChooser">
+  <property name="version" type="u" access="read"/>
+  <method name="OpenFile"><arg type="o" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="a{sv}" direction="in"/><arg type="u" direction="out"/><arg type="a{sv}" direction="out"/></method>
+  <method name="SaveFile"><arg type="o" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="a{sv}" direction="in"/><arg type="u" direction="out"/><arg type="a{sv}" direction="out"/></method>
+ </interface>
  <interface name="org.freedesktop.impl.portal.Request">
   <method name="Close"/>
  </interface>
@@ -88,6 +93,17 @@ def method_call(conn, sender, path, iface, method, params, inv):
     elif iface == 'org.freedesktop.impl.portal.Inhibit':
         log(f'{method} app_id={a[1] if method == "Inhibit" else a[2]}')
         inv.return_value(GLib.Variant('(u)', (0,)) if method == 'CreateMonitor' else None)
+    elif iface == 'org.freedesktop.impl.portal.FileChooser':
+        # The user's choice is scripted: the file `<log>.chooser` holds the addresses (one per line); an empty or missing file is a dialog the user closed.
+        log(f'{method} app_id={a[1]} parent={a[2]} keys={",".join(sorted(a[4]))}')
+        try:
+            uris = [u for u in open(LOG + '.chooser').read().split() if u]
+        except OSError:
+            uris = []
+        if uris:
+            inv.return_value(GLib.Variant('(ua{sv})', (0, {'uris': GLib.Variant('as', uris)})))
+        else:
+            inv.return_value(GLib.Variant('(ua{sv})', (1, {})))
     elif iface == 'test.Fake':
         scheme[0] = a[0]
         conn.emit_signal(None, '/org/freedesktop/portal/desktop', 'org.freedesktop.impl.portal.Settings', 'SettingChanged',

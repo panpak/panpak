@@ -247,6 +247,8 @@ struct Control {
     actor_in: Vec<u8>,
     actor_out: Vec<u8>,
     pending: VecDeque<u64>,
+    /// Tokens of the file dialogs waiting for the user (the actor answers them when the user has chosen, not in order).
+    choosing: Vec<u64>,
 }
 
 struct Process {
@@ -295,6 +297,20 @@ impl Process {
                     if sent.is_none() {
                         self.log(&format!("OpenURI {uri}: no opener"));
                         let more = self.router.open_done(token, Err("the runtime has no way to open addresses here".into()));
+                        self.apply(more);
+                    }
+                }
+                Out::Choose { client, token, call } => {
+                    let key = self.conns.get(&client).map(|c| c.control);
+                    let sent = u32::try_from(token).ok().zip(key).and_then(|(_, k)| self.controls.get_mut(&k)).filter(|c| c.actor.is_some()).and_then(|c| {
+                        let frame = frames::encode_request(frames::KIND_FILE_CHOOSER, &panpak_core::filechooser::request_payload(token as u32, &call)).ok()?;
+                        c.actor_out.extend_from_slice(&frame);
+                        c.choosing.push(token);
+                        Some(())
+                    });
+                    if sent.is_none() {
+                        self.log("a file dialog: no actor");
+                        let more = self.router.choose_done(token, 2, None);
                         self.apply(more);
                     }
                 }
@@ -499,6 +515,7 @@ impl Process {
     /// Answers from the actor of a copy (frames, in order), and the requests waiting to be written to it.
     fn actor_events(&mut self, key: u64, revents: i16) {
         let mut done: Vec<(u64, Result<(), String>)> = Vec::new();
+        let mut chosen: Vec<(u64, u32, Option<panpak_core::dbus::Value>)> = Vec::new();
         let mut broken = false;
         if let Some(c) = self.controls.get_mut(&key) {
             let fd = c.actor.as_ref().map(AsRawFd::as_raw_fd).unwrap_or(-1);
@@ -524,7 +541,19 @@ impl Process {
                     match frames::parse_response(&c.actor_in) {
                         Ok(Some((r, used))) => {
                             c.actor_in.drain(..used);
-                            if let Some(t) = c.pending.pop_front() {
+                            if r.status == Status::Chooser {
+                                // The answer to a file dialog: its own token, whatever the order.
+                                match panpak_core::filechooser::parse_response_text(&r.text) {
+                                    Some((t, code, dict)) if c.choosing.contains(&(t as u64)) => {
+                                        c.choosing.retain(|x| *x != t as u64);
+                                        chosen.push((t as u64, code, dict));
+                                    }
+                                    _ => {
+                                        broken = true;
+                                        break;
+                                    }
+                                }
+                            } else if let Some(t) = c.pending.pop_front() {
                                 done.push((t, if r.status == Status::Done { Ok(()) } else { Err(r.text) }));
                             }
                         }
@@ -541,11 +570,18 @@ impl Process {
                 while let Some(t) = c.pending.pop_front() {
                     done.push((t, Err("the opener of the runtime ended".into())));
                 }
+                for t in c.choosing.drain(..) {
+                    chosen.push((t, 2, None));
+                }
                 c.actor = None;
             }
         }
         for (t, r) in done {
             let more = self.router.open_done(t, r);
+            self.apply(more);
+        }
+        for (t, code, dict) in chosen {
+            let more = self.router.choose_done(t, code, dict);
             self.apply(more);
         }
     }
@@ -652,7 +688,7 @@ impl Process {
                             if peer_uid(fd) == Some(self.uid) {
                                 let key = self.next_control;
                                 self.next_control += 1;
-                                self.controls.insert(key, Control { sock, buf: Vec::new(), fds: VecDeque::new(), attached: false, listener: None, out: Vec::new(), actor: None, actor_in: Vec::new(), actor_out: Vec::new(), pending: VecDeque::new() });
+                                self.controls.insert(key, Control { sock, buf: Vec::new(), fds: VecDeque::new(), attached: false, listener: None, out: Vec::new(), actor: None, actor_in: Vec::new(), actor_out: Vec::new(), pending: VecDeque::new(), choosing: Vec::new() });
                                 ever = true;
                                 last_copy = None;
                             }
@@ -730,13 +766,13 @@ impl Process {
     }
 }
 
-/// Entry of the router process. Arguments after the flag: `<portal id or -> <alias or -> <open_uri 0|1> <debug 0|1> <end pause ms>`.
+/// Entry of the router process. Arguments after the flag: `<portal id or -> <alias or -> <open_uri 0|1> <file chooser version|0> <debug 0|1> <end pause ms>`.
 pub fn main_router(args: &[String]) -> Result<()> {
-    ensure!(args.len() == 5, "usage: {FLAG} <portal-id|-> <mpris-alias|-> <open-uri 0|1> <debug 0|1> <end-pause-ms>");
+    ensure!(args.len() == 6, "usage: {FLAG} <portal-id|-> <mpris-alias|-> <open-uri 0|1> <file-chooser version|0> <debug 0|1> <end-pause-ms>");
     let opt = |s: &String| (s != "-").then(|| s.clone());
-    let cfg = RouterConfig { portal_id: opt(&args[0]), mpris_alias: opt(&args[1]), open_uri: args[2] == "1" };
-    let debug = args[3] == "1";
-    let end_pause_ms: i32 = args[4].parse::<i32>().unwrap_or(0).clamp(0, 5000);
+    let cfg = RouterConfig { portal_id: opt(&args[0]), mpris_alias: opt(&args[1]), open_uri: args[2] == "1", file_chooser: args[3].parse::<u32>().ok().filter(|v| *v > 0) };
+    let debug = args[4] == "1";
+    let end_pause_ms: i32 = args[5].parse::<i32>().unwrap_or(0).clamp(0, 5000);
     // SAFETY: the parent started this process with the control listener on this descriptor and nothing else above 2.
     let ctl = unsafe { UnixListener::from_raw_fd(CONTROL_FD) };
     // Before the system calls are limited: the accept loop must not block on the control listener.
@@ -803,6 +839,8 @@ pub struct Spec {
     pub portal_id: Option<String>,
     pub mpris_alias: Option<String>,
     pub open_uri: bool,
+    /// The version of `FileChooser` the router answers for (and so serves the dialog), if the system has the document portal.
+    pub file_chooser: Option<u32>,
     pub debug: bool,
     /// For tests: how long the router waits, holding the lock, before it ends (from PANPAK_ROUTER_END_PAUSE_MS).
     pub end_pause_ms: u64,
@@ -849,6 +887,7 @@ fn connect_or_start(spec: &Spec) -> Result<UnixStream> {
         .arg(spec.portal_id.as_deref().unwrap_or("-"))
         .arg(spec.mpris_alias.as_deref().unwrap_or("-"))
         .arg(if spec.open_uri { "1" } else { "0" })
+        .arg(spec.file_chooser.unwrap_or(0).to_string())
         .arg(if spec.debug { "1" } else { "0" })
         .arg(spec.end_pause_ms.to_string())
         .env_clear()
