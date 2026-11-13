@@ -9,6 +9,7 @@
 
 - **Symbolic links that point outside the package (defect 57).** `convert` leaves out a link of the AppImage whose target is absolute or climbs above the root, lists them in a note, and stops with a clear error when the entry or a library that a program of the tree asks for is such a link. `pack` and `build` refuse such a link and name it, with the way to correct it. The app harness no longer makes `fixed-` copies of AppImages (GIMP and MuseScore convert and start as they are).
 - **`panpak doctor <package>` counts the libraries the package carries** before the first start (the tree is not on the disk then; it called every library of the package missing).
+- **The CI in three levels** (docs/CI.md): a pull request runs the fast level (build, tests, clippy, the private bus; 8 job-minutes instead of 34 to 63); main, the label `full-ci`, the manual and the weekly runs add fuzz, reproducibility and the distro containers. Every job has a time limit, and a test checks that every action is pinned to a full commit.
 
 - **The private bus works with xdg-dbus-proxy 0.1.5** (Debian 12, Ubuntu 24.04), found when the tests first ran for real in CI. The router talked to the proxy with the whole handshake in one write and
   mixed its own messages between the app's, and 0.1.5 closes a connection in both cases: the app had no bus. The handshake goes one line at a time and every message to the host side gets the next serial

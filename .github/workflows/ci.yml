@@ -2,27 +2,28 @@
 # Panpak CI: build, test, clippy, fuzz smoke, reproducibility, distro matrix.
 # No secrets (only the default read-only token), no publish.
 #
-# Where each job runs (the minutes budget is the reason for this split):
-#   - always (pull request, push to main, manual and weekly runs): the fast
-#     checks clippy, licenses (with cargo-deny), secrets and, on a pull request or
-#     a push, DCO.
-#   - pull_request: the heavy jobs (build-test with conformance, fuzz-smoke, repro,
-#     distro) run only when the pull request touches more than documentation
-#     (*.md and docs/**, see scripts/ci-changes.sh). A change to
-#     REPRODUCIBLE-HASHES.md always starts repro.
-#   - push to main: only the fast checks. main receives only fast-forwards of
-#     commits that already passed every job in their pull request.
-#   - workflow_dispatch and the weekly schedule: everything, with a longer fuzz
-#     run on the schedule. This catches new advisories, new nightly toolchains
-#     and drift in the base images even when nobody opens a pull request.
-#     The schedule is weekly (Monday): the repository is public, where Actions
-#     minutes are free.
+# Three levels (the measured times are in docs/CI.md):
+#   - fast, required on every pull request: changes, DCO, secrets, licenses (cargo-deny),
+#     clippy, build-test (build, unit tests, conformance, the security tests of the
+#     isolated view) and private-bus (the private bus against a systemd user session).
+#     The heavy ones run only when the pull request touches more than documentation
+#     (*.md and docs/**, see scripts/ci-changes.sh). repro also runs on a pull request
+#     that changes REPRODUCIBLE-HASHES.md.
+#   - full, on every push to main (which also fills the caches that pull requests
+#     start from), on a manual run, on the weekly run, and on a pull request that has
+#     the label `full-ci`: the fast level plus fuzz-smoke, repro and distro.
+#   - weekly (Monday): the full level with a longer fuzz run, which catches new
+#     advisories, new nightly toolchains and drift in the base images even when nobody
+#     opens a pull request. The weekly app harness is the workflow apps-harness.
+#     The repository is public, where Actions minutes are free.
 #   - gate: always the last job. It fails when a job that had to run did not
 #     succeed, and also when a job that had to run was skipped
 #     (scripts/ci-gate.sh). Require this job, not the others, in the branch rules.
 #   - every job that depends on a job that can be skipped has !cancelled() in its
 #     if: an if: without a status function means success(), which is false when any
 #     job above it, however far, was skipped (tests/ci-workflow-test.py checks this).
+#   - a new push to a pull request cancels the run in progress (concurrency, below);
+#     every job has a time limit.
 
 name: ci
 
@@ -30,6 +31,8 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `labeled`: putting the label full-ci on a pull request starts the full level.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
   schedule:
     # Every Monday, 03:17 UTC.
@@ -67,6 +70,7 @@ jobs:
     # which leaves the answer empty).
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       run: ${{ steps.monday.outputs.run }}
     steps:
@@ -77,35 +81,39 @@ jobs:
           echo "run=$run" | tee -a "$GITHUB_OUTPUT"
 
   changes:
-    # Decides whether the heavy jobs are needed for a pull request. Plain git,
-    # no third-party action. Not needed on push: the heavy jobs never run there.
+    # Decides which jobs are needed. Plain git, no third-party action.
     needs: monday
-    if: ${{ !cancelled() && github.event_name != 'push' && needs.monday.outputs.run != 'false' }}
+    if: ${{ !cancelled() && needs.monday.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       heavy: ${{ steps.classify.outputs.heavy }}
+      fuzz: ${{ steps.classify.outputs.fuzz }}
+      distro: ${{ steps.classify.outputs.distro }}
       repro: ${{ steps.classify.outputs.repro }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Classify the changed files
+      - name: Classify the changed files and the level
         id: classify
         env:
           EVENT: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
         run: |
           if [ "$EVENT" = pull_request ]; then
-            ./scripts/ci-changes.sh "$BASE_SHA" "$HEAD_SHA" | tee -a "$GITHUB_OUTPUT"
+            ./scripts/ci-changes.sh "$BASE_SHA" "$HEAD_SHA" "$FULL_LABEL" | tee -a "$GITHUB_OUTPUT"
           else
-            printf 'heavy=true\nrepro=true\n' | tee -a "$GITHUB_OUTPUT"
+            ./scripts/ci-changes.sh "" "" true | tee -a "$GITHUB_OUTPUT"
           fi
 
   build-test:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Cache the Rust build (registry and target)
@@ -183,6 +191,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Cache the Rust build (registry and target)
@@ -245,6 +254,7 @@ jobs:
     needs: monday
     if: ${{ !cancelled() && needs.monday.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Cache the Rust build (registry and target)
@@ -274,8 +284,9 @@ jobs:
 
   fuzz-smoke:
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.heavy == 'true' }}
+    if: ${{ !cancelled() && needs.changes.outputs.fuzz == 'true' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
       # 30 s per target on pull requests and manual runs, 5 min in the scheduled run.
       FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '300' || '30' }}
@@ -334,6 +345,7 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.repro == 'true' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Pinned Rust toolchain
@@ -363,6 +375,7 @@ jobs:
     needs: monday
     if: ${{ !cancelled() && needs.monday.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: SPDX headers
@@ -393,8 +406,9 @@ jobs:
 
   distro:
     needs: [build-test, changes]
-    if: ${{ !cancelled() && needs.changes.outputs.heavy == 'true' && needs.build-test.result == 'success' }}
+    if: ${{ !cancelled() && needs.changes.outputs.distro == 'true' && needs.build-test.result == 'success' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -419,6 +433,7 @@ jobs:
     # pull request that is base..head; on a push to main, the pushed range.
     if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -444,6 +459,7 @@ jobs:
     needs: monday
     if: ${{ !cancelled() && needs.monday.outputs.run != 'false' }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -467,6 +483,7 @@ jobs:
     if: ${{ always() }}
     needs: [monday, changes, build-test, private-bus, clippy, fuzz-smoke, repro, licenses, distro, dco, secrets]
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Every required job ran and succeeded
@@ -474,6 +491,8 @@ jobs:
           EVENT: ${{ github.event_name }}
           MONDAY_RUN: ${{ needs.monday.outputs.run }}
           HEAVY: ${{ needs.changes.outputs.heavy }}
+          FUZZ: ${{ needs.changes.outputs.fuzz }}
+          DISTRO_ON: ${{ needs.changes.outputs.distro }}
           REPRO: ${{ needs.changes.outputs.repro }}
           R_MONDAY: ${{ needs.monday.result }}
           R_CHANGES: ${{ needs.changes.result }}
@@ -492,6 +511,7 @@ jobs:
     # Only on release tags: SECURITY.md must name the reporting channel, not a placeholder.
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Reporting channel defined

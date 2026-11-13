@@ -7,7 +7,8 @@
 # Input, all in the environment:
 #   EVENT                      pull_request, push, schedule or workflow_dispatch
 #   MONDAY_RUN                 output of the monday job: "true", "false", or empty
-#   HEAVY, REPRO               outputs of the changes job: "true", "false", or empty
+#   HEAVY, FUZZ, DISTRO_ON, REPRO
+#                              outputs of the changes job: "true", "false", or empty
 #   R_<JOB>                    result of each job: success, failure, cancelled, skipped
 #                              (JOB is MONDAY, CHANGES, BUILD_TEST, PRIVATE_BUS, CLIPPY, FUZZ_SMOKE,
 #                              REPRO_JOB, LICENSES, DISTRO, DCO, SECRETS)
@@ -56,14 +57,15 @@ else
   want DCO skipped
 fi
 
-# Heavy checks: not on a push to main; on the other events as the classification says.
-if [ "$all" = true ] && [ "$EVENT" != push ]; then
+# The changes job decides the rest: build-test and private-bus when something is not documentation; fuzz-smoke and distro in
+# addition on the full level; repro on the full level or when the reference hashes changed.
+if [ "$all" = true ]; then
   want CHANGES success
   heavy() { if [ "${!2:-}" = true ]; then want "$1" success; else want "$1" skipped; fi; }
   heavy BUILD_TEST HEAVY
   heavy PRIVATE_BUS HEAVY
-  heavy FUZZ_SMOKE HEAVY
-  heavy DISTRO HEAVY
+  heavy FUZZ_SMOKE FUZZ
+  heavy DISTRO DISTRO_ON
   heavy REPRO_JOB REPRO
 else
   for j in CHANGES BUILD_TEST PRIVATE_BUS FUZZ_SMOKE DISTRO REPRO_JOB; do want "$j" skipped; done
