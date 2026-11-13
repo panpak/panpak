@@ -107,6 +107,9 @@ pub struct Desktop {
     pub sizes: Option<Vec<u32>>,
     pub wm_class: Option<String>,
     pub schemes: Option<Vec<String>>,
+    /// MIME types for the menu entry. When it is not set, the `MimeType` of the `.desktop` file of the installed files
+    /// (`share/applications/<app.id>.desktop`) is used, without the URL schemes.
+    pub mime_types: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]

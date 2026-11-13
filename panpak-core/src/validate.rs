@@ -293,6 +293,18 @@ fn desktop(d: &crate::Desktop) -> Result<()> {
             return Err(bad_field(F, &format!("{sc} listed twice")));
         }
     }
+    let mimes = d.mime_types.as_deref().unwrap_or_default();
+    if mimes.len() > crate::MAX_MIME_TYPES {
+        return Err(bad_field("desktop.mime_types", &format!("more than {} types", crate::MAX_MIME_TYPES)));
+    }
+    for (i, m) in mimes.iter().enumerate() {
+        if let Err(why) = crate::check_mime_type(m) {
+            return Err(bad_field("desktop.mime_types", &format!("{}: {why}", shown(m))));
+        }
+        if mimes[..i].contains(m) {
+            return Err(bad_field("desktop.mime_types", &format!("{m} listed twice")));
+        }
+    }
     let icons = d.icons.as_deref().unwrap_or_default();
     if icons.len() > 6 {
         return Err(bad_field("desktop.icons", "more than 6 icons"));

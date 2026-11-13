@@ -80,6 +80,8 @@ pub struct Collected {
     /// Extra `abi.needs` (plugins that the loader opens by name: the farm of the runtime must link them).
     pub needs: Vec<String>,
     pub icons: Vec<String>,
+    /// The MIME types of the menu entry (`desktop.mime_types`).
+    pub mime_types: Vec<String>,
     pub libs: usize,
     pub bytes: u64,
     pub notes: Vec<String>,
@@ -413,7 +415,39 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
         env.insert(k.clone(), v.clone());
     }
     let _ = seeds_extra;
-    Ok(Collected { env, needs, icons, libs, bytes, notes })
+    // 10. The MIME types of the menu entry: the recipe, or the `MimeType` of the app'"'"'s own `.desktop` file.
+    let mime_types = match r.desktop.as_ref().and_then(|d| d.mime_types.clone()) {
+        Some(list) => list,
+        None => {
+            let f = i.tree.join("share/applications").join(format!("{}.desktop", r.app.id));
+            let text = match std::fs::symlink_metadata(&f) {
+                Ok(m) if m.file_type().is_file() && m.len() <= 1 << 20 => std::fs::read_to_string(&f).unwrap_or_default(),
+                _ => String::new(),
+            };
+            let (keep, left) = panpak_core::mime_types_from_desktop(&desktop_mime_value(&text));
+            for l in left {
+                notes.push(format!("MimeType of {}.desktop, not copied: {l}", r.app.id));
+            }
+            keep
+        }
+    };
+    Ok(Collected { env, needs, icons, mime_types, libs, bytes, notes })
+}
+
+/// The value of `MimeType=` in the group `[Desktop Entry]` of a `.desktop` file; empty when there is none.
+pub fn desktop_mime_value(text: &str) -> String {
+    let mut in_entry = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+        } else if in_entry {
+            if let Some(v) = line.strip_prefix("MimeType=") {
+                return v.to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 #[cfg(test)]

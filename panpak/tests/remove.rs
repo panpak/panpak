@@ -161,6 +161,21 @@ const A: &str = "org.example.alpha";
 const B: &str = "org.example.beta";
 
 #[test]
+fn remove_takes_the_entry_out_of_mimeapps_list_and_leaves_the_rest() {
+    let e = env("mimeapps");
+    let root = e.install(A, "1", "a");
+    e.fake_tree(&root);
+    let list = e.home.join(".config/mimeapps.list");
+    fs::create_dir_all(list.parent().unwrap()).unwrap();
+    let mine = format!("panpak.{A}.desktop");
+    fs::write(&list, format!("[Default Applications]\ntext/plain={mine};\nimage/png=eog.desktop;{mine};\n[Added Associations]\ntext/html=other.desktop;\n")).unwrap();
+    let o = e.remove(&[A]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(fs::read_to_string(&list).unwrap(), "[Default Applications]\nimage/png=eog.desktop;\n[Added Associations]\ntext/html=other.desktop;\n");
+    assert!(!e.desktop(A).exists());
+}
+
+#[test]
 fn remove_takes_the_app_away_and_keeps_the_data_and_a_reinstall_works() {
     let e = env("basic");
     let root = e.install(A, "1", "a");
@@ -552,6 +567,17 @@ fn fake_tools(home: &Path, tools: &[(&str, i32)]) -> PathBuf {
     dir
 }
 
+/// The folder of fake tools is read only by a debug build of `panpak`. A release build looks in `/usr/bin`, where a
+/// real dialog would open on the desktop of whoever runs the tests: those tests do not run then.
+macro_rules! only_with_fake_tools {
+    () => {
+        if !cfg!(debug_assertions) {
+            eprintln!("skipped: this build of panpak does not read PANPAK_TEST_TOOLS_DIR (run the tests without --release)");
+            return;
+        }
+    };
+}
+
 fn ask(e: &Env, tools: &Path, id: &str) -> Output {
     cmd(&e.home, &["remove", "--ask", id]).env("PANPAK_TEST_TOOLS_DIR", tools).env("XDG_CURRENT_DESKTOP", "GNOME").output().unwrap()
 }
@@ -576,6 +602,7 @@ fn the_entry_has_an_uninstall_action_that_runs_the_stable_panpak() {
 
 #[test]
 fn ask_without_a_dialog_tool_removes_nothing_and_says_the_command() {
+    only_with_fake_tools!();
     let e = env("ask-none");
     e.install(A, "1", "a");
     e.fake_data(A);
@@ -595,6 +622,7 @@ fn ask_without_a_dialog_tool_removes_nothing_and_says_the_command() {
 
 #[test]
 fn ask_with_the_answer_no_removes_nothing() {
+    only_with_fake_tools!();
     let e = env("ask-no");
     e.install(A, "1", "a");
     e.fake_data(A);
@@ -613,6 +641,7 @@ fn ask_with_the_answer_no_removes_nothing() {
 
 #[test]
 fn ask_with_the_answer_yes_removes_the_app_keeps_the_data_and_notifies() {
+    only_with_fake_tools!();
     let e = env("ask-yes");
     e.install(A, "1", "a");
     e.fake_data(A);
@@ -634,6 +663,7 @@ fn ask_with_the_answer_yes_removes_the_app_keeps_the_data_and_notifies() {
 
 #[test]
 fn ask_with_a_running_copy_or_a_wrong_id_removes_nothing_and_says_why() {
+    only_with_fake_tools!();
     let e = env("ask-busy");
     e.install(A, "1", "a");
     let lock_dir = e.home.join("run/panpak").join(A);

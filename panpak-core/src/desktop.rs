@@ -113,6 +113,8 @@ pub struct Entry<'a> {
     pub name: &'a str,
     pub launcher: &'a Path,
     pub schemes: &'a [String],
+    /// The MIME types of `desktop.mime_types`.
+    pub mime_types: &'a [String],
     pub wm_class: Option<&'a str>,
     /// The stable `panpak` of the store, for the menu action "Uninstall". Without one there is no action.
     pub panpak: Option<&'a Path>,
@@ -120,14 +122,18 @@ pub struct Entry<'a> {
     pub icon: bool,
 }
 
-/// The entry declares no MimeType but the URL schemes: the manifest has no field for MIME types, and
-/// `application/x-panpak` is the type of the packages themselves, not of the files an app opens.
+/// `MimeType` is made of the URL schemes and of `desktop.mime_types`; nothing else, and never
+/// `application/x-panpak` (the type of the packages themselves).
 pub fn desktop_file(e: &Entry) -> Result<String> {
     // The URL schemes the manifest declares; every name is checked again here, whatever the caller did.
     let mut mime = String::new();
     for sc in e.schemes {
         crate::check_scheme_name(sc).map_err(|why| anyhow::anyhow!("scheme {sc}: {why}"))?;
         mime += &format!("x-scheme-handler/{sc};");
+    }
+    for m in e.mime_types {
+        crate::check_mime_type(m).map_err(|why| anyhow::anyhow!("MIME type {m}: {why}"))?;
+        mime += &format!("{m};");
     }
     let mime = if mime.is_empty() { String::new() } else { format!("MimeType={mime}\n") };
     // The window class the app sets, so that the desktop groups its windows under this entry.
@@ -157,6 +163,38 @@ pub fn desktop_file(e: &Entry) -> Result<String> {
         desktop_string(&icon)?,
         desktop_string(e.app_id)?
     ))
+}
+
+/// `mimeapps.list` without `desktop_id`: the user chose our entry as the default or added it for a type, and the entry
+/// is gone. A line `type=a.desktop;b.desktop;` loses the one item (the line goes when nothing is left); every other
+/// byte of the file stays. `None` when the file does not name the entry.
+pub fn mimeapps_without(text: &str, desktop_id: &str) -> Option<String> {
+    if !text.contains(desktop_id) {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut changed = false;
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\n', '\r']);
+        let eol = &line[body.len()..];
+        match body.split_once('=') {
+            Some((key, value)) if !body.starts_with('#') && !body.starts_with('[') && value.split(';').any(|v| v.trim() == desktop_id) => {
+                changed = true;
+                let kept: Vec<&str> = value.split(';').map(str::trim).filter(|v| !v.is_empty() && *v != desktop_id).collect();
+                if !kept.is_empty() {
+                    out.push_str(key);
+                    out.push('=');
+                    for k in kept {
+                        out.push_str(k);
+                        out.push(';');
+                    }
+                    out.push_str(eol);
+                }
+            }
+            _ => out.push_str(line),
+        }
+    }
+    changed.then_some(out)
 }
 
 /// The launcher script. It runs the stable stub of the store on the `current` link of the app.
@@ -258,7 +296,8 @@ fn read_limited(f: &mut fs::File, max: usize) -> Option<Vec<u8>> {
 /// The lazy update (docs/DESKTOP-INTEGRATION.md, section 3). In the usual case this opens the entry, reads
 /// [`VERSION_WINDOW`] bytes and closes it. `store` is the per-user store, `launcher` the path of the launcher; the stable stub link must be there for
 /// the launcher to work, otherwise nothing is touched.
-pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &str, name: &str, schemes: &[String], wm_class: Option<&str>) -> Result<Refresh> {
+#[allow(clippy::too_many_arguments)] // every field of the entry
+pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &str, name: &str, schemes: &[String], mime_types: &[String], wm_class: Option<&str>) -> Result<Refresh> {
     let path = entry_dir.join(format!("panpak.{app_id}.desktop"));
     let mut f = match fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
         Ok(f) => f,
@@ -286,7 +325,7 @@ pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &s
     let have_icon = old.lines().any(|l| l.strip_prefix("Icon=") == Some(icon_name(app_id).as_str()));
     let panpak = stable_panpak(store);
     let panpak = fs::metadata(&panpak).is_ok_and(|m| m.is_file()).then_some(panpak);
-    let text = desktop_file(&Entry { app_id, name, launcher, schemes, wm_class, panpak: panpak.as_deref(), icon: have_icon })?;
+    let text = desktop_file(&Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon: have_icon })?;
     // The launcher first: the entry must never name one that is older than itself.
     let current = store.join("apps").join(app_id).join("current");
     let sh = launcher_sh(app_id, &stub, &current)?;
@@ -307,7 +346,7 @@ mod tests {
     use super::*;
 
     fn entry<'a>(l: &'a Path, name: &'a str) -> Entry<'a> {
-        Entry { app_id: "org.x", name, launcher: l, schemes: &[], wm_class: None, panpak: None, icon: false }
+        Entry { app_id: "org.x", name, launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false }
     }
 
     #[test]
@@ -386,12 +425,30 @@ mod tests {
     }
 
     #[test]
+    fn our_entry_leaves_mimeapps_list_and_nothing_else_does() {
+        let id = "panpak.org.x.desktop";
+        let text = "# mine\n[Default Applications]\ntext/plain=panpak.org.x.desktop;\nimage/png=eog.desktop;panpak.org.x.desktop;gimp.desktop;\n\n[Added Associations]\ntext/html=panpak.org.x.desktop;org.x.desktop;\n";
+        let want = "# mine\n[Default Applications]\nimage/png=eog.desktop;gimp.desktop;\n\n[Added Associations]\ntext/html=org.x.desktop;\n";
+        assert_eq!(mimeapps_without(text, id).as_deref(), Some(want));
+        assert_eq!(mimeapps_without(want, id), None);
+        assert_eq!(mimeapps_without("[Default Applications]\ntext/plain=org.gnome.TextEditor.desktop;\n", id), None);
+        // a comment or a group that names it is not a line to change
+        assert_eq!(mimeapps_without("# panpak.org.x.desktop\n", id), None);
+    }
+
+    #[test]
     fn only_the_allowed_keys_are_ever_written() {
         let l = Path::new("/home/u/.local/bin/org.x");
         let p = Path::new("/h/.local/share/panpak/bin/panpak");
         let schemes = vec!["org-x".to_string()];
-        let full = Entry { schemes: &schemes, wm_class: Some("Org X"), panpak: Some(p), icon: true, ..entry(l, "X") };
+        let mimes = vec!["text/plain".to_string(), "application/x-bittorrent".to_string()];
+        let full = Entry { schemes: &schemes, mime_types: &mimes, wm_class: Some("Org X"), panpak: Some(p), icon: true, ..entry(l, "X") };
         keys_ok(&desktop_file(&full).unwrap());
+        let text = desktop_file(&full).unwrap();
+        assert!(text.contains("MimeType=x-scheme-handler/org-x;text/plain;application/x-bittorrent;\n"), "{text}");
+        for bad in ["text/plain;Exec=sh", "x-scheme-handler/http", "inode/directory", "application/x-panpak", "text/a\nExec=sh"] {
+            assert!(desktop_file(&Entry { mime_types: &[bad.to_string()], ..entry(l, "X") }).is_err(), "{bad:?}");
+        }
         keys_ok(&desktop_file(&entry(l, "X")).unwrap());
         // Hostile values give an error or a file with the same keys.
         let hostile = [
@@ -476,11 +533,11 @@ mod tests {
             self.apps.join("panpak.org.x.desktop")
         }
         fn current(&self) -> String {
-            let e = Entry { app_id: "org.x", name: "X", launcher: &self.launcher, schemes: &[], wm_class: None, panpak: None, icon: false };
+            let e = Entry { app_id: "org.x", name: "X", launcher: &self.launcher, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false };
             desktop_file(&e).unwrap()
         }
         fn refresh(&self) -> Result<Refresh> {
-            refresh_entry(&self.store, &self.apps, &self.launcher, "org.x", "X", &[], None)
+            refresh_entry(&self.store, &self.apps, &self.launcher, "org.x", "X", &[], &[], None)
         }
     }
 

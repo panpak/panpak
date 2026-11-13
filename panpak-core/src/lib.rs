@@ -29,7 +29,7 @@ mod validate;
 mod view;
 pub use elfsym::{glibc_needed, glibc_version_number, parse_syms, read_elf_info, sym_hash, version_number, ElfInfo, ElfSyms, Needed};
 pub use openchan::{handle as handle_open_request, RateLimit, Target as OpenTarget, BURST, MAX_REQUEST, RATE_PER_SEC};
-pub use openurl::{check_scheme_name, check_url, UrlKind, MAX_URL};
+pub use openurl::{check_mime_type, check_scheme_name, check_url, mime_types_from_desktop, UrlKind, MAX_MIME_TYPES, MAX_URL};
 pub use userdirs::{
     default_user_dir, format_pin, generated_user_dirs, no_links, parse_pin, parse_user_dirs, resolve_xdg_dir, user_dirs_key, USER_DIRS_MARKER,
     XDG_DIR_NAMES,
@@ -273,6 +273,8 @@ pub fn valid_wm_class(w: &str) -> bool {
 pub struct Desktop {
     /// URL schemes the app opens (`x-scheme-handler/<scheme>`), for example the return from a login.
     pub schemes: Option<Vec<String>>,
+    /// MIME types the app opens (`MimeType=` of the entry), so that the desktop offers the app for those files.
+    pub mime_types: Option<Vec<String>>,
     /// The window class the app sets (Wayland `app_id` or X11 `WM_CLASS`), written as `StartupWMClass`
     /// so that the desktop groups its windows under the entry (PANPAK-FORMAT.md §3.1.3).
     pub wm_class: Option<String>,
@@ -443,7 +445,7 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
     const TOP: &[&str] = &["app", "abi", "permissions", "launch", "desktop", "runtime", "origin", "update", "env", "provenance"];
     const PROVENANCE: &[&str] = &["source", "image", "image_deps"];
     const IMAGE_DEP: &[&str] = &["name", "package", "version"];
-    const DESKTOP: &[&str] = &["schemes", "wm_class", "icons"];
+    const DESKTOP: &[&str] = &["schemes", "mime_types", "wm_class", "icons"];
     const XDG_DIR: &[&str] = &["name", "access"];
     const LAUNCH: &[&str] = &["args", "env"];
     const APP: &[&str] = &["id", "name", "version", "entry"];

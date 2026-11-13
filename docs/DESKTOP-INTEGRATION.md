@@ -192,7 +192,7 @@ Icon=panpak.<id>                   (or application-x-executable)
 Terminal=false
 Categories=Utility;
 StartupWMClass=<from the package, if declared>
-MimeType=x-scheme-handler/<scheme>;...   (only the declared URL schemes)
+MimeType=x-scheme-handler/<scheme>;<type>/<subtype>;...   (the declared URL schemes, then desktop.mime_types)
 Actions=Uninstall;
 
 [Desktop Action Uninstall]
@@ -215,7 +215,7 @@ Exec="<store>/bin/panpak" remove --ask <id>
 |---|---|---|
 | `Name` | package | validated (no control characters, length), escaped as a Desktop Entry string |
 | `StartupWMClass` | package | `valid_wm_class` |
-| `MimeType` | package, only schemes | `check_scheme_name`; always `x-scheme-handler/<scheme>;` and nothing else |
+| `MimeType` | package, schemes and file types | `check_scheme_name`, `check_mime_type`; `x-scheme-handler/<scheme>;` and `<type>/<subtype>;` items and nothing else |
 | `Icon` | Panpak | `panpak.<id>` if an icon was installed, else `application-x-executable` |
 | `Exec`, action `Exec` | Panpak | fixed paths of section 2, quoted by `desktop_exec_arg` |
 | `Type`, `Terminal`, `Categories`, `Actions` | Panpak | fixed |
@@ -223,7 +223,7 @@ Exec="<store>/bin/panpak" remove --ask <id>
 
 Never written, whatever the package says: `TryExec`, `Path`, `DBusActivatable`, `X-GNOME-Autostart-*`,
 `X-GNOME-Settings-Panel`, `Hidden`, `NoDisplay`, `OnlyShowIn`/`NotShowIn`, `Keywords`, any extra `Actions`, a
-`MimeType` that is not a declared scheme, any key a future spec adds. The generator is a template with
+`MimeType` that is not a declared scheme or file type, any key a future spec adds. The generator is a template with
 holes, not a filter on a copied file, so a new key cannot get in by a mistake in a deny list.
 
 Tests: a test that parses the output and checks that its set of keys is a subset of the table above; a

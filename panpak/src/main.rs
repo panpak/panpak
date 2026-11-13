@@ -332,15 +332,16 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     write_xdg_pin(&appdir, &xdg_found)?;
     let desktop = desktop_path(app_id)?;
     let schemes = manifest_schemes(&man);
-    if desktop.exists() || legacy_desktop_path(app_id)?.exists() || !schemes.is_empty() {
+    let mimes = manifest_mime_types(&man);
+    if desktop.exists() || legacy_desktop_path(app_id)?.exists() || !schemes.is_empty() || !mimes.is_empty() {
         fs::create_dir_all(desktop.parent().unwrap())?;
         icons::install(app_id, &new_icons)?;
-        let text = entry_text(&store, app_id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), !new_icons.is_empty())?;
+        let text = entry_text(&store, app_id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(&man), !new_icons.is_empty())?;
         let before = fs::read_to_string(&desktop).ok();
         write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
         note_stale_menu(before.as_deref(), &text);
         let moved = remove_legacy_desktop(app_id, &launcher)?;
-        if !schemes.is_empty() || moved {
+        if !schemes.is_empty() || !mimes.is_empty() || moved {
             refresh_desktop_database(desktop.parent().unwrap());
         }
     }
@@ -709,7 +710,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
         }
         match &mut man.desktop {
             Some(d) => d.icons = Some(paths),
-            None => man.desktop = Some(panpak_core::Desktop { schemes: None, wm_class: None, icons: Some(paths) }),
+            None => man.desktop = Some(panpak_core::Desktop { schemes: None, mime_types: None, wm_class: None, icons: Some(paths) }),
         }
         // Same deterministic order as walk_tree.
         payload.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
@@ -1320,6 +1321,7 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     let mut dver: Option<String> = None;
     let mut dwm: Option<String> = None;
     let mut dicon: Option<String> = None;
+    let mut dmime = String::new();
     if let Some(d) = &desktop {
         let txt = fs::read_to_string(d).unwrap_or_default();
         let mut in_entry = false;
@@ -1350,6 +1352,8 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
                 dwm = Some(v.trim().to_string());
             } else if let Some(v) = line.strip_prefix("Icon=") {
                 dicon = Some(v.trim().to_string());
+            } else if let Some(v) = line.strip_prefix("MimeType=") {
+                dmime = v.to_string();
             }
         }
     }
@@ -1462,6 +1466,15 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
         }
         Some(w) => eprintln!("panpak convert: WARNING: StartupWMClass {w:?} in the desktop file is not a plain window class; not used"),
         None => eprintln!("panpak convert: WARNING: the desktop file has no StartupWMClass; the desktop may not group the app's windows under its entry (set [desktop] wm_class in panpak.toml if you know the class)"),
+    }
+    // The MIME types of the original entry, so that the desktop offers the app for those files.
+    let (mimes, left) = panpak_core::mime_types_from_desktop(&dmime);
+    if !mimes.is_empty() {
+        let list: Vec<String> = mimes.iter().map(|m| q(m)).collect();
+        desktop_keys.push_str(&format!("mime_types = [{}]\n", list.join(", ")));
+    }
+    for l in left {
+        eprintln!("panpak convert: note: MimeType not copied: {l}");
     }
     // The icons are not written to the tree: they are read (links followed only inside the tree) and handed to `pack` in memory.
     let icons: Vec<IconInput> = match icon_ov {
@@ -1721,10 +1734,11 @@ fn split_num(s: &str) -> (u64, &str) {
 
 
 /// The text of the entry of an app: the stable `panpak` of the store gives the menu action, when it is there.
-fn entry_text(store: &Path, app_id: &str, name: &str, launcher: &Path, schemes: &[String], wm_class: Option<&str>, icon: bool) -> Result<String> {
+#[allow(clippy::too_many_arguments)] // every field of the entry
+fn entry_text(store: &Path, app_id: &str, name: &str, launcher: &Path, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, icon: bool) -> Result<String> {
     let panpak = dsk::stable_panpak(store);
     let panpak = panpak.is_file().then_some(panpak);
-    dsk::desktop_file(&dsk::Entry { app_id, name, launcher, schemes, wm_class, panpak: panpak.as_deref(), icon })
+    dsk::desktop_file(&dsk::Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon })
 }
 
 /// GNOME Shell reloads a changed entry about 5 seconds after the file changes, but keeps the old one for an app that
@@ -1804,6 +1818,11 @@ fn manifest_wm_class(man: &panpak_core::Manifest) -> Option<&str> {
 /// The URL schemes the manifest declares.
 fn manifest_schemes(man: &panpak_core::Manifest) -> Vec<String> {
     man.desktop.as_ref().and_then(|d| d.schemes.clone()).unwrap_or_default()
+}
+
+/// The MIME types the manifest declares.
+fn manifest_mime_types(man: &panpak_core::Manifest) -> Vec<String> {
+    man.desktop.as_ref().and_then(|d| d.mime_types.clone()).unwrap_or_default()
 }
 
 /// A user folder asked for by the manifest and found in the user's `user-dirs.dirs`.
@@ -2273,8 +2292,9 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     write_replacing(&launcher, &dsk::launcher_sh(&man.app.id, &stub, &current)?, 0o755, "launcher", &|s| launcher_is_ours(s, &man.app.id))?;
     fs::create_dir_all(desktop.parent().unwrap())?;
     let schemes = manifest_schemes(&man);
+    let mimes = manifest_mime_types(&man);
     icons::install(&man.app.id, &new_icons)?;
-    let text = entry_text(&store, &man.app.id, &man.app.name, &launcher, &schemes, manifest_wm_class(&man), !new_icons.is_empty())?;
+    let text = entry_text(&store, &man.app.id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(&man), !new_icons.is_empty())?;
     let before = fs::read_to_string(&desktop).ok();
     write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
     note_stale_menu(before.as_deref(), &text);
@@ -2283,7 +2303,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     if moved {
         println!("note: the desktop entry is now panpak.{}.desktop; the old {}.desktop was removed", man.app.id, man.app.id);
     }
-    if !schemes.is_empty() || moved {
+    if !schemes.is_empty() || !mimes.is_empty() || moved {
         refresh_desktop_database(desktop.parent().unwrap());
     }
 
@@ -3520,7 +3540,7 @@ mod tests {
         assert!(!launcher_is_ours("#!/bin/sh\necho mine\n", "org.x"));
         // Written before the marker existed.
         assert!(launcher_is_ours("#!/bin/sh\n# Generated by `panpak install`: do not edit.\n# Points to apps/<id>/current; x\n", "org.x"));
-        let d = dsk::desktop_file(&dsk::Entry { app_id: "org.x", name: "X", launcher: l, schemes: &[], wm_class: None, panpak: None, icon: false }).unwrap();
+        let d = dsk::desktop_file(&dsk::Entry { app_id: "org.x", name: "X", launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false }).unwrap();
         assert!(desktop_is_ours(&d, "org.x", l));
         assert!(!desktop_is_ours(&d, "org.y", l));
         assert!(!desktop_is_ours("[Desktop Entry]\nType=Application\nName=Mine\nExec=/bin/mine\n", "org.x", l));

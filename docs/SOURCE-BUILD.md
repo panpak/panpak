@@ -217,7 +217,7 @@ toolkit = "gtk4"             # gtk4 | qt6 | none
 
 [desktop]                    # sizes default to [256, 128, 64, 48, 32]
 icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"   # or icons_png = [...] for PNG files of the tree
-# wm_class = "..."   schemes = [...]
+# wm_class = "..."   schemes = [...]   mime_types = [...]  (default: the MimeType of share/applications/<id>.desktop)
 
 [env]                        # optional: added to what the toolkit needs (PANPAK-FORMAT.md section 3.1.6)
 # GSETTINGS_BACKEND = "keyfile"

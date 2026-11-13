@@ -120,6 +120,48 @@ pub fn check_scheme_name(s: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Most MIME types a package may list in `desktop.mime_types`.
+pub const MAX_MIME_TYPES: usize = 128;
+
+/// A MIME type the entry may list: `type/subtype` in lowercase letters, digits, `+`, `.`, `_` and `-`, at most
+/// 100 bytes. Refused: `x-scheme-handler/*` (that is `desktop.schemes`), `inode/*` (folders and devices),
+/// `application/x-panpak` (the packages themselves) and the types of programs and desktop entries.
+pub fn check_mime_type(s: &str) -> std::result::Result<(), String> {
+    let Some((kind, sub)) = s.split_once('/') else {
+        return Err("a MIME type is type/subtype".to_string());
+    };
+    let word = |w: &str, extra: &[char]| {
+        !w.is_empty() && w.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit()) && w.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || extra.contains(&c))
+    };
+    if s.len() > 100 || !word(kind, &['-']) || !word(sub, &['+', '.', '_', '-']) {
+        return Err("a MIME type is type/subtype of lowercase letters, digits, + . _ and -, at most 100 bytes".to_string());
+    }
+    if kind == "x-scheme-handler" || kind == "inode" {
+        return Err(format!("{kind}/* is not allowed here"));
+    }
+    if matches!(s, "application/x-panpak" | "application/x-desktop" | "application/x-executable" | "application/x-sharedlib" | "application/x-pie-executable" | "application/x-shellscript") {
+        return Err(format!("{s} is not allowed"));
+    }
+    Ok(())
+}
+
+/// The types of a `MimeType=` value of a `.desktop` file that `desktop.mime_types` may carry, and what was left
+/// out with the reason. Duplicates are dropped; the list stops at `MAX_MIME_TYPES`.
+pub fn mime_types_from_desktop(value: &str) -> (Vec<String>, Vec<String>) {
+    let (mut keep, mut left) = (Vec::new(), Vec::new());
+    for t in value.split(';').map(str::trim).filter(|t| !t.is_empty()) {
+        if keep.iter().any(|k| k == t) {
+            continue;
+        }
+        match check_mime_type(t) {
+            Ok(()) if keep.len() < MAX_MIME_TYPES => keep.push(t.to_string()),
+            Ok(()) => left.push(format!("{t}: more than {MAX_MIME_TYPES} types")),
+            Err(why) => left.push(format!("{t}: {why}")),
+        }
+    }
+    (keep, left)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -218,5 +260,20 @@ mod tests {
         for bad in ["", "1a", "-a", "A", "a b", "a_b", "a/b", "http", "https", "file", "mailto", "javascript", &"a".repeat(33), "ä"] {
             assert!(check_scheme_name(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn mime_types_are_checked_and_copied_from_a_desktop_value() {
+        for ok in ["text/plain", "application/x-bittorrent", "image/svg+xml", "text/x-c++src", "application/vnd.ms-excel"] {
+            assert!(check_mime_type(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "text", "text/", "/plain", "Text/plain", "text/plain;x", "text/a b", "x-scheme-handler/magnet", "inode/directory", "application/x-panpak", "text/*", "text/pl\u{e0}in"] {
+            assert!(check_mime_type(bad).is_err(), "{bad:?}");
+        }
+        let (keep, left) = mime_types_from_desktop("text/plain;application/x-bittorrent;x-scheme-handler/magnet;text/plain;inode/directory;");
+        assert_eq!(keep, ["text/plain", "application/x-bittorrent"]);
+        assert_eq!(left.len(), 2, "{left:?}");
+        let many: String = (0..200).map(|i| format!("text/x-{i};")).collect();
+        assert_eq!(mime_types_from_desktop(&many).0.len(), MAX_MIME_TYPES);
     }
 }

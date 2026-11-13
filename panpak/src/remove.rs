@@ -417,7 +417,30 @@ fn remove_integration(id: &str, removed: &mut Vec<String>, kept: &mut Vec<String
             refresh_desktop_database(d);
         }
     }
+    forget_in_mimeapps(id, removed, kept);
     Ok(())
+}
+
+/// The user may have chosen the entry as the default app of a type (the desktop writes that in `mimeapps.list`). With the
+/// entry gone that line would stay; it is taken out. Only the name of our entry is touched; a file that is not a plain
+/// file of a size that makes sense is left alone.
+fn forget_in_mimeapps(id: &str, removed: &mut Vec<String>, kept: &mut Vec<String>) {
+    let Some(home) = dirs::home_dir() else { return };
+    let config = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
+    let desktop_id = format!("panpak.{id}.desktop");
+    for path in [config.join("mimeapps.list"), home.join(".local/share/applications/mimeapps.list")] {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        if !meta.file_type().is_file() || meta.len() > 1 << 20 {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Some(new) = panpak_core::desktop::mimeapps_without(&text, &desktop_id) else { continue };
+        use std::os::unix::fs::PermissionsExt;
+        match panpak_core::desktop::write_file_atomic(&path, new.as_bytes(), meta.permissions().mode() & 0o777) {
+            Ok(()) => removed.push(format!("{desktop_id} in {}", path.display())),
+            Err(e) => kept.push(format!("{} (could not take {desktop_id} out: {e})", path.display())),
+        }
+    }
 }
 
 /// The roots of the trees that the packages left in the store use.

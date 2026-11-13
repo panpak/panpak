@@ -193,6 +193,8 @@ pub fn manifest_toml(r: &Recipe, col: &collect::Collected, pubkey: &str, prov: &
         #[serde(skip_serializing_if = "Option::is_none")]
         schemes: Option<Vec<String>>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
+        mime_types: Vec<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         icons: Vec<String>,
     }
     #[derive(serde::Serialize)]
@@ -237,7 +239,7 @@ pub fn manifest_toml(r: &Recipe, col: &collect::Collected, pubkey: &str, prov: &
         abi,
         permissions: r.permissions.as_ref(),
         launch: r.launch.as_ref(),
-        desktop: Desktop { wm_class: d.and_then(|d| d.wm_class.clone()), schemes: d.and_then(|d| d.schemes.clone()), icons: col.icons.clone() },
+        desktop: Desktop { wm_class: d.and_then(|d| d.wm_class.clone()), schemes: d.and_then(|d| d.schemes.clone()), mime_types: col.mime_types.clone(), icons: col.icons.clone() },
         env: &col.env,
         update: Upd { key: pubkey.to_string(), url: r.update.as_ref().and_then(|u| u.url.clone()) },
         provenance: prov,
@@ -296,7 +298,7 @@ mod tests {
             "ab".repeat(20)
         ))
         .unwrap();
-        let col = collect::Collected { env: [("GSETTINGS_BACKEND".to_string(), "keyfile".to_string())].into(), needs: vec!["libpixbufloader_svg.so".into()], icons: vec!["share/icons/hicolor/48x48/apps/org.example.A.png".into()], libs: 1, bytes: 1, notes: vec![] };
+        let col = collect::Collected { env: [("GSETTINGS_BACKEND".to_string(), "keyfile".to_string())].into(), needs: vec!["libpixbufloader_svg.so".into()], icons: vec!["share/icons/hicolor/48x48/apps/org.example.A.png".into()], mime_types: vec!["text/plain".into()], libs: 1, bytes: 1, notes: vec![] };
         let prov = panpak_core::Provenance { source: Some("git x".into()), image: Some("debian-13 sha256:x snapshot y".into()), image_deps: Some(vec![panpak_core::ImageDep { name: "g".into(), package: "p".into(), version: "1".into() }]) };
         let t = manifest_toml(&r, &col, &format!("ed25519:{}", "0".repeat(64)), &prov).unwrap();
         panpak_core::check_panpak_toml_schema(&t).unwrap();

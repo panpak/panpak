@@ -1045,9 +1045,10 @@ fn refresh_menu_entry(store: &Path, man: &panpak_core::Manifest) {
     use panpak_core::desktop::{refresh_entry, Refresh};
     let Some(dir) = dirs::data_dir().map(|d| d.join("applications")) else { return };
     let schemes = man.desktop.as_ref().and_then(|d| d.schemes.clone()).unwrap_or_default();
+    let mimes = man.desktop.as_ref().and_then(|d| d.mime_types.clone()).unwrap_or_default();
     let class = man.desktop.as_ref().and_then(|d| d.wm_class.as_deref());
     let Ok(launcher) = panpak_core::desktop::launcher_path(&man.app.id) else { return };
-    match refresh_entry(store, &dir, &launcher, &man.app.id, &man.app.name, &schemes, class) {
+    match refresh_entry(store, &dir, &launcher, &man.app.id, &man.app.name, &schemes, &mimes, class) {
         Ok(Refresh::Rewritten) if panpak_core::debug_enabled() => eprintln!("panpak: debug: the menu entry of {} was older and is rewritten", man.app.id),
         Ok(_) => {}
         Err(e) if panpak_core::debug_enabled() => eprintln!("panpak: debug: menu entry not refreshed: {e:#}"),
