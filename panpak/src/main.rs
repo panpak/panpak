@@ -979,6 +979,10 @@ fn best_runtime(store: &Path) -> Result<(u32, PathBuf)> {
 /// rebuilt). One line says it. The trust is the one of the program that is running: both files came together. A runtime that was verified as a signed
 /// release (`install-runtime <release.tar.gz> --release-key`) is never replaced by one of the same ABI.
 fn ensure_own_runtime() -> Result<()> {
+    // For the tests, which run with stand-in runtimes beside a real one.
+    if std::env::var_os("PANPAK_OWN_RUNTIME").is_some_and(|v| v == "off") {
+        return Ok(());
+    }
     let Ok(exe) = std::env::current_exe().and_then(|p| p.canonicalize()) else { return Ok(()) };
     let own = exe.with_file_name("panpak-stub");
     let store = store_dir()?;

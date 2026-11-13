@@ -24,6 +24,7 @@ fn cmd_with(bin: &Path, home: &Path, args: &[&str]) -> Command {
         .env("XDG_CACHE_HOME", home.join(".cache"))
         .env("XDG_RUNTIME_DIR", home.join("run"))
         .env_remove("PANPAK_SECRET_FILE")
+        .env("PANPAK_OWN_RUNTIME", "off") // the test programs have stand-in runtimes; the real one beside `panpak` must not replace them
         .stdin(std::process::Stdio::null());
     c
 }
