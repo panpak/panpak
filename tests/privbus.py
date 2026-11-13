@@ -547,7 +547,7 @@ def scenario_links(lab):
     print('L   OpenURI is answered by the router and the app is told what happened: ok')
 
 
-docshare_link_message = 'the file you chose is a link: choose the original file'
+docshare_link_prefix = 'the file you chose is a link to '
 
 
 def scenario_dialog(lab):
@@ -585,17 +585,27 @@ def scenario_dialog(lab):
     r = lab.run(app, 'dialog', 'SaveFile', 0, 'h:' + str(docs / 'new.txt'), 'saved by the app\n')
     print('D   atomic save probe (rename in the document folder):', r.get('rename_error'), '| io:', r.get('io_error'))
     need(r.get('wrote') and (docs / 'new.txt').exists() and (docs / 'new.txt').read_text() == 'saved by the app\n', f'D: the save: {r}, host file: {(docs / "new.txt").exists()}')
-    # A link chosen in the dialog: refused, the app is told the dialog ended.
+    # A link chosen in the dialog, in a folder the app cannot write, to an ordinary file: the user chose it, the app gets the file it points to, under its own name.
     (docs / 'ln.txt').symlink_to(docs / 'a.txt')
     answer.write_text(uri(docs / 'ln.txt') + '\n')
     r = lab.run(app, 'dialog', 'OpenFile', 0, 'h:' + str(docs / 'a.txt'), '')
-    need(r['answers'] and r['answers'][0][0] == 2 and 'uri' not in r, f'D: a link: {r}')
-    # Files given at the start (Open with, a double click, the command line): shared before the app runs; a link is dropped, with the message on stderr.
-    r = lab.run(app, 'args', '-', 0, docs / 'a.txt', docs / 'started.txt', docs / 'ln.txt')
+    need(r['answers'] and r['answers'][0][0] == 0 and r.get('content') == 'hello from the host\n', f'D: a link to a file: {r}; the runtime said: {lab.last_out[-400:]}')
+    need(not any('ln.txt' in u for u in r['answers'][0][1]), f'D: the app got the name of the link: {r["answers"]}')
+    # A link to a hidden place of the home folder (here a settings file): refused, the app is told "cancelled" (1), the message names the place it points to.
+    (lab.home / '.hidden').mkdir(exist_ok=True)
+    (lab.home / '.hidden' / 'secret.txt').write_text('secret\n')
+    (docs / 'ln-hidden.txt').symlink_to(lab.home / '.hidden' / 'secret.txt')
+    answer.write_text(uri(docs / 'ln-hidden.txt') + '\n')
+    r = lab.run(app, 'dialog', 'OpenFile', 0, 'h:' + str(docs / 'a.txt'), '')
+    need(r['answers'] == [[1, []]], f'D: a link to a hidden place: {r["answers"]}')
+    need(docshare_link_prefix in lab.last_out and 'hidden place' in lab.last_out, f'D: the refusal said nothing: {lab.last_out[-400:]}')
+    # Files given at the start (Open with, a double click, the command line): shared before the app runs; a link is followed in the same way, one to a hidden place is
+    # dropped with the message on stderr.
+    r = lab.run(app, 'args', '-', 0, docs / 'a.txt', docs / 'started.txt', docs / 'ln.txt', docs / 'ln-hidden.txt')
     doc = str(rt / 'doc') + '/'
-    need(len(r['argv']) == 2 and all(a.startswith(doc) for a in r['argv']), f"D: the arguments the app got: {r['argv']}")
+    need(len(r['argv']) == 3 and all(a.startswith(doc) for a in r['argv']), f"D: the arguments the app got: {r['argv']}")
     need(r.get('first') == 'hello from the host\n' and r.get('wrote') and (docs / 'started.txt').read_text() == 'written through the document\n', f'D: files given at the start: {r}')
-    need(docshare_link_message in lab.last_out, f'D: the link was dropped without a word: {lab.last_out[-300:]}')
+    need(docshare_link_prefix in lab.last_out and 'hidden place' in lab.last_out, f'D: the link was dropped without a word: {lab.last_out[-300:]}')
     # Removing the app takes the grants back and leaves the user's files alone.
     listing = lambda: lab.sess.call('org.freedesktop.portal.Documents', '/org/freedesktop/portal/documents', 'org.freedesktop.portal.Documents.List', f'panpak.{app}')[1]
     need(not listing().endswith('{},)'), f'D: the portal holds nothing for the app before the removal: {listing()}')
@@ -603,7 +613,7 @@ def scenario_dialog(lab):
     need('file grants of the document portal' in out, f'D: remove says nothing about the grants: {out}')
     need(listing().endswith('{},)'), f'D: the grants are still there after the removal: {listing()}')
     need((docs / 'a.txt').read_text() == 'hello from the host\n' and (docs / 'new.txt').exists(), 'D: the files of the user were touched by the removal')
-    print('D   the file dialog: open, close, save and a refused link, through the real portal and the document folder; remove takes the grants back: ok')
+    print('D   the file dialog: open, close, save and a refused link, through the real portal and the document folder (a link to an ordinary file is followed, one to a hidden place is refused); remove takes the grants back: ok')
 
 
 def scenario_mpris(lab):

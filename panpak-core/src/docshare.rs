@@ -21,8 +21,51 @@ const REUSE: u32 = 1;
 const PERSISTENT: u32 = 2;
 const EXPORT_DIRECTORY: u32 = 8;
 
-/// What the user sees when the file they chose is a link (it may be one the app made).
+/// What the user sees when the file they chose is a link that is not followed (it may be one the app made).
 pub const LINK_MESSAGE: &str = "the file you chose is a link: choose the original file";
+
+/// The same, with the place the link points to, for a link that is the file itself.
+pub fn link_message(link: &Path) -> String {
+    match std::fs::read_link(link) {
+        Ok(t) if t.as_os_str().len() <= 200 && t.as_os_str().as_bytes().iter().all(|b| (0x20..=0x7e).contains(b)) => {
+            format!("the file you chose is a link to {}: choose the original file", t.display())
+        }
+        _ => LINK_MESSAGE.to_string(),
+    }
+}
+
+/// Why a file that a link points to is not shared in its place, or `None`. The target of a link is a place the user did not see in the dialog, so it must be
+/// an ordinary one: not a system place and not a hidden place of the home folder (settings, keys, startup files).
+fn target_problem(real: &Path, home: Option<&Path>) -> Option<&'static str> {
+    if ["/proc", "/sys", "/dev"].iter().any(|p| real.starts_with(p)) {
+        return Some("it is a place of the system");
+    }
+    let home = home.and_then(|h| std::fs::canonicalize(h).ok())?;
+    let rel = real.strip_prefix(&home).ok()?;
+    let first = rel.components().next()?.as_os_str().as_bytes();
+    first.first().is_some_and(|b| *b == b'.').then_some("it is in a hidden place of your home folder")
+}
+
+/// A link that the user chose, in a folder the app cannot write (so the app did not make it): the file it points to, when that is an ordinary file in an
+/// ordinary place. Anything else is refused with the place the link points to.
+fn open_link_target(link: &Path, writable_roots: &[PathBuf]) -> Result<Opened> {
+    let refuse = |why: &str| Refused(format!("{} ({why})", link_message(link)));
+    if link.parent().is_some_and(|p| writable_roots.iter().any(|r| p.starts_with(r))) {
+        return Err(refuse("this app can write in that folder").into());
+    }
+    let real = std::fs::canonicalize(link).map_err(|_| refuse("it points to nothing"))?;
+    if !std::fs::symlink_metadata(&real).is_ok_and(|m| m.file_type().is_file()) {
+        return Err(refuse("it does not point to a file").into());
+    }
+    if let Some(why) = target_problem(&real, dirs::home_dir().as_deref()) {
+        return Err(refuse(why).into());
+    }
+    // `real` has no link in it. If one appears now, the open below does not follow it and the check of the kind fails: nothing is shared.
+    let (dir, name) = open_parent(&real, writable_roots)?;
+    let fd = open_path_at(dir.as_raw_fd(), &name, libc::O_NOFOLLOW).with_context(|| format!("cannot open {}", real.display()))?;
+    ensure!(fstat(fd.as_raw_fd())?.st_mode & libc::S_IFMT == libc::S_IFREG, "{} is not a file", real.display());
+    reopen(fd, name, false)
+}
 
 /// A file or folder opened for sharing: an `O_PATH` descriptor, its name, and what the user may do with it.
 #[derive(Debug)]
@@ -114,9 +157,15 @@ pub fn open_existing(path: &Path, writable_roots: &[PathBuf]) -> Result<Opened> 
     let st = fstat(fd.as_raw_fd())?;
     let kind = st.st_mode & libc::S_IFMT;
     if kind == libc::S_IFLNK {
-        return Err(Refused(LINK_MESSAGE.into()).into());
+        drop(fd);
+        return open_link_target(path, writable_roots);
     }
     ensure!(kind == libc::S_IFREG || kind == libc::S_IFDIR, "{} is not a file or a folder", path.display());
+    reopen(fd, name, kind == libc::S_IFDIR)
+}
+
+/// The descriptor that is handed to the portal, made from the one that was checked (no name is looked up again, so there is no race).
+fn reopen(fd: OwnedFd, name: Vec<u8>, is_dir: bool) -> Result<Opened> {
     let proc_path = cstr(format!("/proc/self/fd/{}", fd.as_raw_fd()).as_bytes())?;
     // SAFETY: a valid C string. The magic link of an O_PATH descriptor leads to the file itself.
     let writable = unsafe { libc::access(proc_path.as_ptr(), libc::W_OK) == 0 };
@@ -125,11 +174,11 @@ pub fn open_existing(path: &Path, writable_roots: &[PathBuf]) -> Result<Opened> 
     // SAFETY: a valid C string; the descriptor is taken over below.
     let again = unsafe { libc::open(proc_path.as_ptr(), libc::O_PATH | libc::O_CLOEXEC) };
     if again < 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| format!("cannot reopen {}", path.display()));
+        return Err(std::io::Error::last_os_error()).context("cannot reopen the file");
     }
     // SAFETY: again is a fresh descriptor.
     let fd = unsafe { OwnedFd::from_raw_fd(again) };
-    Ok(Opened { fd, name, is_dir: kind == libc::S_IFDIR, writable })
+    Ok(Opened { fd, name, is_dir, writable })
 }
 
 fn permissions(write: bool) -> Value {
@@ -140,9 +189,11 @@ fn permissions(write: bool) -> Value {
     Value::Array("s".into(), p)
 }
 
+/// A document id: letters, digits, `-` and `_` (the portal of Fedora 44 gives ids such as `TvwaFlW6_A0CggRmMl_s2g`; older ones give hex), used as a
+/// folder name under `doc/`, so nothing else is accepted.
 fn doc_id(v: Option<&Value>) -> Result<String> {
     match v {
-        Some(Value::Str(id)) if !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric()) => Ok(id.clone()),
+        Some(Value::Str(id)) if !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') => Ok(id.clone()),
         _ => bail!("the document portal gave an id that is not one"),
     }
 }
@@ -276,6 +327,17 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
+    #[test]
+    fn document_ids_of_both_kinds_are_accepted_and_anything_that_is_a_path_is_not() {
+        for ok in ["0a1b2c3d", "TvwaFlW6_A0CggRmMl_s2g", "a-b"] {
+            assert_eq!(doc_id(Some(&Value::str(ok))).unwrap(), ok);
+        }
+        for bad in ["", "..", "a/b", "a.b", "a b", "a\n", &"x".repeat(65)] {
+            assert!(doc_id(Some(&Value::str(bad))).is_err(), "{bad:?}");
+        }
+        assert!(doc_id(None).is_err());
+    }
+
     fn scratch(n: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("panpak-docshare-{n}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -300,16 +362,45 @@ mod tests {
     }
 
     #[test]
-    fn a_final_link_is_refused_with_the_message() {
+    fn a_final_link_is_followed_only_when_the_app_could_not_have_made_it() {
         let d = scratch("link");
         std::fs::write(d.join("real.txt"), "x").unwrap();
         symlink(d.join("real.txt"), d.join("notes.txt")).unwrap();
+        symlink("real.txt", d.join("relative.txt")).unwrap();
         symlink(&d, d.join("loop")).unwrap();
-        for l in ["notes.txt", "loop"] {
+        symlink("nowhere.txt", d.join("dangling")).unwrap();
+        symlink("/proc/self/status", d.join("system")).unwrap();
+        let mine = std::slice::from_ref(&d);
+        // In a folder the app can write: refused, with the place it points to.
+        let e = open_existing(&d.join("notes.txt"), mine).unwrap_err();
+        assert_eq!(e.to_string(), format!("the file you chose is a link to {}: choose the original file (this app can write in that folder)", d.join("real.txt").display()));
+        // In a folder it cannot write: the file it points to, as a plain file under its own name (also with a relative link).
+        for l in ["notes.txt", "relative.txt"] {
+            let o = open_existing(&d.join(l), &[]).unwrap_or_else(|e| panic!("{l}: {e:#}"));
+            assert_eq!((o.name.as_slice(), o.is_dir), (&b"real.txt"[..], false), "{l}");
+        }
+        // A link to a folder, to nothing, or to a place of the system is refused with the reason.
+        for (l, why) in [("loop", "it does not point to a file"), ("dangling", "it points to nothing"), ("system", "it is a place of the system")] {
             let e = open_existing(&d.join(l), &[]).unwrap_err();
-            assert_eq!(e.to_string(), LINK_MESSAGE, "{l}");
+            assert!(e.to_string().starts_with("the file you chose is a link to ") && e.to_string().ends_with(&format!("({why})")), "{l}: {e}");
         }
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_link_to_a_hidden_place_of_the_home_folder_is_refused() {
+        let home = scratch("home");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::write(home.join(".ssh/id_ed25519"), "k").unwrap();
+        std::fs::create_dir_all(home.join("docs")).unwrap();
+        std::fs::write(home.join("docs/a.txt"), "x").unwrap();
+        let real = |p: &str| std::fs::canonicalize(home.join(p)).unwrap();
+        assert_eq!(target_problem(&real(".ssh/id_ed25519"), Some(&home)), Some("it is in a hidden place of your home folder"));
+        assert_eq!(target_problem(&real("docs/a.txt"), Some(&home)), None);
+        assert_eq!(target_problem(Path::new("/proc/1/mem"), Some(&home)), Some("it is a place of the system"));
+        assert_eq!(target_problem(Path::new("/srv/x.txt"), Some(&home)), None);
+        assert_eq!(target_problem(&real("docs/a.txt"), None), None);
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[test]

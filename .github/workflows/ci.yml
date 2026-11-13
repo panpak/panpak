@@ -219,7 +219,7 @@ jobs:
       - name: Packages, bubblewrap, and a systemd user manager for the runner user
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap dbus-daemon dbus-user-session xdg-dbus-proxy xdg-desktop-portal python3-gi gir1.2-glib-2.0 libglib2.0-bin at-spi2-core
+          sudo apt-get install -y -qq bubblewrap dbus-daemon dbus-user-session xdg-dbus-proxy xdg-desktop-portal python3-gi gir1.2-glib-2.0 gir1.2-gtk-4.0 sway libglib2.0-bin at-spi2-core
           # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile (see the build-test job).
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo loginctl enable-linger "$USER"
@@ -235,6 +235,8 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
           python3 tests/privbus.py --only A,B,C,F,L,D || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
+      - name: A real GTK 4 program against the answers of the file chooser (a refused dialog must not crash the app)
+        run: python3 tests/gtk_filechooser.py
       - name: Private bus, all scenarios (advisory until they have passed on the runners for a while; the portal here is 1.18, older than the one the identity needs)
         continue-on-error: true
         env:

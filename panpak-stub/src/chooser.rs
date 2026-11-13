@@ -57,6 +57,8 @@ impl Gate {
 }
 
 pub struct Actor {
+    /// Whether a refusal is also told in a notification of the desktop (not in the tests, which have no desktop of their own).
+    notify: bool,
     ctx: Arc<HostCtx>,
     gate: Arc<Gate>,
     runner: Arc<Runner>,
@@ -64,12 +66,21 @@ pub struct Actor {
 
 impl Actor {
     pub fn new(ctx: HostCtx) -> Actor {
-        Actor::with_runner(ctx, chooserhost::run)
+        Actor { notify: true, ..Actor::with_runner(ctx, chooserhost::run) }
+    }
+
+    /// A request that was not served: a line on standard error and a notification, then the app is told "cancelled" (the router maps the code).
+    fn refused(&self, writer: &Writer, token: u32, why: &str) {
+        eprintln!("panpak: file dialog refused: {why}");
+        if self.notify {
+            chooserhost::notify("Panpak", &format!("The file dialog could not be shown: {why}."));
+        }
+        write_answer(writer, token, 2, None);
     }
 
     /// With another way to show the dialog (tests).
     pub fn with_runner(ctx: HostCtx, runner: impl Fn(&HostCtx, &Call) -> Outcome + Send + Sync + 'static) -> Actor {
-        Actor { ctx: Arc::new(ctx), gate: Arc::new(Gate { busy: AtomicBool::new(false), recent: Mutex::new(VecDeque::new()) }), runner: Arc::new(runner) }
+        Actor { notify: false, ctx: Arc::new(ctx), gate: Arc::new(Gate { busy: AtomicBool::new(false), recent: Mutex::new(VecDeque::new()) }), runner: Arc::new(runner) }
     }
 
     /// A request frame of kind file chooser: the token of the router and the call of the app. Answered on `writer` when the dialog ends.
@@ -78,8 +89,7 @@ impl Actor {
         let permit = match self.gate.try_enter(Instant::now()) {
             Ok(p) => p,
             Err(why) => {
-                eprintln!("panpak: file dialog refused: {why}");
-                write_answer(&writer, token, 2, None);
+                self.refused(&writer, token, why);
                 return;
             }
         };
@@ -88,8 +98,7 @@ impl Actor {
         let call = match filechooser::parse_call(raw, &doc_prefix) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("panpak: file dialog refused: {}", panpak_core::err_text(&e));
-                write_answer(&writer, token, 2, None);
+                self.refused(&writer, token, &panpak_core::err_text(&e));
                 return;
             }
         };

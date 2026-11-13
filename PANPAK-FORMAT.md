@@ -159,6 +159,7 @@ access = "ro"                  # "ro" or "rw"
 
 [desktop]                      # §3.1.4
 schemes = ["myapp"]            # URL schemes the app opens (x-scheme-handler/<scheme>)
+mime_types = ["text/plain"]   # file types the app opens (MimeType of the menu entry)
 wm_class = "Editor"            # §3.1.5: the window class the app sets (StartupWMClass)
 
 [launch]                       # §3.1.2
@@ -225,6 +226,7 @@ no control character and no NUL.
 | `permissions.home_paths` | At most 32 items, see §3.1.2 |
 | `permissions.xdg_dirs` | At most 5 items, each `name` once, see §3.1.4 |
 | `desktop.schemes` | At most 8 items, see §3.1.4 |
+| `desktop.mime_types` | At most 128 items, see §3.1.4 |
 | `launch.args`, `launch.env` | At most 64 items each, see §3.1.2 |
 
 Paths and symlink targets in the index MUST NOT contain a control character
@@ -339,6 +341,18 @@ desktop entry as `MimeType=x-scheme-handler/<scheme>;` with `Exec=` the launcher
 address arrives as an argument of the launcher). It then runs `update-desktop-database` on the
 folder of the entry, when the tool exists at `/usr/bin` or `/bin`; a failure is only a note.
 
+**`desktop.mime_types`.** The file types the app opens, written into the same `MimeType=` line after the
+schemes, so that the desktop offers the app in "Open with" for those files. At most 128 items, each
+`type/subtype` of lowercase letters, digits, `+`, `.`, `_` and `-` (at most 100 bytes), each at most once.
+These are refused: `x-scheme-handler/*` (use `desktop.schemes`), `inode/*`, `application/x-panpak`,
+`application/x-desktop`, `application/x-executable`, `application/x-sharedlib`,
+`application/x-pie-executable` and `application/x-shellscript`. The field only makes the app a candidate:
+it does not give the app access to any file (the file dialog and `panpak open` do). The package does not choose the
+default app, but a desktop that has no default for a type for the user may take the first entry it finds, and an entry in
+the user's own folder comes first (seen on GNOME: `text/plain` went to the panpak Text Editor): the user changes it in the
+settings of the desktop. `convert` and `build` copy the types of the original
+`.desktop` file (the types that are refused are listed in a note, and the schemes are not copied).
+
 ### 3.1.5 Bus permissions and the window class [NORMATIVE]
 
 These fields are used only when the filtered session bus (§9.5) is active.
@@ -409,7 +423,7 @@ app that has the same upstream id. `install` and `update` MUST remove `<app.id>.
 
 *Content of the entry.* The entry is made from a fixed template, never from a `.desktop` file of the package. The package
 contributes `Name` (`app.name`, escaped as a Desktop Entry string), `StartupWMClass` (`desktop.wm_class`) and the
-`x-scheme-handler/<scheme>` items of `MimeType` (`desktop.schemes`); everything else is fixed or derived from the store:
+`x-scheme-handler/<scheme>` items of `MimeType` (`desktop.schemes`) and the other items of `MimeType` (`desktop.mime_types`); everything else is fixed or derived from the store:
 `Type`, `Exec` (the launcher, with `%U`), `Icon`, `Terminal`, `Categories`, `Actions` and the group `Uninstall`
 (`Exec` is `<store>/bin/panpak remove --ask <app.id>`, §9.6), and the two keys `X-Panpak-Desktop-Version` and
 `X-Panpak-App-Id`. No other key is ever written (`TryExec`, `Path`, `DBusActivatable`, `X-GNOME-Autostart-*`, `Hidden`,
@@ -1163,7 +1177,7 @@ answered `unsupported` until it is defined; every other kind is `unsupported`, a
 is `"PKRS"`, the version, a status byte (0 done, 1 refused, 2 failed, 3 unsupported, 4 file dialog), a 16-bit length (at most 256, and at most
 60000 for status 4) and printable ASCII text. The actor answers each request of kind 1 with one response, in order. The answer to a file dialog is
 status 4, sent when the user has chosen (so out of order), and its text is `<token> <code> [<hex>]`: the token of the request, the code of the
-`Response` (0 done, 1 the user closed the dialog, 2 anything else) and, for code 0, the `a{sv}` of the answer in D-Bus encoding as hexadecimal
+`Response` (0 done, 1 the user closed the dialog, 2 anything else; the router tells the app 1 with `uris` = an empty list for every code but 0) and, for code 0, the `a{sv}` of the answer in D-Bus encoding as hexadecimal
 digits (the document addresses, and `choices` and `current_filter` when the portal gave them). The router checks the dictionary again. No frame carries a descriptor.
 
 ### 9.8 System calls (seccomp) [NORMATIVE for the policy; the program is INFORMATIVE]

@@ -86,7 +86,7 @@ What the app controls: that a dialog is shown, its title and accept label, filte
 file is chosen. The user does, in a window of the desktop. The chain:
 
 1. The router checks the call: interface and member are `FileChooser.OpenFile`, `SaveFile` or `SaveFiles`; argument types are exact; at most one dialog
-   per copy at a time (a second call is answered with `Response` 2 at once); sizes are bounded.
+   per copy at a time (a second call is answered with `Response` 1 at once, "cancelled", as every dialog that gives no file); sizes are bounded.
 2. The router sends the actor a frame (`KIND_FILE_CHOOSER`, reserved in `frames.rs` today and answered "not done by this version"). The actor does not trust
    the frame: it parses it again, keeps only the option keys it knows (`accept_label`, `modal`, `multiple`, `directory`, `filters`, `current_filter`,
    `choices`, `current_name`), and drops the rest. `handle_token` is the actor's own. `current_folder` and `current_file` are kept only when they resolve inside
@@ -206,7 +206,7 @@ What happens, in one batch before the app starts (one call, so the cost does not
 | folder | `AddFull` with the export-directory flag, `read` and `write` when writable | `/run/user/<uid>/doc/<id>/<folder name>` |
 | file that does not exist, folder exists | `AddNamedFull` (as SaveFile): the app creates the file on its first write, as `gnome-text-editor new.txt` does | document path of the new name |
 | file that does not exist, folder does not | not shared; the argument is dropped with a message | nothing |
-| symbolic link as the final component | refused as in 4.3; message: `the file you chose is a link: choose the original file` | nothing |
+| symbolic link as the final component | followed or refused as in 4.3; a refusal says where the link points | the file the link points to, or nothing |
 | file the user cannot read | not shared; message with the system error | nothing |
 
 Failure policy: a failed argument is dropped and reported on standard error and, when a desktop session is running, as a notification (through the
@@ -232,9 +232,17 @@ The actor receives a path from the portal and does not follow what it did not me
    folder for directories). The document portal accepts a regular descriptor and checks that it points to the file it names (`validate_fd`:
    `fstatat(AT_SYMLINK_NOFOLLOW)` in the opened folder, same device and inode) **[source: `document-portal.c:487-545`]**; it also computes `writable` from the
    descriptor, so a file the user cannot write is not shared as writable.
-3. If the final component is a symbolic link, the actor refuses (`ELOOP`) and the app gets `Response` 2 with no files. A link the user placed is rare in a
-   dialog choice and a link the app placed (in a folder it may write) is the attack: the user sees `notes.txt` and the app has made it point to a file of
-   the user's. A symbolic link in a parent folder is accepted only if the link is in a folder the app cannot write (the actor knows the app's write grants).
+3. If the final component is a symbolic link, the actor does not follow it where it stands (`O_NOFOLLOW`). The dialog shows the name of the link, not the place
+   it points to, so a link is a way to make the user choose a file they did not mean: `notes.txt` that the app made point to a file of the user's. The rule:
+   - the folder that holds the link is under a place the app can write (its own folders, `rw` home paths and user folders): the app may have made the link, so the
+     choice is refused;
+   - otherwise the link is the user's (or the system's): the actor resolves it once (`canonicalize`), and shares the file it points to, under its own name, when that is
+     a regular file that is not in a place of the system (`/proc`, `/sys`, `/dev`) nor in a hidden place of the home folder (`~/.ssh`, `~/.config`, `~/.local`, ...);
+     it opens the resolved path again without following links, so a swap after the check leaves nothing shared;
+   - a link to a folder, to nothing, or to one of those places is refused.
+   A refusal says where the link points: `the file you chose is a link to <target>: choose the original file (<why>)`. A Save under the name of an existing link is
+   always refused, and so is a link in a parent folder when the folder that holds it is one the app can write (the actor knows the app's write grants).
+   The app gets the name of the target, not of the link (`notes.txt` -> `real.txt` is opened as `real.txt`); a Save-as under that name is the document of `real.txt`.
 4. The descriptor goes to the document portal in the same call; the portal stores the folder's file handle and the name, and checks them again at each
    later access, so a swap after the choice is caught by the portal as well.
 
@@ -246,7 +254,7 @@ The actor receives a path from the portal and does not follow what it did not me
 | A compromised router names a file to share | the router has no such message: the actor takes the paths from its own request to the portal |
 | A compromised router asks for many dialogs | one dialog per copy at a time, 5 per minute per copy, each visible to the user |
 | The app labels the dialog to mislead ("Save game", really a folder) | possible, same as Flatpak; limited to what the user chooses |
-| A symbolic link made by the app in its own folder | final link refused (4.3); a link in a folder the app can write is refused |
+| A symbolic link made by the app in its own folder | a final link is refused when the folder that holds it is one the app can write; one made elsewhere is followed only to an ordinary file outside the hidden places of the home (4.3) |
 | A swap of the file between the choice and the sharing | the descriptor is the file; the portal checks folder handle and name later |
 | The app gets more than the user chose | `read`/`write` on the chosen file or folder only; no `grant-permissions`; a folder gives its subtree, as the dialog says |
 | Grants outlive the app | `remove` revokes them; `--purge-data` deletes them (3.5) |
@@ -286,7 +294,7 @@ and a large file transfer in a document folder.
 1. The actor, not the router, calls the portal (2 and 3.2). It costs one more host-side module; it keeps the router out of the decision about files.
 2. `FileChooser` properties are answered by the router (3.7), not passed from the portal.
 3. `grant-permissions` and `delete` are not given (3.1).
-4. A final symbolic link is refused (4.3).
+4. A final symbolic link is followed only in the cases of 4.3, and refused with the place it points to otherwise (changed after the test on the VM: a plain refusal made a link in `~/Documents` unusable).
 
 Answers (owner): 1 and 2 yes; 3 yes, with the message `the file you chose is a link: choose the original file` (user-facing text in the language of the
 desktop is the job of step 10b; the English text is the source); 4 `panpak grants` is postponed (the grants will be shown in the Panpak app, step 10b);
@@ -399,14 +407,26 @@ two small files.
 9. **Files given at the start.** An argument is a file when it names something that exists, is written as a `file:` address, or is a path (has a `/`) that does not exist in a
    folder that does (a new file). A bare word that does not exist (`new.txt`, `org.example.App`, `1.2.3`) is left to the app: it could be anything. So
    `gnome-text-editor ./new.txt` makes a new file and `gnome-text-editor new.txt` does not. More than 64 files: the rest is dropped with a line. The menu entry that `install`
-   writes has `%U` and no `MimeType`, so a file manager offers the app under "Open with" > "Other application", not as the default for a type.
+   writes has `%U` and the `MimeType` of the original `.desktop` file (`desktop.mime_types`, copied by `convert` and `build`), so a file manager offers the app under "Open with" for those types; the desktop, not the package, chooses the default.
 10. The table of permissions has the rows `files-chosen` and `launch-files` for every app, shown where this system has the document portal's folder.
 11. `panpak doctor` says whether the dialog is served on this system. `panpak pack` prints a note for a GTK or Qt app that asks for a user folder with `rw`. The Text Editor recipe
     of the test harness no longer asks for `documents`.
+12. **The parent window.** The parent of a dialog is `""`, `x11:<id>` or `wayland:<handle>`; the handle is whatever the compositor made up, and GNOME's has punctuation and spaces
+    (`wayland:WR59{Q`_1R>B nNso%~-Y8FWc1!a)gD~`, taken from a core dump on the VM), so any printable ASCII up to 128 bytes is accepted. A first version took only letters and digits and
+    refused the Save of Text Editor on GNOME, which no test had seen because the tests used `wayland:abc`.
+13. **What the app is told when no file comes back.** Whatever the reason (the user closed the dialog, a second dialog while one is open, a call that was refused, an answer that is not
+    valid, the portal not there), the router sends `Response` 1 with `uris` = an empty list, never 2 and never an empty dictionary. GTK 4.18 (the VM) and 4.22 crash with SIGSEGV
+    (`g_vfs_get_file_for_uri` called from GTK) on a Save whose answer has no `uris` key, with any code, and with the key they treat 1 and 2 as "dismissed". The reason is on standard error
+    and in a notification of the desktop. The frame between the actor and the router keeps its codes (0, 1, 2): the mapping is the last step, in `choose_done`.
+14. **Links.** Section 4.3: a link the user chose, in a folder the app cannot write, is followed to an ordinary file (not in `/proc`, `/sys`, `/dev` or a hidden place of the home folder);
+    any other link is refused with the place it points to. The same rule applies to files given at the start. Found on the VM, where a plain refusal made `~/Documenti/collegamento.txt`
+    unusable although the user had put it there.
 
 **Tested**
 
-- Unit tests: the call parser and its option filter, the addresses, the frames and the answer text (`panpak-core/src/filechooser.rs`), the safe open and the link rules
+- A real GTK 4 program (`tests/gtk_filechooser.py`, headless Sway, a fake portal): `Gtk.FileDialog.save()` gets the answers the router gives (1 and 2 with `uris` = [], and a file) and ends
+  normally; the answer without `uris` is tried as a control and reported (it crashes GTK 4.18 and 4.22). It runs in the job of the private bus of the CI.
+- Unit tests: the call parser and its option filter (with the real call of GNOME for a Save in a new document), the addresses, the frames and the answer text (`panpak-core/src/filechooser.rs`), the safe open and the link rules
   (`docshare.rs`), the router (`panpak-core/src/dbus/route.rs`: handle at once, one dialog at a time, Close, bad calls and bad answers), the actor (`panpak-stub/src/chooser.rs`: filtering, token,
   busy, five a minute), the arguments of a start (`startfiles.rs`).
 - A fake desktop portal on a private bus (`tests/fake_portal_files.py`, `panpak-core/tests/chooserhost.rs`): what is asked of the portal, the permissions of each kind of file,

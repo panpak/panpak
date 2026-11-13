@@ -161,7 +161,7 @@ fn run_inner(ctx: &HostCtx, call: &Call) -> Result<Outcome> {
                 let (parent, name) = docshare::open_parent(p, ctx.roots())?;
                 // An existing link under the chosen name is how an app would redirect a save: refused, as for an open.
                 if std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()) {
-                    return Err(Refused(docshare::LINK_MESSAGE.into()).into());
+                    return Err(Refused(docshare::link_message(p)).into());
                 }
                 let id = docs.share_new(&parent, &name)?;
                 out_uris.push(filechooser::document_uri(&ctx.runtime_dir, &id, &name));

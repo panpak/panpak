@@ -189,16 +189,31 @@ fn the_dialog_shares_what_the_user_chose_and_only_that() {
     assert!(matches!(run(&ctx(), &call("OpenFile", vec![])), Outcome::Ended { code: 1, .. }));
     assert!(calls(&lab.take_log(), "AddFull").is_empty());
 
-    // 7. A link: refused with the message, nothing shared; also for a save under the name of a link.
+    // 7. A link in a folder the app can write (it may have made it): refused with the message and the place it points to, nothing shared; also for a save
+    // under the name of a link.
     let link = d.join("notes.txt");
     symlink(&rw, &link).unwrap();
+    let rooted = ctx();
+    rooted.writable_roots.set(vec![d.clone()]).unwrap();
     lab.answers(&format!(r#"[{{"code":0,"uris":["{}"]}},{{"code":0,"uris":["{}"]}}]"#, uri_of(&link), uri_of(&link)));
-    for m in ["OpenFile", "SaveFile"] {
-        let Outcome::Ended { code, user, .. } = run(&ctx(), &call(m, vec![])) else { panic!("{m}: not ended") };
-        assert_eq!((code, user.as_deref()), (2, Some(docshare::LINK_MESSAGE)), "{m}");
-    }
+    let says = format!("the file you chose is a link to {}: choose the original file", rw.display());
+    let Outcome::Ended { code, user, .. } = run(&rooted, &call("OpenFile", vec![])) else { panic!("not ended") };
+    assert_eq!((code, user.as_deref()), (2, Some(format!("{says} (this app can write in that folder)").as_str())));
+    let Outcome::Ended { code, user, .. } = run(&rooted, &call("SaveFile", vec![])) else { panic!("not ended") };
+    assert_eq!((code, user.as_deref()), (2, Some(says.as_str())));
     let log = lab.take_log();
     assert!(calls(&log, "AddFull").is_empty() && calls(&log, "AddNamedFull").is_empty(), "{log:?}");
+    // 7b. The same link in a folder the app cannot write: the user chose it, the file it points to is shared (under its own name). A save under the name
+    // of a link is still refused.
+    lab.answers(&format!(r#"[{{"code":0,"uris":["{}"]}},{{"code":0,"uris":["{}"]}}]"#, uri_of(&link), uri_of(&link)));
+    let Outcome::Done(dict) = run(&ctx(), &call("OpenFile", vec![])) else { panic!("the link was not followed") };
+    let text = format!("{dict:?}");
+    let own_name = rw.file_name().unwrap().to_string_lossy().replace(' ', "%20");
+    assert!(text.contains(&format!("/{own_name}\"")) && !text.contains("notes.txt"), "{text}");
+    assert_eq!(calls(&lab.take_log(), "AddFull").len(), 1);
+    let Outcome::Ended { user, .. } = run(&ctx(), &call("SaveFile", vec![])) else { panic!("not ended") };
+    assert_eq!(user.as_deref(), Some(says.as_str()));
+    assert!(calls(&lab.take_log(), "AddNamedFull").is_empty());
 
     // 8. An address that is not a file, and a file that is gone: ended, with a reason in the log line.
     lab.answers(r#"[{"code":0,"uris":["https://example.org/x"]},{"code":0,"uris":["file:///nonexistent/zzz"]}]"#);
@@ -211,14 +226,14 @@ fn the_dialog_shares_what_the_user_chose_and_only_that() {
     lab.take_log();
     let args: Vec<String> =
         ["--new-window", "a b.txt", "./new2.txt", &uri_of(&ro), "word", "https://example.org/x.txt", "notes.txt"].iter().map(|s| s.to_string()).collect();
-    let shared = panpak_core::startfiles::share(&args, &d, "panpak.org.example.App", "/run/user/1000", &[], || Connection::session(Duration::from_secs(10)));
+    let shared = panpak_core::startfiles::share(&args, &d, "panpak.org.example.App", "/run/user/1000", std::slice::from_ref(&d), || Connection::session(Duration::from_secs(10)));
     assert_eq!(shared.args.len(), 6, "{:?}", shared.args);
     assert_eq!((shared.args[0].as_str(), shared.args[4].as_str(), shared.args[5].as_str()), ("--new-window", "word", "https://example.org/x.txt"));
     assert!(shared.args[1].starts_with("/run/user/1000/doc/") && shared.args[1].ends_with("/a b.txt"), "a path stays a path: {:?}", shared.args);
     assert!(shared.args[2].starts_with("/run/user/1000/doc/") && shared.args[2].ends_with("/new2.txt"), "{:?}", shared.args);
     assert!(shared.args[3].starts_with("file:///run/user/1000/doc/") && shared.args[3].ends_with("/ro.txt"), "an address stays an address: {:?}", shared.args);
     assert!(shared.args.iter().all(|a| !a.contains(d.to_string_lossy().as_ref())), "no path of the host reaches the app: {:?}", shared.args);
-    assert_eq!(shared.dropped, [format!("notes.txt: {}", docshare::LINK_MESSAGE)]);
+    assert_eq!(shared.dropped, [format!("notes.txt: the file you chose is a link to {}: choose the original file (this app can write in that folder)", rw.display())]);
     assert!(!d.join("new2.txt").exists(), "the new file appears when the app writes");
     let log = lab.take_log();
     assert_eq!(calls(&log, "AddFull").len(), 2, "one call for the writable file and one for the read-only one: {log:?}");

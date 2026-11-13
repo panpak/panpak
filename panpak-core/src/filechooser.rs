@@ -73,13 +73,15 @@ const OPTIONS: &[(&str, &str, &[Method])] = &[
     ("files", "aay", &[Method::SaveFiles]),
 ];
 
-/// A parent window as the portal documents it: `x11:<hex>` or `wayland:<handle>`, or empty.
+/// A parent window as the portal documents it: `x11:<id>` or `wayland:<handle>`, or empty. The handle is whatever the compositor made up: GNOME gives 32
+/// printable characters with punctuation and spaces (`wayland:WR59{Q`_1R>B nNso%~-Y8FWc1!a)gD~`, seen on the VM), so any printable ASCII is accepted. The value is
+/// only a D-Bus string handed to the portal, never a path, a name or a command.
 pub fn parent_ok(p: &str) -> bool {
     if p.is_empty() {
         return true;
     }
     let rest = p.strip_prefix("x11:").or_else(|| p.strip_prefix("wayland:"));
-    rest.is_some_and(|r| !r.is_empty() && r.len() <= 128 && r.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'))
+    rest.is_some_and(|r| !r.is_empty() && r.len() <= 128 && r.bytes().all(|b| (0x20..=0x7e).contains(&b)))
 }
 
 fn bytes_of(v: &Value) -> Option<Vec<u8>> {
@@ -374,6 +376,37 @@ mod tests {
         assert!(!w.writable);
     }
 
+    /// The call that GTK 4.18 sent for Ctrl+S in a new document on GNOME (taken from a core dump on the VM): the parent is the handle of the compositor, with
+    /// punctuation and a space; there is `current_name` and no `current_file`. It was refused by an earlier `parent_ok`, and the refusal crashed the app.
+    #[test]
+    fn the_save_call_of_gnome_with_the_real_handle_is_accepted() {
+        const HANDLE: &str = "wayland:WR59{Q`_1R>B nNso%~-Y8FWc1!a)gD~";
+        let opts = vec![entry("modal", Value::Bool(true)), entry("current_name", Value::str("")), entry("handle_token", Value::str("gtk94249923"))];
+        let c = parse_call(&raw("SaveFile", HANDLE, opts), DOC).unwrap();
+        assert_eq!(c.parent, HANDLE);
+        assert_eq!(c.opts.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["modal", "current_name"], "no current_file, and the token is the router's business");
+        assert!(parent_ok(HANDLE));
+        // Every handle of printable characters up to the length limit is accepted, and nothing longer, with a control character or above 0x7e.
+        let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+        for i in 0..200 {
+            let len = 1 + (i % 128);
+            let h: String = (0..len)
+                .map(|_| {
+                    x ^= x << 13;
+                    x ^= x >> 7;
+                    x ^= x << 17;
+                    (0x20 + (x % 95) as u8) as char
+                })
+                .collect();
+            assert!(parent_ok(&format!("wayland:{h}")) && parent_ok(&format!("x11:{h}")), "{h:?}");
+            assert!(parse_call(&raw("SaveFile", &format!("wayland:{h}"), vec![]), DOC).is_ok(), "{h:?}");
+        }
+        assert!(!parent_ok(&format!("wayland:{}", "a".repeat(129))) && parent_ok(&format!("wayland:{}", "a".repeat(128))));
+        for bad in ["wayland:", "x11:", "wayland", "Wayland:abc", "wayland:a\nb", "wayland:\u{80}", "wayland:\u{1b}[0m", "file:///x"] {
+            assert!(!parent_ok(bad), "{bad:?}");
+        }
+    }
+
     #[test]
     fn a_folder_the_app_names_must_be_a_place_it_already_sees() {
         let folder = |p: &str| parse_call(&raw("OpenFile", "", vec![entry("current_folder", bytes(p.as_bytes()))]), DOC).unwrap().opts.len();
@@ -385,7 +418,7 @@ mod tests {
 
     #[test]
     fn a_bad_call_is_refused() {
-        for (m, parent) in [("OpenFile", "file:///etc"), ("OpenFile", "x11:"), ("OpenFile", "x11:a b"), ("Nope", "")] {
+        for (m, parent) in [("OpenFile", "file:///etc"), ("OpenFile", "x11:"), ("OpenFile", "x11:a\tb"), ("OpenFile", "wayland:a\u{7f}"), ("OpenFile", "wayland:caf\u{e9}"), ("OpenFile", "gtk:abc"), ("Nope", "")] {
             assert!(parse_call(&raw(m, parent, vec![]), DOC).is_err(), "{m} {parent}");
         }
         assert!(parse_call(b"not a message", DOC).is_err());
@@ -443,6 +476,8 @@ mod tests {
         let opts = vec![entry("modal", Value::Bool(true)), entry("multiple", Value::Bool(true)), entry("accept_label", Value::str("Open")), entry("current_folder", bytes(b"/run/user/1000/doc/ab/x\0"))];
         std::fs::write(dir.join("open"), raw("OpenFile", "x11:1f", opts.clone())).unwrap();
         std::fs::write(dir.join("save"), raw("SaveFile", "wayland:abc", opts)).unwrap();
+        let gnome = vec![entry("modal", Value::Bool(true)), entry("current_name", Value::str(""))];
+        std::fs::write(dir.join("save-gnome-handle"), raw("SaveFile", "wayland:WR59{Q`_1R>B nNso%~-Y8FWc1!a)gD~", gnome)).unwrap();
         let d = result_dict(&["file:///run/user/1000/doc/a/x".to_string()], &[]);
         std::fs::write(dir.join("answer"), response_text(1, 0, Some(&d))).unwrap();
         std::fs::write(dir.join("payload"), request_payload(5, &raw("OpenFile", "", vec![]))).unwrap();

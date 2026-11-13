@@ -26,6 +26,8 @@ fn valid_unique(s: &str) -> bool {
 }
 
 /// The name of the daemon and its object.
+/// The Response code of a file dialog that did not give a file, whatever the reason: the answer of a dialog the user cancelled.
+const CANCELLED: u32 = 1;
 pub const BUS: &str = "org.freedesktop.DBus";
 const BUS_PATH: &str = "/org/freedesktop/DBus";
 pub const PORTAL: &str = "org.freedesktop.portal.Desktop";
@@ -1036,8 +1038,8 @@ impl<F> Router<F> {
             }
         }
         if busy {
-            // A second dialog while one is open: ended at once, with the answer of a dialog the user closed for another reason.
-            if let Some(raw) = self.response_signal(c, &handle, 2, Value::Array("{sv}".into(), Vec::new())) {
+            // A second dialog while one is open: ended at once, as a dialog that was cancelled (see `choose_done`).
+            if let Some(raw) = self.response_signal(c, &handle, CANCELLED, crate::filechooser::result_dict(&[], &[])) {
                 outs.push(app(c, raw));
             }
             outs.push(Out::Log("a second file dialog while one is open: refused".into()));
@@ -1079,7 +1081,9 @@ impl<F> Router<F> {
         true
     }
 
-    /// The actor answered: `code` 0 with the dictionary (checked), 1 for a dialog the user closed, 2 for anything else. A result for a dialog that was closed
+    /// The actor answered: `code` 0 with the dictionary (checked), anything else for a dialog that did not give a file. The app is always told "cancelled" (1)
+    /// with `uris` = an empty list in that case: GTK 4.18 (the VM) and 4.22 crash on a Save whose answer has no `uris` key, with any code (shown with a fake portal,
+    /// docs/FILE-CHOOSER.md section 5), and with the key they treat 1 and 2 alike as "dismissed". The reason is in the log of the runtime and in a notification, not in the answer. A result for a dialog that was closed
     /// by the app, or whose connection is gone, is dropped.
     pub fn choose_done(&mut self, token: u64, code: u32, dict: Option<Value>) -> Vec<Out<F>> {
         let mut outs = Vec::new();
@@ -1090,14 +1094,15 @@ impl<F> Router<F> {
             (0, Some(d)) => d,
             (0, None) => {
                 outs.push(Out::Log("the actor gave a file dialog answer that is not valid".into()));
-                if let Some(raw) = self.response_signal(c, &handle, 2, Value::Array("{sv}".into(), Vec::new())) {
+                if let Some(raw) = self.response_signal(c, &handle, CANCELLED, crate::filechooser::result_dict(&[], &[])) {
                     outs.push(app(c, raw));
                 }
                 return self.number_up(outs);
             }
-            _ => Value::Array("{sv}".into(), Vec::new()),
+            // No file: an empty list of addresses, not an empty dictionary (GTK 4.18 to 4.22 crash on a Save when `uris` is missing, whatever the code).
+            _ => crate::filechooser::result_dict(&[], &[]),
         };
-        if let Some(raw) = self.response_signal(c, &handle, code.min(2), dict) {
+        if let Some(raw) = self.response_signal(c, &handle, if code == 0 { 0 } else { CANCELLED }, dict) {
             outs.push(app(c, raw));
         }
         self.number_up(outs)
@@ -1541,7 +1546,37 @@ mod tests {
         let outs = chooser_call(&mut r, c, 41, "SaveFile", "tk8");
         let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
         let sig = apps(&r.choose_done(token, 1, None), c).remove(0);
-        assert_eq!((sig.body[0].clone(), sig.body[1].clone()), (Value::U32(1), Value::Array("{sv}".into(), vec![])));
+        assert_eq!((sig.body[0].clone(), sig.body[1].clone()), (Value::U32(1), crate::filechooser::result_dict(&[], &[])));
+    }
+
+    /// Whatever the actor says went wrong (2, or a code that does not exist), the app is told "cancelled" with an empty dictionary, never 2 and never a
+    /// dictionary: this is what GTK 4.18 handles (it crashed on 2 with an empty dictionary for a Save, found on the VM).
+    #[test]
+    fn a_dialog_that_gave_no_file_is_answered_as_cancelled_whatever_the_reason() {
+        let mut r = R::new(config());
+        let c = connect(&mut r, 5);
+        for (i, code) in [1u32, 2, 3, 99].into_iter().enumerate() {
+            let outs = chooser_call(&mut r, c, 70 + i as u32, "SaveFile", &format!("c{i}"));
+            let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
+            let sig = apps(&r.choose_done(token, code, None), c).remove(0);
+            assert_eq!((sig.body[0].clone(), sig.body[1].clone()), (Value::U32(1), crate::filechooser::result_dict(&[], &[])), "code {code}");
+        }
+    }
+
+    /// The call GNOME sends for Ctrl+S in a new document, with the real handle of the window (see `filechooser::tests`): the router hands it to the actor.
+    #[test]
+    fn the_save_call_of_gnome_with_its_real_handle_reaches_the_actor() {
+        let mut r = R::new(config());
+        let c = connect(&mut r, 5);
+        let opts = Value::Array("{sv}".into(), vec![
+            Value::Entry(Box::new(Value::str("handle_token")), Box::new(Value::variant(Value::str("gtk94249923")))),
+            Value::Entry(Box::new(Value::str("current_name")), Box::new(Value::variant(Value::str("")))),
+        ]);
+        let raw = call(80, PORTAL, PORTAL_PATH, crate::filechooser::IFACE, "SaveFile", "ssa{sv}", vec![Value::str("wayland:WR59{Q`_1R>B nNso%~-Y8FWc1!a)gD~"), Value::str("Salva un file"), opts]);
+        let outs = r.from_app(c, msg(raw));
+        let Some(Out::Choose { call: sent, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!("not handed to the actor") };
+        let parsed = crate::filechooser::parse_call(&sent, "/run/user/1000/doc/").unwrap();
+        assert_eq!(parsed.parent, "wayland:WR59{Q`_1R>B nNso%~-Y8FWc1!a)gD~");
     }
 
     #[test]
@@ -1550,11 +1585,11 @@ mod tests {
         let c = connect(&mut r, 5);
         let outs = chooser_call(&mut r, c, 50, "OpenFile", "a1");
         let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
-        // A second call: the handle, and Response 2 at once; nothing goes to the actor.
+        // A second call: the handle, and Response 1 (cancelled) at once; nothing goes to the actor.
         let outs = chooser_call(&mut r, c, 51, "OpenFile", "a2");
         assert!(!outs.iter().any(|o| matches!(o, Out::Choose { .. })));
         let got = apps(&outs, c);
-        assert_eq!((got[0].kind, got[1].member.as_deref(), got[1].body[0].clone()), (RETURN, Some("Response"), Value::U32(2)));
+        assert_eq!((got[0].kind, got[1].member.as_deref(), got[1].body[0].clone()), (RETURN, Some("Response"), Value::U32(1)));
         // The app closes the first request: the call is answered, and the result that comes later is dropped.
         let close = call(52, PORTAL, "/org/freedesktop/portal/desktop/request/1_5/a1", "org.freedesktop.portal.Request", "Close", "", vec![]);
         let outs = r.from_app(c, msg(close));
@@ -1578,21 +1613,21 @@ mod tests {
         // A method the router does not serve.
         let raw = call(61, PORTAL, PORTAL_PATH, crate::filechooser::IFACE, "Other", "ssa{sv}", vec![Value::str(""), Value::str(""), Value::Array("{sv}".into(), vec![])]);
         assert_eq!(apps(&r.from_app(c, msg(raw)), c)[0].error_name.as_deref(), Some("org.freedesktop.DBus.Error.NotSupported"));
-        // An answer with a key the router does not know, or too many files, is Response 2.
+        // An answer with a key the router does not know, or too many files, is Response 1 (cancelled): GTK does not survive a 2 with an empty dictionary.
         let outs = chooser_call(&mut r, c, 62, "OpenFile", "b1");
         let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
         let evil = Value::Array("{sv}".into(), vec![Value::Entry(Box::new(Value::str("uris")), Box::new(Value::variant(Value::Array("s".into(), vec![])))), Value::Entry(Box::new(Value::str("writable")), Box::new(Value::variant(Value::Bool(true))))]);
         let outs = r.choose_done(token, 0, Some(evil));
-        assert_eq!(apps(&outs, c)[0].body[0], Value::U32(2));
+        assert_eq!(apps(&outs, c)[0].body[0], Value::U32(1));
         let outs = chooser_call(&mut r, c, 63, "OpenFile", "b2");
         let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
         let many: Vec<String> = (0..65).map(|i| format!("file:///x/{i}")).collect();
         let refs: Vec<&str> = many.iter().map(String::as_str).collect();
-        assert_eq!(apps(&r.choose_done(token, 0, Some(dict(&refs))), c)[0].body[0], Value::U32(2));
+        assert_eq!(apps(&r.choose_done(token, 0, Some(dict(&refs))), c)[0].body[0], Value::U32(1));
         // A success without a dictionary is not a success.
         let outs = chooser_call(&mut r, c, 64, "SaveFile", "b3");
         let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
-        assert_eq!(apps(&r.choose_done(token, 0, None), c)[0].body[0], Value::U32(2));
+        assert_eq!(apps(&r.choose_done(token, 0, None), c)[0].body[0], Value::U32(1));
         // A connection that went away takes its dialog with it.
         let outs = chooser_call(&mut r, c, 65, "OpenFile", "b4");
         let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };

@@ -238,13 +238,16 @@ mod tests {
     }
 
     #[test]
-    fn a_link_is_dropped_with_the_message_before_the_bus_is_asked() {
+    fn a_link_the_app_could_have_made_is_dropped_with_the_message_before_the_bus_is_asked() {
         let d = scratch("link");
         std::fs::write(d.join("a.txt"), "x").unwrap();
         std::os::unix::fs::symlink(d.join("a.txt"), d.join("ln")).unwrap();
-        let r = share(&["ln".to_string()], &d, "panpak.x.y", "/run/user/1000", &[], || panic!("nothing to share, no bus"));
+        let r = share(&["ln".to_string()], &d, "panpak.x.y", "/run/user/1000", std::slice::from_ref(&d), || panic!("nothing to share, no bus"));
         assert!(r.args.is_empty());
-        assert_eq!(r.dropped, [format!("ln: {}", docshare::LINK_MESSAGE)]);
+        assert_eq!(r.dropped, [format!("ln: the file you chose is a link to {}: choose the original file (this app can write in that folder)", d.join("a.txt").display())]);
+        // In a folder the app cannot write the link is followed: the file is shared (here there is no bus, so it stays unshared with that reason).
+        let r = share(&["ln".to_string()], &d, "panpak.x.y", "/run/user/1000", &[], || anyhow::bail!("no session bus"));
+        assert!(r.dropped.iter().any(|m| m.contains("not shared") && m.contains("no session bus")), "{:?}", r.dropped);
         std::fs::remove_dir_all(&d).unwrap();
     }
 }
