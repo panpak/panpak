@@ -124,7 +124,7 @@ The theme files can reveal which software the user runs; they hold no secret.
 a fixed place in the home folder. The manifest validation refuses broad
 folders and a list of places that run code at login or hold credentials. The
 list is incomplete by nature: a path outside it is not thereby harmless, and
-`install` shows the line "Partial access to your home" so the user can judge.
+`install` lists the access at the High risk level, and the summary says "Partial isolation", so the user can judge.
 At start the stub refuses a path that is, or has above it, a symbolic link.
 Landlock ties each rule to the folder opened when the rules are built, so
 replacing a path by a link afterwards does not widen the access. An `rw` path is
@@ -276,8 +276,8 @@ default refused, opt-in works; signals to the parent still denied.
   would start a unit outside the sandbox. `sockets_allow` cannot change this
   below V9 (the stub refuses it there). On V9 the default is the opposite: a
   path socket is denied unless `sockets_allow` lists it. A package that lists
-  a bus socket makes `install` and `update` print "Full access to desktop
-  services (D-Bus): this app is not isolated". An app that does not list a bus
+  a bus socket makes `install` and `update` list "Use the message bus of your whole
+  desktop" at the High risk level, and the summary says "Partial isolation". An app that does not list a bus
   socket gets no bus, or, in the isolated view with a systemd user manager and
   `xdg-dbus-proxy`, the filtered bus below.
 
@@ -629,7 +629,7 @@ Status of the project: pre-beta.
 - **KL-14 `rw` home paths are open to the whole user session.** An `rw` path from
   `home_paths` or `xdg_dirs` is readable and writable by the app and by every other process
   of the user. The list of refused places is incomplete by nature. `install` shows
-  "Partial access to your home". See §2.2.
+  the access as High risk, with the summary "Partial isolation". See §2.2.
 
 **Network**
 

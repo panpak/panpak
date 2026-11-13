@@ -155,6 +155,35 @@ When an installed app starts:
 The format is specified in [PANPAK-FORMAT.md](PANPAK-FORMAT.md); the security model, with every known
 limit and its consequence, in [THREAT-MODEL.md](THREAT-MODEL.md).
 
+## What an app can ask for
+
+`install` and `update` show what a package asks for before anything is installed, in the language of the user (English and Italian for now), and `panpak inspect <package or app id>` shows it
+again with a sentence on what each permission means. Every permission has a level, always written in words and with a mark (`[ ]` Normal, `[!]` Attention, `[!!]` High risk). The summary says
+"Full isolation" when nothing is High risk, and "Partial isolation" with the reason when something is. The list also says what the app cannot do. Only what the sandbox keeps is listed; the table
+below is printed by `panpak permissions --markdown`, and a test fails when it is out of date.
+
+<!-- permissions:start -->
+| Level | What the app may do | What it means |
+|---|---|---|
+| \[!!\] High risk | See what other apps show and what you type in them (X11) | X11 has no walls between apps: this app can read the windows and the keyboard input of the others. |
+| \[!!\] High risk | Use the message bus of your whole desktop | It can talk to every service of your session, also to start programs and to read what other apps publish. The sandbox does not isolate it any more. |
+| \[!!\] High risk | Read, change and delete *x* in your home folder | A place in your home folder that belongs to you, not to the app, is open to it for writing. |
+| \[!!\] High risk | Read *x* in your home folder | A place in your home folder that belongs to you, not to the app, is open to it for reading. |
+| \[!\] Attention | Connect to the network on the ports *x* | It can reach any computer on these TCP ports, also on the internet. The filter is by port, not by address. |
+| \[!\] Attention | Accept connections from the network on the ports *x* | Other computers can connect to this app on these TCP ports. |
+| \[!\] Attention | Use the network | It can use the network. The ports are not listed by the package. |
+| \[!\] Attention | Play sound and use the microphone | It can use the sound system of your session: play sounds and record from the microphone. |
+| \[!\] Attention | Read, change and delete the files in your *x* folder | The folder is the one of your user-dirs.dirs, not a copy. |
+| \[!\] Attention | Read the files in your *x* folder | The folder is the one of your user-dirs.dirs. The app cannot change it. |
+| \[!\] Attention | Talk to the local service *x* | It can connect to this Unix socket, and so to the program that listens on it. |
+| \[ \] Normal | Open the links that start with *x*: | The links of this kind, in your browser or in other apps, are given to this app. |
+| \[ \] Normal | Show notifications | It can show messages in the notification area of your desktop, also while it works in the background. |
+| \[ \] Normal | Put an icon in the notification area | It can show an icon and a menu there, and it sees which icons are there. |
+| \[ \] Normal | Be controlled by the media keys | The shell of your desktop and the media keys of your keyboard can play, pause and skip in it. |
+<!-- permissions:end -->
+
+A new language is a file `po/<language>.po`: no code changes. A sentence without a translation is shown in English.
+
 ## Panpak and the others
 
 |  | Panpak | AppImage | Flatpak | Snap |

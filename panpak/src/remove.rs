@@ -96,13 +96,15 @@ struct PkgInfo {
     name: String,
     version: String,
     root: String,
+    perms: Vec<panpak_core::permissions::Item>,
 }
 
 fn read_pkg(packages: &Dir, name: &OsStr) -> Option<PkgInfo> {
     let mut f = packages.open_file(name).ok()?;
     let ft = panpak_core::read_footer(&mut f).ok()?;
     let (m, _) = panpak_core::verify(&mut f, &ft).ok()?;
-    Some(PkgInfo { id: m.app.id, name: m.app.name, version: m.app.version, root: panpak_core::hex(&ft.root) })
+    let perms = panpak_core::permissions::items(&m);
+    Some(PkgInfo { id: m.app.id, name: m.app.name, version: m.app.version, root: panpak_core::hex(&ft.root), perms })
 }
 
 fn package_names(packages: &Option<Dir>) -> Vec<String> {
@@ -125,6 +127,8 @@ struct Facts {
     tree_bytes: u64,
     data_bytes: Option<u64>,
     cache_bytes: Option<u64>,
+    /// What the installed version asks for; `None` when there is no readable current package.
+    perms: Option<Vec<panpak_core::permissions::Item>>,
     has_launcher: bool,
     has_desktop: bool,
     has_icon: bool,
@@ -195,6 +199,7 @@ impl Ctx {
             tree_bytes: 0,
             data_bytes: None,
             cache_bytes: None,
+            perms: None,
             has_launcher: false,
             has_desktop: false,
             has_icon: false,
@@ -242,6 +247,7 @@ impl Ctx {
                     if current_pkg.as_deref() == Some(n.as_str()) {
                         f.name = Some(i.name.clone());
                         f.version = Some(i.version.clone());
+                        f.perms = Some(i.perms.clone());
                     }
                     if !f.roots.contains(&i.root) {
                         f.roots.push(i.root);
@@ -303,7 +309,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
             let opt = |v: Option<u64>| v.map_or("null".to_string(), |n| n.to_string());
             let strs = |v: &[String]| format!("[{}]", v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(","));
             out.push_str(&format!(
-                "\n  {{\"id\":{},\"name\":{},\"version\":{},\"status\":{},\"problems\":{},\"package_bytes\":{},\"tree_bytes\":{},\"data_bytes\":{},\"cache_bytes\":{},\"packages\":{}}}",
+                "\n  {{\"id\":{},\"name\":{},\"version\":{},\"status\":{},\"problems\":{},\"package_bytes\":{},\"tree_bytes\":{},\"data_bytes\":{},\"cache_bytes\":{},\"permissions\":{},\"packages\":{}}}",
                 json_str(&f.id),
                 f.name.as_deref().map_or("null".into(), json_str),
                 f.version.as_deref().map_or("null".into(), json_str),
@@ -313,6 +319,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
                 f.tree_bytes,
                 opt(f.data_bytes),
                 opt(f.cache_bytes),
+                f.perms.as_deref().map_or("null".to_string(), panpak_core::permissions::items_json),
                 strs(&f.packages),
             ));
         }
@@ -324,7 +331,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
         println!("no apps installed. Install one with `panpak install <file.panpak>`.");
         return Ok(());
     }
-    let rows: Vec<[String; 6]> = facts
+    let rows: Vec<[String; 7]> = facts
         .iter()
         .map(|f| {
             let status = if f.problems.is_empty() { f.status().to_string() } else { format!("{}: {}", f.status(), f.problems.join(", ")) };
@@ -335,11 +342,12 @@ pub fn cmd_list(json: bool) -> Result<()> {
                 clean(f.version.as_deref().unwrap_or("-")),
                 if f.in_apps || !f.packages.is_empty() { human(f.package_bytes + f.tree_bytes) } else { "-".into() },
                 if f.data_bytes.is_some() || f.cache_bytes.is_some() { human(data) } else { "-".into() },
+                f.perms.as_deref().map_or("-".to_string(), |p| panpak_core::permissions::short_summary(panpak_core::i18n::current(), p)),
                 clean(&status),
             ]
         })
         .collect();
-    let head = ["ID", "NAME", "VERSION", "APP", "DATA", "STATUS"];
+    let head = ["ID", "NAME", "VERSION", "APP", "DATA", "PERMISSIONS", "STATUS"];
     let mut w = head.map(str::len);
     for r in &rows {
         for (i, c) in r.iter().enumerate() {
@@ -347,7 +355,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
         }
     }
     let line = |r: &[String]| {
-        let cells: Vec<String> = r.iter().enumerate().map(|(i, c)| if i == 5 { c.clone() } else { format!("{c:<width$}", width = w[i]) }).collect();
+        let cells: Vec<String> = r.iter().enumerate().map(|(i, c)| if i == 6 { c.clone() } else { format!("{c:<width$}", width = w[i]) }).collect();
         println!("{}", cells.join("  "));
     };
     line(&head.map(String::from));

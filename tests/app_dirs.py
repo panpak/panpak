@@ -268,7 +268,8 @@ def main():
         '[[permissions.home_paths]]\npath = "Missing/Dir"\naccess = "rw"\n'
         '[[permissions.home_paths]]\npath = "Absent"\naccess = "ro"\n')
     assert p.returncode == 0, p.stdout + p.stderr
-    assert 'Partial access to your home: Notes (rw), Docs (ro), Missing/Dir (rw), Absent (ro)' in p.stdout, p.stdout
+    for want in ('Read, change and delete Notes in your home folder', 'Read Docs in your home folder', 'Read, change and delete Missing/Dir in your home folder', 'Read Absent in your home folder'):
+        assert want in p.stdout, (want, p.stdout)
     rc, rep, err = lab.run('tail')
     assert rc == 0, err
     expect(rep, write_notes='ok', read_notes='ok', read_docs='ok', write_docs='deny', write_home_file='deny',
@@ -303,7 +304,7 @@ def main():
 
     # 5b. A package that asks for the bus socket gets a plain warning at install.
     p = lab.install('[permissions]\nsockets_allow = ["$XDG_RUNTIME_DIR/bus"]\n')
-    assert p.returncode == 0 and 'WARNING: Full access to desktop services (D-Bus): this app is not isolated' in p.stdout, p.stdout
+    assert p.returncode == 0 and 'Use the message bus of your whole desktop' in p.stdout, p.stdout
     lab.install('')
     print('bus warning: ok')
 
@@ -361,7 +362,7 @@ def main():
     url = f'http://127.0.0.1:{port}/remote.panpak'
     p = lab.cli('install', '--yes', '--runtime', lab.stub, lab.pack('', url), check=False)
     assert p.returncode == 0, p.stdout + p.stderr
-    assert 'permissions: none beyond the private app folders' in p.stdout, p.stdout
+    assert 'asks for more than' not in p.stdout and 'isolation layers:' in p.stdout, p.stdout
     server = subprocess.Popen([sys.executable, str(ROOT / 'tests/range_server.py'), str(serve), str(port), 'normal'],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
@@ -376,28 +377,28 @@ def main():
             p = lab.cli(*update, *extra, ID, check=False)
             assert p.returncode != 0 and 'PANPAK-E5004' in p.stderr, (extra, p.stdout + p.stderr)
             assert '--accept-new-permissions' in p.stderr and '--yes does not accept' in p.stderr, p.stderr
-            assert 'asks for permissions' in p.stdout and 'listen on TCP port 2658' in p.stdout and 'access to Notes in your home (rw)' in p.stdout, p.stdout
+            assert 'asks for more than the version you have' in p.stdout and 'on the ports 2658' in p.stdout and 'Read, change and delete Notes in your home folder' in p.stdout and 'you stay on the current version' in p.stdout, p.stdout
             assert current.readlink() == before, 'update was published without an explicit yes'
         p = lab.cli(*update, '--accept-new-permissions', ID)
         assert (warning in p.stdout) == partial, p.stdout
-        assert current.readlink() != before and 'Partial access to your home: Notes (rw)' in p.stdout, p.stdout
+        assert current.readlink() != before and 'Read, change and delete Notes in your home folder' in p.stdout, p.stdout
         before = current.readlink()
         shutil.copy(lab.pack(more, url), serve / 'remote.panpak')
         p = lab.cli(*update, ID)
-        assert current.readlink() != before and 'asks for permissions' not in p.stdout, p.stdout
+        assert current.readlink() != before and 'asks for more than' not in p.stdout, p.stdout
         # install over an installed app follows the same rule.
         richer = more + '[[permissions.home_paths]]\npath = "Docs"\naccess = "ro"\n'
         pkg2 = lab.pack(richer, url)
         before = current.readlink()
         for extra in ([], ['--yes']):
             p = lab.cli('install', *extra, '--runtime', lab.stub, pkg2, check=False)
-            assert p.returncode != 0 and 'PANPAK-E5004' in p.stderr and 'access to Docs in your home (ro)' in p.stdout, (extra, p.stdout + p.stderr)
+            assert p.returncode != 0 and 'PANPAK-E5004' in p.stderr and 'Read Docs in your home folder' in p.stdout, (extra, p.stdout + p.stderr)
             assert current.readlink() == before, 'install replaced the app without an explicit yes'
         p = lab.cli('install', '--yes', '--accept-new-permissions', '--runtime', lab.stub, pkg2)
         assert current.readlink() != before
         before = current.readlink()
         p = lab.cli('install', '--yes', '--runtime', lab.stub, pkg2)
-        assert 'asks for permissions' not in p.stdout, p.stdout
+        assert 'asks for more than' not in p.stdout, p.stdout
         # The kernel warning follows the Landlock level of this machine.
         doctor = lab.cli('doctor', check=False).stdout
         print('doctor:', next(l for l in doctor.splitlines() if 'local sockets' in l))

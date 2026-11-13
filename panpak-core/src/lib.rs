@@ -7,6 +7,8 @@ pub mod dbus;
 pub mod desktop;
 pub mod frames;
 mod elfsym;
+pub mod i18n;
+pub mod permissions;
 pub mod pkgenv;
 mod errors;
 mod layout;
@@ -30,8 +32,8 @@ pub use userdirs::{
 };
 pub use errors::{code_of, coded, render, ErrorCode, PanpakError};
 pub use layout::{
-    added_permissions, app_dirs, describe_permissions, fonts_conf, is_bus_socket, readonly_user_paths, system_cache_paths, xdg_search_dirs, AppDirs,
-    allows_desktop_bus, allows_session_bus, allows_system_bus, is_system_bus_socket, socket_isolation, IsolationReport, SocketIsolation, ABSTRACT_SOCKETS_WARNING, DESKTOP_BUS_WARNING, FONTS_CONF_MARKER,
+    app_dirs, fonts_conf, is_bus_socket, readonly_user_paths, system_cache_paths, xdg_search_dirs, AppDirs,
+    allows_desktop_bus, allows_session_bus, allows_system_bus, is_system_bus_socket, socket_isolation, IsolationReport, SocketIsolation, ABSTRACT_SOCKETS_WARNING, FONTS_CONF_MARKER,
     PARTIAL_ISOLATION_WARNING,
 };
 pub use view::{

@@ -361,7 +361,7 @@ widget reach the player through it (§9.5). The app never owns a name on the hos
 
 **`permissions.dbus_own`** (list of strings, at most 8, each at most once). Before step 13p: names the app may own
 on the session bus besides its own `app.id`. Since 13p every name the app takes is on its private bus (§9.5) and none is on the host bus, so the
-field has no effect; it is still validated, shown at install and counted as before. Each is a D-Bus well-known name of at least three
+field has no effect; it is still validated, but it is not a permission any more: `install` and `update` do not show it and do not ask about it. Each is a D-Bus well-known name of at least three
 elements (`[A-Za-z_][A-Za-z0-9_]*` separated by `.`, at most 255 bytes), with no `*`. A name is refused
 by `pack`, `install`, `update` and the verifier when it is, or is below, one of these: `org.freedesktop`,
 `org.gtk`, `org.gnome.Shell`, `org.gnome.SessionManager`, `org.gnome.Mutter`, `org.gnome.SettingsDaemon`,

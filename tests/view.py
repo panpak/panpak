@@ -533,7 +533,7 @@ def main():
 
         # 3. Audio only with the permission.
         p = lab.install('[permissions]\naudio = true\n')
-        assert 'audio: the PipeWire and PulseAudio sockets' in p.stdout, p.stdout
+        assert 'Play sound and use the microphone' in p.stdout, p.stdout
         if view_here:
             _, rep = run_report(lab, [], mask=False)
             check(rep, sock_pipewire='ok', sock_pulse='ok', sock_bus='absent', sock_wayland='ok')
@@ -542,7 +542,7 @@ def main():
         # 3b. Home paths come back into the empty home, as declared.
         p = lab.install('[permissions]\n[[permissions.home_paths]]\npath = "Notes"\naccess = "rw"\n'
                         '[[permissions.home_paths]]\npath = "Docs"\naccess = "ro"\n')
-        assert 'Partial access to your home: Notes (rw), Docs (ro)' in p.stdout, p.stdout
+        assert 'Read, change and delete Notes in your home folder' in p.stdout and 'Read Docs in your home folder' in p.stdout, p.stdout
         if view_here:
             _, rep = run_report(lab, [], mask=False)
             check(rep, read_notes='ok', write_notes='ok', read_docs_ro='ok', write_docs_ro='err30', sock_ssh_cm='absent',
@@ -553,7 +553,7 @@ def main():
 
         # 4. A listed bus socket is the one thing from the session that appears.
         p = lab.install('[permissions]\nsockets_allow = ["$XDG_RUNTIME_DIR/bus"]\n')
-        assert 'Unix socket: $XDG_RUNTIME_DIR/bus' in p.stdout and 'not isolated' in p.stdout, p.stdout
+        assert 'Use the message bus of your whole desktop' in p.stdout and 'High risk' in p.stdout, p.stdout
         if view_here:
             _, rep = run_report(lab, [], mask=False)
             check(rep, sock_bus='ok', sock_pipewire='absent', sock_ssh_agent='absent', sock_systemd_private='absent')
@@ -761,7 +761,7 @@ def main():
         # 6e. URL schemes: the desktop entry declares them, the desktop learns of them, the launcher gets the address.
         p = lab.install('[desktop]\nschemes = ["panpaktest", "panpak-two"]\n')
         assert p.returncode == 0, p.stdout + p.stderr
-        assert 'URL scheme panpaktest' in p.stdout and 'URL scheme panpak-two' in p.stdout, p.stdout
+        assert 'Open the links that start with panpaktest:' in p.stdout and 'Open the links that start with panpak-two:' in p.stdout, p.stdout
         entry = (h / f'.local/share/applications/panpak.{app_dirs.ID}.desktop').read_text()
         assert 'MimeType=x-scheme-handler/panpaktest;x-scheme-handler/panpak-two;\n' in entry, entry
         exec_line = next(l for l in entry.splitlines() if l.startswith('Exec='))

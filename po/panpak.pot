@@ -1,0 +1,169 @@
+# Template of the translations of Panpak. Written by the test `template_matches_the_messages` (PANPAK_UPDATE_POT=1).
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "A place in your home folder that belongs to you, not to the app, is open to it for reading."
+msgstr ""
+
+msgid "A place in your home folder that belongs to you, not to the app, is open to it for writing."
+msgstr ""
+
+msgid "Accept connections from the network on the ports {subject}"
+msgstr ""
+
+msgid "Accept them?"
+msgstr ""
+
+msgid "Attention"
+msgstr ""
+
+msgid "Be controlled by the media keys"
+msgstr ""
+
+msgid "Connect to the network on the ports {subject}"
+msgstr ""
+
+msgid "Full isolation"
+msgstr ""
+
+msgid "High risk"
+msgstr ""
+
+msgid "If you do not accept, you stay on the current version."
+msgstr ""
+
+msgid "It asks for nothing beyond its own private folders."
+msgstr ""
+
+msgid "It can connect to this Unix socket, and so to the program that listens on it."
+msgstr ""
+
+msgid "It can reach any computer on these TCP ports, also on the internet. The filter is by port, not by address."
+msgstr ""
+
+msgid "It can show an icon and a menu there, and it sees which icons are there."
+msgstr ""
+
+msgid "It can show messages in the notification area of your desktop, also while it works in the background."
+msgstr ""
+
+msgid "It can talk to every service of your session, also to start programs and to read what other apps publish. The sandbox does not isolate it any more."
+msgstr ""
+
+msgid "It can use the network. The ports are not listed by the package."
+msgstr ""
+
+msgid "It can use the sound system of your session: play sounds and record from the microphone."
+msgstr ""
+
+msgid "It cannot control your other apps or the services of your desktop."
+msgstr ""
+
+msgid "It cannot read your passwords, keys or the saved logins of other programs."
+msgstr ""
+
+msgid "It cannot record sound."
+msgstr ""
+
+msgid "It cannot see your documents, photos or other personal files."
+msgstr ""
+
+msgid "It cannot see your files outside the folders above."
+msgstr ""
+
+msgid "It cannot use the internet or the network."
+msgstr ""
+
+msgid "It cannot watch other apps or read what you type in them."
+msgstr ""
+
+msgid "Normal"
+msgstr ""
+
+msgid "Open the links that start with {subject}:"
+msgstr ""
+
+msgid "Other computers can connect to this app on these TCP ports."
+msgstr ""
+
+msgid "Partial isolation:"
+msgstr ""
+
+msgid "Play sound and use the microphone"
+msgstr ""
+
+msgid "Put an icon in the notification area"
+msgstr ""
+
+msgid "Read the files in your {subject} folder"
+msgstr ""
+
+msgid "Read {subject} in your home folder"
+msgstr ""
+
+msgid "Read, change and delete the files in your {subject} folder"
+msgstr ""
+
+msgid "Read, change and delete {subject} in your home folder"
+msgstr ""
+
+msgid "See what other apps show and what you type in them (X11)"
+msgstr ""
+
+msgid "Show notifications"
+msgstr ""
+
+msgid "Talk to the local service {subject}"
+msgstr ""
+
+msgid "The folder is the one of your user-dirs.dirs, not a copy."
+msgstr ""
+
+msgid "The folder is the one of your user-dirs.dirs. The app cannot change it."
+msgstr ""
+
+msgid "The links of this kind, in your browser or in other apps, are given to this app."
+msgstr ""
+
+msgid "The shell of your desktop and the media keys of your keyboard can play, pause and skip in it."
+msgstr ""
+
+msgid "This package asks for more than the version you have:"
+msgstr ""
+
+msgid "This update asks for more than the version you have:"
+msgstr ""
+
+msgid "Use the message bus of your whole desktop"
+msgstr ""
+
+msgid "Use the network"
+msgstr ""
+
+msgid "What it can do:"
+msgstr ""
+
+msgid "What it cannot do:"
+msgstr ""
+
+msgid "X11 has no walls between apps: this app can read the windows and the keyboard input of the others."
+msgstr ""
+
+msgid "it can talk to every service of your desktop"
+msgstr ""
+
+msgid "it can watch other apps (X11)"
+msgstr ""
+
+msgid "it reaches your home folder"
+msgstr ""
+
+msgid "none"
+msgstr ""
+
+msgid "{n} permission"
+msgid_plural "{n} permissions"
+msgstr[0] ""
+msgstr[1] ""

@@ -32,7 +32,7 @@ fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
-  panpak open <app-id> [file] [--write | --write-rename]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
+  panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
 fn agent_for(url: &str, allow_insecure: bool, timeout_secs: u64) -> Result<ureq::Agent> {
@@ -304,8 +304,8 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     let new_icons = icons::read_from_package(&mut vf, &vraw, &vman)?;
     icons::check_destinations(app_id, &new_icons)?;
     // New permissions need a yes before the update is published (current stays on a no).
-    print_permissions(&vman);
-    let added = panpak_core::added_permissions(&old_man, &vman);
+    print_isolation(&vman);
+    let added = panpak_core::permissions::added(&old_man, &vman);
     if let Err(e) = accept_new_permissions(&added, yes, accept_new, "update") {
         let _ = fs::remove_file(&tmp);
         return Err(e);
@@ -2013,22 +2013,21 @@ fn bus_filter_state(view: bool, perms: Option<&panpak_core::Permissions>) -> Str
     }
 }
 
-/// Print what the package may do: permissions and extra start arguments or variables.
+/// How the permissions are written on this terminal.
+fn perm_style() -> panpak_core::permissions::Style {
+    panpak_core::permissions::Style::detect(std::io::IsTerminal::is_terminal(&std::io::stdout()))
+}
+
+/// Print what the package may do and may not do, from the table of permissions, then how it is isolated and its extra start arguments.
 fn print_permissions(man: &panpak_core::Manifest) {
-    let lines = panpak_core::describe_permissions(man);
-    if lines.is_empty() {
-        println!("permissions: none beyond the private app folders");
-    } else {
-        println!("permissions:");
-        for l in &lines {
-            // Warnings stand out: no indent.
-            if l.starts_with("WARNING:") {
-                println!("{l}");
-            } else {
-                println!("  {l}");
-            }
-        }
+    for l in panpak_core::permissions::render_block(panpak_core::i18n::current(), perm_style(), man) {
+        println!("{l}");
     }
+    print_isolation(man);
+}
+
+/// Print how the package is isolated on this machine, and its extra start arguments and variables.
+fn print_isolation(man: &panpak_core::Manifest) {
     let view = panpak_core::view_status();
     let iso = panpak_core::socket_isolation(panpak_core::detect_abi().ok(), man.permissions.as_ref(), view.usable());
     println!("isolation layers: {}", iso.layers());
@@ -2050,16 +2049,67 @@ fn print_permissions(man: &panpak_core::Manifest) {
     }
 }
 
+/// `panpak inspect [--json] <package or app id>`: what a package is, who signed it, what it may do and may not do, and how it is isolated.
+fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
+    use panpak_core::permissions as perms;
+    let given = Path::new(arg);
+    let path = if given.is_file() { given.to_path_buf() } else { store_dir()?.join("apps").join(arg).join("current") };
+    ensure_code!(path.exists(), ErrorCode::E5001, "{arg}: not a package file and not an installed app (see `panpak list`)");
+    let mut f = File::open(&path).with_context(|| format!("open {}", path.display()))?;
+    let ft = panpak_core::read_footer(&mut f)?;
+    let (man, _) = panpak_core::verify(&mut f, &ft)?;
+    let key = man.update.as_ref().map(|u| u.key.clone()).unwrap_or_default();
+    let fp = panpak_core::parse_pubkey(&key).map(|vk| panpak_core::fingerprint(&vk)).unwrap_or_else(|_| "?".into());
+    let (lang, style) = (panpak_core::i18n::current(), perm_style());
+    let items = perms::items_in(lang, &man);
+    if json {
+        let q = |s: &str| format!("{s:?}");
+        println!(
+            "{{\"id\":{},\"name\":{},\"version\":{},\"key_fingerprint\":{},\"isolation\":{},\"permissions\":{}}}",
+            q(&man.app.id),
+            q(&man.app.name),
+            q(&man.app.version),
+            q(&fp),
+            q(if perms::top_level(&items) == Some(perms::Level::High) { "partial" } else { "full" }),
+            perms::items_json(&items)
+        );
+        return Ok(());
+    }
+    println!("{} {} ({})", man.app.name, man.app.version, man.app.id);
+    println!("signed with the key {fp}");
+    if let Some(o) = &man.origin {
+        println!("converted from {} (NOT verified by the author; signed by the converter, not upstream)", o.converted_from);
+    }
+    println!();
+    let lines = perms::render_block(lang, style, &man);
+    let mut shown = items.iter();
+    for l in &lines {
+        println!("{l}");
+        // The sentence of each permission is followed by what it means.
+        if l.starts_with("  ") && !l.starts_with("  - ") {
+            if let Some(it) = shown.next() {
+                println!("        {}", it.detail);
+            }
+        }
+    }
+    println!();
+    print_isolation(&man);
+    Ok(())
+}
+
 /// New permissions are never accepted by `--yes` (that flag is for the key of a new app).
 /// They need an answer at a terminal, or `--accept-new-permissions`.
-fn accept_new_permissions(added: &[String], yes: bool, accept: bool, what: &str) -> Result<()> {
+fn accept_new_permissions(added: &[panpak_core::permissions::Item], yes: bool, accept: bool, what: &str) -> Result<()> {
+    use panpak_core::i18n::tr;
     if added.is_empty() {
         return Ok(());
     }
-    println!("WARNING: this {what} asks for permissions the installed version did not have:");
+    let (lang, style) = (panpak_core::i18n::current(), perm_style());
+    println!("{}", if what == "update" { tr("This update asks for more than the version you have:") } else { tr("This package asks for more than the version you have:") });
     for a in added {
-        println!("  {a}");
+        println!("  {}", panpak_core::permissions::render_item(lang, style, a));
     }
+    println!("{}", tr("If you do not accept, you stay on the current version."));
     if accept {
         return Ok(());
     }
@@ -2069,7 +2119,7 @@ fn accept_new_permissions(added: &[String], yes: bool, accept: bool, what: &str)
         ErrorCode::E5004,
         "new permissions need your confirmation: --yes does not accept them. Run the command at a terminal and answer the question, or pass --accept-new-permissions after reading the list above"
     );
-    confirm("Accept them?", false, ErrorCode::E1003, "new permissions")
+    confirm(&tr("Accept them?"), false, ErrorCode::E1003, "new permissions")
 }
 
 /// The manifest of the version installed now, if there is one.
@@ -2153,11 +2203,11 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     if pin.exists() {
         let old = fs::read_to_string(&pin)?;
         ensure_code!(old.trim() == key.trim(), ErrorCode::E1004, "key DIFFERS from TOFU pin: possible attack or changed author; manual reinstall required");
-        print_permissions(&man);
+        print_isolation(&man);
         print_xdg_dirs(&xdg_found, &xdg_problems);
         // Installing over an installed app is an update: new permissions need a yes.
         if let Some(old) = installed_manifest(&appdir) {
-            accept_new_permissions(&panpak_core::added_permissions(&old, &man), yes, accept_new, "package")?;
+            accept_new_permissions(&panpak_core::permissions::added(&old, &man), yes, accept_new, "package")?;
         }
     } else {
         println!("app: {} {} ({})", man.app.id, man.app.name, man.app.version);
@@ -2599,7 +2649,7 @@ fn generic_code(sub: Option<&str>) -> ErrorCode {
         Some("pack" | "convert" | "dump-index" | "dump-manifest" | "dbus-rules") => ErrorCode::E0000,
         Some("keygen" | "release" | "install-runtime") => ErrorCode::E1000,
         Some("init" | "build") => ErrorCode::E6000,
-        Some("install" | "rollback" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove") => ErrorCode::E2000,
+        Some("install" | "rollback" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove" | "inspect" | "permissions") => ErrorCode::E2000,
         Some("update") => ErrorCode::E4000,
         _ => ErrorCode::E5000,
     }
@@ -2840,6 +2890,32 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             }
             Ok(())
         }
+        Some("inspect") => {
+            let (mut json, mut target) = (false, None);
+            for a in &args[2..] {
+                match a.as_str() {
+                    "--json" => json = true,
+                    x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    x if target.is_none() => target = Some(x),
+                    _ => bail_code!(ErrorCode::E5001, "inspect takes one package or app id\n{usage}", usage = usage()),
+                }
+            }
+            cmd_inspect(target.ok_or_else(|| coded(ErrorCode::E5002, "inspect [--json] <package or app id>"))?, json)
+        }
+        Some("permissions") => match args.get(2).map(String::as_str) {
+            Some("--markdown") if args.len() == 3 => {
+                print!("{}", panpak_core::permissions::markdown());
+                Ok(())
+            }
+            None => {
+                let lang = panpak_core::i18n::current();
+                for r in panpak_core::permissions::ROWS {
+                    println!("{:<16} {:<10} {}", r.id, r.level.word(lang), panpak_core::i18n::tr(r.text).replace("{subject}", "..."));
+                }
+                Ok(())
+            }
+            Some(x) => bail_code!(ErrorCode::E5001, "unknown argument {x}\n{usage}", usage = usage()),
+        },
         Some("list") => {
             let mut json = false;
             for a in &args[2..] {

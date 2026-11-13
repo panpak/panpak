@@ -1,0 +1,170 @@
+# Italian translation of Panpak.
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: it\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "A place in your home folder that belongs to you, not to the app, is open to it for reading."
+msgstr "Un posto della tua cartella personale che è tuo, non dell'app, è aperto all'app in lettura."
+
+msgid "A place in your home folder that belongs to you, not to the app, is open to it for writing."
+msgstr "Un posto della tua cartella personale che è tuo, non dell'app, è aperto all'app in scrittura."
+
+msgid "Accept connections from the network on the ports {subject}"
+msgstr "Accettare connessioni dalla rete sulle porte {subject}"
+
+msgid "Attention"
+msgstr "Attenzione"
+
+msgid "Be controlled by the media keys"
+msgstr "Essere controllata dai tasti multimediali"
+
+msgid "Connect to the network on the ports {subject}"
+msgstr "Connettersi alla rete sulle porte {subject}"
+
+msgid "Full isolation"
+msgstr "Isolamento completo"
+
+msgid "High risk"
+msgstr "Rischio alto"
+
+msgid "It asks for nothing beyond its own private folders."
+msgstr "Non chiede nulla oltre alle proprie cartelle private."
+
+msgid "It can connect to this Unix socket, and so to the program that listens on it."
+msgstr "Può collegarsi a questo socket Unix, e quindi al programma che vi ascolta."
+
+msgid "It can reach any computer on these TCP ports, also on the internet. The filter is by port, not by address."
+msgstr "Può raggiungere qualsiasi computer su queste porte TCP, anche su internet. Il filtro è per porta, non per indirizzo."
+
+msgid "It can show an icon and a menu there, and it sees which icons are there."
+msgstr "Vi può mostrare un'icona e un menu, e vede quali icone ci sono."
+
+msgid "It can show messages in the notification area of your desktop, also while it works in the background."
+msgstr "Può mostrare messaggi nell'area di notifica del tuo desktop, anche mentre lavora in secondo piano."
+
+msgid "It can talk to every service of your session, also to start programs and to read what other apps publish. The sandbox does not isolate it any more."
+msgstr "Può parlare con ogni servizio della tua sessione, anche per avviare programmi e leggere ciò che le altre app pubblicano. Il sandbox non la isola più."
+
+msgid "It can use the network. The ports are not listed by the package."
+msgstr "Può usare la rete. Le porte non sono elencate dal pacchetto."
+
+msgid "It can use the sound system of your session: play sounds and record from the microphone."
+msgstr "Può usare il sistema audio della tua sessione: riprodurre suoni e registrare dal microfono."
+
+msgid "It cannot control your other apps or the services of your desktop."
+msgstr "Non può controllare le altre app né i servizi del tuo desktop."
+
+msgid "It cannot read your passwords, keys or the saved logins of other programs."
+msgstr "Non può leggere le tue password, le chiavi o gli accessi salvati di altri programmi."
+
+msgid "It cannot record sound."
+msgstr "Non può registrare l'audio."
+
+msgid "It cannot see your documents, photos or other personal files."
+msgstr "Non può vedere i tuoi documenti, le foto o altri file personali."
+
+msgid "It cannot see your files outside the folders above."
+msgstr "Non può vedere i tuoi file fuori dalle cartelle indicate sopra."
+
+msgid "It cannot use the internet or the network."
+msgstr "Non può usare internet né la rete."
+
+msgid "It cannot watch other apps or read what you type in them."
+msgstr "Non può osservare le altre app né leggere ciò che scrivi in esse."
+
+msgid "Normal"
+msgstr "Normale"
+
+msgid "Open the links that start with {subject}:"
+msgstr "Aprire i link che iniziano con {subject}:"
+
+msgid "Other computers can connect to this app on these TCP ports."
+msgstr "Altri computer possono collegarsi a questa app su queste porte TCP."
+
+msgid "Partial isolation:"
+msgstr "Isolamento parziale:"
+
+msgid "Play sound and use the microphone"
+msgstr "Riprodurre l'audio e usare il microfono"
+
+msgid "Put an icon in the notification area"
+msgstr "Mettere un'icona nell'area di notifica"
+
+msgid "Read the files in your {subject} folder"
+msgstr "Leggere i file nella tua cartella {subject}"
+
+msgid "Read {subject} in your home folder"
+msgstr "Leggere {subject} nella tua cartella personale"
+
+msgid "Read, change and delete the files in your {subject} folder"
+msgstr "Leggere, modificare ed eliminare i file nella tua cartella {subject}"
+
+msgid "Read, change and delete {subject} in your home folder"
+msgstr "Leggere, modificare ed eliminare {subject} nella tua cartella personale"
+
+msgid "See what other apps show and what you type in them (X11)"
+msgstr "Vedere cosa mostrano le altre app e cosa scrivi in esse (X11)"
+
+msgid "Show notifications"
+msgstr "Mostrare notifiche"
+
+msgid "Talk to the local service {subject}"
+msgstr "Parlare con il servizio locale {subject}"
+
+msgid "The folder is the one of your user-dirs.dirs, not a copy."
+msgstr "La cartella è quella indicata nel tuo user-dirs.dirs, non una copia."
+
+msgid "The folder is the one of your user-dirs.dirs. The app cannot change it."
+msgstr "La cartella è quella indicata nel tuo user-dirs.dirs. L'app non può modificarla."
+
+msgid "The links of this kind, in your browser or in other apps, are given to this app."
+msgstr "I link di questo tipo, nel browser o in altre app, vengono dati a questa app."
+
+msgid "The shell of your desktop and the media keys of your keyboard can play, pause and skip in it."
+msgstr "La shell del tuo desktop e i tasti multimediali della tastiera possono avviare, mettere in pausa e saltare brani al suo interno."
+
+msgid "Use the message bus of your whole desktop"
+msgstr "Usare il bus di messaggi di tutto il tuo desktop"
+
+msgid "Use the network"
+msgstr "Usare la rete"
+
+msgid "What it can do:"
+msgstr "Cosa può fare:"
+
+msgid "What it cannot do:"
+msgstr "Cosa non può fare:"
+
+msgid "X11 has no walls between apps: this app can read the windows and the keyboard input of the others."
+msgstr "X11 non ha muri tra le app: questa app può leggere le finestre e la tastiera delle altre."
+
+msgid "it can talk to every service of your desktop"
+msgstr "può parlare con ogni servizio del tuo desktop"
+
+msgid "it can watch other apps (X11)"
+msgstr "può osservare le altre app (X11)"
+
+msgid "it reaches your home folder"
+msgstr "raggiunge la tua cartella personale"
+
+msgid "none"
+msgstr "nessuno"
+
+msgid "{n} permission"
+msgid_plural "{n} permissions"
+msgstr[0] "{n} permesso"
+msgstr[1] "{n} permessi"
+
+msgid "This update asks for more than the version you have:"
+msgstr "Questo aggiornamento chiede più della versione che hai:"
+
+msgid "This package asks for more than the version you have:"
+msgstr "Questo pacchetto chiede più della versione che hai:"
+
+msgid "If you do not accept, you stay on the current version."
+msgstr "Se non accetti, resti sulla versione attuale."
+
+msgid "Accept them?"
+msgstr "Li accetti?"

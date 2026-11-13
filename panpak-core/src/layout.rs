@@ -2,7 +2,7 @@
 //! Private folders of an app, what the app may read of the user's own
 //! configuration, and how permissions are shown to the user.
 //! Layout and rules: PANPAK-FORMAT.md §9.1 and THREAT-MODEL.md §2.2.
-use crate::{coded, validate_app_id, ErrorCode, Manifest, PLACEHOLDERS};
+use crate::{coded, validate_app_id, ErrorCode, PLACEHOLDERS};
 use anyhow::{Context, Result};
 use std::{
     fs,
@@ -230,10 +230,6 @@ pub fn fonts_conf(real_config: &Path, real_data: &Path, home: &Path) -> String {
     )
 }
 
-/// Shown whenever a package asks for the D-Bus socket of the desktop session or system.
-pub const DESKTOP_BUS_WARNING: &str =
-    "Full access to desktop services (D-Bus): this app is not isolated";
-
 /// Printed by `install` and `update` when the kernel cannot block local sockets.
 pub const PARTIAL_ISOLATION_WARNING: &str = "WARNING: on this kernel the sandbox cannot block local sockets (D-Bus, ssh-agent, gpg-agent): this app is only partially isolated";
 
@@ -261,7 +257,7 @@ pub enum SocketIsolation {
 
 impl SocketIsolation {
     /// The warning to print, if the app is not fully isolated. `ManifestAllowsBus` has its
-    /// own line in `describe_permissions`.
+    /// own line in the table of permissions.
     pub fn warning(self) -> Option<&'static str> {
         match self {
             SocketIsolation::Isolated | SocketIsolation::ManifestAllowsBus => None,
@@ -353,121 +349,6 @@ pub fn is_bus_socket(path: &str) -> bool {
     path.split('/').any(|p| matches!(p, "bus" | "dbus" | "dbus-1" | "system_bus_socket"))
 }
 
-/// The permissions of a manifest, one line each, for `install` and `update`.
-pub fn describe_permissions(man: &Manifest) -> Vec<String> {
-    let mut out = Vec::new();
-    for sc in man.desktop.as_ref().and_then(|d| d.schemes.as_ref()).into_iter().flatten() {
-        out.push(format!("URL scheme {sc}: addresses that start with {sc}: are opened by this app"));
-    }
-    let Some(p) = &man.permissions else { return out };
-    if p.x11 == Some(true) {
-        out.push("X11 access: the app can observe other apps' input and screen".to_string());
-    }
-    if p.audio == Some(true) {
-        out.push("audio: the PipeWire and PulseAudio sockets of your session; the app can play sounds and record from the microphone".to_string());
-    }
-    let list = |v: &Option<Vec<u16>>| v.iter().flatten().map(u16::to_string).collect::<Vec<_>>().join(", ");
-    if p.network == Some(true) || p.network_allow_tcp.is_some() || p.network_bind_tcp.is_some() {
-        out.push(format!(
-            "network: connect to TCP ports [{}], listen on TCP ports [{}] (filtered by port, not by address)",
-            list(&p.network_allow_tcp),
-            list(&p.network_bind_tcp)
-        ));
-    }
-    if p.notifications == Some(true) {
-        out.push("notifications: the app can show desktop notifications (the notification portal and the older notification service)".to_string());
-    }
-    if p.tray == Some(true) {
-        out.push("tray icon: the app can put an icon and a menu in the notification area, and sees which icons are there".to_string());
-    }
-    for n in p.dbus_own.iter().flatten() {
-        out.push(format!("D-Bus name: the app can own {n} on your session bus, besides its own id"));
-    }
-    for s in p.sockets_allow.iter().flatten() {
-        out.push(format!("Unix socket: {s}"));
-    }
-    if p.sockets_allow.iter().flatten().any(|s| is_bus_socket(s)) {
-        out.push(format!("WARNING: {DESKTOP_BUS_WARNING}"));
-    }
-    for d in p.xdg_dirs.iter().flatten() {
-        out.push(format!("User folder: {} ({}), the one in your user-dirs.dirs", d.name, d.access));
-    }
-    let homes: Vec<String> =
-        p.home_paths.iter().flatten().map(|h| format!("{} ({})", h.path, h.access)).collect();
-    if !homes.is_empty() {
-        out.push(format!("Partial access to your home: {}", homes.join(", ")));
-    }
-    out
-}
-
-/// Permissions in `new` that `old` did not have: a feature turned on, a port, a socket, a home
-/// path, or `ro` raised to `rw`. Used to ask before an update.
-pub fn added_permissions(old: &Manifest, new: &Manifest) -> Vec<String> {
-    let mut out = Vec::new();
-    let o = old.permissions.as_ref();
-    let Some(n) = &new.permissions else { return out };
-    if n.x11 == Some(true) && o.and_then(|p| p.x11) != Some(true) {
-        out.push("X11 access".to_string());
-    }
-    if n.audio == Some(true) && o.and_then(|p| p.audio) != Some(true) {
-        out.push("audio access (sound output and microphone)".to_string());
-    }
-    if n.notifications == Some(true) && o.and_then(|p| p.notifications) != Some(true) {
-        out.push("notifications".to_string());
-    }
-    if n.tray == Some(true) && o.and_then(|p| p.tray) != Some(true) {
-        out.push("tray icon".to_string());
-    }
-    let had_own = o.map(|p| p.dbus_own.clone().unwrap_or_default()).unwrap_or_default();
-    for name in n.dbus_own.iter().flatten() {
-        if !had_own.contains(name) {
-            out.push(format!("D-Bus name {name}"));
-        }
-    }
-    let had_net = o.is_some_and(|p| p.network == Some(true));
-    if n.network == Some(true) && !had_net {
-        out.push("network access".to_string());
-    }
-    let ports = |sel: fn(&crate::Permissions) -> &Option<Vec<u16>>, p: Option<&crate::Permissions>| -> Vec<u16> {
-        p.map(|p| sel(p).clone().unwrap_or_default()).unwrap_or_default()
-    };
-    for (what, sel) in [
-        ("connect to TCP port", (|p: &crate::Permissions| &p.network_allow_tcp) as fn(&crate::Permissions) -> &Option<Vec<u16>>),
-        ("listen on TCP port", |p: &crate::Permissions| &p.network_bind_tcp),
-    ] {
-        let before = ports(sel, o);
-        for port in ports(sel, Some(n)) {
-            if !before.contains(&port) {
-                out.push(format!("{what} {port}"));
-            }
-        }
-    }
-    let had_socks = o.map(|p| p.sockets_allow.clone().unwrap_or_default()).unwrap_or_default();
-    for s in n.sockets_allow.iter().flatten() {
-        if !had_socks.contains(s) {
-            out.push(format!("Unix socket {s}"));
-            if is_bus_socket(s) && !had_socks.iter().any(|h| is_bus_socket(h)) {
-                out.push(DESKTOP_BUS_WARNING.to_string());
-            }
-        }
-    }
-    let had_xdg = o.map(|p| p.xdg_dirs.clone().unwrap_or_default()).unwrap_or_default();
-    for d in n.xdg_dirs.iter().flatten() {
-        let covered = had_xdg.iter().any(|x| x.name == d.name && (x.access == "rw" || d.access == "ro"));
-        if !covered {
-            out.push(format!("access to the {} folder ({})", d.name, d.access));
-        }
-    }
-    let had_homes = o.map(|p| p.home_paths.clone().unwrap_or_default()).unwrap_or_default();
-    for h in n.home_paths.iter().flatten() {
-        let covered = had_homes.iter().any(|x| x.path == h.path && (x.access == "rw" || h.access == "ro"));
-        if !covered {
-            out.push(format!("access to {} in your home ({})", h.path, h.access));
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -497,6 +378,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::Manifest;
 
     fn man(perm: &str) -> Manifest {
         toml::from_str(&format!(
@@ -547,58 +429,13 @@ mod tests {
     }
 
     #[test]
-    fn audio_permission_says_microphone() {
-        let lines = describe_permissions(&man("[permissions]\naudio=true\n"));
-        let l = lines.iter().find(|l| l.starts_with("audio:")).expect("audio line");
-        assert!(l.contains("play sounds") && l.contains("record from the microphone"), "{l}");
-    }
-
-    #[test]
-    fn added_permissions_lists_only_new() {
-        let old = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n");
-        let same = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n");
-        assert!(added_permissions(&old, &same).is_empty());
-        let more = man("[permissions]\nx11=true\naudio=true\nnetwork=true\nnetwork_allow_tcp=[443, 8080]\nnetwork_bind_tcp=[2658]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n[[permissions.home_paths]]\npath=\"b\"\naccess=\"ro\"\n");
-        let added = added_permissions(&old, &more);
-        assert_eq!(added.len(), 5, "{added:?}");
-        assert!(added.contains(&"audio access (sound output and microphone)".to_string()));
-        let raised = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n");
-        let from_ro = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n");
-        assert_eq!(added_permissions(&from_ro, &raised).len(), 1);
-        assert_eq!(added_permissions(&man(""), &old).len(), 3);
-    }
-
-    #[test]
-    fn bus_permissions_are_shown_and_counted_as_new() {
-        let none = man("");
-        let m = man("[permissions]\nnotifications=true\ntray=true\ndbus_own=[\"com.example.app.Second\"]\n");
-        let d = describe_permissions(&m);
-        assert!(d.iter().any(|l| l.starts_with("notifications:")) && d.iter().any(|l| l.starts_with("tray icon:")) && d.iter().any(|l| l.contains("com.example.app.Second")), "{d:?}");
-        let added = added_permissions(&none, &m);
-        assert_eq!(added, ["notifications", "tray icon", "D-Bus name com.example.app.Second"]);
-        // Nothing new when the new version asks for the same; a second name is new.
-        assert!(added_permissions(&m, &m).is_empty());
-        let more = man("[permissions]\nnotifications=true\ntray=true\ndbus_own=[\"com.example.app.Second\", \"com.example.app.Third\"]\n");
-        assert_eq!(added_permissions(&m, &more), ["D-Bus name com.example.app.Third"]);
-        // Dropping a permission is not new.
-        assert!(added_permissions(&m, &none).is_empty());
-    }
-
-    #[test]
-    fn bus_sockets_are_recognised_and_warned_about() {
+    fn bus_sockets_are_recognised() {
         for p in ["$XDG_RUNTIME_DIR/bus", "${XDG_RUNTIME_DIR}/bus", "/run/user/1000/bus", "/run/dbus/system_bus_socket", "/var/run/dbus/system_bus_socket"] {
             assert!(is_bus_socket(p), "{p}");
         }
         for p in ["$XDG_RUNTIME_DIR/pulse/native", "/run/user/1000/wayland-0", "$HOME/.cache/business"] {
             assert!(!is_bus_socket(p), "{p}");
         }
-        let m = man("[permissions]\nsockets_allow=[\"$XDG_RUNTIME_DIR/bus\"]\n");
-        assert!(describe_permissions(&m).iter().any(|l| l.contains(DESKTOP_BUS_WARNING)));
-        let plain = man("[permissions]\nsockets_allow=[\"$XDG_RUNTIME_DIR/pulse/native\"]\n");
-        assert!(!describe_permissions(&plain).iter().any(|l| l.contains("not isolated")));
-        // An update that adds the bus is flagged; one that already had it is not flagged twice.
-        assert!(added_permissions(&plain, &m).iter().any(|l| l == DESKTOP_BUS_WARNING));
-        assert!(!added_permissions(&m, &m).iter().any(|l| l == DESKTOP_BUS_WARNING));
     }
 
     #[test]
@@ -661,12 +498,6 @@ mod tests {
         let v9 = Some(landlock::ABI::V9);
         assert_eq!(socket_isolation(v9, sys.permissions.as_ref(), false).level, SocketIsolation::ManifestAllowsBus);
         assert_eq!(socket_isolation(v9, sess.permissions.as_ref(), false).level, SocketIsolation::ManifestAllowsBus);
-    }
-
-    #[test]
-    fn describe_shows_home_line() {
-        let m = man("[permissions]\n[[permissions.home_paths]]\npath=\".config/x\"\naccess=\"rw\"\n");
-        assert_eq!(describe_permissions(&m), vec!["Partial access to your home: .config/x (rw)".to_string()]);
     }
 
     #[test]

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **One table of permissions** (`panpak_core::permissions`): the words, the level (Normal, Attention, High risk), the icon and the longer sentence of each permission are written once, and `install`, `update`, `list`, the new `panpak inspect` and the README use them. The summary says "Full isolation" or "Partial isolation" and why; the list also says what the app cannot do; an update lists only the permissions that are new or higher, and says that without a yes the current version stays. Every home path is High risk. The line about `dbus_own` is gone (it has had no effect since the private bus). The text is translated with gettext catalogs in `po/` (English, Italian): a language is added with a `po/<language>.po` file and no code; the catalogs are compiled into the program. `panpak list` has a PERMISSIONS column and `--json` has `permissions`.
+
 - **A simpler Quick start.** `./build.sh` prepares Zig (the pinned wheel, hashes checked), adds the Rust target and builds, and says what is missing if something is. `panpak build` and `panpak install` install the runtime that comes with `panpak` (the file `panpak-stub` beside it) when there is none or it is older, with one line; `install-runtime` stays for a signed release or another build. The first `panpak build` or `convert` without a key makes a personal one in `~/.config/panpak/secret.key` (mode 0600) and says so with its fingerprint. README, QUICKSTART.md and docs/REQUIREMENTS.md follow.
 
 - **`install` is about 25 ms faster** (96 to 71 ms for a 44 MB package): the icons are written without a sync of the file and of the folder each (14 syncs of about 2 ms were the difference with the 38 ms of before the desktop integration); the package copy and its sync are what remains.
