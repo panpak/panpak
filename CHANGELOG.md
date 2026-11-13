@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **The CI in three levels** (docs/CI.md): a pull request runs the fast level (build, tests, clippy, the private bus; 8 job-minutes instead of 34 to 63); main, the label `full-ci`, the manual and the weekly runs add fuzz, reproducibility and the distro containers. Every job has a time limit, and a test checks that every action is pinned to a full commit.
+
 - **The private bus works with xdg-dbus-proxy 0.1.5** (Debian 12, Ubuntu 24.04), found when the tests first ran for real in CI. The router talked to the proxy with the whole handshake in one write and
   mixed its own messages between the app's, and 0.1.5 closes a connection in both cases: the app had no bus. The handshake goes one line at a time and every message to the host side gets the next serial
   (replies get the sender's number back). `tests/privbus.py` runs in CI against a systemd user manager started for the runner; A, B, C, F11, F22 and F23 are required there.
