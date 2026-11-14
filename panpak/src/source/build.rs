@@ -66,9 +66,16 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
     }
     // 3. The image and the source.
     let cache = super::cache_dir()?;
-    let root = image::ensure(&cache, &lk, &r.build.packages)?;
+    let t = std::time::Instant::now();
+    let ens = image::ensure(&cache, &lk, &r.build.packages)?;
+    let root = ens.root;
+    // The patched packages are inside the making of the image: they are told apart, and the rest is the image.
+    super::said_phase("image", t.elapsed().saturating_sub(ens.patch), ens.kept);
+    super::said_phase("patch", ens.patch, ens.patch_kept);
     let shim = sandbox::shim_in(&cache)?;
+    let t = std::time::Instant::now();
     let src = fetch::fetch(&cache, &r.source)?;
+    super::said_phase("source", t.elapsed(), false);
     let epoch = src.epoch.to_string();
     // 4. The workspace.
     let key = image::image_key(&lk, &r.build.packages);
@@ -95,7 +102,9 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
     // 5. Zig: a pinned compiler, and a persistent cache of its packages.
     let mut marker: Option<PathBuf> = None;
     if let Some(z) = &r.build.zig {
+        let tz = std::time::Instant::now();
         let zdir = ensure_zig(&cache, &root, &shim, &z.version, &z.sha256)?;
+        super::said_phase("zig", tz.elapsed(), false);
         mounts.push((zdir, "/opt/zig".into(), false));
         let zc = cache.join("zigcache").join(format!("{}-{}", r.app.id, &key[..8]));
         std::fs::create_dir_all(&zc)?;
@@ -117,6 +126,7 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
     let logs = ws.join("logs");
     std::fs::create_dir_all(&logs)?;
     let mt: Vec<(&Path, &str, bool)> = mounts.iter().map(|(s, d, rw)| (s.as_path(), d.as_str(), *rw)).collect();
+    let tc = std::time::Instant::now();
     for (n, step) in steps(&r, plan.jobs, "/src").iter().enumerate() {
         let log = logs.join(format!("step-{n}.log"));
         let run = run_step(&root, &shim, step, &env, &mt, &cwd, net);
@@ -140,14 +150,18 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
     if let Some(m) = marker {
         std::fs::write(m, "fetched\n")?;
     }
+    super::said_phase("compile", tc.elapsed(), false);
     // 7. Collect.
     super::say("collecting the libraries, plugins and data");
+    let tl = std::time::Instant::now();
     let log = logs.join("collect.log");
     let col = collect::collect(&collect::Inputs { recipe: &r, root: &root, destdir: &out, source: &src.dir, tree: &tree, shim: &shim, log: &log })?;
     for n in &col.notes {
         super::say(&format!("NOTE: {n}"));
     }
+    super::said_phase("collect", tl.elapsed(), false);
     // 8. The manifest and the package.
+    let tp = std::time::Instant::now();
     let secret_key = crate::parse_secret(a.secret)?;
     let pubkey = format!("ed25519:{}", panpak_core::hex(secret_key.verifying_key().as_bytes()));
     let mut deps = Vec::new();
@@ -169,6 +183,7 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
         None => a.dir.join(format!("{}.panpak", r.app.id)),
     };
     let pkg = crate::cmd_pack(&tree, a.stub, a.secret, None, Some(&outp), Vec::new())?;
+    super::said_phase("pack", tp.elapsed(), false);
     // 9. What was measured.
     let secs = t0.elapsed().as_secs();
     super::say(&format!("{}: {} libraries ({} MB), built in {secs} s", pkg.display(), col.libs, col.bytes >> 20));

@@ -146,6 +146,28 @@ class Readers(unittest.TestCase):
         self.assertEqual(pipeline.median_after_first([2.5]), 2.5)
 
 
+class BuildNotes(unittest.TestCase):
+    def test_the_time_of_each_phase_and_the_memory_reach_the_log_and_nothing_else(self):
+        out = "\n".join([
+            "panpak build: Text Editor 48.3 (org.gnome.TextEditor)",
+            "panpak build: time image: 312.4 s",
+            "panpak build: time patch: 0.0 s (kept)",
+            "panpak build: time source: 4.1 s",
+            "panpak build: building with 6 job(s), memory cap 1G",
+            "panpak build: time compile: 11.0 s",
+            "panpak build: time collect: 3.2 s",
+            "panpak build: time pack: 2.5 s",
+            "panpak build: /x/te.panpak: 106 libraries (101 MB), built in 336 s",
+            "panpak build: peak memory 0.5G (build.memory is 1G)",
+            "a line of the compiler that says time image: 1 s",
+            "",
+        ])
+        self.assertEqual(pipeline.build_notes(out), [
+            "time image: 312.4 s", "time patch: 0.0 s (kept)", "time source: 4.1 s", "time compile: 11.0 s", "time collect: 3.2 s", "time pack: 2.5 s",
+            "peak memory 0.5G (build.memory is 1G)"])
+        self.assertEqual(pipeline.build_notes(""), [])
+
+
 class CacheKey(unittest.TestCase):
     def ctx(self, d, a, b):
         c = object.__new__(pipeline.Ctx)

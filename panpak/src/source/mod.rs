@@ -37,6 +37,27 @@ pub fn say(what: &str) {
     eprintln!("panpak build: {what}");
 }
 
+/// The line that tells how long a phase of the build took: `time <phase>: <seconds> s`, with ` (kept)` when the phase had nothing to do because its
+/// result was in the cache. The harness copies these lines into its log (tests/apps/pipeline.py).
+pub fn phase_line(phase: &str, took: std::time::Duration, kept: bool) -> String {
+    format!("time {phase}: {:.1} s{}", took.as_secs_f64(), if kept { " (kept)" } else { "" })
+}
+
+/// Say how long a phase took.
+pub fn said_phase(phase: &str, took: std::time::Duration, kept: bool) {
+    say(&phase_line(phase, took, kept));
+}
+
+#[cfg(test)]
+mod phase_tests {
+    use std::time::Duration;
+    #[test]
+    fn a_phase_line_has_the_name_the_seconds_and_says_when_it_was_kept() {
+        assert_eq!(super::phase_line("image", Duration::from_millis(312_450), false), "time image: 312.4 s");
+        assert_eq!(super::phase_line("patch", Duration::from_millis(40), true), "time patch: 0.0 s (kept)");
+    }
+}
+
 #[cfg(test)]
 mod cache_tests {
     #[test]

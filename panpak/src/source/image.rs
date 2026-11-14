@@ -208,13 +208,21 @@ pub fn image_key(lock: &Lock, packages: &[String]) -> String {
 }
 
 /// The root file system for a recipe, made if it is not in the cache yet. Returns its folder.
-pub fn ensure(cache: &Path, lock: &Lock, packages: &[String]) -> Result<PathBuf> {
+/// What `ensure` made and how long the patched packages took (zero when the image was in the cache, or the lock has no patch).
+pub struct Ensured {
+    pub root: PathBuf,
+    pub kept: bool,
+    pub patch: std::time::Duration,
+    pub patch_kept: bool,
+}
+
+pub fn ensure(cache: &Path, lock: &Lock, packages: &[String]) -> Result<Ensured> {
     let k = known(&lock.image.name)?;
     let key = image_key(lock, packages);
     let dir = cache.join("images").join(&key);
     let root = dir.join("rootfs");
     if dir.join(".complete").exists() {
-        return Ok(root);
+        return Ok(Ensured { root, kept: true, patch: std::time::Duration::ZERO, patch_kept: true });
     }
     super::say(&format!("making the build image {} (digest {}…, snapshot {}): the first time takes a few minutes", lock.image.name, &lock.image.manifest_digest[7..19], lock.image.snapshot));
     let _ = chmod_all(&dir);
@@ -251,7 +259,10 @@ pub fn ensure(cache: &Path, lock: &Lock, packages: &[String]) -> Result<PathBuf>
     // Record what is in the image (name and version), so that a build can say which version of an image dependency it found.
     let mut tsv = installed(&root, &shim)?;
     // Patched packages: the ones the image has are replaced by the rebuilt ones (built once for all images of this lock).
+    let (mut patch, mut patch_kept) = (std::time::Duration::ZERO, true);
     if !lock.image.patches.is_empty() {
+        let t = std::time::Instant::now();
+        patch_kept = cache.join("patched").join(patched_id(lock)).join(".complete").exists();
         let debs = patched_debs(cache, lock, k)?;
         let have: Vec<&str> = tsv.lines().filter_map(|l| l.split('\t').next()).collect();
         let mut names: Vec<String> = Vec::new();
@@ -272,11 +283,12 @@ pub fn ensure(cache: &Path, lock: &Lock, packages: &[String]) -> Result<PathBuf>
             inst.run_logged(&log, "apt-get install (patched packages)")?;
             tsv = installed(&root, &shim)?;
         }
+        patch = t.elapsed();
     }
     std::fs::write(dir.join("packages.tsv"), &tsv)?;
     let _ = std::fs::remove_dir_all(&scratch);
     std::fs::write(dir.join(".complete"), format!("{}\n", lock.image.manifest_digest))?;
-    Ok(root)
+    Ok(Ensured { root, kept: false, patch, patch_kept })
 }
 
 /// `name<TAB>version` for every installed package of the image.
@@ -314,15 +326,19 @@ pub fn snapshot_epoch(snapshot: &str) -> Result<i64> {
     Ok(days * 86400 + hh * 3600 + mm * 60 + ss)
 }
 
+/// The name of the folder of the rebuilt packages: the base image, the snapshot and the patches give it.
+fn patched_id(lock: &Lock) -> String {
+    let mut h = Sha256::new();
+    h.update(format!("panpak-patched-v1\n{}\n{}\n{}\n{}\n", lock.image.name, lock.image.manifest_digest, lock.image.snapshot, lock.image.patches.join(";")));
+    hex(&h.finalize())[..20].to_string()
+}
+
 /// The rebuilt packages of the lock's patches, in a folder of the cache. They are built once for an image version (the base image, the snapshot and the
 /// patches), not once per recipe: the first image that needs them builds them in a separate image with the build dependencies, and every later image
 /// installs the same files. The build is deterministic as far as Debian's packaging is (fixed SOURCE_DATE_EPOCH, fixed changelog date, no tests, no
 /// documentation); the hash of each file is written to `SHA256SUMS` next to them.
 pub fn patched_debs(cache: &Path, lock: &Lock, k: &Known) -> Result<PathBuf> {
-    let mut h = Sha256::new();
-    h.update(format!("panpak-patched-v1\n{}\n{}\n{}\n{}\n", lock.image.name, lock.image.manifest_digest, lock.image.snapshot, lock.image.patches.join(";")));
-    let id = hex(&h.finalize())[..20].to_string();
-    let dir = cache.join("patched").join(&id);
+    let dir = cache.join("patched").join(patched_id(lock));
     let debs = dir.join("debs");
     if dir.join(".complete").exists() {
         return Ok(debs);

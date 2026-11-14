@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Step 11c, first part.** `panpak install` updates `<store>/bin/panpak` when it says an older version than the running one (one rename, under a lock of the folder), and never replaces one that is the same version, newer, a link, or does not say its version. `panpak build` prints the time of each phase (`time image`, `patch`, `source`, `zig`, `compile`, `collect`, `pack`) and the app harness keeps those lines in its log. Two tests of the lock files (`safefs`, `stalelocks`), which failed now and then, run alone in a process: a lock taken with `flock(2)` belongs to the open file description, so a child forked by another test keeps it until it calls `exec`.
 - **The file dialog of the desktop for apps (step 11).** Where the desktop has the document portal, an app that asks for a file gets the dialog of the desktop: the
   router of the app serves `OpenFile`, `SaveFile` and `SaveFiles` of the portal, the outer stub shows the dialog as a client of the session bus, opens what the user chose
   (a final link is refused: "the file you chose is a link: choose the original file") and shares it with the app through the document portal (`read`, and `write` where the user
