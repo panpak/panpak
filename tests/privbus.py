@@ -633,7 +633,35 @@ def scenario_dialog(lab):
     # Removing the app takes the grants back and leaves the user's files alone.
     listing = lambda: lab.sess.call('org.freedesktop.portal.Documents', '/org/freedesktop/portal/documents', 'org.freedesktop.portal.Documents.List', f'panpak.{app}')[1]
     need(not listing().endswith('{},)'), f'D: the portal holds nothing for the app before the removal: {listing()}')
-    out = lab.cli('remove', app).stdout
+    # The menu action "Uninstall" is started by the shell in a scope called `app-gnome-panpak.<id>-N.scope`. From 1.19 or so the portals take that name as the identity of the caller (when the
+    # menu entry exists), and the document portal refuses an app to revoke its own documents. First see whether the portal of this lab does that (a revoke from such a scope); then the
+    # removal started from the same kind of scope must still take the grants back (it leaves the scope of the app: `remove.rs`, `leave_app_scope`).
+    import re
+    some = re.search(r"['\"]([A-Za-z0-9_-]{8,})['\"]", listing())
+    def in_scope(unit, *argv):
+        """Run argv inside the transient scope `unit` (what the shell makes for a menu action): the process waits for a line, is moved into the scope by the user's systemd
+        (asked on $XDG_RUNTIME_DIR/bus, as the runtime does; `systemd-run` does not find it there), then runs argv."""
+        p = subprocess.Popen(['sh', '-c', 'read _; exec "$@"', 'sh', *argv], env=lab.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        m = subprocess.run(['gdbus', 'call', '--address', f'unix:path={lab.sess.rt}/bus', '--dest', 'org.freedesktop.systemd1', '--object-path', '/org/freedesktop/systemd1',
+                            '--method', 'org.freedesktop.systemd1.Manager.StartTransientUnit', unit, 'fail', f"[('Description', <'panpak test'>), ('PIDs', <[uint32 {p.pid}]>)]", '[]'],
+                           capture_output=True, text=True, timeout=30)
+        if m.returncode:
+            p.kill()
+            need(False, f'D: the user manager did not make the scope {unit}: {m.stderr[-200:]}')
+        time.sleep(0.5)
+        out, err = p.communicate('\n', timeout=120)
+        return subprocess.CompletedProcess(argv, p.returncode, out, err)
+
+    if some and shutil.which('gdbus'):
+        t = in_scope(f'app-gnome-panpak.{app}-{os.getpid()}.scope', 'gdbus', 'call', '--session', '--dest', 'org.freedesktop.portal.Documents', '--object-path', '/org/freedesktop/portal/documents',
+                     '--method', 'org.freedesktop.portal.Documents.RevokePermissions', some.group(1), f'panpak.{app}', "['read', 'write', 'grant-permissions', 'delete']")
+        print('D   a revoke from the scope of the app:', 'refused (the portal takes the identity from the scope name)' if 'permission' in (t.stdout + t.stderr).lower() else 'allowed (this portal does not use the name of the scope)')
+    if shutil.which('gdbus'):
+        r = in_scope(f'app-gnome-panpak.{app}-{os.getpid() + 1}.scope', str(BIN / 'panpak'), 'remove', app)
+        out = r.stdout
+        need(r.returncode == 0, f'D: remove from the scope of the app failed: {r.stdout[-300:]}{r.stderr[-300:]}')
+    else:
+        out = lab.cli('remove', app).stdout
     need('file grants of the document portal' in out, f'D: remove says nothing about the grants: {out}')
     need(listing().endswith('{},)'), f'D: the grants are still there after the removal: {listing()}')
     need((docs / 'a.txt').read_text() == 'hello from the host\n' and (docs / 'new.txt').exists(), 'D: the files of the user were touched by the removal')

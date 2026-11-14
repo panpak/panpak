@@ -30,6 +30,9 @@ fn cmd(home: &Path, args: &[&str]) -> Command {
         .env("XDG_RUNTIME_DIR", home.join("run"))
         .env_remove("PANPAK_SECRET_FILE")
         .env_remove("PANPAK_TEST_KILL_AT")
+        // The messages are in English whatever the language of the user who runs the tests.
+        .env_remove("LANGUAGE")
+        .env("LC_ALL", "C")
         .stdin(std::process::Stdio::null());
     c
 }
@@ -218,7 +221,7 @@ fn a_running_copy_stops_the_removal_and_nothing_is_touched() {
     for args in [&[A][..], &["--purge-data", "--yes", A][..]] {
         let o = e.remove(args);
         let t = text(&o);
-        assert!(!o.status.success() && t.contains("PANPAK-E2002") && t.contains("is running"), "{t}");
+        assert!(!o.status.success() && t.contains("PANPAK-E2002") && t.contains("is open. Close it and try again"), "{t}");
     }
     assert!(e.launcher(A).exists() && e.desktop(A).exists() && e.store().join("apps").join(A).join("current").exists());
     assert!(e.userdata(A).join("data/file").exists());
@@ -631,11 +634,12 @@ fn ask_with_the_answer_no_removes_nothing() {
     assert!(o.status.success(), "{}", text(&o));
     assert!(e.launcher(A).exists() && e.desktop(A).exists() && e.store().join("apps").join(A).join("current").exists());
     assert!(e.userdata(A).join("data/file").exists());
-    // The dialog told what is removed, what stays and where, and the command for the data.
+    // The dialog tells in plain words what is removed and what stays; no command, no path, and no stray "?" (a new line is a new line).
     let q = fs::read_to_string(tools.join("zenity.args")).unwrap();
-    assert!(q.contains("--question") && q.contains(&format!("App {A}")) && q.contains(e.userdata(A).to_str().unwrap()), "{q}");
-    assert!(q.contains("installs the app again") || q.contains("install the app again"), "{q}");
-    assert!(q.contains(&format!("remove --purge-data {A}")), "{q}");
+    assert!(q.contains("--question") && q.contains(&format!("Remove App {A}?")), "{q}");
+    assert!(q.contains("Your settings and data are kept (") && q.contains("If you install the app again, they are still there."), "{q}");
+    assert!(!q.contains("--purge-data") && !q.contains(e.userdata(A).to_str().unwrap()) && !q.contains("terminal"), "{q}");
+    assert_eq!(q.matches('?').count(), 1, "only the question mark of the question: {q}");
     assert!(!tools.join("notify-send.args").exists(), "no notification for a refusal by the user");
 }
 
@@ -651,7 +655,7 @@ fn ask_with_the_answer_yes_removes_the_app_keeps_the_data_and_notifies() {
     assert!(!e.launcher(A).exists() && !e.desktop(A).exists() && !e.store().join("apps").join(A).exists());
     assert!(e.userdata(A).join("data/file").exists() && e.cache(A).join("file").exists(), "the data stays");
     let n = fs::read_to_string(tools.join("notify-send.args")).unwrap();
-    assert!(n.contains("removed") && n.contains(e.userdata(A).to_str().unwrap()), "{n}");
+    assert!(n.contains(&format!("App {A} was removed. Your settings and data are kept.")), "{n}");
     // KDE gets kdialog first.
     let e = env("ask-kde");
     e.install(A, "1", "a");
@@ -659,6 +663,30 @@ fn ask_with_the_answer_yes_removes_the_app_keeps_the_data_and_notifies() {
     let o = cmd(&e.home, &["remove", "--ask", A]).env("PANPAK_TEST_TOOLS_DIR", &tools).env("XDG_CURRENT_DESKTOP", "KDE").output().unwrap();
     assert!(o.status.success() && e.launcher(A).exists(), "{}", text(&o));
     assert!(tools.join("kdialog.args").exists() && !tools.join("zenity.args").exists());
+}
+
+/// The words come from `po/it.po`, so this file has none of its own.
+fn italian(id: &'static str) -> String {
+    panpak_core::i18n::catalogs().iter().find(|c| c.name == "it").and_then(|c| c.entries.iter().find(|e| e.0 == id)).map(|e| e.1.to_string()).expect("po/it.po has the message")
+}
+
+#[test]
+fn the_dialog_and_the_notification_speak_the_language_of_the_system() {
+    only_with_fake_tools!();
+    use panpak_core::messages as m;
+    let e = env("ask-it");
+    e.install(A, "1", "a");
+    e.fake_data(A);
+    let tools = fake_tools(&e.home, &[("zenity", 0), ("notify-send", 0)]);
+    let o = cmd(&e.home, &["remove", "--ask", A]).env("PANPAK_TEST_TOOLS_DIR", &tools).env("XDG_CURRENT_DESKTOP", "GNOME").env("LC_ALL", "it_IT.UTF-8").output().unwrap();
+    assert!(o.status.success(), "{}", text(&o));
+    let q = fs::read_to_string(tools.join("zenity.args")).unwrap();
+    let ask = italian(m::REMOVE_ASK).replace("{name}", &format!("App {A}"));
+    assert!(q.contains(&ask) && q.contains(&italian(m::REMOVE_WHAT)) && q.contains(&italian(m::REMOVE_TITLE)) && q.contains(&italian(m::REMOVE_OK_LABEL)), "{q}");
+    assert!(!q.contains("Remove App") && !q.contains("are kept") && !q.contains("--purge-data"), "{q}");
+    assert_eq!(q.matches('?').count(), 1, "{q}");
+    let n = fs::read_to_string(tools.join("notify-send.args")).unwrap();
+    assert!(n.contains(&italian(m::REMOVED_TITLE)) && n.contains(&italian(m::REMOVED_KEPT).replace("{name}", &format!("App {A}"))), "{n}");
 }
 
 #[test]
@@ -675,7 +703,7 @@ fn ask_with_a_running_copy_or_a_wrong_id_removes_nothing_and_says_why() {
     let o = ask(&e, &tools, A);
     assert!(!o.status.success() && text(&o).contains("PANPAK-E2002"), "{}", text(&o));
     let n = fs::read_to_string(tools.join("notify-send.args")).unwrap();
-    assert!(n.contains("is running"), "{n}");
+    assert!(n.contains("is open. Close it and try again"), "{n}");
     assert!(e.launcher(A).exists());
     drop(lock);
     let o = ask(&e, &tools, "org.example.unknown");

@@ -26,6 +26,9 @@ msgstr "Attenzione"
 msgid "Be controlled by the media keys"
 msgstr "Essere controllata dai tasti multimediali"
 
+msgid "Cancel"
+msgstr "Annulla"
+
 msgid "Connect to the network on the ports {subject}"
 msgstr "Connettersi alla rete sulle porte {subject}"
 
@@ -86,6 +89,9 @@ msgstr "Non può usare internet né la rete."
 msgid "It cannot watch other apps or read what you type in them."
 msgstr "Non può osservare le altre app né leggere ciò che scrivi in esse."
 
+msgid "It has no settings or data."
+msgstr "Non ha impostazioni né dati."
+
 msgid "Normal"
 msgstr "Normale"
 
@@ -100,6 +106,18 @@ msgstr "Aprire i link che iniziano con {subject}:"
 
 msgid "Other computers can connect to this app on these TCP ports."
 msgstr "Altri computer possono collegarsi a questa app su queste porte TCP."
+
+msgid "Panpak could not take back the files that {name} was given ({why}). Nothing was removed; try again."
+msgstr "Panpak non è riuscito a ritirare i file dati a {name} ({why}). Non è stato rimosso nulla; riprova."
+
+msgid "Panpak: app removed"
+msgstr "Panpak: app rimossa"
+
+msgid "Panpak: nothing was removed"
+msgstr "Panpak: non è stato rimosso nulla"
+
+msgid "Panpak: the app was not removed"
+msgstr "Panpak: l'app non è stata rimossa"
 
 msgid "Partial isolation:"
 msgstr "Isolamento parziale:"
@@ -134,6 +152,15 @@ msgstr "Leggere, modificare ed eliminare {subject} nella tua cartella personale"
 msgid "Read, change and delete {subject} in your home folder, a place of passwords, keys or startup files"
 msgstr "Leggere, modificare ed eliminare {subject} nella tua cartella personale, un posto di password, chiavi o file di avvio"
 
+msgid "Remove"
+msgstr "Rimuovi"
+
+msgid "Remove an app"
+msgstr "Rimuovi un'app"
+
+msgid "Remove {name}?"
+msgstr "Rimuovere {name}?"
+
 msgid "See what other apps show and what you type in them (X11)"
 msgstr "Vedere cosa mostrano le altre app e cosa scrivi in esse (X11)"
 
@@ -142,6 +169,9 @@ msgstr "Mostrare notifiche"
 
 msgid "Talk to the local service {subject}"
 msgstr "Parlare con il servizio locale {subject}"
+
+msgid "The app and its launcher are removed."
+msgstr "L'app e il suo avviatore vengono rimossi."
 
 msgid "The folder is the one of your user-dirs.dirs, not a copy."
 msgstr "La cartella è quella indicata nel tuo user-dirs.dirs, non una copia."
@@ -160,6 +190,9 @@ msgstr "L'intera cartella personale è aperta all'app in lettura: i tuoi documen
 
 msgid "The whole home folder is open to it, with your documents, settings and everything other programs keep there."
 msgstr "L'intera cartella personale è aperta all'app, con i tuoi documenti, le impostazioni e tutto ciò che gli altri programmi vi tengono."
+
+msgid "There is no dialog tool (zenity or kdialog) to ask you. To remove {name}, run in a terminal: {command}"
+msgstr "Manca lo strumento per le finestre di dialogo (zenity o kdialog). Per rimuovere {name}, esegui in un terminale: {command}"
 
 msgid "This package asks for more than the version you have:"
 msgstr "Questo pacchetto chiede più della versione che hai:"
@@ -191,6 +224,9 @@ msgstr "Quando l'app chiede di aprire o salvare un file, il tuo desktop mostra l
 msgid "X11 has no walls between apps: this app can read the windows and the keyboard input of the others."
 msgstr "X11 non ha muri tra le app: questa app può leggere le finestre e la tastiera delle altre."
 
+msgid "Your settings and data are kept ({size}). If you install the app again, they are still there."
+msgstr "Le tue impostazioni e i tuoi dati restano ({size}). Se installi di nuovo l'app, li ritrovi."
+
 msgid "it can talk to every service of your desktop"
 msgstr "può parlare con ogni servizio del tuo desktop"
 
@@ -205,6 +241,15 @@ msgstr "raggiunge l'intera tua cartella personale"
 
 msgid "none"
 msgstr "nessuno"
+
+msgid "{name} is open. Close it and try again."
+msgstr "{name} è aperta. Chiudila e riprova."
+
+msgid "{name} was removed."
+msgstr "{name} è stata rimossa."
+
+msgid "{name} was removed. Your settings and data are kept."
+msgstr "{name} è stata rimossa. Le tue impostazioni e i tuoi dati restano."
 
 msgid "{n} permission"
 msgid_plural "{n} permissions"

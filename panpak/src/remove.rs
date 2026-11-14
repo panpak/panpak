@@ -8,6 +8,8 @@ use super::{confirm, desktop_is_ours, desktop_path, launcher_is_ours, legacy_des
 use anyhow::{Context, Result};
 use panpak_core::{
     coded, ensure_code,
+    i18n::{self, tr},
+    messages as m,
     removal::{valid_package_name, Journal, JOURNAL_FILE, MAX_JOURNAL_BYTES},
     safefs::{Dir, Kind},
     ErrorCode,
@@ -603,9 +605,40 @@ fn test_pause() {
 #[cfg(not(debug_assertions))]
 fn test_pause() {}
 
+/// The name of the app for a person, or its id.
+fn app_name(ctx: &Ctx, id: &str) -> String {
+    ctx.facts(id, &ctx.app_ids()).name.unwrap_or_else(|| id.to_string())
+}
+
+/// Whether the control group of this process is a scope that the desktop made for the app `id` (`app-gnome-panpak.<id>-123.scope` when the shell starts the menu action,
+/// `app-panpak.<id>-<hash>.scope` for a copy that Panpak started). The portals know a caller by that name when the menu entry `panpak.<id>.desktop` exists, so a
+/// `remove` in such a scope is "the app" for the document portal, which refuses it to revoke the app's documents (`Not enough permissions`; seen on GNOME with the action "Uninstall").
+pub fn in_scope_of_app(cgroup: &str, id: &str) -> bool {
+    let Some(path) = cgroup.lines().find_map(|l| l.strip_prefix("0::")) else { return false };
+    let leaf = path.rsplit('/').next().unwrap_or("").replace("\\x2d", "-");
+    leaf.starts_with("app-") && leaf.ends_with(".scope") && leaf.contains(&format!("panpak.{id}-"))
+}
+
+/// Moves this process into a scope of its own when it was started in the scope of the app it removes (see `in_scope_of_app`), asking the user's systemd on
+/// `$XDG_RUNTIME_DIR/bus` as the runtime does for an app (`dbus::start_scope`). The name `panpak-remove-<id>-<pid>.scope` gives no identity to the portals. Without a user
+/// manager, or when it refuses, nothing changes and the removal goes on (the portal may then refuse the revoke, and the error says what to do).
+fn leave_app_scope(id: &str) {
+    let Ok(cgroup) = std::fs::read_to_string("/proc/self/cgroup") else { return };
+    if !in_scope_of_app(&cgroup, id) {
+        return;
+    }
+    let Some(bus) = std::env::var_os("XDG_RUNTIME_DIR").map(|r| PathBuf::from(r).join("bus")).filter(|b| b.exists()) else { return };
+    let moved = panpak_core::dbus::Connection::open(&bus, std::time::Duration::from_secs(10))
+        .and_then(|mut c| panpak_core::dbus::start_scope(&mut c, &format!("panpak-remove-{id}-{}.scope", std::process::id()), &format!("Panpak: removing {id}"), std::process::id(), Some("app.slice")));
+    if let Err(e) = moved {
+        eprintln!("panpak: could not leave the scope of {id}: {e:#}");
+    }
+}
+
 /// `panpak remove [--purge-data] [--yes] <app-id>`.
 pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
     panpak_core::validate_app_id(id)?;
+    leave_app_scope(id);
     let ctx = Ctx::open()?;
     recover_removals(&ctx);
 
@@ -618,7 +651,7 @@ pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
     let rt_app = rt_panpak.create_dir(OsStr::new(id)).map_err(|e| coded(ErrorCode::E2002, format!("cannot use the runtime folder of {id}: {e}")))?;
     let _lock = match rt_app.lock_file(OsStr::new("lock")) {
         Ok(Some(f)) => f,
-        Ok(None) => return Err(coded(ErrorCode::E2002, format!("a copy of {id} is running (or another remove is working on it): close it first. Nothing was removed"))),
+        Ok(None) => return Err(coded(ErrorCode::E2002, i18n::fill(&tr(m::IS_OPEN), &[("name", app_name(&ctx, id))]))),
         Err(e) => return Err(coded(ErrorCode::E2002, format!("cannot take the lock of {id}: {e}"))),
     };
 
@@ -678,7 +711,10 @@ pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
         Ok(DocOutcome::Revoked(n)) if n > 0 => removed.push(format!("{n} file grants of the document portal (your files are untouched)")),
         Ok(DocOutcome::Revoked(_)) => {}
         Ok(DocOutcome::NoPortal(why)) => kept.push(format!("file grants of the document portal: not checked ({why})")),
-        Err(e) => return Err(coded(ErrorCode::E2002, format!("cannot take back the files that {id} was given: {e}. Nothing was removed; run the command again"))),
+        Err(e) => {
+            let why = e.chain().last().map_or_else(|| e.to_string(), ToString::to_string);
+            return Err(coded(ErrorCode::E2002, i18n::fill(&tr(m::CANNOT_TAKE_BACK), &[("name", app_name(&ctx, id)), ("why", why)])));
+        }
     }
 
     // 1. What the desktop knows of the app.
@@ -877,22 +913,19 @@ fn revoke_documents(id: &str, purge: bool) -> Result<DocOutcome> {
 pub fn cmd_remove_ask(id: &str) -> Result<()> {
     use std::process::{Command, Stdio};
     panpak_core::validate_app_id(id)?;
+    leave_app_scope(id);
     let exe = std::env::current_exe().ok().map(|p| p.display().to_string()).unwrap_or_else(|| "panpak".into());
     let ctx = Ctx::open()?;
     let ids = ctx.app_ids();
     let facts = ctx.facts(id, &ids);
     let name = facts.name.clone().unwrap_or_else(|| id.to_string());
-    let dirs = panpak_core::app_dirs(id)?;
-    let mut kept = String::new();
-    for (p, b) in [(&dirs.root, facts.data_bytes), (&dirs.cache, facts.cache_bytes)] {
-        if let Some(b) = b {
-            kept.push_str(&format!("{} ({})\n", p.display(), human(b)));
-        }
-    }
+    // What stays: the settings and data, and the cache; a person is told the size, the places are in the output of `panpak remove`.
+    let kept_bytes = facts.data_bytes.unwrap_or(0) + facts.cache_bytes.unwrap_or(0);
+    let has_kept = facts.data_bytes.is_some() || facts.cache_bytes.is_some();
     let how = format!("{exe} remove {id}");
-    let tell_terminal = |why: &str| {
-        let body = format!("{why} To remove {name}, run in a terminal: {how}");
-        if !notify("Panpak: nothing was removed", &body) {
+    let tell_terminal = || {
+        let body = i18n::fill(&tr(m::NO_DIALOG_TOOL), &[("name", name.clone()), ("command", how.clone())]);
+        if !notify(&tr(m::NOTHING_REMOVED_TITLE), &body) {
             eprintln!("panpak: {body}");
         }
     };
@@ -900,24 +933,20 @@ pub fn cmd_remove_ask(id: &str) -> Result<()> {
     let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_uppercase().contains("KDE"));
     let order: [&str; 2] = if kde { ["kdialog", "zenity"] } else { ["zenity", "kdialog"] };
     let Some((tool, path)) = order.iter().find_map(|t| find_tool(t).map(|p| (*t, p))) else {
-        tell_terminal("There is no dialog tool (zenity or kdialog) to ask you.");
+        tell_terminal();
         return Err(coded(ErrorCode::E5004, format!("no dialog tool to ask for a confirmation: nothing was removed; run `{how}` in a terminal")));
     };
     let text_with = |esc: &dyn Fn(&str) -> String| {
-        format!(
-            "Remove {}?\n\nThe app and its launcher are removed.\n\n{}If you install the app again it finds your settings and data. To delete them too, run in a terminal:\n{} remove --purge-data {}",
-            esc(&name),
-            if kept.is_empty() { "It has no settings or data.\n\n".to_string() } else { format!("Your settings and data stay in:\n{}\n", esc(&kept)) },
-            esc(&exe),
-            esc(id),
-        )
+        let kept_text = if has_kept { i18n::fill(&tr(m::REMOVE_KEPT), &[("size", human(kept_bytes))]) } else { tr(m::REMOVE_NO_DATA).into_owned() };
+        format!("{}\n\n{}\n\n{}", esc(&i18n::fill(&tr(m::REMOVE_ASK), &[("name", name.clone())])), esc(&tr(m::REMOVE_WHAT)), esc(&kept_text))
     };
-    let title = "Remove an app";
+    let title = tr(m::REMOVE_TITLE);
+    let (ok_label, cancel_label) = (tr(m::REMOVE_OK_LABEL), tr(m::REMOVE_CANCEL_LABEL));
     let mut cmd = Command::new(&path);
     if tool == "zenity" {
-        cmd.args(["--question", "--no-markup", "--title", title, "--text", &text_with(&|s| clean(s)), "--ok-label", "Remove", "--cancel-label", "Cancel", "--width", "460"]);
+        cmd.args(["--question", "--no-markup", "--title", &title, "--text", &text_with(&|s| clean(s)), "--ok-label", &ok_label, "--cancel-label", &cancel_label, "--width", "460"]);
     } else {
-        cmd.args(["--title", title, "--warningyesno", &text_with(&markup_safe).replace('\n', "<br>"), "--yes-label", "Remove", "--no-label", "Cancel"]);
+        cmd.args(["--title", &title, "--warningyesno", &text_with(&markup_safe).replace('\n', "<br>"), "--yes-label", &ok_label, "--no-label", &cancel_label]);
     }
     let answered_yes = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
     if !answered_yes {
@@ -927,12 +956,12 @@ pub fn cmd_remove_ask(id: &str) -> Result<()> {
     }
     match cmd_remove(id, false, true) {
         Ok(()) => {
-            let body = if kept.is_empty() { format!("{name} was removed.") } else { format!("{name} was removed. Your settings and data stay in {}", kept.trim_end().replace('\n', ", ")) };
-            notify("Panpak: app removed", &body);
+            let body = i18n::fill(&tr(if has_kept { m::REMOVED_KEPT } else { m::REMOVED }), &[("name", name.clone())]);
+            notify(&tr(m::REMOVED_TITLE), &body);
             Ok(())
         }
         Err(e) => {
-            notify("Panpak: the app was not removed", &format!("{e:#}"));
+            notify(&tr(m::NOT_REMOVED_TITLE), &format!("{e:#}"));
             Err(e)
         }
     }
@@ -952,6 +981,24 @@ mod tests {
     fn dialog_and_notification_text_is_made_safe() {
         assert_eq!(markup_safe("A <b>&x</b>\u{1b}"), "A &lt;b&gt;&amp;x&lt;/b&gt;?");
         assert_eq!(gvariant_str("it's \\ ok"), "'it\\'s \\\\ ok'");
+    }
+
+    #[test]
+    fn the_scope_of_the_app_is_recognised_by_its_name() {
+        let cg = |leaf: &str| format!("0::/user.slice/user-1000.slice/user@1000.service/app.slice/{leaf}\n");
+        let id = "org.gnome.TextEditor";
+        // What gnome-shell makes for the menu action, and what Panpak makes for a copy.
+        assert!(in_scope_of_app(&cg("app-gnome-panpak.org.gnome.TextEditor-8341.scope"), id));
+        assert!(in_scope_of_app(&cg("app-panpak.org.gnome.TextEditor-ba7f942d.scope"), id));
+        // An id with a dash is escaped in the name of a unit.
+        assert!(in_scope_of_app(&cg("app-gnome-panpak.org.x.my\\x2dapp-12.scope"), "org.x.my-app"));
+        // Another app, a terminal, a session, a service, a scope of our own, and no control group at all.
+        assert!(!in_scope_of_app(&cg("app-gnome-panpak.org.gnome.Other-8341.scope"), id));
+        assert!(!in_scope_of_app(&cg("app-gnome-panpak.org.gnome.TextEditorPlus-1.scope"), id));
+        assert!(!in_scope_of_app(&cg("app-org.gnome.Ptyxis-spawn-1.scope"), id));
+        assert!(!in_scope_of_app(&cg("session-3.scope"), id));
+        assert!(!in_scope_of_app(&cg("panpak-remove-org.gnome.TextEditor-77.scope"), id));
+        assert!(!in_scope_of_app("1:name=systemd:/x\n", id) && !in_scope_of_app("", id));
     }
 
     #[test]

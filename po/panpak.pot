@@ -25,6 +25,9 @@ msgstr ""
 msgid "Be controlled by the media keys"
 msgstr ""
 
+msgid "Cancel"
+msgstr ""
+
 msgid "Connect to the network on the ports {subject}"
 msgstr ""
 
@@ -85,6 +88,9 @@ msgstr ""
 msgid "It cannot watch other apps or read what you type in them."
 msgstr ""
 
+msgid "It has no settings or data."
+msgstr ""
+
 msgid "Normal"
 msgstr ""
 
@@ -98,6 +104,18 @@ msgid "Open the links that start with {subject}:"
 msgstr ""
 
 msgid "Other computers can connect to this app on these TCP ports."
+msgstr ""
+
+msgid "Panpak could not take back the files that {name} was given ({why}). Nothing was removed; try again."
+msgstr ""
+
+msgid "Panpak: app removed"
+msgstr ""
+
+msgid "Panpak: nothing was removed"
+msgstr ""
+
+msgid "Panpak: the app was not removed"
 msgstr ""
 
 msgid "Partial isolation:"
@@ -133,6 +151,15 @@ msgstr ""
 msgid "Read, change and delete {subject} in your home folder, a place of passwords, keys or startup files"
 msgstr ""
 
+msgid "Remove"
+msgstr ""
+
+msgid "Remove an app"
+msgstr ""
+
+msgid "Remove {name}?"
+msgstr ""
+
 msgid "See what other apps show and what you type in them (X11)"
 msgstr ""
 
@@ -140,6 +167,9 @@ msgid "Show notifications"
 msgstr ""
 
 msgid "Talk to the local service {subject}"
+msgstr ""
+
+msgid "The app and its launcher are removed."
 msgstr ""
 
 msgid "The folder is the one of your user-dirs.dirs, not a copy."
@@ -158,6 +188,9 @@ msgid "The whole home folder is open to it for reading: your documents, settings
 msgstr ""
 
 msgid "The whole home folder is open to it, with your documents, settings and everything other programs keep there."
+msgstr ""
+
+msgid "There is no dialog tool (zenity or kdialog) to ask you. To remove {name}, run in a terminal: {command}"
 msgstr ""
 
 msgid "This package asks for more than the version you have:"
@@ -190,6 +223,9 @@ msgstr ""
 msgid "X11 has no walls between apps: this app can read the windows and the keyboard input of the others."
 msgstr ""
 
+msgid "Your settings and data are kept ({size}). If you install the app again, they are still there."
+msgstr ""
+
 msgid "it can talk to every service of your desktop"
 msgstr ""
 
@@ -203,6 +239,15 @@ msgid "it reaches your whole home folder"
 msgstr ""
 
 msgid "none"
+msgstr ""
+
+msgid "{name} is open. Close it and try again."
+msgstr ""
+
+msgid "{name} was removed."
+msgstr ""
+
+msgid "{name} was removed. Your settings and data are kept."
 msgstr ""
 
 msgid "{n} permission"

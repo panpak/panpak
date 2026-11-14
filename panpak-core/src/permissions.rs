@@ -515,6 +515,7 @@ pub fn msgids() -> Vec<&'static str> {
         "If you do not accept, you stay on the current version.",
         "Accept them?",
     ];
+    v.extend_from_slice(crate::messages::ALL);
     for r in ROWS {
         v.push(r.text);
         v.push(r.detail);
