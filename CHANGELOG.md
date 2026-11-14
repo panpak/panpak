@@ -11,6 +11,8 @@
   Qt app that asks for a user folder with `rw`. New frame kind and fuzz target (`fuzz_chooser`), the lab scenario D with the real portal and a fake portal for the unit tests.
   The menu entry now lists the file types of the original `.desktop` file (`[desktop] mime_types`, copied by `convert` and `build`), so the app appears in "Open with" for them.
   Found on the VM and fixed: the Save of Text Editor on GNOME was refused because the parent window handle of GNOME has punctuation (the app then crashed: GTK does not survive an answer with no `uris`); a dialog that gives no file is now answered "cancelled" with `uris` = []; a link the user put in a folder the app cannot write is followed to an ordinary file instead of refused, with the place it points to in the message when it is refused.
+  What the app can already reach (under a folder it can write) is given as the real address, not as a document; a second dialog waits for the first (one may wait); `--panpak-open` is not added when the files are shared
+  as documents. The menu action "Uninstall" works (it was refused by the document portal because the shell starts it in the scope of the app), asks in the language of the system, and shows no paths or commands.
   `panpak remove` also takes the entry out of `mimeapps.list` (where the desktop writes the default app the user chose) and refreshes the type cache, so a double click on a text file goes back to the native app.
   Design and what differs from it: docs/FILE-CHOOSER.md.
 - **The table of permissions, corrected.** High risk is the whole home folder (also read-only) and the secret places (passwords, keys, browser and keyring data, startup files); a

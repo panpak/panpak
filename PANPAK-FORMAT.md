@@ -1132,8 +1132,9 @@ for both.
 `[Desktop Action Uninstall]`, with at least the names in English and Italian) whose `Exec` is `<store>/bin/panpak remove --ask <id>` (the stable copy of §6, never the path of the `panpak` that
 happened to run `install`). If that file does not exist when the entry is written, the entry has no action.
 `panpak remove --ask <id>` asks in a dialog (`zenity` or `kdialog`, from fixed folders, never from `PATH`) with the name of the
-app, what is removed, where the data stays and what happens on a reinstall; only a yes starts the removal, which never deletes
-data. It ends with a notification (`notify-send` or `gdbus`, if present). Without a dialog tool it removes nothing, explains the
+app, what is removed, that the settings and data are kept (with their size) and that a new install finds them; no command and no folder path (they are in the output of `panpak remove`); the texts are in the language of the system
+(`po/<language>.po`, §3.1.4 of the translations). Only a yes starts the removal, which never deletes data. A `remove` that finds itself in the scope `app-*panpak.<id>-*.scope` of the app (the scope that the shell makes for the
+action) first moves into a scope of its own, because the document portal takes the caller of such a scope for the app and refuses it to revoke the app's documents. It ends with a notification (`notify-send` or `gdbus`, if present). Without a dialog tool it removes nothing, explains the
 terminal command by notification and ends with `PANPAK-E5004`. `--ask` takes no other option.
 
 The runtime and the shared blobs and chunks stay. Every step below the store, the data, the cache and the runtime

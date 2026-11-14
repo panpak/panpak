@@ -62,8 +62,8 @@ Differences from forwarding the call to the portal through the proxy:
 | older document portal | `Add` / `AddNamed` and then `GrantPermissions` (what `xdp_register_document` does when `version < 2` or `< 3`) | 1 | as above |
 
 Flags: `reuse_existing` (1) so that the same file gets the same document id each time, `persistent` (2) so that the grant survives a restart of the
-portal and the session, `as-needed-by-app` (4) is NOT used (the portal's own code passes it only to skip files a Flatpak app can already reach; panpak
-apps are checked by Landlock, not by the portal) **[source: `xdp-documents.c:129-134`, `document-portal.c:1021-1030`]**. All three portal trees read
+portal and the session, `as-needed-by-app` (4) is NOT passed to the portal: the same idea is done by the actor itself, with Landlock as the judge (4.4): what is under a folder the app can write is
+given as the real address and no document is made **[source: `xdp-documents.c:129-134`, `document-portal.c:1021-1030`]**. All three portal trees read
 announce interface version 5 (`document-portal.c:1649` in 1.22.1, `:1522` in 1.21.0, `:1514` in 1.20.3). Minimum versions per call: `AddFull` 2,
 `AddNamedFull` 3, directories 4 (`Documents.xml`, "This method was added in version N"). The actor reads the `version` property first and falls back as
 in the last row.
@@ -240,10 +240,18 @@ The actor receives a path from the portal and does not follow what it did not me
      a regular file that is not in a place of the system (`/proc`, `/sys`, `/dev`) nor in a hidden place of the home folder (`~/.ssh`, `~/.config`, `~/.local`, ...);
      it opens the resolved path again without following links, so a swap after the check leaves nothing shared;
    - a link to a folder, to nothing, or to one of those places is refused.
+   (This applies to what the actor has to share; what is under a folder the app can write is given as the real path, 4.4, and the link rule is not needed there.)
    A refusal says where the link points: `the file you chose is a link to <target>: choose the original file (<why>)`. A Save under the name of an existing link is
    always refused, and so is a link in a parent folder when the folder that holds it is one the app can write (the actor knows the app's write grants).
    The app gets the name of the target, not of the link (`notes.txt` -> `real.txt` is opened as `real.txt`); a Save-as under that name is the document of `real.txt`.
-4. The descriptor goes to the document portal in the same call; the portal stores the folder's file handle and the name, and checks them again at each
+4. **What the app can already reach is not shared.** After the dialog, each path the portal returned is looked at before anything is opened: the canonical folder part (so `/home` and
+   `/var/home` are the same on both sides) plus the name; if that is under a folder the app can write (its own folders, `rw` home paths and user folders: the same list as for the
+   links), the answer carries the REAL address (`file://` + the canonical path) and nothing is shared: no document, no descriptor of the host opened by the actor, nothing to swap. This
+   is the case of `~/Scaricati` for qBittorrent (`xdg_dirs = download`): its "Save at" keeps a real path, not `/run/user/<uid>/doc/<id>/...` (a FUSE path, slow for a torrent). It
+   holds for a file, a folder, and a name that does not exist yet; a link there is the app's business, because the kernel judges what it opens (a link to a place outside the folders
+   is refused by Landlock when the app follows it). The same rule applies to the files given at the start. Anything else (outside the folders, or only under a read-only one) is a
+   document as before, with the rules of 4.3.
+5. The descriptor goes to the document portal in the same call; the portal stores the folder's file handle and the name, and checks them again at each
    later access, so a swap after the choice is caught by the portal as well.
 
 ## 5. Threat model of this part
@@ -254,7 +262,7 @@ The actor receives a path from the portal and does not follow what it did not me
 | A compromised router names a file to share | the router has no such message: the actor takes the paths from its own request to the portal |
 | A compromised router asks for many dialogs | one dialog per copy at a time, 5 per minute per copy, each visible to the user |
 | The app labels the dialog to mislead ("Save game", really a folder) | possible, same as Flatpak; limited to what the user chooses |
-| A symbolic link made by the app in its own folder | a final link is refused when the folder that holds it is one the app can write; one made elsewhere is followed only to an ordinary file outside the hidden places of the home (4.3) |
+| A symbolic link made by the app in its own folder | nothing is opened by the host there (4.4): the app gets the path and the kernel judges what it opens; a link made elsewhere is followed only to an ordinary file outside the hidden places of the home (4.3) |
 | A swap of the file between the choice and the sharing | the descriptor is the file; the portal checks folder handle and name later |
 | The app gets more than the user chose | `read`/`write` on the chosen file or folder only; no `grant-permissions`; a folder gives its subtree, as the dialog says |
 | Grants outlive the app | `remove` revokes them; `--purge-data` deletes them (3.5) |
@@ -418,7 +426,15 @@ two small files.
     valid, the portal not there), the router sends `Response` 1 with `uris` = an empty list, never 2 and never an empty dictionary. GTK 4.18 (the VM) and 4.22 crash with SIGSEGV
     (`g_vfs_get_file_for_uri` called from GTK) on a Save whose answer has no `uris` key, with any code, and with the key they treat 1 and 2 as "dismissed". The reason is on standard error
     and in a notification of the desktop. The frame between the actor and the router keeps its codes (0, 1, 2): the mapping is the last step, in `choose_done`.
-14. **Links.** Section 4.3: a link the user chose, in a folder the app cannot write, is followed to an ordinary file (not in `/proc`, `/sys`, `/dev` or a hidden place of the home folder);
+14. **One dialog at a time, with a queue.** A second request of the same connection while one is open WAITS (the app gets its handle at once, the answer later, as with the real portal);
+    one request may wait, a third is answered "cancelled". `Request.Close` on a waiting request takes it out of the queue (answered, never shown); when the open dialog ends, or is closed by the app,
+    the waiting one starts. The actor's gate (one dialog, five a minute per copy) is open before the answer is written, so the next request is never refused for that reason. Before this,
+    the second request was answered "cancelled" at once and Text Editor printed `gtk_box_remove` assertions in a second window (not proved to be the cause).
+15. **Removal and the identity of the caller.** The menu action `Uninstall` is started by the shell in the scope `app-gnome-panpak.<id>-N.scope`; the portals read the identity of a caller from the scope
+    name when the menu entry exists, so `panpak remove` was "the app" for the document portal, which refuses an app to revoke its documents (`Not enough permissions`). `remove` now moves itself into
+    `panpak-remove-<id>-<pid>.scope` first (the user's systemd on `$XDG_RUNTIME_DIR/bus`); the other calls to the document portal (`AddFull`, `Delete`, `List`) are not affected. Scenario D starts `remove`
+    inside a scope named for the app; without the move it fails with the reason of the portal.
+16. **Links.** Section 4.3: a link the user chose, in a folder the app cannot write, is followed to an ordinary file (not in `/proc`, `/sys`, `/dev` or a hidden place of the home folder);
     any other link is refused with the place it points to. The same rule applies to files given at the start. Found on the VM, where a plain refusal made `~/Documenti/collegamento.txt`
     unusable although the user had put it there.
 
@@ -427,13 +443,13 @@ two small files.
 - A real GTK 4 program (`tests/gtk_filechooser.py`, headless Sway, a fake portal): `Gtk.FileDialog.save()` gets the answers the router gives (1 and 2 with `uris` = [], and a file) and ends
   normally; the answer without `uris` is tried as a control and reported (it crashes GTK 4.18 and 4.22). It runs in the job of the private bus of the CI.
 - Unit tests: the call parser and its option filter (with the real call of GNOME for a Save in a new document), the addresses, the frames and the answer text (`panpak-core/src/filechooser.rs`), the safe open and the link rules
-  (`docshare.rs`), the router (`panpak-core/src/dbus/route.rs`: handle at once, one dialog at a time, Close, bad calls and bad answers), the actor (`panpak-stub/src/chooser.rs`: filtering, token,
+  (`docshare.rs`), the router (`panpak-core/src/dbus/route.rs`: handle at once, one dialog at a time with one waiting, Close of a waiting request, bad calls and bad answers), the actor (`panpak-stub/src/chooser.rs`: filtering, token,
   busy, five a minute), the arguments of a start (`startfiles.rs`).
 - A fake desktop portal on a private bus (`tests/fake_portal_files.py`, `panpak-core/tests/chooserhost.rs`): what is asked of the portal, the permissions of each kind of file,
   the order of several files, a folder, a new file, a closed dialog, a link, an address that is not a file, the files at the start, the revoke and the purge, and a portal that is not there.
 - The whole path with the real portal front end and the real document portal (FUSE) in `tests/privbus.py` scenario D: the app reads a file through its document path and does not see
-  the host path, saves a new file that appears on the host, renames inside the document folder (atomic save), gets `Response` 2 for a link; files given at the start; `panpak remove`
-  takes the grants back and leaves the files.
+  the host path, saves a new file that appears on the host, renames inside the document folder (atomic save), follows a link to an ordinary file and is told "cancelled" for one to a hidden place; an app that can write a folder gets the real address; files given at the start (and
+  none of the old `--panpak-open` rule); `panpak remove` started in a scope named for the app takes the grants back and leaves the files.
 - Fuzz: `fuzz_chooser` (call, answer text, addresses, frames, start arguments) and `fuzz_router` with the dialog.
 
 **Not tested yet** (needs the desktops; the owner starts the VMs one at a time): the dialogs of GNOME and KDE as the user sees them, Text Editor and qBittorrent with the real
