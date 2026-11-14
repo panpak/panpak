@@ -1768,31 +1768,51 @@ fn reported_version(bin: &Path) -> Option<String> {
     out.status.success().then(|| String::from_utf8(out.stdout).ok()).flatten()?.trim().strip_prefix("panpak ").map(str::to_string)
 }
 
-/// Make sure `<store>/bin/panpak` exists, for the menu action "Uninstall": copy the running `panpak` when there is
-/// none. One that is there is never replaced (a build from a test folder must not overwrite the installed one);
-/// `install-runtime` is what replaces it. An older one gets a warning.
+/// Make sure `<store>/bin/panpak` is there and is not older than the running `panpak`, for the menu action "Uninstall":
+/// - none there: the running `panpak` is copied;
+/// - one there that reports an older version: it is replaced, in one rename (a running copy keeps the old file);
+/// - one of the same version or a newer one, one that is a link (the user's own), or one that does not report a version:
+///   it stays (a build from a test folder of the same version must not overwrite the installed one, and a version is never
+///   replaced by an older one). A newer running `panpak` than the one stored is the only thing that moves it.
+///
+/// The check and the rename are done under a lock of the folder, so that two installs at once cannot end with the older one.
 fn ensure_stable_panpak(store: &Path) -> Result<()> {
     let dest = dsk::stable_panpak(store);
     let me = std::env::current_exe().ok().filter(|p| p.is_absolute() && fs::metadata(p).is_ok_and(|m| m.is_file()));
+    let Some(me) = me else { return Ok(()) };
+    let dir = dest.parent().context("no folder for the stable panpak")?;
+    fs::create_dir_all(dir)?;
+    let _lock = lock_folder(dir)?;
+    let mine = env!("CARGO_PKG_VERSION");
     match fs::symlink_metadata(&dest) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(me) = me {
-                fs::create_dir_all(dest.parent().unwrap())?;
-                install_file_atomically(&me, &dest, 0o755)?;
-                println!("note: copied panpak to {} (the menu action \"Uninstall\" runs it)", dest.display());
-            }
+            install_file_atomically(&me, &dest, 0o755)?;
+            println!("note: copied panpak to {} (the menu action \"Uninstall\" runs it)", dest.display());
         }
         Err(e) => return Err(e).with_context(|| format!("inspect {}", dest.display())),
-        Ok(_) => {
-            let same = me.as_ref().is_some_and(|m| fs::canonicalize(m).ok() == fs::canonicalize(&dest).ok());
-            if let (false, Some(have)) = (same, reported_version(&dest)) {
-                if cmp_versions(&have, env!("CARGO_PKG_VERSION")) == std::cmp::Ordering::Less {
-                    eprintln!("WARNING: the panpak in {} is version {have}, older than this one ({}); the menu action \"Uninstall\" runs it. Update it with `panpak install-runtime <release.tar.gz> --release-key <key>`", dest.display(), env!("CARGO_PKG_VERSION"));
-                }
-            }
+        Ok(m) if !m.file_type().is_file() => {
+            eprintln!("NOTE: {} is not a plain file (a link of yours?): it is not touched", dest.display());
         }
+        Ok(_) if fs::canonicalize(&me).ok() == fs::canonicalize(&dest).ok() => {}
+        Ok(_) => match reported_version(&dest) {
+            Some(have) if cmp_versions(&have, mine) == std::cmp::Ordering::Less => {
+                install_file_atomically(&me, &dest, 0o755)?;
+                println!("note: updated panpak in {} from version {have} to {mine} (the menu action \"Uninstall\" runs it)", dest.display());
+            }
+            Some(_) => {}
+            None => eprintln!("NOTE: {} does not say its version: it is not replaced; `panpak install-runtime <release.tar.gz> --release-key <key>` updates it", dest.display()),
+        },
     }
     Ok(())
+}
+
+/// A lock of a folder for the length of a change in it: a hidden file in it, `flock(2)`, waited for (the holders are short).
+fn lock_folder(dir: &Path) -> Result<fs::File> {
+    use std::os::unix::io::AsRawFd;
+    let f = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(".panpak.lock")).with_context(|| format!("lock {}", dir.display()))?;
+    // SAFETY: flock(2) on a descriptor owned here.
+    ensure!(unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == 0, "cannot lock {}", dir.display());
+    Ok(f)
 }
 
 /// Remove the entry of the old name if panpak wrote it. One that is not ours stays. Returns whether one was removed.

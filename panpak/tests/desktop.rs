@@ -152,27 +152,60 @@ fn launcher_and_entry_name_only_the_store_whatever_ran_install() {
 }
 
 #[test]
-fn an_installed_panpak_is_never_replaced_and_an_older_one_is_reported() {
+fn an_older_stable_panpak_is_updated_and_a_newer_or_other_one_is_never_replaced() {
     let e = env("keep");
     fs::create_dir_all(e.store().join("bin")).unwrap();
     let mine = e.store().join("bin/panpak");
+    let running = fs::read(env!("CARGO_BIN_EXE_panpak")).unwrap();
     let say = |v: &str| {
+        let _ = fs::remove_file(&mine);
         fs::write(&mine, format!("#!/bin/sh\n[ \"$1\" = --version ] && echo 'panpak {v}'\n")).unwrap();
         fs::set_permissions(&mine, fs::Permissions::from_mode(0o755)).unwrap();
     };
-    say("0.0.1");
-    let before = fs::read(&mine).unwrap();
-    let o = e.install("1", "", &[]);
-    assert!(o.status.success(), "{}", text(&o));
-    assert_eq!(fs::read(&mine).unwrap(), before, "the stable panpak was replaced");
-    let t = text(&o);
-    assert!(t.contains("is version 0.0.1, older than this one") && t.contains("install-runtime"), "{t}");
-    // The same version: no warning. A newer one: none either.
-    for v in [env!("CARGO_PKG_VERSION"), "99.0.0"] {
-        say(v);
-        let o = e.install("2", "", &[]);
-        assert!(o.status.success() && !text(&o).contains("older than this one"), "{v}: {}", text(&o));
+    let leftovers = || {
+        let mut v: Vec<String> = fs::read_dir(e.store().join("bin")).unwrap().flatten().map(|x| x.file_name().to_string_lossy().into_owned()).filter(|n| n.contains("tmp")).collect();
+        v.sort();
+        v
+    };
+    // An older one (an old store) is replaced by the running panpak, in one rename: no temporary file is left, the mode is kept.
+    for old in ["0.0.1", "0.1.0-rc1"] {
+        say(old);
+        let o = e.install("1", "", &[]);
+        assert!(o.status.success(), "{old}: {}", text(&o));
+        let t = text(&o);
+        assert!(t.contains("updated panpak in") && t.contains(&format!("from version {old} to {}", env!("CARGO_PKG_VERSION"))), "{old}: {t}");
+        assert_eq!(fs::read(&mine).unwrap(), running, "{old}: the stable panpak was not replaced");
+        assert_eq!(fs::metadata(&mine).unwrap().permissions().mode() & 0o777, 0o755);
+        assert!(leftovers().is_empty(), "{:?}", leftovers());
     }
+    // The same version, and a newer one: never replaced, never by an older one, and no warning.
+    for v in [env!("CARGO_PKG_VERSION"), "99.0.0", "0.1.1"] {
+        say(v);
+        let before = fs::read(&mine).unwrap();
+        let o = e.install("2", "", &[]);
+        assert!(o.status.success(), "{v}: {}", text(&o));
+        assert_eq!(fs::read(&mine).unwrap(), before, "{v}: the stable panpak was replaced");
+        assert!(!text(&o).contains("updated panpak") && !text(&o).contains("older than this one"), "{v}: {}", text(&o));
+    }
+    // One that does not say its version is not replaced, and the user is told.
+    fs::write(&mine, "#!/bin/sh\nexit 0\n").unwrap();
+    let before = fs::read(&mine).unwrap();
+    let o = e.install("3", "", &[]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(fs::read(&mine).unwrap(), before);
+    assert!(text(&o).contains("does not say its version"), "{}", text(&o));
+    // A link of the user's own is not replaced either: the target and the link stay as they were.
+    let target = e.home.join("my-panpak");
+    fs::write(&target, "#!/bin/sh\n[ \"$1\" = --version ] && echo 'panpak 0.0.1'\n").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::remove_file(&mine).unwrap();
+    std::os::unix::fs::symlink(&target, &mine).unwrap();
+    let before = fs::read(&target).unwrap();
+    let o = e.install("4", "", &[]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(fs::read_link(&mine).unwrap(), target);
+    assert_eq!(fs::read(&target).unwrap(), before);
+    assert!(text(&o).contains("not a plain file"), "{}", text(&o));
 }
 
 #[test]

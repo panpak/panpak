@@ -134,9 +134,11 @@ Three fixed paths in the per-user store, written by `install-runtime`:
 - `install-runtime` from a release tarball already has both binaries; it installs them with
   `install_file_atomically`. From a bare stub (`install-runtime <stub> --allow-unsigned`) there is no `panpak`
   to copy, so it installs the stub only and `<store>/bin/panpak` stays as it was. `install` and `update` then
-  copy the running `panpak` into `<store>/bin/panpak` when that file is missing, and never replace an
-  existing one (a dev build run from a test folder must not overwrite the installed CLI). Replacing it is
-  `install-runtime`'s job, and the only way the stable `panpak` changes.
+  copy the running `panpak` into `<store>/bin/panpak` when that file is missing, and replace it when it says
+  an older version than the running one (`--version`; one rename, under a lock of the folder, so that two
+  installs at once cannot end with the older one). It is never replaced by an older or the same version (a dev
+  build of the same version, run from a test folder, must not overwrite the installed CLI), and never when it is
+  a link or does not say its version: the user is told. `install-runtime` replaces it too, from a release.
 - The launcher and the entry use only these paths: `Exec=... <store>/bin/panpak-stub run <store>/apps/<id>/current`
   in the launcher and `<store>/bin/panpak remove --ask <id>` in the action. Nothing refers to the folder
   where the user happened to run `panpak`.
