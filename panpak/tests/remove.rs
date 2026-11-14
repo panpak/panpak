@@ -25,6 +25,7 @@ fn cmd(home: &Path, args: &[&str]) -> Command {
     c.args(args)
         .current_dir(home)
         .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
         .env("XDG_RUNTIME_DIR", home.join("run"))
