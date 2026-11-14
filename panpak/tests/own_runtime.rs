@@ -6,7 +6,19 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Output},
+    sync::RwLock,
 };
+
+/// A program that was just written cannot be run while any process holds a descriptor of it open for writing, and a program that another test starts at
+/// that moment holds a copy of every descriptor of this process until it calls `exec` (the run then fails with "Text file busy"). So a test writes a
+/// program under the write side of this gate, and every start of a program takes the read side for the time of the `fork` and `exec` (not for the run).
+static GATE: RwLock<()> = RwLock::new(());
+
+/// Start a program: the gate is held until the new process has called `exec`, which `spawn` waits for.
+fn start(cmd: &mut Command) -> std::process::Child {
+    let _read = GATE.read().unwrap();
+    cmd.spawn().unwrap()
+}
 
 struct Lab {
     home: PathBuf,
@@ -17,7 +29,7 @@ struct Lab {
 impl Drop for Lab {
     fn drop(&mut self) {
         if !std::thread::panicking() {
-            let _ = Command::new("chmod").args(["-R", "u+w"]).arg(&self.home).output();
+            let _ = start(Command::new("chmod").args(["-R", "u+w"]).arg(&self.home).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())).wait();
             let _ = fs::remove_dir_all(&self.home);
         }
     }
@@ -28,6 +40,7 @@ fn text(o: &Output) -> String {
 }
 
 fn stub_script(path: &Path, abi: u32, note: &str) {
+    let _write = GATE.write().unwrap();
     fs::write(path, format!("#!/bin/sh\n# {note}\n[ \"$1\" = --abi-version ] && echo {abi}\nexit 0\n")).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
@@ -41,25 +54,32 @@ impl Lab {
         // The program in a folder of its own, with the runtime beside it.
         let bin = home.join("prog");
         fs::create_dir_all(&bin).unwrap();
-        fs::copy(env!("CARGO_BIN_EXE_panpak"), bin.join("panpak")).unwrap();
-        fs::set_permissions(bin.join("panpak"), fs::Permissions::from_mode(0o755)).unwrap();
+        {
+            let _write = GATE.write().unwrap();
+            fs::copy(env!("CARGO_BIN_EXE_panpak"), bin.join("panpak")).unwrap();
+            fs::set_permissions(bin.join("panpak"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let key = home.join("secret.key");
         let l = Lab { home, bin, key };
         assert!(l.cli(&["keygen", "-o", l.key.to_str().unwrap()]).status.success());
         l
     }
     fn cli(&self, args: &[&str]) -> Output {
-        Command::new(self.bin.join("panpak"))
-            .args(args)
-            .current_dir(&self.home)
-            .env("HOME", &self.home)
-            .env("XDG_DATA_HOME", self.home.join(".local/share"))
-            .env("XDG_CONFIG_HOME", self.home.join(".config"))
-            .env("XDG_RUNTIME_DIR", self.home.join("run"))
-            .env_remove("PANPAK_SECRET_FILE")
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap()
+        start(
+            Command::new(self.bin.join("panpak"))
+                .args(args)
+                .current_dir(&self.home)
+                .env("HOME", &self.home)
+                .env("XDG_DATA_HOME", self.home.join(".local/share"))
+                .env("XDG_CONFIG_HOME", self.home.join(".config"))
+                .env("XDG_RUNTIME_DIR", self.home.join("run"))
+                .env_remove("PANPAK_SECRET_FILE")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped()),
+        )
+        .wait_with_output()
+        .unwrap()
     }
     /// A package made with a stand-in runtime (the one beside the program is not needed for `pack`).
     fn package(&self) -> PathBuf {

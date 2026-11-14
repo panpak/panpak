@@ -80,7 +80,11 @@ Without `sha256` the run still works and says that the download was not checked.
   store. In fast mode it is that single first start, so it is larger and noisy:
   use it to see that an app starts, not to compare.
 - **package** is the time to make the package (`cached` when it was kept). For a
-  recipe this is the whole `panpak build`.
+  recipe this is the whole `panpak build`; below the table the log gives its phases, one line each:
+  `time image` (the base image and its packages), `time patch` (the rebuilt packages of the lock, GTK for
+  example), `time source`, `time zig` (when the recipe has Zig), `time compile`, `time collect` (libraries,
+  plugins, data) and `time pack`. `(kept)` after a time means the cache already had the result. They come
+  from the lines `panpak build: time <phase>: <s> s` that `panpak build` prints.
 - **install** and **starts** are the time spent in those phases. The `phases`
   line adds them over all apps.
 - **peak memory** is `memory.peak` of the scope, page cache included, so it is an

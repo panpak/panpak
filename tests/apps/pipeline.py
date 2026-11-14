@@ -157,6 +157,20 @@ def convert(ctx, app, key, fetched):
 
 # ---- recipe: panpak build ----------------------------------------------------------------------------------------
 
+def build_notes(text):
+    """The lines of `panpak build` that the log of the harness keeps: the time of each phase (`time image: 12.3 s`, then patch, source, zig, compile,
+    collect, pack; "(kept)" when the cache had the result) and what it says of the memory."""
+    prefix = "panpak build: "
+    notes = []
+    for ln in text.splitlines():
+        if not ln.startswith(prefix):
+            continue
+        body = ln[len(prefix):]
+        if body.startswith("time ") or "peak memory" in body or "the build used" in body:
+            notes.append(body)
+    return notes
+
+
 def build(ctx, app, key):
     """Recipe to package with `panpak build` (it has its own caches of the image and the source, in the cache folder of the harness)."""
     d = ctx.work / "recipes" / app.name
@@ -169,8 +183,7 @@ def build(ctx, app, key):
     r = sh([ctx.panpak, "build", d, "--secret-file", ctx.keyfile, "--stub", ctx.stub, "-o", pkg], env=env)
     if r.returncode != 0:
         raise StepError("panpak build failed: " + (r.stdout + r.stderr).strip()[-600:])
-    notes = [ln.split("panpak build: ", 1)[1] for ln in (r.stdout + r.stderr).splitlines() if "peak memory" in ln or "the build used" in ln]
-    return pkg, notes + [f"panpak build took {time.monotonic() - t0:.0f} s"]
+    return pkg, build_notes(r.stdout + r.stderr) + [f"panpak build took {time.monotonic() - t0:.0f} s"]
 
 
 def ensure_package(ctx, app, use_cache=True):
