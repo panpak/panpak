@@ -579,7 +579,7 @@ def scenario_dialog(lab):
     # The user closes the dialog.
     answer.write_text('')
     r = lab.run(app, 'dialog', 'OpenFile', 0, 'h:' + str(docs / 'a.txt'), '')
-    need(r['answers'] == [[1, []]], f"D: a closed dialog: {r['answers']}")
+    need(r['answers'] == [[1, ['uris']]], f"D: a closed dialog: {r['answers']}")  # code 1 and `uris` = []: what GTK survives
     # Save: a name that does not exist yet; the file appears on the host when the app writes.
     answer.write_text(uri(docs / 'new.txt') + '\n')
     r = lab.run(app, 'dialog', 'SaveFile', 0, 'h:' + str(docs / 'new.txt'), 'saved by the app\n')
@@ -590,14 +590,14 @@ def scenario_dialog(lab):
     answer.write_text(uri(docs / 'ln.txt') + '\n')
     r = lab.run(app, 'dialog', 'OpenFile', 0, 'h:' + str(docs / 'a.txt'), '')
     need(r['answers'] and r['answers'][0][0] == 0 and r.get('content') == 'hello from the host\n', f'D: a link to a file: {r}; the runtime said: {lab.last_out[-400:]}')
-    need(not any('ln.txt' in u for u in r['answers'][0][1]), f'D: the app got the name of the link: {r["answers"]}')
+    need(r.get('uri', '').endswith('/a.txt'), f'D: the app got the name of the link and not of the file it points to: {r.get("uri")}')
     # A link to a hidden place of the home folder (here a settings file): refused, the app is told "cancelled" (1), the message names the place it points to.
     (lab.home / '.hidden').mkdir(exist_ok=True)
     (lab.home / '.hidden' / 'secret.txt').write_text('secret\n')
     (docs / 'ln-hidden.txt').symlink_to(lab.home / '.hidden' / 'secret.txt')
     answer.write_text(uri(docs / 'ln-hidden.txt') + '\n')
     r = lab.run(app, 'dialog', 'OpenFile', 0, 'h:' + str(docs / 'a.txt'), '')
-    need(r['answers'] == [[1, []]], f'D: a link to a hidden place: {r["answers"]}')
+    need(r['answers'] == [[1, ['uris']]], f'D: a link to a hidden place: {r["answers"]}')
     need(docshare_link_prefix in lab.last_out and 'hidden place' in lab.last_out, f'D: the refusal said nothing: {lab.last_out[-400:]}')
     # Files given at the start (Open with, a double click, the command line): shared before the app runs; a link is followed in the same way, one to a hidden place is
     # dropped with the message on stderr.
@@ -606,6 +606,30 @@ def scenario_dialog(lab):
     need(len(r['argv']) == 3 and all(a.startswith(doc) for a in r['argv']), f"D: the arguments the app got: {r['argv']}")
     need(r.get('first') == 'hello from the host\n' and r.get('wrote') and (docs / 'started.txt').read_text() == 'written through the document\n', f'D: files given at the start: {r}')
     need(docshare_link_prefix in lab.last_out and 'hidden place' in lab.last_out, f'D: the link was dropped without a word: {lab.last_out[-300:]}')
+    # An app that can write the folder (a `rw` home path): what it chooses there is given as the real address, no document is made, and the app writes through that address.
+    app2 = 'org.panpaktest.Files2'
+    lab.install(app2, '[[permissions.home_paths]]\npath = "Docs"\naccess = "rw"\n')
+    answer.write_text(uri(docs / 'a.txt') + '\n')
+    r = lab.run(app2, 'dialog', 'OpenFile', 0, 'h:' + str(docs / 'a.txt'), '')
+    real = os.path.realpath(docs / 'a.txt')
+    need(r['answers'] and r['answers'][0][0] == 0 and r.get('uri') == 'file://' + real, f'D: an app that can write the folder got {r.get("uri")}, expected the real address: {r}; {lab.last_out[-400:]}')
+    need(r.get('content') == 'hello from the host\n' and not r.get('in_doc_folder'), f'D: the app could not read the real path: {r}')
+    held = lab.sess.call('org.freedesktop.portal.Documents', '/org/freedesktop/portal/documents', 'org.freedesktop.portal.Documents.List', f'panpak.{app2}')[1]
+    need(held.endswith('{},)'), f'D: a document was made for something the app can write: {held}')
+    answer.write_text(uri(docs / 'saved-by-app2.txt') + '\n')
+    r = lab.run(app2, 'dialog', 'SaveFile', 0, 'h:' + str(docs / 'saved-by-app2.txt'), 'real path save\n')
+    need(r.get('wrote') and (docs / 'saved-by-app2.txt').read_text() == 'real path save\n' and r.get('uri') == 'file://' + os.path.realpath(docs) + '/saved-by-app2.txt', f'D: the save of an app that can write the folder: {r}; {lab.last_out[-300:]}')
+    # The launcher starts an app with ONE existing file as `run <app> --panpak-open <file> <file>` (the older way of giving one file). With the document portal served the file is
+    # shared as a document with the other arguments, the host path gets no rule of its own and nothing is said about one.
+    store = lab.home / '.local/share/panpak'
+    report = lab.report_path(app, 'args')
+    report.unlink(missing_ok=True)
+    p = subprocess.run([str(store / 'bin/panpak-stub'), 'run', str(store / 'apps' / app / 'current'), '--panpak-open', str(docs / 'a.txt'), 'args', '-', '0', str(docs / 'a.txt')],
+                       env=lab.env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    need(report.exists(), f'D: the start with one file left no report: {p.stdout[-300:]}{p.stderr[-300:]}')
+    argv = json.loads(report.read_text())['argv']
+    need(len(argv) == 1 and argv[0].startswith(doc) and argv[0].endswith('/a.txt'), f'D: the argument of a start with one file: {argv}')
+    need('may read' not in p.stderr and 'read access' not in p.stderr, f'D: the old rule of the host path was added and announced: {p.stderr[-300:]}')
     # Removing the app takes the grants back and leaves the user's files alone.
     listing = lambda: lab.sess.call('org.freedesktop.portal.Documents', '/org/freedesktop/portal/documents', 'org.freedesktop.portal.Documents.List', f'panpak.{app}')[1]
     need(not listing().endswith('{},)'), f'D: the portal holds nothing for the app before the removal: {listing()}')

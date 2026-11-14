@@ -131,6 +131,22 @@ fn check_parent_links(parent: &Path, writable_roots: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
+/// The real path of something the user chose, when the app can already reach it: the folder part of `path` made canonical (so `/home` and `/var/home` are the same on both
+/// sides) plus the name, if that is under a folder the app can write. Then nothing is shared: the app gets the path as it is, as Flatpak's portal does for what an app can see
+/// (the flag `as-needed-by-app`), and the kernel (Landlock) judges every open, links included. `None` when the path is elsewhere (a document is made), has no name or no folder.
+pub fn under_roots(path: &Path, writable_roots: &[PathBuf]) -> Option<PathBuf> {
+    if !path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return None;
+    }
+    let full = std::fs::canonicalize(path.parent()?).ok()?.join(path.file_name()?);
+    writable_roots.iter().any(|r| full.starts_with(std::fs::canonicalize(r).unwrap_or_else(|_| r.clone()))).then_some(full)
+}
+
+/// The `file:` address of a real path, as the dialog returns it.
+pub fn real_uri(path: &Path) -> String {
+    format!("file://{}", crate::filechooser::percent_encode(path.as_os_str().as_bytes()))
+}
+
 /// Open the parent folder of `path` (`O_PATH | O_DIRECTORY`) and return it with the final name.
 pub fn open_parent(path: &Path, writable_roots: &[PathBuf]) -> Result<(OwnedFd, Vec<u8>)> {
     ensure!(path.is_absolute(), "the path is not absolute");
@@ -384,6 +400,30 @@ mod tests {
             let e = open_existing(&d.join(l), &[]).unwrap_err();
             assert!(e.to_string().starts_with("the file you chose is a link to ") && e.to_string().ends_with(&format!("({why})")), "{l}: {e}");
         }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn what_is_under_a_folder_the_app_can_write_is_given_as_a_real_path() {
+        let d = scratch("roots");
+        std::fs::create_dir_all(d.join("rw/sub")).unwrap();
+        std::fs::create_dir_all(d.join("ro")).unwrap();
+        std::fs::write(d.join("rw/sub/a.txt"), "x").unwrap();
+        // The folder of the app is reached through a link of the system (like /home -> /var/home): both sides agree after `canonicalize`.
+        symlink(d.join("rw"), d.join("via")).unwrap();
+        let roots = vec![d.join("rw")];
+        let real = std::fs::canonicalize(d.join("rw")).unwrap();
+        assert_eq!(under_roots(&d.join("rw/sub/a.txt"), &roots), Some(real.join("sub/a.txt")));
+        assert_eq!(under_roots(&d.join("via/sub/a.txt"), &roots), Some(real.join("sub/a.txt")));
+        assert_eq!(under_roots(&d.join("rw/sub/not-yet.txt"), &roots), Some(real.join("sub/not-yet.txt")), "a name to create");
+        assert_eq!(under_roots(&d.join("rw/sub"), &roots), Some(real.join("sub")), "a folder");
+        // Elsewhere, under a folder the app cannot write, a missing folder, a path with `..`, a relative path: a document is made.
+        assert_eq!(under_roots(&d.join("ro/x.txt"), &roots), None);
+        assert_eq!(under_roots(&d.join("rw/missing/x.txt"), &roots), None);
+        assert_eq!(under_roots(&d.join("rw/../ro/x.txt"), &roots), None);
+        assert_eq!(under_roots(Path::new("rw/sub/a.txt"), &roots), None);
+        assert_eq!(under_roots(&d.join("rw/sub/a.txt"), &[]), None);
+        assert_eq!(real_uri(Path::new("/a b/\u{e9}.txt")), "file:///a%20b/%C3%A9.txt");
         std::fs::remove_dir_all(&d).unwrap();
     }
 

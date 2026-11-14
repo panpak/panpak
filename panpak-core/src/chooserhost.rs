@@ -144,27 +144,38 @@ fn run_inner(ctx: &HostCtx, call: &Call) -> Result<Outcome> {
         bail!("the dialog gave {} files: at most {MAX_FILES}", uris.len());
     }
     let paths: Vec<PathBuf> = uris.iter().map(|u| filechooser::file_uri_to_path(u)).collect::<Result<_>>().context("the portal gave an address that is not a file")?;
-    let mut docs_conn = conn;
-    let dv = docshare::documents_version(&mut docs_conn).context("the document portal is not running")?;
-    let mut docs = Docs { conn: &mut docs_conn, version: dv, app_id: &ctx.app_id };
-    let mut out_uris = Vec::new();
-    match call.method {
-        Method::OpenFile => {
-            let items: Vec<docshare::Opened> = paths.iter().map(|p| docshare::open_existing(p, ctx.roots())).collect::<Result<_>>()?;
-            let ids = docs.share_existing(&items, call.writable)?;
-            for (it, id) in items.iter().zip(&ids) {
-                out_uris.push(filechooser::document_uri(&ctx.runtime_dir, id, &it.name));
-            }
+    // What the app can already reach (under a folder it can write) is given as the real address: no document, nothing opened by the host.
+    let mut out_uris: Vec<String> = vec![String::new(); paths.len()];
+    let mut to_share: Vec<usize> = Vec::new();
+    for (i, p) in paths.iter().enumerate() {
+        match docshare::under_roots(p, ctx.roots()) {
+            Some(real) => out_uris[i] = docshare::real_uri(&real),
+            None => to_share.push(i),
         }
-        Method::SaveFile | Method::SaveFiles => {
-            for p in &paths {
-                let (parent, name) = docshare::open_parent(p, ctx.roots())?;
-                // An existing link under the chosen name is how an app would redirect a save: refused, as for an open.
-                if std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()) {
-                    return Err(Refused(docshare::link_message(p)).into());
+    }
+    if !to_share.is_empty() {
+        let mut docs_conn = conn;
+        let dv = docshare::documents_version(&mut docs_conn).context("the document portal is not running")?;
+        let mut docs = Docs { conn: &mut docs_conn, version: dv, app_id: &ctx.app_id };
+        match call.method {
+            Method::OpenFile => {
+                let items: Vec<docshare::Opened> = to_share.iter().map(|&i| docshare::open_existing(&paths[i], ctx.roots())).collect::<Result<_>>()?;
+                let ids = docs.share_existing(&items, call.writable)?;
+                for ((&i, it), id) in to_share.iter().zip(&items).zip(&ids) {
+                    out_uris[i] = filechooser::document_uri(&ctx.runtime_dir, id, &it.name);
                 }
-                let id = docs.share_new(&parent, &name)?;
-                out_uris.push(filechooser::document_uri(&ctx.runtime_dir, &id, &name));
+            }
+            Method::SaveFile | Method::SaveFiles => {
+                for &i in &to_share {
+                    let p = &paths[i];
+                    let (parent, name) = docshare::open_parent(p, ctx.roots())?;
+                    // An existing link under the chosen name is how an app would redirect a save: refused, as for an open.
+                    if std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()) {
+                        return Err(Refused(docshare::link_message(p)).into());
+                    }
+                    let id = docs.share_new(&parent, &name)?;
+                    out_uris[i] = filechooser::document_uri(&ctx.runtime_dir, &id, &name);
+                }
             }
         }
     }

@@ -762,7 +762,7 @@ fn build_ruleset(
             // Truncate is part of writing (open O_TRUNC / fs::write).
             AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::Truncate
         } else {
-            eprintln!("panpak: read access to {}", path.display());
+            eprintln!("panpak: the app may read {} (only that file; without the document portal there is no other way to give it)", path.display());
             AccessFs::ReadFile.into()
         };
         rs = rs.add_rule(PathBeneath::new(fd, access))?;
@@ -1015,6 +1015,11 @@ fn split_stub_flags(args: Vec<String>) -> Result<StubFlags> {
         bail_code!(ErrorCode::E5001, "--panpak-open-write/--panpak-open-rename without --panpak-open");
     }
     Ok((allow_unfiltered, open_file, app_args))
+}
+
+/// The folder of the document portal for apps is there: files given at the start are shared through it.
+fn documents_served(runtime_dir: Option<&Path>) -> bool {
+    runtime_dir.is_some_and(|rt| rt.join("doc/by-app").is_dir())
 }
 
 /// Files and folders among the arguments (a double click, "Open with", the command line) are shared with the app through the document portal, and the
@@ -1314,6 +1319,9 @@ fn real_main() -> Result<()> {
         cmd.env("GTK_THEME", theme);
     }
     let app_args = if layer_ok && installed_mode { share_start_files(app_args, &man.app.id, runtime_dir.as_deref(), access.rw.as_slice()) } else { app_args };
+    // With the document portal served, the file the launcher names with `--panpak-open` is shared as a document with the other arguments (just above), so the older rule
+    // of Landlock on the path of the host is not added: it would be a second, read-only grant to the same file, and a line on standard error that says so.
+    let open_file = if layer_ok && installed_mode && documents_served(runtime_dir.as_deref()) { None } else { open_file };
     cmd.args(&launch_args)
         .args(&app_args)
         .env("PANPAK_APP_ID", &man.app.id)

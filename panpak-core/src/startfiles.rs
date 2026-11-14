@@ -98,6 +98,13 @@ pub fn share(
             dropped.push(format!("{a}: more than {MAX_FILES} files at once"));
             continue;
         }
+        // Under a folder the app can write: it gets the real path, nothing is shared (see `docshare::under_roots`).
+        if let Arg::Existing { path, as_uri } | Arg::New { path, as_uri } = &kind {
+            if let Some(real) = docshare::under_roots(path, writable_roots) {
+                items.push(Item::Keep(if *as_uri { docshare::real_uri(&real) } else { real.to_string_lossy().into_owned() }));
+                continue;
+            }
+        }
         match kind {
             Arg::Existing { path, as_uri } => match docshare::open_existing(&path, writable_roots) {
                 Ok(o) => {
@@ -238,13 +245,15 @@ mod tests {
     }
 
     #[test]
-    fn a_link_the_app_could_have_made_is_dropped_with_the_message_before_the_bus_is_asked() {
+    fn what_the_app_can_reach_is_passed_as_it_is_and_nothing_is_shared() {
         let d = scratch("link");
         std::fs::write(d.join("a.txt"), "x").unwrap();
         std::os::unix::fs::symlink(d.join("a.txt"), d.join("ln")).unwrap();
-        let r = share(&["ln".to_string()], &d, "panpak.x.y", "/run/user/1000", std::slice::from_ref(&d), || panic!("nothing to share, no bus"));
-        assert!(r.args.is_empty());
-        assert_eq!(r.dropped, [format!("ln: the file you chose is a link to {}: choose the original file (this app can write in that folder)", d.join("a.txt").display())]);
+        let real = std::fs::canonicalize(&d).unwrap();
+        let args: Vec<String> = ["ln", "--flag", "./new.txt", &format!("file://{}/a.txt", d.display())].iter().map(|s| s.to_string()).collect();
+        let r = share(&args, &d, "panpak.x.y", "/run/user/1000", std::slice::from_ref(&d), || panic!("nothing to share, no bus"));
+        assert_eq!(r.args, [real.join("ln").to_string_lossy().into_owned(), "--flag".into(), real.join("new.txt").to_string_lossy().into_owned(), format!("file://{}/a.txt", real.display())]);
+        assert!(r.dropped.is_empty());
         // In a folder the app cannot write the link is followed: the file is shared (here there is no bus, so it stays unshared with that reason).
         let r = share(&["ln".to_string()], &d, "panpak.x.y", "/run/user/1000", &[], || anyhow::bail!("no session bus"));
         assert!(r.dropped.iter().any(|m| m.contains("not shared") && m.contains("no session bus")), "{:?}", r.dropped);
