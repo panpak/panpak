@@ -106,8 +106,10 @@ impl Actor {
         let spawned = std::thread::Builder::new().name("file-dialog".into()).spawn({
             let writer = writer.clone();
             move || {
-                let _permit = permit;
-                match runner(&ctx, &call) {
+                let outcome = runner(&ctx, &call);
+                // The copy is free again before the answer is written: the router may send the dialog that waits as soon as it reads the answer.
+                drop(permit);
+                match outcome {
                     Outcome::Done(dict) => write_answer(&writer, token, 0, Some(&dict)),
                     Outcome::Ended { code, log, user } => {
                         if code != 1 {
@@ -223,6 +225,16 @@ mod tests {
         let calls = seen.lock().unwrap();
         let keys: Vec<&str> = calls[0].opts.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, ["multiple", "accept_label"], "unknown keys, a host folder and a key for another method are dropped");
+    }
+
+    #[test]
+    fn the_copy_is_free_before_the_answer_is_written() {
+        // The router sends the dialog that waits as soon as it reads the answer of the one before: the gate must be open by then.
+        let actor = Actor::with_runner(ctx(), |_, _| Outcome::Done(filechooser::result_dict(&["file:///run/user/1000/doc/ab/a.txt".to_string()], &[])));
+        let good = call_bytes("OpenFile", vec![]);
+        for i in 0..PER_MINUTE as u32 {
+            assert_eq!(ask(&actor, i, &good).1, 0, "dialog {i}");
+        }
     }
 
     #[test]

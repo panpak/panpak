@@ -218,6 +218,8 @@ struct Client {
     opens: usize,
     /// A file dialog of this connection is open.
     choosing: bool,
+    /// A second dialog asked while one is open waits here (the handle already given to the app, and the call as it came): one only, the next is answered "cancelled".
+    queued: Option<(String, Vec<u8>)>,
     /// Serials of the messages sent to the host side. The proxy of Debian 12 and Ubuntu 24.04 (xdg-dbus-proxy 0.1.5) closes a connection whose serials
     /// do not grow, and the router's own messages are mixed with the app's, so every message that goes up gets the next number and the replies are
     /// given back the number the sender used (`calls`: the new number to the old one, for the calls that expect a reply).
@@ -1038,11 +1040,17 @@ impl<F> Router<F> {
             }
         }
         if busy {
-            // A second dialog while one is open: ended at once, as a dialog that was cancelled (see `choose_done`).
+            // A second dialog while one is open waits for the first to end (the app sees one request that takes a while, as with the real portal). One may wait; a third is
+            // ended at once, as a dialog that was cancelled (see `choose_done`).
+            if let Some(cl) = self.clients.get_mut(&c).filter(|x| x.queued.is_none()) {
+                cl.queued = Some((handle, msg.raw.clone()));
+                outs.push(Out::Log("a second file dialog while one is open: it waits".into()));
+                return;
+            }
             if let Some(raw) = self.response_signal(c, &handle, CANCELLED, crate::filechooser::result_dict(&[], &[])) {
                 outs.push(app(c, raw));
             }
-            outs.push(Out::Log("a second file dialog while one is open: refused".into()));
+            outs.push(Out::Log("a file dialog while one is open and another waits: refused".into()));
             return;
         }
         let t = self.next_token;
@@ -1070,6 +1078,16 @@ impl<F> Router<F> {
     /// The app closes the request of its dialog (a toolkit does when its window is destroyed): answered, and the dialog's result is not delivered. The
     /// dialog of the desktop stays until the user closes it. False if the path is not the handle of a dialog of this connection.
     fn close_chooser(&mut self, c: ClientId, m: &Message, path: &str, outs: &mut Vec<Out<F>>) -> bool {
+        // The request that waits for its turn: taken out of the queue, never shown.
+        if self.clients.get(&c).and_then(|x| x.queued.as_ref()).is_some_and(|(h, _)| h == path) {
+            if let Some(cl) = self.clients.get_mut(&c) {
+                cl.queued = None;
+            }
+            if let Some(raw) = self.reply_msg(c, m, "", Vec::new()) {
+                outs.push(app(c, raw));
+            }
+            return true;
+        }
         let Some(t) = self.choosers.iter().find(|(_, (cl, h))| *cl == c && h == path).map(|(t, _)| *t) else { return false };
         self.choosers.remove(&t);
         if let Some(cl) = self.clients.get_mut(&c) {
@@ -1078,7 +1096,20 @@ impl<F> Router<F> {
         if let Some(raw) = self.reply_msg(c, m, "", Vec::new()) {
             outs.push(app(c, raw));
         }
+        self.start_queued(c, outs);
         true
+    }
+
+    /// The dialog of the connection ended: the one that waits, if any, goes to the actor now.
+    fn start_queued(&mut self, c: ClientId, outs: &mut Vec<Out<F>>) {
+        let Some((handle, raw)) = self.clients.get_mut(&c).and_then(|cl| cl.queued.take()) else { return };
+        if let Some(cl) = self.clients.get_mut(&c) {
+            cl.choosing = true;
+        }
+        let t = self.next_token;
+        self.next_token += 1;
+        self.choosers.insert(t, (c, handle));
+        outs.push(Out::Choose { client: c, token: t, call: raw });
     }
 
     /// The actor answered: `code` 0 with the dictionary (checked), anything else for a dialog that did not give a file. The app is always told "cancelled" (1)
@@ -1097,6 +1128,7 @@ impl<F> Router<F> {
                 if let Some(raw) = self.response_signal(c, &handle, CANCELLED, crate::filechooser::result_dict(&[], &[])) {
                     outs.push(app(c, raw));
                 }
+                self.start_queued(c, &mut outs);
                 return self.number_up(outs);
             }
             // No file: an empty list of addresses, not an empty dictionary (GTK 4.18 to 4.22 crash on a Save when `uris` is missing, whatever the code).
@@ -1105,6 +1137,7 @@ impl<F> Router<F> {
         if let Some(raw) = self.response_signal(c, &handle, if code == 0 { 0 } else { CANCELLED }, dict) {
             outs.push(app(c, raw));
         }
+        self.start_queued(c, &mut outs);
         self.number_up(outs)
     }
 
@@ -1579,28 +1612,71 @@ mod tests {
         assert_eq!(parsed.parent, "wayland:WR59{Q`_1R>B nNso%~-Y8FWc1!a)gD~");
     }
 
+    fn choose_of(outs: Vec<Out<()>>) -> Option<(u64, Vec<u8>)> {
+        outs.into_iter().find_map(|o| if let Out::Choose { token, call, .. } = o { Some((token, call)) } else { None })
+    }
+
+    fn close_call(serial: u32, handle_token: &str) -> Vec<u8> {
+        call(serial, PORTAL, &format!("/org/freedesktop/portal/desktop/request/1_5/{handle_token}"), "org.freedesktop.portal.Request", "Close", "", vec![])
+    }
+
     #[test]
-    fn one_dialog_at_a_time_and_a_closed_request_is_not_answered() {
+    fn a_second_dialog_waits_for_the_first_and_only_one_may_wait() {
         let mut r = R::new(config());
         let c = connect(&mut r, 5);
-        let outs = chooser_call(&mut r, c, 50, "OpenFile", "a1");
-        let Some(Out::Choose { token, .. }) = outs.into_iter().find(|o| matches!(o, Out::Choose { .. })) else { panic!() };
-        // A second call: the handle, and Response 1 (cancelled) at once; nothing goes to the actor.
-        let outs = chooser_call(&mut r, c, 51, "OpenFile", "a2");
+        let (t1, _) = choose_of(chooser_call(&mut r, c, 50, "OpenFile", "a1")).expect("the first goes to the actor");
+        // The second: its handle at once, nothing to the actor, no answer yet.
+        let outs = chooser_call(&mut r, c, 51, "SaveFile", "a2");
+        assert!(!outs.iter().any(|o| matches!(o, Out::Choose { .. })));
+        let got = apps(&outs, c);
+        assert_eq!((got.len(), got[0].kind), (1, RETURN), "only the handle: the request waits");
+        // The third: the handle, and "cancelled" at once (one may wait).
+        let outs = chooser_call(&mut r, c, 52, "OpenFile", "a3");
         assert!(!outs.iter().any(|o| matches!(o, Out::Choose { .. })));
         let got = apps(&outs, c);
         assert_eq!((got[0].kind, got[1].member.as_deref(), got[1].body[0].clone()), (RETURN, Some("Response"), Value::U32(1)));
-        // The app closes the first request: the call is answered, and the result that comes later is dropped.
-        let close = call(52, PORTAL, "/org/freedesktop/portal/desktop/request/1_5/a1", "org.freedesktop.portal.Request", "Close", "", vec![]);
-        let outs = r.from_app(c, msg(close));
+        // The first ends: its answer, and the second goes to the actor with its own call and a new token.
+        let outs = r.choose_done(t1, 0, Some(dict(&["file:///run/user/1000/doc/ab12/a.txt"])));
+        assert_eq!(apps(&outs, c)[0].body[0], Value::U32(0));
+        let (t2, raw) = choose_of(outs).expect("the waiting dialog starts");
+        assert_ne!(t1, t2);
+        assert_eq!(parse_message(&raw, 0, &Limits::default()).unwrap().member.as_deref(), Some("SaveFile"));
+        // And the answer of the second reaches the handle of the second.
+        let sig = apps(&r.choose_done(t2, 1, None), c).remove(0);
+        assert_eq!((sig.path.as_deref(), sig.body[0].clone()), (Some("/org/freedesktop/portal/desktop/request/1_5/a2"), Value::U32(1)));
+        // Nothing is left: the next one goes straight to the actor.
+        assert!(choose_of(chooser_call(&mut r, c, 53, "OpenFile", "a4")).is_some());
+    }
+
+    #[test]
+    fn a_closed_request_is_not_answered_and_a_closed_waiting_request_leaves_the_queue() {
+        let mut r = R::new(config());
+        let c = connect(&mut r, 5);
+        let (t1, _) = choose_of(chooser_call(&mut r, c, 60, "OpenFile", "a1")).unwrap();
+        assert!(choose_of(chooser_call(&mut r, c, 61, "OpenFile", "a2")).is_none());
+        // The app closes the request that waits: the call is answered, it is never shown, and the next one may wait again.
+        let outs = r.from_app(c, msg(close_call(62, "a2")));
         assert_eq!(apps(&outs, c)[0].kind, RETURN);
-        assert!(ups(&outs, c).is_empty());
-        assert!(r.choose_done(token, 0, Some(dict(&["file:///x"]))).is_empty());
-        // The connection is free again.
-        assert!(chooser_call(&mut r, c, 53, "OpenFile", "a3").iter().any(|o| matches!(o, Out::Choose { .. })));
+        assert!(ups(&outs, c).is_empty() && !outs.iter().any(|o| matches!(o, Out::Choose { .. })));
+        assert!(choose_of(chooser_call(&mut r, c, 63, "OpenFile", "a3")).is_none(), "it waits (and does not start)");
+        // The first ends: the one that waits is a3, not a2.
+        let (t3, raw) = choose_of(r.choose_done(t1, 1, None)).expect("a3 starts");
+        let m = parse_message(&raw, 0, &Limits::default()).unwrap();
+        assert!(matches!(&m.body[2], Value::Array(_, e) if e.iter().any(|x| matches!(x, Value::Entry(_, v) if matches!(&**v, Value::Variant(i) if **i == Value::str("a3")))))); // the handle token of a3
+        // The app closes the open dialog while one waits: the call is answered, the result that comes later is dropped, and the waiting one starts.
+        assert!(choose_of(chooser_call(&mut r, c, 64, "OpenFile", "a5")).is_none());
+        let outs = r.from_app(c, msg(close_call(65, "a3")));
+        assert_eq!(apps(&outs, c)[0].kind, RETURN);
+        let (t5, _) = choose_of(outs).expect("a5 starts when a3 is closed");
+        assert!(r.choose_done(t3, 0, Some(dict(&["file:///x"]))).is_empty(), "the result of a closed dialog is dropped");
+        // The connection ends while one waits: nothing goes to the actor for it.
+        assert!(choose_of(chooser_call(&mut r, c, 66, "OpenFile", "a6")).is_none());
+        r.client_gone(c);
+        assert!(r.choose_done(t5, 0, Some(dict(&["file:///x"]))).is_empty());
         // A Close for something else goes to the host.
-        let other = call(54, PORTAL, "/org/freedesktop/portal/desktop/request/1_5/zz", "org.freedesktop.portal.Request", "Close", "", vec![]);
-        assert_eq!(ups(&r.from_app(c, msg(other)), c).len(), 1);
+        let c2 = connect(&mut r, 6);
+        let other = call(67, PORTAL, "/org/freedesktop/portal/desktop/request/1_6/zz", "org.freedesktop.portal.Request", "Close", "", vec![]);
+        assert_eq!(ups(&r.from_app(c2, msg(other)), c2).len(), 1);
     }
 
     #[test]

@@ -9,7 +9,8 @@ Needs `sway`, `dbus-daemon` and python3-gi with the GTK 4 typelib; prints SKIP a
 `org.freedesktop.portal.Desktop` that answers the dialog by hand. What the router sends when a dialog gives no file is the answer "cancelled" (1) with
 `uris` = an empty list (route.rs, `choose_done`; its unit tests check the bytes), so that is what is tried here:
   - code 1 and code 2 with `uris` = []   -> the program is told the dialog was dismissed and ends normally;
-  - code 0 with one address               -> the program gets that file.
+  - code 0 with one address               -> the program gets that file;
+  - two dialogs, the second asked while the first is open (the router makes it wait: the answer of the second comes after the first's) -> both end, the program goes on.
 GTK 4.18 (GNOME on the VM) and 4.22 crash on a Save whose answer has no `uris` key, with any code (found on the VM: SIGSEGV in `g_vfs_get_file_for_uri`
 called from GTK): that answer is tried as a control, and only reported, because other versions of GTK may not crash on it.
 """
@@ -41,15 +42,27 @@ def answer():
     if mode == 'file':
         return {'uris': GLib.Variant('as', ['file:///run/user/1000/doc/ab12/chosen.txt'])}
     return {'uris': GLib.Variant('as', [])}
+# One dialog at a time, as the router of Panpak does: the handle of each request is returned at once, the answer of a second one comes after the answer of the first.
+waiting, busy = [], [False]
+def start():
+    busy[0] = True
+    conn, sender, handle = waiting.pop(0)
+    def respond():
+        conn.emit_signal(sender, handle, 'org.freedesktop.portal.Request', 'Response', GLib.Variant('(ua{sv})', (code, answer())))
+        print('answered', handle.rsplit('/', 1)[1], flush=True)
+        busy[0] = False
+        if waiting:
+            start()
+        return False
+    GLib.timeout_add(1500, respond)
 def call(conn, sender, path, iface, method, params, inv):
     parent, title, opts = params.unpack()
     print('call', method, 'parent=' + parent, flush=True)
     handle = '/org/freedesktop/portal/desktop/request/%s/%s' % (sender.lstrip(':').replace('.', '_'), opts.get('handle_token', 'x'))
     inv.return_value(GLib.Variant('(o)', (handle,)))
-    def respond():
-        conn.emit_signal(sender, handle, 'org.freedesktop.portal.Request', 'Response', GLib.Variant('(ua{sv})', (code, answer())))
-        return False
-    GLib.timeout_add(1500, respond)
+    waiting.append((conn, sender, handle))
+    if not busy[0]:
+        start()
 def acquired(conn, name):
     conn.register_object('/org/freedesktop/portal/desktop', info.interfaces[0], call, lambda *a: GLib.Variant('u', 4), None)
 Gio.bus_own_name(Gio.BusType.SESSION, 'org.freedesktop.portal.Desktop', Gio.BusNameOwnerFlags.NONE, acquired, None, None)
@@ -64,6 +77,9 @@ from gi.repository import Gtk, GLib, Gio
 # on a connection that nobody else uses was seen to wait for ever on this fake portal.
 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
 bus.signal_subscribe(None, 'org.freedesktop.portal.Request', 'Response', None, None, 0, lambda *a: None)
+import sys
+HOW_MANY = 2 if len(sys.argv) > 1 and sys.argv[1] == 'two' else 1
+finished = [0]
 def on_activate(app):
     win = Gtk.ApplicationWindow(application=app)
     win.present()
@@ -75,10 +91,15 @@ def on_activate(app):
                 print('RESULT file', f.get_uri(), flush=True)
             except GLib.Error as e:
                 print('RESULT error', e.message, flush=True)
-            GLib.timeout_add(200, lambda: (app.quit(), False)[1])
+            finished[0] += 1
+            if finished[0] == HOW_MANY:
+                GLib.timeout_add(200, lambda: (app.quit(), False)[1])
         d.save(win, None, done)
         return False
     GLib.timeout_add(1000, go)
+    if HOW_MANY == 2:
+        # A second dialog while the first is open (a second window of the app, the Ctrl+O of step 31): its answer comes after the first one's.
+        GLib.timeout_add(1600, go)
 app = Gtk.Application(application_id='org.example.GtkSave')
 app.connect('activate', on_activate)
 app.run([])
@@ -138,11 +159,11 @@ def main():
         spawn([bus, '--session', f'--address=unix:path={runtime}/bus', '--nofork', '--nopidfile'])
         time.sleep(0.5)
 
-        def attempt(code, mode):
+        def attempt(code, mode, *program_args):
             """Run the program once against a portal that answers (code, mode); returns (exit code, output of the program, line of the portal)."""
             portal = spawn([sys.executable, str(work / 'portal.py'), str(code), mode])
             time.sleep(1.0)
-            r = subprocess.run([sys.executable, str(work / 'app.py')], env=env, capture_output=True, text=True, timeout=40)
+            r = subprocess.run([sys.executable, str(work / 'app.py'), *program_args], env=env, capture_output=True, text=True, timeout=60)
             lines = [l for l in r.stdout.splitlines() if l.startswith(('RESULT', 'EXIT'))]
             os.killpg(portal.pid, signal.SIGTERM)
             portal.wait(timeout=10)
@@ -159,6 +180,13 @@ def main():
         print(f"GTK  Response 0 with one address: exit {rc}, {lines} -> {'ok' if ok else 'FAILED'}")
         if not ok:
             failures.append('code 0 with one address')
+        # Two dialogs, the second asked while the first is open: both end, one after the other, and the program goes on.
+        for code, mode, want in ((1, 'empty', 'RESULT error Dismissed by user'), (0, 'file', 'RESULT file file:///run/user/1000/doc/ab12/chosen.txt')):
+            rc, lines = attempt(code, mode, 'two')
+            ok = rc == 0 and lines.count(want) == 2 and 'EXIT clean' in lines
+            print(f"GTK  two dialogs, the second asked while the first is open, Response {code}: exit {rc}, {lines} -> {'ok' if ok else 'FAILED'}")
+            if not ok:
+                failures.append(f'two dialogs, code {code}')
         rc, lines = attempt(1, 'none')
         print(f"GTK  control, Response 1 with an empty dictionary (not what the router sends): exit {rc}, {lines} -> {'GTK survives it' if rc == 0 else 'GTK crashes on it, as on the VM'}")
     finally:
