@@ -302,11 +302,13 @@ folder the user has chosen for that purpose, which the app cannot know (it is no
 under a fixed name). It does not change `home_paths`.
 
 *Finding the folder.* `panpak install` and `panpak update` MUST find the folder outside the
-sandbox, in `$XDG_CONFIG_HOME/user-dirs.dirs` (`~/.config/user-dirs.dirs`). The parser is rigid.
-The file is at most 16 KiB; a blank line, a line that starts with `#`, or a line
-`XDG_<KEY>_DIR="<value>"` with `<KEY>` one of `DESKTOP`, `DOWNLOAD`, `TEMPLATES`, `PUBLICSHARE`,
-`DOCUMENTS`, `MUSIC`, `PICTURES`, `VIDEOS` (each at most once) is accepted, at most 600 bytes
-per line, with no control character; any other line makes the whole file unusable. `<value>` is
+sandbox, in `$XDG_CONFIG_HOME/user-dirs.dirs` (`~/.config/user-dirs.dirs`). The parser is strict about
+each line and tolerant about the file: it skips what it does not understand, one line at a time. The file is at most 16 KiB (a larger one is not
+read). A blank line and a line that starts with `#` are ignored. A line `XDG_<KEY>_DIR="<value>"` with `<KEY>` one of `DESKTOP`, `DOWNLOAD`,
+`TEMPLATES`, `PUBLICSHARE`, `DOCUMENTS`, `MUSIC`, `PICTURES`, `VIDEOS` names that folder (at most 600 bytes per line, no control character). A line with another
+key (`PROJECTS`, written by xdg-user-dirs 0.19, or one that a later version adds) is ignored and its folder is never granted; a line that is not understood, or a known key
+with a bad value, gives that one folder no value (`install` and `update` say why) and does not touch the others; a key written twice is dropped
+(which of the two is meant is not guessed). `<value>` is
 `$HOME`, `$HOME/<path>`, or the absolute path of the home folder followed by `/<path>`; it
 contains no quote, backslash, backquote or other `$`. A trailing `/` is dropped. If the file
 does not exist, the folder is `Music`, `Documents`, `Pictures`, `Videos` or `Downloads` in

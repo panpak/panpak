@@ -138,7 +138,7 @@ installed app follows the same rule.
 
 ### 2.3 User folders, links and copies of an app (tested in tests/view.py)
 
-- **`xdg_dirs`.** The folder is found by `install` outside the sandbox, with a rigid parser, shown to the user
+- **`xdg_dirs`.** The folder is found by `install` outside the sandbox, with a parser that takes only the lines it understands and never grants a key it does not know, shown to the user
   and pinned. At start it is granted only if it is still the same, with no symbolic link in the way; a
   `user-dirs.dirs` changed later by anything the app can reach (it cannot write it) or by the user gives
   a warning and no access. The folder passes the same rules as `home_paths`. Listing the home folder

@@ -15,6 +15,7 @@
   as documents. The menu action "Uninstall" works (it was refused by the document portal because the shell starts it in the scope of the app), asks in the language of the system, and shows no paths or commands.
   `panpak remove` also takes the entry out of `mimeapps.list` (where the desktop writes the default app the user chose) and refreshes the type cache, so a double click on a text file goes back to the native app.
   Design and what differs from it: docs/FILE-CHOOSER.md.
+- **`user-dirs.dirs` is read line by line.** A key that this version does not know (`XDG_PROJECTS_DIR` of xdg-user-dirs 0.19, on Fedora 45 and later) or a line that is not understood is skipped and no longer makes the whole file unusable, so the Downloads and Documents folders of an app are granted on a current system; an unknown key is never granted.
 - **The table of permissions, corrected.** High risk is the whole home folder (also read-only) and the secret places (passwords, keys, browser and keyring data, startup files); a
   sub-folder of the home is Attention, read or write. The sentences about what an app cannot do are shown only where this system keeps them (without the isolated view the
   claims about the network, other apps and the desktop services are shorter or left out). New rows: the files you choose in the dialog, and the files you start the app with.
