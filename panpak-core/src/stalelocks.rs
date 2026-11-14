@@ -346,6 +346,10 @@ mod tests {
 
     #[test]
     fn unlock_refuses_while_a_copy_holds_the_lock() {
+        // The lock is released by `drop` at once only when no other test forks meanwhile (see `testutil::alone`).
+        if !crate::testutil::alone() {
+            return;
+        }
         let base = tmp("alive");
         let lock = copies_lock_path(&base, "org.example.app");
         fs::create_dir_all(lock.parent().unwrap()).unwrap();

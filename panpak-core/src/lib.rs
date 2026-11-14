@@ -27,6 +27,8 @@ pub mod unitname;
 pub mod wayland;
 mod userdirs;
 mod validate;
+#[cfg(test)]
+mod testutil;
 mod view;
 pub use elfsym::{glibc_needed, glibc_version_number, parse_syms, read_elf_info, sym_hash, version_number, ElfInfo, ElfSyms, Needed};
 pub use openchan::{handle as handle_open_request, RateLimit, Target as OpenTarget, BURST, MAX_REQUEST, RATE_PER_SEC};
