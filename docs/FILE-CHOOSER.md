@@ -430,9 +430,9 @@ two small files.
     one request may wait, a third is answered "cancelled". `Request.Close` on a waiting request takes it out of the queue (answered, never shown); when the open dialog ends, or is closed by the app,
     the waiting one starts. The actor's gate (one dialog, five a minute per copy) is open before the answer is written, so the next request is never refused for that reason. Before this,
     the second request was answered "cancelled" at once and Text Editor printed `gtk_box_remove` assertions in a second window (not proved to be the cause).
-15. **Removal and the identity of the caller.** The menu action `Uninstall` is started by the shell in the scope `app-gnome-panpak.<id>-N.scope`; the portals read the identity of a caller from the scope
-    name when the menu entry exists, so `panpak remove` was "the app" for the document portal, which refuses an app to revoke its documents (`Not enough permissions`). `remove` now moves itself into
-    `panpak-remove-<id>-<pid>.scope` first (the user's systemd on `$XDG_RUNTIME_DIR/bus`); the other calls to the document portal (`AddFull`, `Delete`, `List`) are not affected. Scenario D starts `remove`
+15. **Removal and the identity of the caller.** The menu action `Uninstall` is started by GNOME in the scope `app-gnome-panpak.<id>-N.scope` and by KDE in the service `app-panpak.<id>@<uuid>.service`; the portals read the identity of a caller from the scope
+    name when the menu entry exists, so `panpak remove` was "the app" for the document portal, which refuses an app to revoke its documents (`Not enough permissions`). `remove` now always moves itself into
+    `panpak-remove-<id>-<pid>.scope` first (the user's systemd on `$XDG_RUNTIME_DIR/bus`), unless it already runs in a `panpak-remove-` unit; no name used by a desktop is guessed; the other calls to the document portal (`AddFull`, `Delete`, `List`) are not affected. Scenario D starts `remove`
     inside a scope named for the app; without the move it fails with the reason of the portal.
 16. **Links.** Section 4.3: a link the user chose, in a folder the app cannot write, is followed to an ordinary file (not in `/proc`, `/sys`, `/dev` or a hidden place of the home folder);
     any other link is refused with the place it points to. The same rule applies to files given at the start. Found on the VM, where a plain refusal made `~/Documenti/collegamento.txt`

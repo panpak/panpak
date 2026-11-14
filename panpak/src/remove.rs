@@ -610,21 +610,22 @@ fn app_name(ctx: &Ctx, id: &str) -> String {
     ctx.facts(id, &ctx.app_ids()).name.unwrap_or_else(|| id.to_string())
 }
 
-/// Whether the control group of this process is a scope that the desktop made for the app `id` (`app-gnome-panpak.<id>-123.scope` when the shell starts the menu action,
-/// `app-panpak.<id>-<hash>.scope` for a copy that Panpak started). The portals know a caller by that name when the menu entry `panpak.<id>.desktop` exists, so a
-/// `remove` in such a scope is "the app" for the document portal, which refuses it to revoke the app's documents (`Not enough permissions`; seen on GNOME with the action "Uninstall").
-pub fn in_scope_of_app(cgroup: &str, id: &str) -> bool {
+/// Whether this process must move into a scope of its own before it removes anything. It must unless it already is in one of ours (`panpak-remove-...`, which this
+/// command made, or the one a `remove --ask` made before it started `remove`). Nothing is guessed about the name of the unit the desktop used: the menu action runs in
+/// `app-gnome-panpak.<id>-N.scope` on GNOME and in `app-panpak.<id>@<uuid>.service` on KDE, and a terminal in `app-org.kde.konsole-N.scope`. The portals take a caller by
+/// the name of its unit (for `panpak.<id>` when the menu entry `panpak.<id>.desktop` exists), and the document portal refuses "the app" to revoke its own documents
+/// (`Not enough permissions`; seen with the action "Uninstall" on GNOME and on KDE).
+pub fn needs_own_scope(cgroup: &str) -> bool {
     let Some(path) = cgroup.lines().find_map(|l| l.strip_prefix("0::")) else { return false };
-    let leaf = path.rsplit('/').next().unwrap_or("").replace("\\x2d", "-");
-    leaf.starts_with("app-") && leaf.ends_with(".scope") && leaf.contains(&format!("panpak.{id}-"))
+    !path.rsplit('/').next().unwrap_or("").starts_with("panpak-remove-")
 }
 
-/// Moves this process into a scope of its own when it was started in the scope of the app it removes (see `in_scope_of_app`), asking the user's systemd on
-/// `$XDG_RUNTIME_DIR/bus` as the runtime does for an app (`dbus::start_scope`). The name `panpak-remove-<id>-<pid>.scope` gives no identity to the portals. Without a user
-/// manager, or when it refuses, nothing changes and the removal goes on (the portal may then refuse the revoke, and the error says what to do).
+/// Moves this process into a scope of its own (see `needs_own_scope`), asking the user's systemd on `$XDG_RUNTIME_DIR/bus` as the runtime does for an app
+/// (`dbus::start_scope`). The name `panpak-remove-<id>-<pid>.scope` gives no identity to the portals. Without a user manager, or when it refuses, nothing changes and the
+/// removal goes on (the portal may then refuse the revoke, and the error says what to do).
 fn leave_app_scope(id: &str) {
     let Ok(cgroup) = std::fs::read_to_string("/proc/self/cgroup") else { return };
-    if !in_scope_of_app(&cgroup, id) {
+    if !needs_own_scope(&cgroup) {
         return;
     }
     let Some(bus) = std::env::var_os("XDG_RUNTIME_DIR").map(|r| PathBuf::from(r).join("bus")).filter(|b| b.exists()) else { return };
@@ -984,21 +985,25 @@ mod tests {
     }
 
     #[test]
-    fn the_scope_of_the_app_is_recognised_by_its_name() {
+    fn remove_goes_into_a_scope_of_its_own_unless_it_is_in_one() {
         let cg = |leaf: &str| format!("0::/user.slice/user-1000.slice/user@1000.service/app.slice/{leaf}\n");
-        let id = "org.gnome.TextEditor";
-        // What gnome-shell makes for the menu action, and what Panpak makes for a copy.
-        assert!(in_scope_of_app(&cg("app-gnome-panpak.org.gnome.TextEditor-8341.scope"), id));
-        assert!(in_scope_of_app(&cg("app-panpak.org.gnome.TextEditor-ba7f942d.scope"), id));
-        // An id with a dash is escaped in the name of a unit.
-        assert!(in_scope_of_app(&cg("app-gnome-panpak.org.x.my\\x2dapp-12.scope"), "org.x.my-app"));
-        // Another app, a terminal, a session, a service, a scope of our own, and no control group at all.
-        assert!(!in_scope_of_app(&cg("app-gnome-panpak.org.gnome.Other-8341.scope"), id));
-        assert!(!in_scope_of_app(&cg("app-gnome-panpak.org.gnome.TextEditorPlus-1.scope"), id));
-        assert!(!in_scope_of_app(&cg("app-org.gnome.Ptyxis-spawn-1.scope"), id));
-        assert!(!in_scope_of_app(&cg("session-3.scope"), id));
-        assert!(!in_scope_of_app(&cg("panpak-remove-org.gnome.TextEditor-77.scope"), id));
-        assert!(!in_scope_of_app("1:name=systemd:/x\n", id) && !in_scope_of_app("", id));
+        // The units seen on real desktops: the menu action on GNOME (a scope) and on KDE (a service), a copy of the app that Panpak started, a terminal, a session.
+        for leaf in [
+            "app-gnome-panpak.org.gnome.TextEditor-8341.scope",
+            "app-panpak.org.gnome.TextEditor-ba7f942d.scope",
+            "app-panpak.org.gnome.TextEditor@6cb9759d62334922820cd3ecfc7e2840.service",
+            "app-gnome-panpak.org.x.my\\x2dapp-12.scope",
+            "app-org.kde.konsole-6136.scope",
+            "app-org.gnome.Ptyxis-spawn-1.scope",
+            "session-39.scope",
+            "dbus-:1.2-org.example@0.service",
+        ] {
+            assert!(needs_own_scope(&cg(leaf)), "{leaf}");
+        }
+        // Already in one of ours.
+        assert!(!needs_own_scope(&cg("panpak-remove-org.gnome.TextEditor-77.scope")));
+        // No control group of version 2: nothing to decide.
+        assert!(!needs_own_scope("1:name=systemd:/x\n") && !needs_own_scope(""));
     }
 
     #[test]
