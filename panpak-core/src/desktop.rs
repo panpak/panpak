@@ -62,11 +62,6 @@ pub fn legacy_desktop_path(app_id: &str) -> Result<PathBuf> {
 pub fn icon_name(app_id: &str) -> String {
     format!("panpak.{app_id}")
 }
-/// The icon name of the marked variant (a badge in the corner), used while another app with the same id is installed. An icon theme that has no
-/// file of this name falls back to the plain one (it drops the part after the last dash).
-pub fn marked_icon_name(app_id: &str) -> String {
-    format!("panpak.{app_id}-marked")
-}
 /// The themed icon that every icon theme has, for an app without an icon.
 pub const GENERIC_ICON: &str = "application-x-executable";
 
@@ -130,11 +125,8 @@ pub struct Entry<'a> {
     pub panpak: Option<&'a Path>,
     /// Whether an icon file of the app is installed.
     pub icon: bool,
-    /// Another app with the same id is installed (see [`find_twin`]): the name gets [`TWIN_SUFFIX`], the entry carries [`TWIN_KEY`], and the icon is the
-    /// marked variant when `marked` says its files are installed.
+    /// Another app with the same id is installed (see [`find_twin`]): the name gets [`TWIN_SUFFIX`] and the entry carries [`TWIN_KEY`].
     pub twin: bool,
-    /// The marked variant of the icon is installed.
-    pub marked: bool,
 }
 
 /// `MimeType` is made of the URL schemes and of `desktop.mime_types`; nothing else, and never
@@ -170,11 +162,7 @@ pub fn desktop_file(e: &Entry) -> Result<String> {
         ),
         None => ("", String::new()),
     };
-    let icon = match (e.icon, e.twin && e.marked) {
-        (true, true) => marked_icon_name(e.app_id),
-        (true, false) => icon_name(e.app_id),
-        _ => GENERIC_ICON.to_string(),
-    };
+    let icon = if e.icon { icon_name(e.app_id) } else { GENERIC_ICON.to_string() };
     let (name, twin) = if e.twin { (format!("{}{TWIN_SUFFIX}", e.name), format!("{TWIN_KEY}1\n")) } else { (e.name.to_string(), String::new()) };
     Ok(format!(
         "[Desktop Entry]\n{VERSION_KEY}{DESKTOP_VERSION}\n{twin}Type=Application\nName={}\nExec={} %U\nIcon={}\nTerminal=false\nCategories=Utility;\n{mime}{class}{actions}{DESKTOP_MARKER}{}\n{action}",
@@ -324,14 +312,6 @@ fn read_limited_path(p: &Path, max: usize) -> Option<String> {
     String::from_utf8(read_limited(&mut f, max)?).ok()
 }
 
-/// Whether the marked icon of the app is installed (any size) in the icon folder that goes with `entry_dir` (`<data>/applications`).
-pub fn marked_icon_installed(entry_dir: &Path, app_id: &str) -> bool {
-    let Some(hicolor) = entry_dir.parent().map(|d| d.join("icons/hicolor")) else { return false };
-    let Ok(rd) = fs::read_dir(&hicolor) else { return false };
-    let file = format!("{}.png", marked_icon_name(app_id));
-    rd.flatten().any(|e| fs::symlink_metadata(e.path().join("apps").join(&file)).is_ok_and(|m| m.file_type().is_file()))
-}
-
 /// Write `data` next to `path` under a hidden temporary name (created with `O_EXCL` and `O_NOFOLLOW`), sync it,
 /// rename it over `path` and sync the folder, so that a crash leaves the old file or the new one. The rename
 /// replaces a link itself and never follows it.
@@ -419,10 +399,10 @@ pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &s
     drop(f);
     let stub = stable_stub(store);
     ensure!(fs::symlink_metadata(&stub).is_ok(), "no stable stub in the store at {}", stub.display());
-    let have_icon = old.lines().any(|l| matches!(l.strip_prefix("Icon="), Some(i) if i == icon_name(app_id) || i == marked_icon_name(app_id)));
+    let have_icon = old.lines().any(|l| l.strip_prefix("Icon=") == Some(icon_name(app_id).as_str()));
     let panpak = stable_panpak(store);
     let panpak = fs::metadata(&panpak).is_ok_and(|m| m.is_file()).then_some(panpak);
-    let text = desktop_file(&Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon: have_icon, twin, marked: twin && marked_icon_installed(entry_dir, app_id) })?;
+    let text = desktop_file(&Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon: have_icon, twin })?;
     // The launcher first: the entry must never name one that is older than itself.
     let current = store.join("apps").join(app_id).join("current");
     let sh = launcher_sh(app_id, &stub, &current)?;
@@ -443,7 +423,7 @@ mod tests {
     use super::*;
 
     fn entry<'a>(l: &'a Path, name: &'a str) -> Entry<'a> {
-        Entry { app_id: "org.x", name, launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false, marked: false }
+        Entry { app_id: "org.x", name, launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false }
     }
 
     #[test]
@@ -630,7 +610,7 @@ mod tests {
             self.apps.join("panpak.org.x.desktop")
         }
         fn current(&self) -> String {
-            let e = Entry { app_id: "org.x", name: "X", launcher: &self.launcher, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false, marked: false };
+            let e = Entry { app_id: "org.x", name: "X", launcher: &self.launcher, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false };
             desktop_file(&e).unwrap()
         }
         fn refresh(&self) -> Result<Refresh> {
@@ -642,23 +622,21 @@ mod tests {
     }
 
     #[test]
-    fn another_app_with_the_same_id_changes_the_name_the_icon_and_one_line_in_the_first_bytes() {
+    fn another_app_with_the_same_id_changes_the_name_and_one_line_in_the_first_bytes() {
         let l = Path::new("/home/u/.local/bin/org.x");
         let plain = desktop_file(&Entry { icon: true, ..entry(l, "X") }).unwrap();
         assert!(plain.contains("\nName=X\n") && !plain.contains("Twin") && plain.contains("\nIcon=panpak.org.x\n"));
         assert!(!entry_twin(plain.as_bytes()));
-        let twin = desktop_file(&Entry { icon: true, twin: true, marked: true, ..entry(l, "X") }).unwrap();
-        assert!(twin.contains("\nName=X (Panpak)\n") && twin.contains("\nIcon=panpak.org.x-marked\n"), "{twin}");
+        let twin = desktop_file(&Entry { icon: true, twin: true, ..entry(l, "X") }).unwrap();
+        assert!(twin.contains("\nName=X (Panpak)\n") && twin.contains("\nIcon=panpak.org.x\n"), "{twin}");
         // The line is in the window the start of an app reads, with the version, and the version is still found.
         assert!(entry_twin(&twin.as_bytes()[..VERSION_WINDOW]) && entry_version(twin.as_bytes()) == Some(DESKTOP_VERSION));
         // The name of the app is checked as before, with the suffix.
         if let Ok(d) = desktop_file(&Entry { twin: true, ..entry(l, "X\nExec=y") }) {
             assert!(!d.lines().any(|l| l == "Exec=y") && d.lines().filter(|l| l.starts_with("Name=")).count() == 1, "{d}");
         }
-        // Without the marked files the plain icon stays; without an icon, the generic one.
-        let no_marked = desktop_file(&Entry { icon: true, twin: true, marked: false, ..entry(l, "X") }).unwrap();
-        assert!(no_marked.contains("\nIcon=panpak.org.x\n") && no_marked.contains("Name=X (Panpak)"));
-        assert!(desktop_file(&Entry { twin: true, marked: true, ..entry(l, "X") }).unwrap().contains("\nIcon=application-x-executable\n"));
+        // The icon is not changed: the app's own, or the generic one.
+        assert!(desktop_file(&Entry { twin: true, ..entry(l, "X") }).unwrap().contains("\nIcon=application-x-executable\n"));
     }
 
     #[test]

@@ -24,17 +24,8 @@ fn file_name(app_id: &str) -> String {
     format!("{}.png", panpak_core::desktop::icon_name(app_id))
 }
 
-/// The marked variant of an icon (a badge in the corner), used while another app with the same id is installed.
-fn marked_file_name(app_id: &str) -> String {
-    format!("{}.png", panpak_core::desktop::marked_icon_name(app_id))
-}
-
 pub fn path_of(app_id: &str, side: u32) -> Result<PathBuf> {
     Ok(hicolor()?.join(format!("{side}x{side}")).join("apps").join(file_name(app_id)))
-}
-
-pub fn marked_path_of(app_id: &str, side: u32) -> Result<PathBuf> {
-    Ok(hicolor()?.join(format!("{side}x{side}")).join("apps").join(marked_file_name(app_id)))
 }
 
 /// Read and check the icons a manifest lists, from a verified package. A bad icon is an error: the package is refused.
@@ -66,7 +57,6 @@ fn check_destination(path: &Path) -> Result<()> {
 pub fn check_destinations(app_id: &str, icons: &[Checked]) -> Result<()> {
     for i in icons {
         check_destination(&path_of(app_id, i.side)?)?;
-        check_destination(&marked_path_of(app_id, i.side)?)?;
     }
     Ok(())
 }
@@ -81,18 +71,6 @@ pub fn install(app_id: &str, icons: &[Checked]) -> Result<Vec<PathBuf>> {
         fs::create_dir_all(path.parent().unwrap())?;
         panpak_core::desktop::write_file_lazy(&path, &i.data, 0o644).with_context(|| format!("write icon {}", path.display()))?;
         written.push(path);
-        // The marked variant is always made, so that a later change (the other app comes or goes) only changes the entry. One that cannot be made
-        // (an icon that would be too large with the badge) is left out, and a stale one of that size is taken away.
-        let marked = marked_path_of(app_id, i.side)?;
-        match panpak_icon::mark(&i.data) {
-            Ok(m) => {
-                panpak_core::desktop::write_file_lazy(&marked, &m, 0o644).with_context(|| format!("write icon {}", marked.display()))?;
-                written.push(marked);
-            }
-            Err(_) => {
-                let _ = fs::remove_file(&marked);
-            }
-        }
     }
     let keep: Vec<u32> = icons.iter().map(|i| i.side).collect();
     remove(app_id, &keep)?;
@@ -114,7 +92,7 @@ fn walk(app_id: &str, keep: &[u32], delete: bool) -> Result<Vec<(PathBuf, u64)>>
     use panpak_core::safefs::{Dir, Kind};
     let root = hicolor()?;
     let Ok(dir) = Dir::open_path(&root) else { return Ok(Vec::new()) };
-    let names = [file_name(app_id), marked_file_name(app_id)];
+    let name = file_name(app_id);
     let mut gone = Vec::new();
     for size in dir.list().unwrap_or_default() {
         let Some(s) = size.to_str() else { continue };
@@ -125,14 +103,12 @@ fn walk(app_id: &str, keep: &[u32], delete: bool) -> Result<Vec<(PathBuf, u64)>>
         }
         let Ok(Some(sizedir)) = dir.open_dir_opt(&size) else { continue };
         let Ok(Some(apps)) = sizedir.open_dir_opt(OsStr::new("apps")) else { continue };
-        for name in &names {
-            if let Ok(Some(st)) = apps.lstat(OsStr::new(name)) {
-                if st.kind == Kind::File {
-                    if delete {
-                        apps.unlink(OsStr::new(name)).with_context(|| format!("remove {}", root.join(s).join("apps").join(name).display()))?;
-                    }
-                    gone.push((root.join(s).join("apps").join(name), st.size));
+        if let Ok(Some(st)) = apps.lstat(OsStr::new(&name)) {
+            if st.kind == Kind::File {
+                if delete {
+                    apps.unlink(OsStr::new(&name)).with_context(|| format!("remove {}", root.join(s).join("apps").join(&name).display()))?;
                 }
+                gone.push((root.join(s).join("apps").join(&name), st.size));
             }
         }
     }
