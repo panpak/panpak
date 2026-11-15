@@ -93,6 +93,7 @@ pub fn cmd_background(app_id: &str, force: bool, after_start: bool, at_exit: boo
             eprintln!("panpak: {app_id}: the staged update was not applied: {}", panpak_core::err_text(&e));
         }
         cmd_repair_if_damaged(app_id, allow_insecure)?;
+        gc::after(&store, &[]);
     }
     if after_start {
         // The start of the app comes first: nothing of this competes with it. (The app may be gone when the wait ends: then there is nothing to do.)

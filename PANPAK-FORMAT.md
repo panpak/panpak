@@ -771,6 +771,20 @@ unknown line as absent and a bad number as 0, and nothing in it is trusted for a
 
 The settings are `~/.config/panpak/config.toml` (`panpak config`, `panpak config set <key> <value>`): `[background] updates = true`, `verify_mb = 64`, and `[network] ca_file = "<file>"` (certificate authorities in PEM that REPLACE the built-in list for every download of panpak, for a network with its own authority; a file that cannot be read or holds no certificate stops the download, it never falls back to the list). A file that is not valid TOML means the defaults.
 
+### 6.8 Garbage collection [NORMATIVE for what is kept; the order and the grace are INFORMATIVE]
+
+`panpak gc [--dry-run] [--grace <seconds>]` takes out of the store what no installed version reaches. Liveness is read from the records, never counted:
+
+- **records**: the ones that `current`, `previous` or `pending` of an app name. Every other record goes (one version of rollback), as does a `.rec.tmp<pid>` of a dead process;
+- **trees**: `trees/<root>` and its marks (`.readonly`, `.lock`) live while a kept record has that root; leftovers of an interrupted make or repair (`.partial`, `.damaged<pid>`) go when nobody holds the lock of the tree;
+- **farms**: `farms/<root>` lives while any record with its root lives. (The farm is named by the root, and a tree is shared by every version with that root, so it cannot be told apart by version.)
+- **blobs**: a blob (`<hash>-<size>`) that no tree links (link count 1) goes, and so does the work folder of a dead process (`.work-<pid>-<time>`);
+- **caches and leftovers**: an entry of the ABI cache whose farm is gone, or that is older than 30 days (it is rebuilt at the next start); a download folder in `staging/<id>/<root>` that nothing wrote to for 7 days (at once, after the grace time, for an app that is not installed); a runtime `runtimes/<n>` that neither the stable link, nor the best runtime, nor a launcher or entry of an installed app names.
+
+Rules that make it safe: the app lock of each installed app is taken without waiting for long, and an app that is busy, or that has a copy running, keeps everything it has; the caller that holds the lock of an app passes it. Anything younger than the
+grace time (an hour by default) is kept, because work that has not been linked yet looks like garbage. A name that is not of the forms above is never touched. The order is records, trees, farms, blobs, then the caches, so that a stop in the middle leaves things that the next
+run takes out and never a link that names nothing (the test points `gc.*` check it). It runs after an apply (not at a start) and after a removal, and when the last copy of an app ends; `userdata/` and the data of the apps are never touched.
+
 ## 7. ABI resolution (`[abi]`) [NORMATIVE]
 
 `panpak pack` compiles `needs` by scanning `DT_NEEDED` of the ELF

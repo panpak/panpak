@@ -9,6 +9,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod background;
+mod gc;
 mod happy;
 mod icons;
 mod remove;
@@ -32,7 +33,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run] [--grace <seconds>]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -484,6 +485,10 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool) -> Resul
         if !schemes.is_empty() || !mimes.is_empty() || moved {
             refresh_desktop_database(desktop.parent().unwrap());
         }
+    }
+    if !at_start {
+        // What the new version made unreachable (the version before the one that was `previous`) goes now; a start never does this.
+        gc::after(&store, &[app_id]);
     }
     if at_start {
         eprintln!("panpak: {app_id} updated from {} to {} (it was staged)", old_man.app.version, man.app.version);
@@ -3155,7 +3160,7 @@ fn generic_code(sub: Option<&str>) -> ErrorCode {
         Some("pack" | "convert" | "dump-index" | "dump-manifest" | "dbus-rules") => ErrorCode::E0000,
         Some("keygen" | "release" | "install-runtime") => ErrorCode::E1000,
         Some("init" | "build") => ErrorCode::E6000,
-        Some("install" | "rollback" | "repair" | "apply" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove" | "inspect" | "permissions") => ErrorCode::E2000,
+        Some("install" | "rollback" | "repair" | "apply" | "gc" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove" | "inspect" | "permissions") => ErrorCode::E2000,
         Some("update") => ErrorCode::E4000,
         _ => ErrorCode::E5000,
     }
@@ -3574,6 +3579,18 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             } else {
                 background::cmd_background(id, force, after_start, at_exit, insecure)
             }
+        }
+        Some("gc") => {
+            let (mut dry, mut grace) = (false, gc::DEFAULT_GRACE);
+            let mut it = args[2..].iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--dry-run" => dry = true,
+                    "--grace" => grace = it.next().and_then(|v| v.parse().ok()).ok_or_else(|| coded(ErrorCode::E5001, "--grace takes a number of seconds"))?,
+                    x => bail_code!(ErrorCode::E5001, "unknown argument {x}\n{usage}", usage = usage()),
+                }
+            }
+            gc::cmd_gc(dry, grace)
         }
         Some("config") => {
             let file = panpak_core::config::path().context("no config folder (set XDG_CONFIG_HOME or HOME)")?;

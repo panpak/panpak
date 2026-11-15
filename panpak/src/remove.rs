@@ -685,6 +685,17 @@ pub fn lock_no_copies(id: &str, what: &str) -> Result<std::fs::File> {
 
 /// `panpak remove [--purge-data] [--yes] <app-id>`.
 pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
+    cmd_remove_inner(id, purge, yes)?;
+    // The blobs that only this app linked are garbage now (the grace time keeps what was made a moment ago).
+    if let Ok(store) = dirs::data_dir().context("no data dir").map(|d| d.join("panpak")) {
+        if store.is_dir() {
+            crate::gc::after(&store, &[]);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_remove_inner(id: &str, purge: bool, yes: bool) -> Result<()> {
     panpak_core::validate_app_id(id)?;
     leave_app_scope(id);
     let ctx = Ctx::open()?;
