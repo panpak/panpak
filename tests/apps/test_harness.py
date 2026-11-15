@@ -146,6 +146,48 @@ class Readers(unittest.TestCase):
         self.assertEqual(pipeline.median_after_first([2.5]), 2.5)
 
 
+class LibraryPath(unittest.TestCase):
+    TREES = "/h/.local/share/panpak/trees"
+
+    def row(self, pid, ppid, exe, ld=None):
+        return {"pid": pid, "ppid": ppid, "exe": exe, "ld": ld}
+
+    def test_only_the_app_and_what_it_starts_hold_the_variable(self):
+        rel = "/$ORIGIN/.panpak-lib-abcd1234/.farm:/$ORIGIN/.panpak-lib-abcd1234/lib"
+        rows = [
+            self.row(10, 1, "/h/.local/share/panpak/runtimes/1/panpak-stub"),
+            self.row(11, 10, "/usr/bin/bwrap"),
+            self.row(12, 11, self.TREES + "/abc/bin/app", rel),
+            self.row(13, 12, "/usr/bin/zenity", rel),          # started by the app: it inherits the relative value, which is inert
+        ]
+        self.assertEqual(display.library_path_offenders(rows, self.TREES), [])
+
+    def test_the_outer_processes_must_not_hold_it(self):
+        rel = "/$ORIGIN/.panpak-lib-abcd1234/.farm"
+        rows = [
+            self.row(10, 1, "/h/.local/share/panpak/runtimes/1/panpak-stub", rel),
+            self.row(11, 10, "/usr/bin/bwrap", rel),
+            self.row(12, 11, self.TREES + "/abc/bin/app", rel),
+        ]
+        bad = display.library_path_offenders(rows, self.TREES)
+        self.assertEqual(len(bad), 2)
+        self.assertIn("pid 10", bad[0] + bad[1])
+        self.assertIn("pid 11", bad[0] + bad[1])
+
+    def test_a_path_of_the_store_in_the_value_is_a_fault(self):
+        rows = [self.row(12, 1, self.TREES + "/abc/bin/app", "/h/.local/share/panpak/farms/abc:" + self.TREES + "/abc/lib")]
+        bad = display.library_path_offenders(rows, self.TREES)
+        self.assertEqual(len(bad), 1)
+        self.assertIn("not relative", bad[0])
+
+    def test_the_rows_of_this_process_can_be_read(self):
+        import os
+        rows = display.process_rows(os.getpid())
+        me = [r for r in rows if r["pid"] == os.getpid()]
+        self.assertEqual(len(me), 1)
+        self.assertTrue(me[0]["exe"].startswith("/"))
+
+
 class BuildNotes(unittest.TestCase):
     def test_the_time_of_each_phase_and_the_memory_reach_the_log_and_nothing_else(self):
         out = "\n".join([

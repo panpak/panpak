@@ -630,6 +630,35 @@ fn walk_tree(root: &Path) -> Result<Vec<PayloadEntry>> {
     Ok(out)
 }
 
+/// The library path of the app is valid only for its own programs because each folder with a program has a link to the root
+/// of the tree (`panpak_core::libpath`). A package with a program and a folder without the link is refused, with the commands
+/// that make it. `.farm` in the root is kept by the runtime.
+fn check_library_path_links(app_id: &str, payload: &[PayloadEntry]) -> Result<()> {
+    ensure!(
+        !payload.iter().any(|p| p.entry.path == Path::new(panpak_core::libpath::FARM_LINK)),
+        "`{}` in the root of the tree is kept by the runtime (the link to the farm of the app): rename it",
+        panpak_core::libpath::FARM_LINK
+    );
+    let dirs: std::collections::BTreeSet<PathBuf> = payload
+        .iter()
+        .filter(|p| matches!(p.entry.kind, Kind::File { .. }))
+        .filter(|p| p.source.as_deref().is_some_and(panpak_core::libpath::is_program))
+        .map(|p| p.entry.path.parent().unwrap_or(Path::new("")).to_path_buf())
+        .collect();
+    let have = |path: &Path| -> Option<String> {
+        payload.iter().find(|p| p.entry.path == path).and_then(|p| match &p.entry.kind {
+            Kind::Link(t) => Some(t.clone()),
+            _ => None,
+        })
+    };
+    let missing = panpak_core::libpath::missing_links(app_id, &dirs, &have);
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(panpak_core::libpath::missing_error(&missing))
+    }
+}
+
 fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, out: Option<&Path>, extra_icons: Vec<IconInput>) -> Result<PathBuf> {
     let input_toml = fs::read_to_string(dir.join("panpak.toml")).context("read <folder>/panpak.toml")?;
     // Strict schema in pack: future keys must not silently disappear.
@@ -676,6 +705,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
     }
 
     let mut payload = walk_tree(dir)?;
+    check_library_path_links(&man.app.id, &payload)?;
     add_license_entries(&mut payload)?;
     ensure!(
         payload.iter().any(|p| p.entry.path == entry_rel
@@ -1499,6 +1529,8 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     toml.push_str(&format!("[origin]\nconverted_from = {}\nversion = {}\nsha256 = {}\nsigned_by_upstream = false\n", q(&src_name), q(&version), q(&src_sha256)));
     toml.push_str(&format!("[update]\nkey = {}\n", q(&key)));
     tw.replace_file(Path::new("panpak.toml"), toml.as_bytes(), 0o644)?;
+    // The links that make the library path of the app valid for its own programs only (PANPAK-FORMAT.md section 7.1).
+    panpak_core::libpath::make_links(&tree, id, &mut |p, t| tw.symlink(p, Path::new(t)))?;
     cmd_pack(&tree, stub, secret, None, out, icons)
 }
 

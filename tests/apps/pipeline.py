@@ -264,6 +264,10 @@ class Run:
                     time.sleep(0.05)
             if found is not None:
                 time.sleep(0.5)
+                # The library path must be valid only for the programs of the app: the outer stub and the helpers do not hold it.
+                bad = display.library_path_offenders(display.process_rows(p.pid), self.home / ".local/share/panpak/trees")
+                if bad:
+                    raise StepError("library path: " + "; ".join(bad))
         finally:
             isolation.stop_group(p.pid, p, grace=5)
             display.end_run(str(self.home))

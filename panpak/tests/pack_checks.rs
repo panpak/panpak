@@ -61,6 +61,11 @@ fn lab(name: &str) -> Lab {
 impl Lab {
     /// A tree with the given files (path, bytes, mode) and a manifest with `extra` appended; packed. Returns the output and the package path.
     fn pack(&self, name: &str, files: &[(&str, Vec<u8>)], extra: &str) -> (Output, PathBuf) {
+        self.pack_with(name, files, extra, true)
+    }
+
+    /// The same, with or without the links that `build` and `convert` make next to the programs (`links`).
+    fn pack_with(&self, name: &str, files: &[(&str, Vec<u8>)], extra: &str, links: bool) -> (Output, PathBuf) {
         let tree = self.home.join(format!("tree-{name}"));
         for (p, d) in files {
             let f = tree.join(p);
@@ -73,6 +78,9 @@ impl Lab {
             format!("[app]\nid = \"org.example.{name}\"\nname = \"{name}\"\nversion = \"1\"\nentry = \"bin/app\"\n{extra}\n[update]\nkey = \"{}\"\n", self.key),
         )
         .unwrap();
+        if links {
+            panpak_core::libpath::make_links(&tree, &format!("org.example.{name}"), &mut |p, t| Ok(std::os::unix::fs::symlink(t, tree.join(p))?)).unwrap();
+        }
         let pkg = self.home.join(format!("{name}.panpak"));
         let o = cli(&self.home, &["pack", tree.to_str().unwrap(), "--stub", self.stub.to_str().unwrap(), "--secret-file", self.keyfile.to_str().unwrap(), "-o", pkg.to_str().unwrap()]);
         (o, pkg)
@@ -299,4 +307,46 @@ fn elf_needing(name: &str) -> Vec<u8> {
     }
     b.extend_from_slice(&strtab);
     b
+}
+
+#[test]
+fn pack_refuses_a_program_without_the_links_of_the_library_path() {
+    let l = lab("links");
+    let elf = host_elf();
+    // A program in bin/ and one in libexec/: no links at all.
+    let files = [("bin/app", elf.clone()), ("libexec/helper", elf.clone())];
+    let (o, _) = l.pack_with("nolinks", &files, "", false);
+    let t = text(&o);
+    assert!(!o.status.success() && t.contains("PANPAK-E0009"), "{t}");
+    let n = panpak_core::libpath::link_name("org.example.nolinks");
+    // It names the three links, with the commands that make them.
+    for want in [format!("ln -s . {n}"), format!("ln -s .. bin/{n}"), format!("ln -s .. libexec/{n}")] {
+        assert!(t.contains(&want), "missing `{want}` in: {t}");
+    }
+    // With the links it is packed. Only the folder of the second program lacks its link: refused, and it is the only one named.
+    let (o, _) = l.pack_with("onelink", &files, "", true);
+    assert!(o.status.success(), "{}", text(&o));
+    let tree = l.home.join("tree-onelink");
+    let n1 = panpak_core::libpath::link_name("org.example.onelink");
+    fs::remove_file(tree.join("libexec").join(&n1)).unwrap();
+    fs::remove_file(tree.join("panpak.toml")).unwrap();
+    fs::write(
+        tree.join("panpak.toml"),
+        format!("[app]\nid = \"org.example.onelink\"\nname = \"x\"\nversion = \"1\"\nentry = \"bin/app\"\n[update]\nkey = \"{}\"\n", l.key),
+    )
+    .unwrap();
+    let o = cli(&l.home, &["pack", tree.to_str().unwrap(), "--stub", l.stub.to_str().unwrap(), "--secret-file", l.keyfile.to_str().unwrap(), "-o", l.home.join("x.panpak").to_str().unwrap()]);
+    let t = text(&o);
+    assert!(!o.status.success() && t.contains("PANPAK-E0009") && t.contains(&format!("ln -s .. libexec/{n1}")) && !t.contains(&format!("bin/{n1}")), "{t}");
+    // A link with another target is as good as none.
+    fs::remove_file(tree.join("bin").join(&n1)).unwrap();
+    std::os::unix::fs::symlink("../lib", tree.join("bin").join(&n1)).unwrap();
+    let o = cli(&l.home, &["pack", tree.to_str().unwrap(), "--stub", l.stub.to_str().unwrap(), "--secret-file", l.keyfile.to_str().unwrap(), "-o", l.home.join("x.panpak").to_str().unwrap()]);
+    assert!(!o.status.success() && text(&o).contains(&format!("ln -s .. bin/{n1}")), "{}", text(&o));
+    // A script needs none, and a library (the same bytes, a `.so` name) neither.
+    let (o, _) = l.pack_with("scripts", &[("bin/app", b"#!/bin/sh\n".to_vec()), ("lib/libx.so.1", elf.clone())], "", false);
+    assert!(o.status.success(), "{}", text(&o));
+    // The name `.farm` in the root belongs to the runtime.
+    let (o, _) = l.pack_with("farm", &[("bin/app", b"#!/bin/sh\n".to_vec()), (".farm/x", b"x".to_vec())], "", false);
+    assert!(!o.status.success() && text(&o).contains(".farm"), "{}", text(&o));
 }

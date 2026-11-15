@@ -159,6 +159,11 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
     for n in &col.notes {
         super::say(&format!("NOTE: {n}"));
     }
+    // The links that make the library path of the app valid for its own programs only (PANPAK-FORMAT.md section 7.1).
+    let links = panpak_core::libpath::make_links(&tree, &r.app.id, &mut |p, t| {
+        std::os::unix::fs::symlink(t, tree.join(p)).with_context(|| format!("make the link {}", p.display()))
+    })?;
+    super::say(&format!("{links} library-path links made (one in each folder with a program, and one in the root)"));
     super::said_phase("collect", tl.elapsed(), false);
     // 8. The manifest and the package.
     let tp = std::time::Instant::now();

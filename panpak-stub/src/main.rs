@@ -285,6 +285,11 @@ fn materialize(
         resolve(&links, path)?;
     }
 
+    // The link to the farm of this tree: the library path of the app leads through it (`panpak_core::libpath`). It is not part of
+    // the package, so it does not change the root hash; it goes in before the tree is made read-only.
+    let farm_link = tmp.join(panpak_core::libpath::FARM_LINK);
+    ensure!(fs::symlink_metadata(&farm_link).is_err(), "the package has a path that the runtime keeps for the farm: {}", panpak_core::libpath::FARM_LINK);
+    std::os::unix::fs::symlink(panpak_core::libpath::farm_target(&hex(root)), &farm_link)?;
     File::create(tmp.join(".complete"))?;
     set_tree_times(&tmp)?;
     // Non-writable tree before publishing it (defense in depth).
@@ -1227,6 +1232,10 @@ fn real_main() -> Result<()> {
     let plan = resolution::resolve(&store, &pkg, &hex(&ft.root), &tree, &man)?;
     let ld_path =
         std::env::join_paths(plan.ld_path.iter()).context("non-UTF-8 LD_LIBRARY_PATH")?;
+    // The value of `LD_LIBRARY_PATH` of the app: relative to the program that is run, so that a program of the host that
+    // the app starts does not use it (PANPAK-FORMAT.md section 7.1). A package without the links (made before, or with no
+    // program) keeps the absolute list.
+    let ld_env = library_path_env(&store, &tree, &ft.root, &man, &plan)?.unwrap_or_else(|| ld_path.clone());
 
     stage("libraries resolved");
     // Private folders (0700), created before the sandbox closes the rest of the disk.
@@ -1326,7 +1335,7 @@ fn real_main() -> Result<()> {
     cmd.args(&launch_args)
         .args(&app_args)
         .env("PANPAK_APP_ID", &man.app.id)
-        .env("LD_LIBRARY_PATH", &ld_path)
+        .env("LD_LIBRARY_PATH", &ld_env)
         .env_remove("PANPAK_SOCKET_PROBE");
     let open_arg = open_file.as_ref().map(|(p, w)| (p.as_path(), *w));
     #[cfg(target_arch = "x86_64")]
@@ -1395,6 +1404,41 @@ struct ViewStart<'a> {
 
 /// Start the app in the isolated view: build the job for the inner stub and replace this
 /// process with `bwrap`. Returns only on error.
+/// The relative `LD_LIBRARY_PATH` of an app whose package has the links of `panpak_core::libpath` (the one in the root of the
+/// tree is the mark), or `None` for a package without them. Before it is used the farm link of the tree is checked: with a
+/// farm that cannot be reached the loader would skip the entry and the app would start with other libraries than the ones
+/// chosen, with no message.
+fn library_path_env(store: &Path, tree: &Path, root: &[u8; 32], man: &panpak_core::Manifest, plan: &panpak_core::abi::Plan) -> Result<Option<std::ffi::OsString>> {
+    use panpak_core::libpath;
+    let mark = tree.join(libpath::link_name(&man.app.id));
+    if !fs::symlink_metadata(&mark).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Ok(None);
+    }
+    let farm = store.join("farms").join(hex(root));
+    check_farm(tree, &farm, &hex(root))?;
+    Ok(Some(libpath::env_value(&man.app.id, tree, &farm, &plan.ld_path)?))
+}
+
+/// The farm of a tree is `<store>/farms/<root>`, reached through `<tree>/.farm`. Anything else (the link gone or changed, the
+/// farm folder gone or a link) stops the start with a message that says what to do.
+fn check_farm(tree: &Path, farm: &Path, root_hex: &str) -> Result<()> {
+    let link = tree.join(panpak_core::libpath::FARM_LINK);
+    let want = panpak_core::libpath::farm_target(root_hex);
+    let have = fs::read_link(&link).ok().map(|t| t.to_string_lossy().into_owned());
+    let farm_ok = fs::symlink_metadata(farm).is_ok_and(|m| m.is_dir());
+    ensure_code!(
+        have.as_deref() == Some(want.as_str()) && farm_ok,
+        ErrorCode::E2006,
+        "the library folder of the app cannot be reached: {} should point to {want} ({}), and {} should be a folder ({}); the app would start with other libraries than the ones chosen. Remove the folder {} (it is made again at the next start) and start the app again",
+        link.display(),
+        match &have { Some(t) => format!("it points to {t}"), None => "it is missing".to_string() },
+        farm.display(),
+        if farm_ok { "it is" } else { "it is not" },
+        tree.display()
+    );
+    Ok(())
+}
+
 fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     let perms = ctx.man.permissions.as_ref();
     let x11 = perms.is_some_and(|p| p.x11 == Some(true));
@@ -2314,6 +2358,73 @@ mod tests {
         for p in [tree.clone(), tree.join("bin"), tree.join("bin/hello"), tree.join(".complete")] {
             assert_eq!(fs::symlink_metadata(&p).unwrap().mtime(), TREE_MTIME, "{}", p.display());
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn materialize_makes_the_farm_link_and_check_farm_accepts_only_that() {
+        let dir = tmpdir("farm-link");
+        let (path, root, chunks, entries) = fake_panpak_with_file(&dir, b"x");
+        let mut f = File::open(&path).unwrap();
+        let store = dir.join("store");
+        let tree = materialize(&mut f, &store, &root, &chunks, &entries).unwrap();
+        let rh = hex(&root);
+        let link = tree.join(panpak_core::libpath::FARM_LINK);
+        assert_eq!(fs::read_link(&link).unwrap().to_str().unwrap(), format!("../../farms/{rh}"));
+        let farm = store.join("farms").join(&rh);
+        let code = |e: anyhow::Error| panpak_core::code_of(&e, ErrorCode::E2000);
+        // The farm folder is made by the resolution; until then the link leads nowhere, and the check says so.
+        assert_eq!(code(check_farm(&tree, &farm, &rh).unwrap_err()), ErrorCode::E2006);
+        fs::create_dir_all(&farm).unwrap();
+        check_farm(&tree, &farm, &rh).unwrap();
+        // The farm is a link to another folder: refused.
+        fs::remove_dir(&farm).unwrap();
+        fs::create_dir_all(dir.join("other")).unwrap();
+        std::os::unix::fs::symlink(dir.join("other"), &farm).unwrap();
+        let err = check_farm(&tree, &farm, &rh).unwrap_err();
+        assert_eq!(code(err), ErrorCode::E2006);
+        fs::remove_file(&farm).unwrap();
+        fs::create_dir_all(&farm).unwrap();
+        // The link of the tree is another one, or gone: refused, with the path of the tree in the message.
+        let mut p = fs::symlink_metadata(&tree).unwrap().permissions();
+        p.set_mode(0o755);
+        fs::set_permissions(&tree, p).unwrap();
+        fs::remove_file(&link).unwrap();
+        let err = check_farm(&tree, &farm, &rh).unwrap_err();
+        assert_eq!(panpak_core::code_of(&err, ErrorCode::E2000), ErrorCode::E2006);
+        let text = format!("{err}");
+        assert!(text.contains("is missing") && text.contains(&tree.display().to_string()), "{text}");
+        std::os::unix::fs::symlink("../../farms/other", &link).unwrap();
+        assert_eq!(code(check_farm(&tree, &farm, &rh).unwrap_err()), ErrorCode::E2006);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_library_path_is_relative_only_for_a_package_with_the_links() {
+        let dir = tmpdir("ld-env");
+        let man: panpak_core::Manifest = toml::from_str("[app]\nid = \"org.example.app\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n").unwrap();
+        let (path, root, chunks, entries) = fake_panpak_with_file(&dir, b"x");
+        let mut f = File::open(&path).unwrap();
+        let store = dir.join("store");
+        let tree = materialize(&mut f, &store, &root, &chunks, &entries).unwrap();
+        let rh = hex(&root);
+        let farm = store.join("farms").join(&rh);
+        fs::create_dir_all(&farm).unwrap();
+        let plan = panpak_core::abi::Plan { loader: None, ld_path: vec![farm.clone(), tree.join("lib")] };
+        // No mark in the root of the tree: the absolute list stays (a package made before).
+        assert!(library_path_env(&store, &tree, &root, &man, &plan).unwrap().is_none());
+        // With the mark (a link in the root named for the id) the value is relative to the program.
+        let mut p = fs::symlink_metadata(&tree).unwrap().permissions();
+        p.set_mode(0o755);
+        fs::set_permissions(&tree, p).unwrap();
+        let name = panpak_core::libpath::link_name("org.example.app");
+        std::os::unix::fs::symlink(".", tree.join(&name)).unwrap();
+        let v = library_path_env(&store, &tree, &root, &man, &plan).unwrap().unwrap();
+        assert_eq!(v.to_str().unwrap(), format!("/$ORIGIN/{name}/.farm:/$ORIGIN/{name}/lib"));
+        // And a damaged farm link stops the start instead of giving a value that leads nowhere.
+        fs::remove_file(tree.join(".farm")).unwrap();
+        let err = library_path_env(&store, &tree, &root, &man, &plan).unwrap_err();
+        assert_eq!(panpak_core::code_of(&err, ErrorCode::E2000), ErrorCode::E2006);
         let _ = fs::remove_dir_all(&dir);
     }
 

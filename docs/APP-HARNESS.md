@@ -128,3 +128,11 @@ collect 0.7 s, pack 0.7 s; the package in 87 s and the whole run in 96 s, agains
 `python3 -m unittest discover -s tests/apps -p 'test_*.py'` (no network, no
 display): the list of apps, the cache key, the signing (RFC 8032 vectors) and
 the readers of window lists, and the checks of the cache of the patched packages (`test_patched_cache.py`).
+
+## The library path check
+
+Every window start of a run also reads the environment of every process under the launcher (`/proc/PID/environ`, in `display.process_rows`) and checks
+(`display.library_path_offenders`) that only the programs of the app (whose executable is under the `trees` folder of the store) and what they start hold
+`LD_LIBRARY_PATH`, never the outer stub, bubblewrap or a helper, and that the value an app program holds is the relative one (`/$ORIGIN/.panpak-lib-<h>/...`,
+PANPAK-FORMAT.md section 7.1), not a path of the store. A fault ends the app's row with the pids and the executables. The unit tests of the rule are in
+`tests/apps/test_harness.py` (`LibraryPath`).

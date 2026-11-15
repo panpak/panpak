@@ -738,7 +738,7 @@ yet) with two worlds:
   from the host.
 
 For each decided SONAME the stub creates a symlink in `farms/<root>/`
-(to host or bundle) and launches with that `LD_LIBRARY_PATH`:
+(to host or bundle) and launches with that `LD_LIBRARY_PATH` (written relative to the program, section 7.1):
 per-lib control despite the per-directory path. The loader (`ld-*`,
 libc's own `DT_NEEDED`) is not part of the farm: it is the plan's
 `loader`.
@@ -775,6 +775,40 @@ the §7 resolution applies at equal SONAME, and a possible incompatibility fails
 the loader explicitly (fail-closed). `panpak doctor` reads the ELF files of an
 installed app and reports the undefined symbols that none of the chosen libraries
 defines, after the symbol check above. See also Appendix C.
+
+### 7.1 The library path of the app [NORMATIVE]
+
+The runtime puts the farm and the library folders of the package in `LD_LIBRARY_PATH` of the app. An absolute list reaches
+every program that the app starts, system programs included (a shell, `zenity`, `flatpak`), and those load the package's
+libraries instead of their own: `symbol lookup error`, `no version information available`. So the value is relative to the
+program that is run:
+
+```
+LD_LIBRARY_PATH=/$ORIGIN/.panpak-lib-<h>/.farm:/$ORIGIN/.panpak-lib-<h>/lib:...
+```
+
+- `<h>` is the first 8 hex digits of the BLAKE3 hash of `app.id`. It is not derived from the root hash: the links below are part
+  of the content that the root hash covers.
+- glibc replaces `$ORIGIN` with the folder of the main program of the process, in `LD_LIBRARY_PATH` as well (measured on
+  glibc 2.39, 2.41, 2.43 and 2.44). The entry becomes `//<folder>/.panpak-lib-<h>/...`.
+- **In the package**: in every folder that holds a program there is a symbolic link `.panpak-lib-<h>` to the root of the tree
+  (`.` in the root, `..` in `bin/`, `../..` two levels down), and the same link in the root, which is the mark by which the
+  runtime knows that the package is made this way. A program is a regular file, with an execute bit, that is an ELF with a
+  program interpreter (`PT_INTERP`) and has no `.so` in its name. `pack` refuses a package that has a program and lacks a link
+  or has one with another target (`PANPAK-E0009`, with the `ln -s` commands); a package with no program needs none. `build` and
+  `convert` make the links. The name `.farm` in the root of the tree is kept by the runtime.
+- **In the tree**: the runtime makes `<tree>/.farm`, a link to `../../farms/<root>`, when it makes the tree (before the tree is
+  made read-only; it is not part of the package). Before the app is started the runtime checks that the link and the farm folder
+  are as they should be, and stops with `PANPAK-E2006` otherwise: with a farm that cannot be reached the loader skips the entry
+  without a message and the app would start with other libraries than the ones chosen.
+- **For a program of the host** the folder is `/usr/bin` or alike, where `.panpak-lib-<h>` does not exist, and the loader skips
+  the entry: the program uses its own libraries. The cost is a failed `stat` and `open` for each entry and library
+  (measured: +0.1 to +0.3 ms for a start of `grep` or `zenity` with 11 entries).
+- **musl** does not expand `$ORIGIN` and takes a relative entry as a path under the current folder: a value without the slash in
+  front loads a library from `./$ORIGIN/.panpak-lib-<h>/` when the folder holds one (measured). With the slash the entry is an
+  absolute path in the root of the file system, where only the administrator writes, and the current folder does not matter.
+- A package without the mark (made before this section) keeps the absolute list. `--library-path` of the bundled loader
+  (world B) is absolute as before.
 
 ## 8. Out of scope of v1 [INFORMATIVE]
 

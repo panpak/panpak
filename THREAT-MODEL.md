@@ -209,6 +209,14 @@ then call `PermissionStore.DeletePermission` for the app and revoke its document
 
 ### 2.5 Hardening of the app process (tested in tests/hardening.py and the unit tests)
 
+- **The library path reaches only the app's own programs.** `LD_LIBRARY_PATH` of the app is `/$ORIGIN/.panpak-lib-<h>/...`
+  (`PANPAK-FORMAT.md` §7.1), not a list of paths of the store. A system program that the app starts inherits the text but
+  finds no such folder next to itself, and uses its own libraries (before this, it loaded the package's: a defect, and a way
+  for a package to change what a host program runs). Tested: the harness reads the environment of every process of a run and
+  fails when the outer stub, bubblewrap or a helper holds the variable, or when the app holds a path of the store; unit tests;
+  checked by hand on glibc 2.39, 2.41, 2.43 and 2.44 and on musl (the slash in front of `$ORIGIN` keeps a folder of the current
+  directory from being used there). It is a rule about names, not a barrier: a program of the package can still set its own
+  `LD_LIBRARY_PATH` or `LD_PRELOAD` for what it starts, as it could before, inside the same sandbox.
 - **Seccomp deny list.** The inner stub installs a filter as the last step before the exec, after Landlock, with
   `no_new_privs`, on all threads; nothing runs between the filter and the exec (every start goes through one function,
   `exec_filtered`). It returns an error number, it does not kill. It refuses `io_uring_*` (`ENOSYS`), `bpf`,

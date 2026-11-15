@@ -160,3 +160,61 @@ def end_run(marker, grace=3.0):
             except OSError:
                 pass
         time.sleep(wait)
+
+
+LIBRARY_PATH_VAR = "LD_LIBRARY_PATH"
+
+
+def process_rows(root_pid):
+    """The process `root_pid` and everything below it, read from /proc: a list of `{pid, ppid, exe, ld}` where `ld` is the value of LD_LIBRARY_PATH in
+    the environment of the process, or None. A process that cannot be read (it ended, or it is not ours) is left out."""
+    kids = {}
+    ppids = {}
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            try:
+                ppid = int(Path(f"/proc/{d}/stat").read_text().rsplit(")", 1)[1].split()[1])
+            except (OSError, IndexError, ValueError):
+                continue
+            ppids[int(d)] = ppid
+            kids.setdefault(ppid, []).append(int(d))
+    rows, todo = [], [root_pid]
+    while todo:
+        pid = todo.pop()
+        todo += kids.get(pid, [])
+        try:
+            exe = os.readlink(f"/proc/{pid}/exe")
+            env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        except OSError:
+            continue
+        ld = next((e[len(LIBRARY_PATH_VAR) + 1:].decode(errors="replace") for e in env if e.startswith(LIBRARY_PATH_VAR.encode() + b"=")), None)
+        rows.append({"pid": pid, "ppid": ppids.get(pid), "exe": exe, "ld": ld})
+    return rows
+
+
+def library_path_offenders(rows, tree_dir):
+    """What is wrong with the library path in a run (PANPAK-FORMAT.md section 7.1). `rows` as from `process_rows`, `tree_dir` the folder with the trees of the
+    store. Only the programs of the app, and what they start, may hold the variable; the outer stub, bubblewrap and the helpers that the stub starts must not.
+    And the value an app holds must be the relative one (`/$ORIGIN/...`), never a path of the store. Returns a list of texts, empty when all is well."""
+    tree_dir = str(tree_dir).rstrip("/") + "/"
+    byp = {r["pid"]: r for r in rows}
+    inside = set()
+    for r in rows:
+        if r["exe"].startswith(tree_dir):
+            inside.add(r["pid"])
+    changed = True
+    while changed:                      # what an app program started is inside too
+        changed = False
+        for r in rows:
+            if r["pid"] not in inside and r["ppid"] in inside:
+                inside.add(r["pid"])
+                changed = True
+    out = []
+    for r in rows:
+        if r["ld"] is None:
+            continue
+        if r["pid"] not in inside:
+            out.append(f"pid {r['pid']} ({r['exe']}) is outside the app and holds {LIBRARY_PATH_VAR}")
+        elif r["exe"].startswith(tree_dir) and not r["ld"].startswith("/$ORIGIN/"):
+            out.append(f"pid {r['pid']} ({r['exe']}) holds {LIBRARY_PATH_VAR} with a path that is not relative to the program: {r['ld'][:120]}")
+    return out
