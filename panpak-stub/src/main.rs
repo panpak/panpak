@@ -578,6 +578,8 @@ fn materialize_from(
         ensure_tree_readonly(&tree)?;
         return Ok(tree);
     } // Fast startup.
+    // Making a tree is work that a collection must not see half done (a start of a package that is not installed does it too): the store lock, shared, for as long as it takes.
+    let _store_lock = panpak_core::applock::store_shared(store, panpak_core::applock::WAIT)?;
     // Where the time goes (shown with PANPAK_DEBUG): decoding the chunks, writing files and links, making the tree durable.
     let t_start = std::time::Instant::now();
     // One builder per tree: starts that overlap on a store without the tree wait here, then find it done.

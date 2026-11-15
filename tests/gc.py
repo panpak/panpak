@@ -4,8 +4,8 @@
 
 Reachability from the records: what `current`, `previous` and `pending` name is alive, and so are its tree, its farm (a farm lives while any record with its
 root lives) and the blobs that a kept tree links. Checked: a dry run changes nothing; what the third version made unreachable goes (record, tree, farm, the
-blobs only it linked) and what is shared stays; the app starts and rolls back after; a second run has nothing to do; the grace time keeps what is young;
-an app with a copy running keeps everything; abandoned download folders, cache entries of a farm that is gone, work folders of dead processes and runtimes that
+blobs only it linked) and what is shared stays; the app starts and rolls back after; a second run has nothing to do; a command at work (the store lock held
+shared) makes the collection wait for the next time and touch nothing; an app with a copy running keeps everything; packages of the old layout (`*.panpak`) go; abandoned download folders, cache entries of a farm that is gone, work folders of dead processes and runtimes that
 nobody names go; names that are not ours are left alone.
 """
 import fcntl
@@ -97,42 +97,22 @@ def main():
                 run([panpak, 'update', '--allow-insecure-http', '--timeout', '5', ID], env)
             roots = {n: v[n][-32:].hex() for n in v}
             assert run([stub, 'run', appdir / 'current'], env).stdout.strip() == 'version 3'
-            assert (store / 'trees' / roots['1']).is_dir() and len(names(store / 'packages')) == 3, 'the first version is still there (young): the grace time'
-            print('three versions installed by install and two updates; with the grace time of an hour nothing young is collected PASS')
-
-            # 1. a dry run changes nothing and says what it would do; then the real run
-            before = snapshot(store)
-            out = run([panpak, 'gc', '--dry-run', '--grace', '0'], env).stdout
-            assert 'would remove 1 record' in out and 'would remove 1 tree' in out and 'would remove 1 farm' in out, out
-            assert snapshot(store) == before, 'a dry run changes nothing'
-            out = run([panpak, 'gc', '--grace', '0'], env).stdout
-            assert 'removed 1 record' in out and 'removed 1 tree' in out and 'removed 1 farm' in out and ' blob(s)' in out and 'freed about' in out, out
-            after = snapshot(store)
-            assert not (store / 'trees' / roots['1']).exists() and not (store / 'farms' / roots['1']).exists(), 'tree and farm of the unreachable version'
-            assert all(not n.startswith(f'{ID}-1.0') for n in after['packages']) and len(after['packages']) == 2
+            assert not (store / 'trees' / roots['1']).exists() and not (store / 'farms' / roots['1']).exists(), 'the update that made the first version unreachable collected it'
+            assert len(names(store / 'packages')) == 2, names(store / 'packages')
+            assert all(os.stat(store / 'blobs' / b).st_nlink > 1 for b in names(store / 'blobs') if (store / 'blobs' / b).is_file()), 'no blob that nothing links'
             for n in ('2', '3'):
                 assert (store / 'trees' / roots[n] / '.complete').exists() and (store / 'farms' / roots[n]).is_dir(), f'version {n} is kept whole'
-            # Every blob that is left is linked by a kept tree: nothing of the first version only.
-            assert all(os.stat(store / 'blobs' / b).st_nlink > 1 for b in after['blobs'] if (store / 'blobs' / b).is_file()), 'no blob that nothing links'
-            assert len(after['blobs']) < len(before['blobs'])
             assert run([stub, 'run', appdir / 'current'], env).stdout.strip() == 'version 3'
             run([panpak, 'rollback', ID], env)
             assert run([stub, 'run', appdir / 'current'], env).stdout.strip() == 'version 2', 'previous still starts'
             run([panpak, 'rollback', ID], env)
-            assert 'nothing to collect' in run([panpak, 'gc', '--grace', '0'], env).stdout, 'a second run has nothing to do'
-            print('dry run changes nothing; the unreachable version goes (record, tree, farm, its own blobs); both kept versions start; a second run is empty PASS')
+            print('install and two updates: the update that made the first version unreachable collected its record, tree, farm and blobs; the other two start and roll back PASS')
 
-            # 2. a second app that shares files: what is shared stays when it is removed
-            run([panpak, 'install', '--yes', tmp / 'other.panpak'], env)
-            shared_before = len(names(store / 'blobs'))
-            run([panpak, 'remove', '--yes', OTHER], env)
-            run([panpak, 'gc', '--grace', '0'], env)
-            assert len(names(store / 'blobs')) <= shared_before
-            assert run([stub, 'run', appdir / 'current'], env).stdout.strip() == 'version 3'
-            assert 'does not match' not in run([panpak, 'doctor', (appdir / 'current').resolve()], env, ok=False).stdout
-            print('a removed app: its own blobs go, the ones it shared with the other app stay, the other app runs and checks out PASS')
-
-            # 3. the grace time, work folders of dead processes, names that are not ours
+            # 1. garbage of every kind: a dry run changes nothing and says what it would do; then the real run, then an empty one
+            stray = store / 'packages' / f'{ID}-9.9-{"ee" * 6}.rec'
+            stray.write_bytes((appdir / 'previous').resolve().read_bytes())
+            old_package = store / 'packages' / 'old-layout.panpak'
+            old_package.write_bytes(v['1'])
             orphan_tree = store / 'trees' / ('ab' * 32)
             orphan_tree.mkdir()
             (orphan_tree / 'x').write_text('x')
@@ -143,28 +123,53 @@ def main():
             (work / 'part').write_text('p')
             stranger = store / 'trees' / 'README'
             stranger.write_text('not ours')
-            run([panpak, 'gc'], env)   # the default grace: they are young
-            assert orphan_tree.exists() and orphan_blob.exists() and work.exists(), 'young things stay'
-            out = run([panpak, 'gc', '--grace', '0'], env).stdout
-            assert not orphan_tree.exists() and not orphan_blob.exists() and not work.exists(), out
+            before = snapshot(store)
+            out = run([panpak, 'gc', '--dry-run'], env).stdout
+            assert 'would remove 2 record' in out and 'would remove 1 tree' in out, out
+            assert snapshot(store) == before, 'a dry run changes nothing'
+            out = run([panpak, 'gc'], env).stdout
+            assert 'removed 2 record' in out and 'removed 1 tree' in out and 'blob' in out and 'freed about' in out, out
+            assert not (stray.exists() or old_package.exists() or orphan_tree.exists() or orphan_blob.exists() or work.exists()), 'all of it went, at once: no clock decides'
             assert stranger.exists(), 'a name that is not ours is left alone'
             stranger.unlink()
-            print('the grace time keeps what is young; orphan tree, blob and the work folder of a dead process go; a stranger stays PASS')
+            assert run([stub, 'run', appdir / 'current'], env).stdout.strip() == 'version 3'
+            assert 'nothing to collect' in run([panpak, 'gc'], env).stdout, 'a second run has nothing to do'
+            print('dry run changes nothing; a stray record, an old-layout package, an orphan tree and blob and the work folder of a dead process go at once; a stranger stays; a second run is empty PASS')
+
+            # 1b. a command at work (the store lock held shared): the collection waits for the next time and touches nothing
+            stray.write_bytes((appdir / 'previous').resolve().read_bytes())
+            orphan_blob.write_text('hello')
+            with open(store / 'locks' / '.store', 'a') as at_work:
+                fcntl.flock(at_work, fcntl.LOCK_SH)
+                before = snapshot(store)
+                p = run([panpak, 'gc'], env)
+                assert 'left for the next time' in p.stdout and snapshot(store) == before, p.stdout
+            run([panpak, 'gc'], env)
+            assert not stray.exists() and not orphan_blob.exists()
+            print('a command at work holds the store lock: the collection says it was left for the next time and changes nothing; the next one collects PASS')
+
+            # 2. a second app that shares files: what is shared stays when it is removed
+            run([panpak, 'install', '--yes', tmp / 'other.panpak'], env)
+            shared_before = len(names(store / 'blobs'))
+            run([panpak, 'remove', '--yes', OTHER], env)
+            run([panpak, 'gc'], env)
+            assert len(names(store / 'blobs')) <= shared_before
+            assert run([stub, 'run', appdir / 'current'], env).stdout.strip() == 'version 3'
+            assert 'does not match' not in run([panpak, 'doctor', (appdir / 'current').resolve()], env, ok=False).stdout
+            print('a removed app: its own blobs go, the ones it shared with the other app stay, the other app runs and checks out PASS')
 
             # 4. a copy that runs keeps everything of its app
             (serve / 'remote.panpak').write_bytes(v['3'])
-            os.utime(store / 'packages', None)
             # Make a record unreachable again: stage nothing; instead copy the record of version 2 under another name and ask gc to keep it while a copy runs.
-            stray = store / 'packages' / f'{ID}-9.9-{"ee" * 6}.rec'
             stray.write_bytes((appdir / 'previous').resolve().read_bytes())
             copies = runtime / 'panpak' / ID
             copies.mkdir(parents=True, exist_ok=True)
             copies.chmod(0o700)
             with open(copies / 'lock', 'a') as copy:
                 fcntl.flock(copy, fcntl.LOCK_SH)
-                run([panpak, 'gc', '--grace', '0'], env)
+                run([panpak, 'gc'], env)
                 assert stray.exists(), 'a copy runs: everything of the app stays'
-            run([panpak, 'gc', '--grace', '0'], env)
+            run([panpak, 'gc'], env)
             assert not stray.exists(), 'with no copy the unreachable record goes'
             print('with a copy running the app keeps everything; when it ends the unreachable record goes PASS')
 
@@ -184,7 +189,7 @@ def main():
             fake_rt = store / 'runtimes' / '77'
             fake_rt.mkdir()
             (fake_rt / 'panpak-stub').write_text('x')
-            run([panpak, 'gc', '--grace', '0'], env)
+            run([panpak, 'gc'], env)
             assert not old.exists() and fresh.exists(), 'the abandoned download folder goes, the one in use stays'
             assert not cache.exists() and all(p.exists() for p in keep_cache), 'the cache entry of a farm that is gone goes; the others stay'
             assert not fake_rt.exists(), 'a runtime that nobody names goes'
@@ -199,7 +204,7 @@ def main():
 
             def collector():
                 while not stop.is_set():
-                    gc_runs.append(subprocess.run([str(panpak), 'gc', '--grace', '0'], env=env, capture_output=True, text=True, timeout=60))
+                    gc_runs.append(subprocess.run([str(panpak), 'gc'], env=env, capture_output=True, text=True, timeout=60))
 
             t = threading.Thread(target=collector)
             t.start()

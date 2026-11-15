@@ -54,6 +54,47 @@ pub fn lock_for(store: &Path, app_id: &str, wait: Duration) -> Result<File> {
     }
 }
 
+/// The lock of the whole store, in two modes (PANPAK-FORMAT.md 6.4). Every command that makes or changes what an app is made of (install, update, stage, apply,
+/// repair, rollback, remove, and the making of a tree) holds it SHARED for as long as it works; `panpak gc` takes it EXCLUSIVE without waiting, so a collection never
+/// sees work that is half done and does not depend on how long that work takes. Taken before the lock of an app.
+pub fn store_lock_path(store: &Path) -> PathBuf {
+    store.join("locks").join(".store")
+}
+
+fn open_store_lock(store: &Path) -> Result<File> {
+    let path = store_lock_path(store);
+    fs::create_dir_all(path.parent().context("lock without a folder")?)?;
+    OpenOptions::new().create(true).truncate(false).write(true).open(&path).with_context(|| format!("open the lock {}", path.display()))
+}
+
+/// Shared, waiting up to `wait` (only a collection holds it exclusively, and it is short).
+pub fn store_shared(store: &Path, wait: Duration) -> Result<File> {
+    let f = open_store_lock(store)?;
+    let start = Instant::now();
+    loop {
+        // SAFETY: flock(2) on a descriptor this function owns.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+            return Ok(f);
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EWOULDBLOCK) {
+            return Err(err).context("lock the store");
+        }
+        if start.elapsed() >= wait {
+            return Err(coded(ErrorCode::E2008, "the store is being cleaned (panpak gc): wait a moment and run the command again"));
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Exclusive, without waiting: `None` when any command holds it shared.
+pub fn store_exclusive_try(store: &Path) -> Result<Option<File>> {
+    let f = open_store_lock(store)?;
+    // SAFETY: flock(2) on a descriptor this function owns.
+    let r = unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    Ok((r == 0).then_some(f))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,4 +123,22 @@ mod tests {
         assert!(lock(&d, "../x").is_err(), "a name that is not an app id is refused");
         let _ = fs::remove_dir_all(&d);
     }
+
+    #[test]
+    fn the_store_lock_is_shared_for_work_and_exclusive_for_a_collection() {
+        let d = std::env::temp_dir().join(format!("panpak-storelock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let a = store_shared(&d, Duration::from_millis(100)).unwrap();
+        let b = store_shared(&d, Duration::from_millis(100)).unwrap();
+        assert!(store_exclusive_try(&d).unwrap().is_none(), "a command at work: no collection");
+        drop(a);
+        assert!(store_exclusive_try(&d).unwrap().is_none(), "one is still at work");
+        drop(b);
+        let gc = store_exclusive_try(&d).unwrap().expect("nobody at work");
+        assert!(store_shared(&d, Duration::from_millis(100)).is_err(), "a collection is running: work waits, then says so");
+        drop(gc);
+        assert!(store_shared(&d, Duration::from_millis(100)).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
+

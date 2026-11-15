@@ -22,6 +22,19 @@ macro_rules! failpoint {
 pub fn hit(name: &'static str) {
     use std::{collections::HashMap, sync::Mutex};
     static COUNTS: Mutex<Option<HashMap<&'static str, usize>>> = Mutex::new(None);
+    // A pause instead of a stop: the point writes `<dir>/reached` and waits for `<dir>/go` (so a test can do something while the command is in the middle of its work).
+    if let (Ok(point), Ok(dir)) = (std::env::var(["PANPAK_", "FAILPOINT_PAUSE"].concat()), std::env::var(["PANPAK_", "FAILPOINT_DIR"].concat())) {
+        if point == name {
+            let dir = std::path::PathBuf::from(dir);
+            let _ = std::fs::write(dir.join("reached"), name);
+            for _ in 0..2400 {
+                if dir.join("go").exists() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
     let Ok(want) = std::env::var(["PANPAK_", "FAILPOINT"].concat()) else { return };
     let (point, nth) = match want.split_once(':') {
         Some((p, n)) => (p, n.parse::<usize>().unwrap_or(1)),

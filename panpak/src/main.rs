@@ -33,7 +33,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run] [--grace <seconds>]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -192,6 +192,8 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     let store = store_dir()?;
     // The lock of the app is held while the installed state is read and changed, and let go while the chunks come (it can take a while, and a start,
     // `remove` or another command may want the app): after the download the state is read again and must be the one that this update started from.
+    // The store lock, shared, until the update (or its staging) ends: a collection never sees it half done. Then the lock of the app.
+    let store_guard = panpak_core::applock::store_shared(&store, panpak_core::applock::WAIT)?;
     let mut first_lock = Some(panpak_core::applock::lock(&store, app_id)?);
     let appdir = store.join("apps").join(app_id);
     // Refuse before downloading if the launcher cannot be replaced.
@@ -346,6 +348,9 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     drop(first_lock.take());
     match cmd_apply(app_id, yes, accept_new, false)? {
         Applied::Done { dest, best_abi } => {
+            // What the new version made unreachable (the version before the one that was `previous`) goes now, with this command's locks let go.
+            drop(store_guard);
+            gc::after(&store, &[]);
             println!("updated {app_id}: {} -> {} (reused chunks {n_reused}, fetched chunks {n_fetched}, runtime {best_abi})", old_man.app.version, man.app.version);
             println!("downloaded bytes: {downloaded}");
             Ok(dest)
@@ -375,6 +380,12 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool) -> Resul
         return skip("no update is staged");
     }
     // At a start nobody is asked to wait: another command on the app means "later".
+    // A start does not wait: a collection that is running means "later".
+    let _store_lock = match panpak_core::applock::store_shared(&store, if at_start { std::time::Duration::from_millis(300) } else { panpak_core::applock::WAIT }) {
+        Ok(l) => l,
+        Err(_) if at_start => return skip("the store is being cleaned"),
+        Err(e) => return Err(e),
+    };
     let lock = if at_start { panpak_core::applock::lock_for(&store, app_id, std::time::Duration::from_millis(300)) } else { panpak_core::applock::lock(&store, app_id) };
     let _app_lock = match lock {
         Ok(l) => l,
@@ -486,10 +497,6 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool) -> Resul
             refresh_desktop_database(desktop.parent().unwrap());
         }
     }
-    if !at_start {
-        // What the new version made unreachable (the version before the one that was `previous`) goes now; a start never does this.
-        gc::after(&store, &[app_id]);
-    }
     if at_start {
         eprintln!("panpak: {app_id} updated from {} to {} (it was staged)", old_man.app.version, man.app.version);
     }
@@ -573,6 +580,7 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
     panpak_core::validate_app_id(app_id)?;
     remove::recover();
     let store = store_dir()?;
+    let _store_lock = panpak_core::applock::store_shared(&store, panpak_core::applock::WAIT)?;
     let _app_lock = panpak_core::applock::lock(&store, app_id)?;
     let appdir = store.join("apps").join(app_id);
     let rec_path = fs::read_link(appdir.join("current")).with_context(|| format!("{app_id} is not installed (see `panpak list`)"))?;
@@ -671,6 +679,7 @@ fn good_from_tree(_tree: &Path, _chunks: &[panpak_core::Chunk], _entries: &[panp
 
 fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     panpak_core::validate_app_id(app_id)?;
+    let _store_lock = panpak_core::applock::store_shared(&store_dir()?, panpak_core::applock::WAIT)?;
     let _app_lock = panpak_core::applock::lock(&store_dir()?, app_id)?;
     let appdir = store_dir()?.join("apps").join(app_id);
     let current = appdir.join("current");
@@ -2609,6 +2618,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     mark("package verified");
     panpak_core::failpoint!("install.verified");
     // One command at a time changes what is installed of this app (PANPAK-FORMAT.md 6.4).
+    let _store_lock = panpak_core::applock::store_shared(&store, panpak_core::applock::WAIT)?;
     let _app_lock = panpak_core::applock::lock(&store, &man.app.id)?;
     warn_unknown_fields(&panpak_core::unknown_manifest_keys(&mut f, &ft));
     if man.permissions.as_ref().and_then(|p| p.x11).unwrap_or(false) {
@@ -3581,16 +3591,14 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             }
         }
         Some("gc") => {
-            let (mut dry, mut grace) = (false, gc::DEFAULT_GRACE);
-            let mut it = args[2..].iter();
-            while let Some(a) = it.next() {
+            let mut dry = false;
+            for a in &args[2..] {
                 match a.as_str() {
                     "--dry-run" => dry = true,
-                    "--grace" => grace = it.next().and_then(|v| v.parse().ok()).ok_or_else(|| coded(ErrorCode::E5001, "--grace takes a number of seconds"))?,
                     x => bail_code!(ErrorCode::E5001, "unknown argument {x}\n{usage}", usage = usage()),
                 }
             }
-            gc::cmd_gc(dry, grace)
+            gc::cmd_gc(dry)
         }
         Some("config") => {
             let file = panpak_core::config::path().context("no config folder (set XDG_CONFIG_HOME or HOME)")?;
@@ -3620,7 +3628,11 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                 }
             }
             match cmd_apply(id.ok_or_else(|| coded(ErrorCode::E5002, "apply <app-id>"))?, yes, accept_new, at_start)? {
-                Applied::Done { .. } => {}
+                Applied::Done { .. } => {
+                    if !at_start {
+                        gc::after(&store_dir()?, &[]);
+                    }
+                }
                 Applied::Skipped(why) => {
                     if !at_start {
                         println!("nothing applied: {why}");

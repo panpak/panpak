@@ -238,7 +238,7 @@ def main():
                         (orphan / 'x').write_text('x')
                         blob = store / 'blobs' / (('cd' * 32) + '-5')
                         blob.write_text('hello')
-                        args = [BIN / 'panpak', 'gc', '--grace', '0']
+                        args = [BIN / 'panpak', 'gc']
                         p = run(args, dict(e, **fp), ok=False)
                         fired = f'failpoint {name}' in p.stderr
                         if fired:
@@ -278,6 +278,34 @@ def main():
                     if fired:
                         hit[name].append(cmd)
                     doctor_ok(e)
+            # A collection while an install is in the middle of its work (paused after the blobs are named and before they are linked into the tree):
+            # it must not touch anything, and say that it was left for the next time. Nothing here depends on how long the install takes.
+            e, store = lab.fresh()
+            pause = tmp / 'pause'
+            pause.mkdir()
+            slow = subprocess.Popen([str(BIN / 'panpak'), 'install', '--yes', '--runtime', str(BIN / 'panpak-stub'), str(tmp / 'v1.panpak')],
+                                    env=dict(e, PANPAK_FAILPOINT_PAUSE='prepare.blobs_named', PANPAK_FAILPOINT_DIR=str(pause)), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            for _ in range(200):
+                if (pause / 'reached').exists():
+                    break
+                time.sleep(0.1)
+            assert (pause / 'reached').exists(), 'the install reached the pause'
+            blobs = sorted(p.name for p in (store / 'blobs').iterdir() if p.is_file())
+            assert blobs and all(os.stat(store / 'blobs' / b).st_nlink == 1 for b in blobs), 'in the middle: blobs named, no tree links them yet'
+            orphan = store / 'trees' / ('ab' * 32)
+            orphan.mkdir()
+            (orphan / 'x').write_text('x')
+            before = sorted(str(p.relative_to(store)) for p in store.rglob('*'))
+            out = run([BIN / 'panpak', 'gc'], e)
+            assert 'left for the next time' in out.stdout, out.stdout
+            assert sorted(str(p.relative_to(store)) for p in store.rglob('*')) == before, 'the collection touched a store with an install in the middle'
+            (pause / 'go').write_text('')
+            so, se = slow.communicate(timeout=60)
+            assert slow.returncode == 0, so + se
+            out = run([BIN / 'panpak', 'gc'], e).stdout
+            assert not orphan.exists() and 'removed' in out, out
+            assert run([stub, 'run', store / 'apps' / ID / 'current'], e).stdout.strip() == 'version 1'
+            print('a collection run in the middle of a slow install touches nothing and says so; after the install it collects what is garbage and the app starts PASS')
         finally:
             server.terminate()
             server.wait(timeout=5)

@@ -4,14 +4,14 @@
 //! Liveness comes from the records, never from counts: the records that `current`, `previous` or `pending` of an app name are alive; their roots keep the
 //! trees and the farms (a farm lives while any record with its root lives); a blob that no tree links is dead. The order is the order of the dependencies, so
 //! that a stop in the middle leaves things that the next run finishes and never a link that names nothing: records, trees, farms, blobs, then what is only a cache.
-//! Nothing that is young (the grace time) is touched, because an install that has not linked its work yet looks like garbage.
+//! No clock decides anything about work in progress: every command that makes or changes what an app is made of holds the store lock shared for as long as it
+//! works, and a collection takes it exclusive without waiting, so it never sees work that is half done (when it cannot, it is left for the next time).
+//! Time is used only for what costs space and nothing else: the ABI cache (30 days) and the folders of abandoned downloads (7 days).
 use super::*;
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::MetadataExt;
 use std::time::{Duration, SystemTime};
 
-/// What is kept without a reason except its age, for work that has not been linked yet.
-pub const DEFAULT_GRACE: u64 = 3600;
 /// A download folder that was not used for this long is abandoned.
 const STAGING_DAYS: u64 = 7;
 /// An entry of the ABI cache that was not rewritten for this long is rebuilt at the next start (it is only a cache).
@@ -22,6 +22,8 @@ pub struct Report {
     /// (what, name) of each thing taken out (or that would be).
     pub items: Vec<(&'static str, String)>,
     pub bytes: u64,
+    /// A command was working on the store: nothing was done.
+    pub deferred: bool,
 }
 
 impl Report {
@@ -36,7 +38,6 @@ impl Report {
 
 pub struct Options {
     pub dry_run: bool,
-    pub grace: Duration,
 }
 
 fn age(m: &fs::Metadata) -> Duration {
@@ -88,7 +89,6 @@ struct Rec {
     path: PathBuf,
     id: String,
     root: String,
-    young: bool,
     bytes: u64,
 }
 
@@ -97,6 +97,11 @@ struct Rec {
 pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
     remove::recover();
     let mut rep = Report::default();
+    // Exclusive, without waiting: a command at work holds it shared.
+    let Some(_store_lock) = panpak_core::applock::store_exclusive_try(store)? else {
+        rep.deferred = true;
+        return Ok(rep);
+    };
     let apps_dir = store.join("apps");
     let ids: Vec<String> = fs::read_dir(&apps_dir)
         .map(|rd| rd.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| panpak_core::validate_app_id(n).is_ok()).collect())
@@ -136,19 +141,19 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
             }
             if name.contains(".rec.tmp") {
                 let pid = name.rsplit(".tmp").next().and_then(|p| p.parse::<i32>().ok());
-                if age(&m) >= opts.grace && !pid.is_some_and(pid_alive) {
+                if !pid.is_some_and(pid_alive) {
                     tmps.push((e.path(), m.len()));
                 }
                 continue;
             }
-            if !name.ends_with(".rec") {
+            // A `.panpak` here is a package that a store from before step 8a kept: kept only while a link names it, like a record.
+            if !name.ends_with(".rec") && !name.ends_with(".panpak") {
                 continue;
             }
-            let young = age(&m) < opts.grace;
             match panpak_core::record::open_verified(&e.path()) {
-                Ok(o) if o.is_record => recs.push(Rec { path: e.path(), id: o.manifest.app.id.clone(), root: panpak_core::hex(&o.footer.root), young, bytes: m.len() }),
-                // A record that does not verify and is old: nothing can start from it, and no link may name it (checked below by the path).
-                _ => recs.push(Rec { path: e.path(), id: String::new(), root: String::new(), young, bytes: m.len() }),
+                Ok(o) => recs.push(Rec { path: e.path(), id: o.manifest.app.id.clone(), root: panpak_core::hex(&o.footer.root), bytes: m.len() }),
+                // One that does not verify: nothing can start from it, and no link may name it (checked below by the path).
+                _ => recs.push(Rec { path: e.path(), id: String::new(), root: String::new(), bytes: m.len() }),
             }
         }
     }
@@ -164,7 +169,7 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
         }
     }
     for (i, r) in recs.iter().enumerate() {
-        if r.young || busy.contains(&r.id) {
+        if busy.contains(&r.id) {
             keep[i] = true;
         }
     }
@@ -199,9 +204,6 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
             let Some((root, kind)) = tree_entry(&name) else { continue };
             let path = trees.join(&name);
             let Ok(m) = fs::symlink_metadata(&path) else { continue };
-            if age(&m) < opts.grace {
-                continue;
-            }
             let alive = roots.contains(root);
             // Leftovers of an interrupted make or repair go even when the tree is alive; the tree itself and its marks only when it is not.
             let leftover = kind == ".partial" || kind.starts_with(".damaged");
@@ -242,7 +244,7 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             let Ok(m) = fs::symlink_metadata(e.path()) else { continue };
-            if !is_hex(&name, 64) || !m.is_dir() || roots.contains(&name) || age(&m) < opts.grace {
+            if !is_hex(&name, 64) || !m.is_dir() || roots.contains(&name) {
                 continue;
             }
             rep.add("farm", name, 0);
@@ -259,9 +261,6 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
         for e in rd.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             let Ok(m) = fs::symlink_metadata(e.path()) else { continue };
-            if age(&m) < opts.grace {
-                continue;
-            }
             if m.file_type().is_file() && is_blob_name(&name) && m.nlink() == 1 {
                 rep.add("blob", name, m.len());
                 if !opts.dry_run {
@@ -298,7 +297,7 @@ fn cache_step(store: &Path, opts: &Options, rep: &mut Report) {
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let Ok(m) = fs::symlink_metadata(e.path()) else { continue };
-        if !m.file_type().is_file() || !name.ends_with(".toml") || age(&m) < opts.grace {
+        if !m.file_type().is_file() || !name.ends_with(".toml") {
             continue;
         }
         // The entry names the farm that it was made for (in its stamps): when that farm is gone the entry is of no use; an old entry goes too.
@@ -326,7 +325,8 @@ fn staging_step(store: &Path, opts: &Options, ids: &[String], busy: &HashSet<Str
             continue;
         }
         let installed = ids.contains(&id);
-        let limit = if installed { Duration::from_secs(STAGING_DAYS * 86400) } else { opts.grace };
+        // An app that is not installed has no download in progress (the store lock says so): its folders go at once.
+        let limit = if installed { Duration::from_secs(STAGING_DAYS * 86400) } else { Duration::ZERO };
         // One folder per version being downloaded: it is in use while something in it is written (the newest entry decides).
         for c in fs::read_dir(e.path()).into_iter().flatten().flatten() {
             let Ok(cm) = fs::symlink_metadata(c.path()) else { continue };
@@ -383,7 +383,7 @@ fn runtimes_step(store: &Path, opts: &Options, ids: &[String], rep: &mut Report)
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let Ok(m) = fs::symlink_metadata(e.path()) else { continue };
-        if !m.is_dir() || named.contains(&name) || age(&m) < opts.grace || name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
+        if !m.is_dir() || named.contains(&name) || name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
             continue;
         }
         rep.add("runtime", name, dir_size(&e.path()));
@@ -393,17 +393,21 @@ fn runtimes_step(store: &Path, opts: &Options, ids: &[String], rep: &mut Report)
     }
 }
 
-/// `panpak gc [--dry-run] [--grace <seconds>]`.
-pub fn cmd_gc(dry_run: bool, grace_secs: u64) -> Result<()> {
+/// `panpak gc [--dry-run]`.
+pub fn cmd_gc(dry_run: bool) -> Result<()> {
     let store = store_dir()?;
     ensure_code!(store.is_dir(), ErrorCode::E2004, "there is no store yet: nothing to collect");
-    let rep = run(&store, &Options { dry_run, grace: Duration::from_secs(grace_secs) }, &[])?;
+    let rep = run(&store, &Options { dry_run }, &[])?;
     print_report(&rep, dry_run);
     Ok(())
 }
 
 fn print_report(rep: &Report, dry_run: bool) {
     let verb = if dry_run { "would remove" } else { "removed" };
+    if rep.deferred {
+        println!("another panpak command is working on the store (install, update, repair or remove): the collection was left for the next time");
+        return;
+    }
     if rep.items.is_empty() {
         println!("nothing to collect");
         return;
@@ -420,10 +424,13 @@ fn print_report(rep: &Report, dry_run: bool) {
     println!("{} {}", if dry_run { "would free about" } else { "freed about" }, humansize(rep.bytes));
 }
 
-/// After a step that changes what is alive (apply, remove): collect quietly. A failure never fails the step.
+/// After a step that changes what is alive (apply, remove): collect quietly. The caller has let go of its store lock. A failure never fails the step, and a store
+/// that is busy says so and waits for the next time.
 pub fn after(store: &Path, held: &[&str]) {
-    if let Err(e) = run(store, &Options { dry_run: false, grace: Duration::from_secs(DEFAULT_GRACE) }, held) {
-        eprintln!("panpak: the collection of the store did not run: {}", panpak_core::err_text(&e));
+    match run(store, &Options { dry_run: false }, held) {
+        Ok(rep) if rep.deferred => eprintln!("panpak: the collection of the store was left for the next time: another command is working on it"),
+        Ok(_) => {}
+        Err(e) => eprintln!("panpak: the collection of the store did not run: {}", panpak_core::err_text(&e)),
     }
 }
 

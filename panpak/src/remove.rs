@@ -685,7 +685,14 @@ pub fn lock_no_copies(id: &str, what: &str) -> Result<std::fs::File> {
 
 /// `panpak remove [--purge-data] [--yes] <app-id>`.
 pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
-    cmd_remove_inner(id, purge, yes)?;
+    {
+        // The store lock, shared, while the app is taken away (the collection that follows needs it free).
+        let _store_lock = match dirs::data_dir().map(|d| d.join("panpak")).filter(|s| s.is_dir()) {
+            Some(store) => Some(panpak_core::applock::store_shared(&store, panpak_core::applock::WAIT)?),
+            None => None,
+        };
+        cmd_remove_inner(id, purge, yes)?;
+    }
     // The blobs that only this app linked are garbage now (the grace time keeps what was made a moment ago).
     if let Ok(store) = dirs::data_dir().context("no data dir").map(|d| d.join("panpak")) {
         if store.is_dir() {

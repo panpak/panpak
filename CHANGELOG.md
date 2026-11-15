@@ -2,10 +2,11 @@
 
 ## Unreleased
 
-- **Step 8e: garbage collection by reachability from the records.** `panpak gc [--dry-run] [--grace <seconds>]` keeps the records that `current`, `previous` and `pending` name, the trees and farms of their roots (a farm
-  lives while any record with its root lives) and the blobs that a kept tree links, and takes out the rest: records, trees, farms, blobs, work folders of dead processes, ABI cache entries of a gone farm or older than 30 days,
-  abandoned download folders, runtimes that nothing names. An app that is busy or runs keeps everything; what is younger than the grace time (an hour) is kept. It runs after an apply, after a removal and when the last copy ends.
-  Test points `gc.*` (33 points, 70 stops); `tests/gc.py`; PANPAK-FORMAT.md 6.8.
+- **Step 8e: garbage collection by reachability from the records.** `panpak gc [--dry-run]` keeps the records that `current`, `previous` and `pending` name, the trees and farms of their roots (a farm lives while any
+  record with its root lives) and the blobs that a kept tree links, and takes out the rest: records, trees, farms, blobs, work folders of dead processes, `*.panpak` of the old layout, ABI cache entries of a gone farm or older than
+  30 days, download folders idle for 7 days, runtimes that nothing names. **No clock decides about work in progress**: `locks/.store` is a two-mode lock; install, update, stage, apply, repair, rollback, remove and the making of a
+  tree hold it shared, `gc` takes it exclusive without waiting and, when it cannot, says it was left for the next time. An app that is busy or runs keeps everything. It runs after an apply, an update or a removal, and when the last
+  copy ends. Test points `gc.*` (33 points, 70 stops) and a test that runs a collection in the middle of a slow install (a pause point); `tests/gc.py`; PANPAK-FORMAT.md 6.8.
 - **Work at the end of the last copy; HTTPS with an authority of the user; the notice through our D-Bus client.** The outer stub now stays while any installed app runs; when the last copy ends it starts, detached
   at nice 19 and idle I/O, `panpak background --exit <id>`: the staged update is applied, the files found damaged are repaired (with the network), and the daily job runs if it is due. A start no longer repairs
   anything and never waits for the network: it applies a staged update when no copy runs (the fallback), names damaged files with `panpak repair <id>` on standard error and starts the app. The notice of a security
