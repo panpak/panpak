@@ -16,14 +16,15 @@ Toolchain (everything that can change the bytes is pinned):
 - Zig 0.17.0 (wheel 0.17.0.post0, the complete re-upload of the yanked 0.17.0, with the same executable) as C compiler and linker (`tools/requirements-zig.txt`, wheel
   hash checked by `pip --require-hashes`); `scripts/repro-build.sh` refuses
   any other version.
-- `SOURCE_DATE_EPOCH=1700000000` and path remapping for the sources and the
-  cargo registry.
+- `SOURCE_DATE_EPOCH=1794700803` (the date of the last commit that touched the code, which `panpak --build-epoch` reports; update it
+  with the hashes: `git log -1 --format=%ct -- panpak panpak-core panpak-stub Cargo.toml Cargo.lock rust-toolchain.toml .cargo scripts/zig-cc`)
+  and path remapping for the sources and the cargo registry.
 
-Sizes: `panpak-stub` 3,769,072 bytes, `panpak` 7,797,048 bytes.
+Sizes: `panpak-stub` 3,769,072 bytes, `panpak` 7,798,072 bytes.
 
 ```
 b5b8276cc69c8869819395efb578a2e6082080f63381f4c5c59b1e4cf9a97fa1  panpak-stub
-8aadbdddef0e05c012fe5163b0a21f39e7d90abe67b636aabfb485340eb33fee  panpak
+30ebd37d79beb624dcb3ebd129b6c98ac5a6e4dca8cbf8b0ac32914bb1a6a3f1  panpak
 ```
 
 ## Reproduce
