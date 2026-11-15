@@ -32,7 +32,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak config [show] | config set <background.updates|background.verify_mb> <value>\n  panpak background [--force] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day)\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -41,7 +41,18 @@ fn agent_for(url: &str, allow_insecure: bool, timeout_secs: u64) -> Result<ureq:
     match uri.scheme_str() {
         // Always HTTPS anyway; redirects stay in https (ureq) and max 3.
         Some("https") => {
-            let config = ureq::Agent::config_builder().https_only(true).max_redirects(3).timeout_global(Some(std::time::Duration::from_secs(timeout_secs))).build();
+            let mut builder = ureq::Agent::config_builder().https_only(true).max_redirects(3).timeout_global(Some(std::time::Duration::from_secs(timeout_secs)));
+            // `network.ca_file` of the settings replaces the built-in list of authorities; a file that cannot be used stops the download (it never falls back to the list).
+            if let Some(file) = panpak_core::config::load().ca_file {
+                let pem = fs::read(&file).with_context(|| format!("network.ca_file: cannot read {file}"))?;
+                let certs: Vec<ureq::tls::Certificate<'static>> = ureq::tls::parse_pem(&pem).filter_map(|i| match i {
+                    Ok(ureq::tls::PemItem::Certificate(c)) => Some(c),
+                    _ => None,
+                }).collect();
+                ensure!(!certs.is_empty(), "network.ca_file: {file} holds no certificate");
+                builder = builder.tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::new_with_certs(&certs)).build());
+            }
+            let config = builder.build();
             // The address is chosen the way Happy Eyeballs does it: an unreachable IPv6 address does not stall the download (see `happy`).
             Ok(ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::default(), happy::HappyEyeballs))
         }
@@ -3545,22 +3556,23 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             Ok(())
         }
         Some("background") => {
-            let (mut force, mut after_start, mut insecure, mut repair, mut id) = (false, false, false, false, None);
+            let (mut force, mut after_start, mut at_exit, mut insecure, mut repair, mut id) = (false, false, false, false, false, None);
             for a in &args[2..] {
                 match a.as_str() {
                     "--force" => force = true,
                     "--after-start" => after_start = true,
                     "--allow-insecure-http" => insecure = true,
                     "--repair" => repair = true,
+                    "--exit" => at_exit = true,
                     x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
                     x => id = Some(x),
                 }
             }
             let id = id.ok_or_else(|| coded(ErrorCode::E5002, "background <app-id>"))?;
             if repair {
-                background::cmd_repair_if_damaged(id)
+                background::cmd_repair_if_damaged(id, insecure)
             } else {
-                background::cmd_background(id, force, after_start, insecure)
+                background::cmd_background(id, force, after_start, at_exit, insecure)
             }
         }
         Some("config") => {
@@ -3576,7 +3588,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                     println!("{}", panpak_core::config::render(&c).trim_end());
                     Ok(())
                 }
-                _ => bail_code!(ErrorCode::E5001, "config [show] | config set <background.updates|background.verify_mb> <value>"),
+                _ => bail_code!(ErrorCode::E5001, "config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>"),
             }
         }
         Some("apply") => {

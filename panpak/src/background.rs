@@ -49,37 +49,28 @@ pub fn verify_slice(tree: &Path, chunks: &[panpak_core::Chunk], entries: &[panpa
     Slice { next_cursor: if wrapped { 0 } else { i as u64 }, bytes, bad, wrapped }
 }
 
-/// The arguments of `gdbus` that show a notice through the notification portal (the one a sandboxed or a plain program may use).
-pub fn notify_args(app_id: &str, name: &str, version: &str) -> Vec<String> {
-    let q = |s: &str| format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'").chars().filter(|c| !c.is_control()).collect::<String>());
-    let title = format!("{name}: a security update is ready");
-    let body = format!("Version {version} is ready and is applied the next time {name} is started. Close it and open it again to be protected now.");
-    vec![
-        "call".into(),
-        "--session".into(),
-        "--dest".into(),
-        "org.freedesktop.portal.Desktop".into(),
-        "--object-path".into(),
-        "/org/freedesktop/portal/desktop".into(),
-        "--method".into(),
-        "org.freedesktop.portal.Notification.AddNotification".into(),
-        format!("panpak-update-{app_id}"),
-        format!("{{'title': <{}>, 'body': <{}>}}", q(&title), q(&body)),
-    ]
+/// The arguments of `org.freedesktop.portal.Notification.AddNotification (s id, a{sv} notification)`: the id that replaces an older notice of the same app, and the
+/// title and the body of the notice.
+pub fn notification_args(app_id: &str, name: &str, version: &str) -> Vec<panpak_core::dbus::Value> {
+    use panpak_core::dbus::Value;
+    let clean = |s: &str| s.chars().filter(|c| !c.is_control()).collect::<String>();
+    let title = format!("{}: a security update is ready", clean(name));
+    let body = format!("Version {} is ready and is applied the next time {} is started. Close it and open it again to be protected now.", clean(version), clean(name));
+    let entry = |k: &str, v: String| Value::Entry(Box::new(Value::str(k)), Box::new(Value::variant(Value::Str(v))));
+    vec![Value::Str(format!("panpak-update-{app_id}")), Value::Array("{sv}".into(), vec![entry("title", title), entry("body", body)])]
 }
 
-/// Show the notice. Nothing is shown (and nothing fails) when there is no session bus or no `gdbus`.
+/// Show the notice through the notification portal, with the D-Bus client of panpak. Nothing is shown (and nothing fails) when there is no session bus or no portal.
 fn notify(app_id: &str, name: &str, version: &str) {
-    let gdbus = Path::new("/usr/bin/gdbus");
-    if !gdbus.exists() {
-        return;
-    }
-    let _ = std::process::Command::new(gdbus)
-        .args(notify_args(app_id, name, version))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    let Ok(mut conn) = panpak_core::dbus::Connection::session(std::time::Duration::from_secs(3)) else { return };
+    let _ = conn.call(
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.Notification",
+        "AddNotification",
+        notification_args(app_id, name, version),
+        vec![],
+    );
 }
 
 fn copy_runs(app_id: &str) -> bool {
@@ -87,7 +78,7 @@ fn copy_runs(app_id: &str) -> bool {
 }
 
 /// `panpak background [--force] [--after-start] [--allow-insecure-http] <app id>`.
-pub fn cmd_background(app_id: &str, force: bool, after_start: bool, allow_insecure: bool) -> Result<()> {
+pub fn cmd_background(app_id: &str, force: bool, after_start: bool, at_exit: bool, allow_insecure: bool) -> Result<()> {
     panpak_core::validate_app_id(app_id)?;
     let store = store_dir()?;
     let appdir = store.join("apps").join(app_id);
@@ -95,6 +86,14 @@ pub fn cmd_background(app_id: &str, force: bool, after_start: bool, allow_insecu
         bail_code!(ErrorCode::E2004, "{app_id} is not installed");
     }
     lower_priority();
+    if at_exit {
+        // The last copy has just ended: what it left undone, in this order. The staged update is applied (nothing is asked: a version with new permissions waits for the user), then
+        // the files found damaged are repaired (this may use the network), then the rest of the job as usual.
+        if let Err(e) = cmd_apply(app_id, false, false, true) {
+            eprintln!("panpak: {app_id}: the staged update was not applied: {}", panpak_core::err_text(&e));
+        }
+        cmd_repair_if_damaged(app_id, allow_insecure)?;
+    }
     if after_start {
         // The start of the app comes first: nothing of this competes with it. (The app may be gone when the wait ends: then there is nothing to do.)
         std::thread::sleep(std::time::Duration::from_secs(20));
@@ -216,15 +215,15 @@ fn try_repair(app_id: &str, allow_insecure: bool) -> bool {
     }
 }
 
-/// `panpak background --repair <app id>`: what the stub runs at a start when the state says files are damaged (no copy running; nothing is asked).
-pub fn cmd_repair_if_damaged(app_id: &str) -> Result<()> {
+/// The repair of files that the job found damaged, when no copy of the app runs (nothing is asked). The stub does not run it at a start: the start waits for nothing.
+pub fn cmd_repair_if_damaged(app_id: &str, allow_insecure: bool) -> Result<()> {
     panpak_core::validate_app_id(app_id)?;
     let appdir = store_dir()?.join("apps").join(app_id);
     let mut st = bgstate::read(&appdir);
     if st.damaged == 0 {
         return Ok(());
     }
-    if try_repair(app_id, false) {
+    if try_repair(app_id, allow_insecure) {
         st.damaged = 0;
         st.damaged_first.clear();
         bgstate::write(&appdir, &st)?;
@@ -238,10 +237,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_notice_quotes_what_it_shows() {
-        let a = notify_args("org.example.app", "It's \\ \n a name", "1.2");
-        assert_eq!(a[8], "panpak-update-org.example.app");
-        assert!(a[9].starts_with("{'title': <'It\\'s \\\\  a name: a security update is ready'>, 'body': <'Version 1.2 is ready"), "{}", a[9]);
-        assert!(!a[9].contains('\n'));
+    fn the_notice_has_the_shape_the_portal_wants() {
+        use panpak_core::dbus::Value;
+        let a = notification_args("org.example.app", "A\nname", "1.2");
+        let sig: String = a.iter().map(Value::signature).collect();
+        assert_eq!(sig, "sa{sv}");
+        assert_eq!(a[0], Value::str("panpak-update-org.example.app"));
+        let Value::Array(_, entries) = &a[1] else { panic!() };
+        let text = format!("{entries:?}");
+        assert!(text.contains("Aname: a security update is ready") && text.contains("Version 1.2 is ready") && !text.contains('\n'), "{text}");
     }
 }

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Work at the end of the last copy; HTTPS with an authority of the user; the notice through our D-Bus client.** The outer stub now stays while any installed app runs; when the last copy ends it starts, detached
+  at nice 19 and idle I/O, `panpak background --exit <id>`: the staged update is applied, the files found damaged are repaired (with the network), and the daily job runs if it is due. A start no longer repairs
+  anything and never waits for the network: it applies a staged update when no copy runs (the fallback), names damaged files with `panpak repair <id>` on standard error and starts the app. The notice of a security
+  update goes through the notification portal with the D-Bus client of panpak (no `gdbus`). `network.ca_file` in `config.toml` replaces the built-in authorities for downloads. `tests/exit_work.py` runs the
+  downloads over HTTPS with a test authority and a test server and checks the exit work. Not changed: the farm stays `farms/<root>` (see the PR).
 - **Step 8d: a daily background job.** The stub starts `panpak background <app id>` (detached, nice 19, idle I/O, 20 s after the start) when `apps/<id>/update-state` says it is due: it stages a new
   version when the update URL has one (the version is applied at a start with no copy running, as in 8c) with a backoff from an hour to a day after a failure, and it reads part of the installed files against
   the signed index by a budget of megabytes a day (a rotating cursor), notes damage, repairs it when no copy runs (or at the next start with none) and shows it in `panpak list` and `panpak doctor`.

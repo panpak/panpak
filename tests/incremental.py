@@ -45,7 +45,7 @@ def index(data):
     return footer, chunks
 
 
-def resign(data, version, port):
+def resign(data, version, port, scheme='http'):
     footer, _ = index(data)
     magic, ver, flags, off, ilen, moff, mlen, root = footer
     man = data[moff:moff + mlen].decode()
@@ -53,7 +53,7 @@ def resign(data, version, port):
     man = re.sub(r'^version = .*$', f'version = "{version}"', man, count=1, flags=re.M)
     man = re.sub(r'^key = .*$', f'key = "ed25519:{PUBLIC}"', man, flags=re.M)
     man = re.sub(r'^url = .*\n', '', man, flags=re.M)
-    man = man.replace('[update]', f'[update]\nurl = "http://127.0.0.1:{port}/remote.panpak"')
+    man = man.replace('[update]', f'[update]\nurl = "{scheme}://127.0.0.1:{port}/remote.panpak"')
     man = man.encode()
     return data[:moff] + man + KEY.sign(man + root) + struct.pack(
         "<8sIIQQQQ32s", magic, ver, flags, off, ilen, moff, len(man), root)

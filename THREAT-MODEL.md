@@ -219,7 +219,7 @@ then call `PermissionStore.DeletePermission` for the app and revoke its document
   The sandboxed app cannot write the store (the tree is read-only to it, and the folders outside its own are not granted). Bit rot is not guaranteed against either, except as below.
   *Built in step 8d (`PANPAK-FORMAT.md` 6.7):* the daily background job of each app also reads part of the installed files against the signed index: a budget of megabytes per day
   (`background.verify_mb`, 64 by default, 0 turns it off), going round all the files in the order of the index over the days (the cursor is in `update-state`). What it finds is noted there, shown by
-  `panpak list` and `panpak doctor`, and repaired from the chunks of the update URL when no copy of the app runs (right away, or at the next start with none). It finds silent damage; it does not
+  `panpak list` and `panpak doctor`, and repaired from the chunks of the update URL when no copy of the app runs (right away, or when the last copy ends; a start never waits for the network). It finds silent damage; it does not
   stop a program that is running as the user from changing a file after the check (or from writing `update-state`), and it is not integrity protection against such a program. Limits that remain:
   a repair from the update URL needs the URL to serve the installed version (when it has moved on, `panpak repair --from <package>` or an update is the way), and only the installed version is
   read, not `previous`.

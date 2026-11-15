@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """Test HTTP server for `panpak update`: static with Range support.
 Usage: range_server.py <dir> <port> [normal|corrupt=<off>|truncate=<off>
-    |norange|badrange|loop|drip|huge]
+    |norange|badrange|loop|drip|huge] [cert.pem:key.pem]
   normal: serves files with correct partial 206s (only if Range present,
     else whole 200).
   corrupt=<off>: flips one byte in every response covering <off>.
@@ -128,7 +128,15 @@ def main():
     ROOT = sys.argv[1]
     PORT = int(sys.argv[2])
     MODE = sys.argv[3] if len(sys.argv) > 3 else "normal"
-    http.server.ThreadingHTTPServer(("127.0.0.1", PORT), H).serve_forever()
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), H)
+    # With a fourth argument `<certificate.pem>:<key.pem>` the server speaks TLS (a test authority signs the certificate).
+    if len(sys.argv) > 4:
+        import ssl
+        cert, key = sys.argv[4].split(":")
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(cert, key)
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    server.serve_forever()
 
 
 if __name__ == "__main__":

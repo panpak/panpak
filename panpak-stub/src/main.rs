@@ -1665,20 +1665,54 @@ fn apply_staged_update(pkg: &Path) {
     }
 }
 
-/// The background work of an installed app, decided by one small file (`apps/<id>/update-state`, PANPAK-FORMAT.md 6.7). Files that the job found damaged are
-/// made right before the app starts (`panpak background --repair`: it does nothing when a copy runs or there is no way to fetch them); when the daily job is
-/// due it is started detached, at the lowest priority, and the start goes on without waiting for it. Nothing here can fail a start.
+/// The `panpak` of the store and the id of the app, when the work at the end of the last copy is to be done: an installed app, a `panpak` next to the runtime.
+fn exit_job(pkg: &Path) -> Option<(PathBuf, String)> {
+    if std::env::var_os("PANPAK_NO_BACKGROUND").is_some() {
+        return None;
+    }
+    let (id, apps) = installed_app_id(pkg)?;
+    let panpak = apps.parent()?.join("bin/panpak");
+    panpak.exists().then_some((panpak, id))
+}
+
+/// Take the exclusive lock of the copies without waiting: true when no other copy holds it. (The lock of this copy is the same open file, so it is converted.)
+fn flock_try_exclusive(lock: &File) -> bool {
+    // SAFETY: flock on a descriptor that `lock` owns.
+    unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+}
+
+/// The last copy of the app has ended: let go of the lock of the copies (the work needs it free) and start `panpak background --exit <id>`, detached, and go.
+/// The work is what the app left undone: the update that was staged is applied, files found damaged are repaired (this one may use the network), and the daily
+/// check runs if it is due. It runs at the lowest priority and never delays the end of this process.
+fn start_exit_work(lock: &File, panpak: &Path, id: &str) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: flock on a descriptor that `lock` owns.
+    unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) };
+    let mut cmd = Command::new(panpak);
+    cmd.args(["background", "--exit", id]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    // SAFETY: setsid is async-signal-safe; the job leaves the session of the app and outlives this process.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let _ = cmd.spawn();
+}
+
+/// What the state file of an installed app says at a start. Nothing here reaches the network or waits: files that the job found damaged are named (the app
+/// starts if it can; the repair is done when the last copy ends, or by `panpak repair`), and when the daily job is due it is started detached and the start goes on.
 fn background_work(pkg: &Path) {
     let Some((id, apps)) = installed_app_id(pkg) else { return };
     let appdir = apps.join(&id);
     let state = panpak_core::bgstate::read(&appdir);
+    if state.damaged > 0 {
+        eprintln!("panpak: {id}: {} file(s) do not match the signed index (for example {}); the app may not work: run `panpak repair {id}`", state.damaged, state.damaged_first);
+    }
     let Some(store) = apps.parent() else { return };
     let panpak = store.join("bin/panpak");
     if !panpak.exists() {
         return;
-    }
-    if state.damaged > 0 {
-        let _ = Command::new(&panpak).args(["background", "--repair", &id]).stdin(std::process::Stdio::null()).status();
     }
     // `PANPAK_NO_BACKGROUND` (set by the tests, and by whoever packages panpak for a machine without a network) keeps the daily job from starting.
     if state.next_check > panpak_core::bgstate::now() || std::env::var_os("PANPAK_NO_BACKGROUND").is_some() {
@@ -2046,7 +2080,7 @@ fn real_main() -> Result<()> {
         let mut store_paths = plan.ld_path.clone();
         store_paths.extend(plan.loader.clone());
         store_paths.push(PathBuf::from(cmd.get_program()));
-        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref(), early_lock: early.as_ref(), store_paths, dbus: std::cell::Cell::new(dbus_early), theme: std::cell::Cell::new(theme_query) };
+        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref(), early_lock: early.as_ref(), exit_job: exit_job(&pkg), store_paths, dbus: std::cell::Cell::new(dbus_early), theme: std::cell::Cell::new(theme_query) };
         stage("entering the view");
         enter_view(&ctx, &mut cmd)?;
     }
@@ -2084,6 +2118,8 @@ struct ViewStart<'a> {
     runtime_dir: Option<&'a Path>,
     /// The shared lock taken at the start of an installed app (see `start_lock`).
     early_lock: Option<&'a File>,
+    /// The work to do when the last copy of the app ends: the `panpak` of the store and the app id (None for a package that is not installed, or when `PANPAK_NO_BACKGROUND` is set).
+    exit_job: Option<(PathBuf, String)>,
     /// What the inner stub and the app read from the store: library folders and the loader.
     store_paths: Vec<PathBuf>,
     /// The D-Bus layer, being built on another thread since the package was verified (see `dbus_layer`).
@@ -2301,20 +2337,31 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     }
     let fd = view::job_memfd(&job)?;
     let plan = view::ViewPlan { fd, ..plan };
-    // The lock of the shared folders must outlive bwrap, so the outer stub stays whenever there is one.
+    let exit = ctx.exit_job.clone();
+    let exit_lock = ctx.early_lock.and_then(|f| f.try_clone().ok());
+    // The lock of the shared folders must outlive bwrap, so the outer stub stays whenever there is one, and whenever there is work for the end.
     match (opener_server, shared, dbus, wayland) {
-        (None, None, None, None) => match view::exec_bwrap(&plan)? {},
+        (None, None, None, None) if exit.is_none() => match view::exec_bwrap(&plan)? {},
         (server, shared, dbus, wayland) => match view::run_bwrap(&plan, (server, shared, dbus, wayland), move |(_, shared, _, _), clean| {
             // The last copy to end looks for the lock files it left (see `Shared::ended`). The cost is at exit, not at start.
+            let mut last = None;
             if let Some(s) = shared {
                 let t0 = std::time::Instant::now();
                 let roots: Vec<&Path> = end_roots.iter().map(PathBuf::as_path).collect();
-                let (gone, last) = s.ended(clean, &roots);
+                let (gone, l) = s.ended(clean, &roots);
                 for g in &gone {
                     eprintln!("panpak: removed a stale lock file at exit: {}", g.display());
                 }
                 if panpak_core::debug_enabled() {
-                    eprintln!("panpak: debug: exit: {} the last copy, stale lock search {:.2} ms, {} removed", if last { "is" } else { "is not" }, t0.elapsed().as_secs_f64() * 1000.0, gone.len());
+                    eprintln!("panpak: debug: exit: {} the last copy, stale lock search {:.2} ms, {} removed", if l { "is" } else { "is not" }, t0.elapsed().as_secs_f64() * 1000.0, gone.len());
+                }
+                last = Some(l);
+            }
+            // The lock of the copies tells whether any other copy is alive: it is ours alone when the exclusive lock can be taken.
+            if let (Some((panpak, id)), Some(lock)) = (exit.as_ref(), exit_lock.as_ref()) {
+                let alone = last.unwrap_or_else(|| flock_try_exclusive(lock));
+                if alone {
+                    start_exit_work(lock, panpak, id);
                 }
             }
         })? {},
