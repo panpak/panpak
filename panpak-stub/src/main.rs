@@ -263,11 +263,13 @@ struct FileJob<'a> {
 }
 
 struct Made {
-    /// The files that were written now (not only linked): the ones whose data must be made durable.
+    /// The large files, written in place in the tree: their data is made durable with the tree (the small ones go through the blobs).
     fresh: Vec<PathBuf>,
     decode: std::time::Duration,
     write: std::time::Duration,
     threads: usize,
+    /// How many blobs were written now (the others of the tree were in the store).
+    blobs_written: usize,
 }
 
 /// How many threads make the files of a tree and sync them: the cores, at most 8 (the work is decoding, which uses a core each, and system
@@ -314,10 +316,30 @@ fn blob_matches(blob: &Path, chunks: &[Chunk], ids: &[u32]) -> bool {
     matches!(f.read(&mut extra), Ok(0))
 }
 
+/// The work folders that starts which were killed left in `blobs/` (`.work-<pid>-<time>`): the ones whose process is gone are removed. A folder whose
+/// process still runs (an install at the same time) is left alone, and so is one whose number a later process has taken: that only costs space until
+/// that process ends.
+fn remove_stale_work_dirs(blobs: &Path) {
+    let Ok(rd) = fs::read_dir(blobs) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(rest) = name.strip_prefix(".work-") else { continue };
+        let Some(pid) = rest.split('-').next().and_then(|p| p.parse::<i32>().ok()) else { continue };
+        if pid == std::process::id() as i32 {
+            continue;
+        }
+        // SAFETY: kill(2) with signal 0 only asks whether the process exists.
+        let gone = unsafe { libc::kill(pid, 0) } == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if gone {
+            let _ = remove_partial_tree(&e.path());
+        }
+    }
+}
+
 /// One piece of work for the threads that make the files.
 enum Work {
-    /// A file whose blob is made or linked by one thread.
-    Small(usize),
+    /// A blob that is not in `blobs/` (or is there but is not what the index says): decoded and written into the work folder.
+    Blob(usize),
     /// Chunks `from..to` of a large file, written at `off` (the file was made and sized beforehand): its chunks are decoded and written by
     /// several threads at once.
     Part { job: usize, from: usize, to: usize, off: u64 },
@@ -326,14 +348,24 @@ enum Work {
 /// The chunks of a large file that one piece of work takes.
 const PART_CHUNKS: usize = 16;
 
+/// Make the files of a tree.
+///
+/// **A blob is visible in `blobs/` only when it is on disk.** The blobs that this tree needs and the store does not have are written into a work
+/// folder of this start (`blobs/.work-<pid>-<time>/`), the kernel is asked to write each back as it is written, and when all are written they are
+/// synced (several at a time), moved into `blobs/` by rename, and `blobs/` is synced. So a blob that is in `blobs/` is a blob that was complete
+/// and written back when it got its name, whenever and by whichever start: another start links it without syncing it again, and no rule that
+/// depends on the clock is needed. Only then are the files of the tree linked to their blobs.
 fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: &Path, check_blobs: bool) -> Result<Made> {
     use std::os::unix::fs::FileExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    // Large files first (they are the long pieces), then the small ones.
+    let total_of = |job: &FileJob| -> u64 { job.ids.iter().map(|&id| chunks[id as usize].raw as u64).sum() };
+    // The work: large files by parts (they are the long pieces, first), then the blobs that have to be made, one per name.
     let mut work: Vec<Work> = Vec::new();
     let mut large: Vec<usize> = Vec::new();
+    let mut names: Vec<Option<String>> = vec![None; jobs.len()];
+    let mut first_of: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (i, job) in jobs.iter().enumerate() {
-        let total: u64 = job.ids.iter().map(|&id| chunks[id as usize].raw as u64).sum();
+        let total = total_of(job);
         if total > MAX_ASSEMBLE {
             let f = File::create(&job.dst)?;
             f.set_len(total)?;
@@ -343,22 +375,31 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
                 off += group.iter().map(|&id| chunks[id as usize].raw as u64).sum::<u64>();
             }
             large.push(i);
+        } else {
+            names[i] = Some(blob_name(chunks, job.ids, job.mode));
         }
     }
-    for (i, job) in jobs.iter().enumerate() {
-        let total: u64 = job.ids.iter().map(|&id| chunks[id as usize].raw as u64).sum();
-        if total <= MAX_ASSEMBLE {
-            work.push(Work::Small(i));
+    for (i, name) in names.iter().enumerate() {
+        if let Some(name) = name {
+            if first_of.insert(name.clone()) {
+                work.push(Work::Blob(i));
+            }
         }
     }
+    remove_stale_work_dirs(blobs);
+    let work_dir = blobs.join(format!(".work-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
+    fs::create_dir(&work_dir).with_context(|| format!("make {}", work_dir.display()))?;
+
     let next = AtomicUsize::new(0);
+    // The files of the tree that were linked already, while the other threads were still decoding (a blob that is in `blobs/` is linked at once).
+    let linked: Vec<std::sync::atomic::AtomicBool> = (0..jobs.len()).map(|_| std::sync::atomic::AtomicBool::new(false)).collect();
     let failed: std::sync::Mutex<Option<anyhow::Error>> = std::sync::Mutex::new(None);
     let threads = work_threads().min(work.len().max(1));
-    let results: std::sync::Mutex<Vec<(Vec<PathBuf>, std::time::Duration, std::time::Duration)>> = std::sync::Mutex::new(Vec::new());
+    let results: std::sync::Mutex<Vec<(Vec<String>, std::time::Duration, std::time::Duration)>> = std::sync::Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         for _ in 0..threads {
             scope.spawn(|| {
-                let mut fresh = Vec::new();
+                let mut written: Vec<String> = Vec::new();
                 let (mut t_decode, mut t_write) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
                 let run = (|| -> Result<()> {
                     let mut dec = ChunkDecoder::new()?;
@@ -387,33 +428,24 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
                                 panpak_core::durable::start_writeback(&out);
                                 continue;
                             }
-                            Work::Small(i) => *i,
+                            Work::Blob(i) => *i,
                         };
                         let job = &jobs[i];
-                        let blob = blobs.join(blob_name(chunks, job.ids, job.mode));
+                        let name = names[i].as_deref().unwrap_or_default();
+                        let blob = blobs.join(name);
                         let t = std::time::Instant::now();
-                        let mut existing = fs::symlink_metadata(&blob).ok();
-                        if existing.is_some() && check_blobs && !blob_matches(&blob, chunks, job.ids) {
-                            // An update or a repair: a blob that is not what the signed index says is not used. It is taken out of the store (the
-                            // other trees that hold it keep their copy of the inode, which `repair` of those apps finds) and made again below.
-                            fs::remove_file(&blob)?;
-                            existing = None;
-                        }
-                        if let Some(m) = existing {
-                            ensure_blob_readonly(&blob)?;
-                            // A blob that was changed a moment ago may belong to a start that has not synced it yet (two installs at once):
-                            // its data is made durable here too, so that this tree never names data that is not on disk.
-                            let recent = {
-                                use std::os::unix::fs::MetadataExt;
-                                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-                                now - m.ctime() < 30
-                            };
-                            link_or_copy(&blob, &job.dst, None, job.mode)?;
-                            t_write += t.elapsed();
-                            if recent {
-                                fresh.push(job.dst.clone());
+                        if fs::symlink_metadata(&blob).is_ok() {
+                            // In `blobs/`, so on disk. An update or a repair does not take it on trust: a blob that is not what the signed index says is
+                            // taken out of the store (the other trees that hold it keep their copy of the inode, which `repair` of those apps finds)
+                            // and made again below.
+                            if !check_blobs || blob_matches(&blob, chunks, job.ids) {
+                                ensure_blob_readonly(&blob)?;
+                                link_or_copy(&blob, &job.dst, None, job.mode)?;
+                                linked[i].store(true, Ordering::Relaxed);
+                                t_write += t.elapsed();
+                                continue;
                             }
-                            continue;
+                            fs::remove_file(&blob)?;
                         }
                         buf.clear();
                         for &id in job.ids {
@@ -421,18 +453,15 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
                         }
                         t_decode += t.elapsed();
                         let t = std::time::Instant::now();
-                        // Another tree (another lock), or another thread of this one, may be writing the same blob: a name of its own.
-                        let btmp = blob.with_extension(format!("part{}-{i}", std::process::id()));
-                        let mut out = File::create(&btmp)?;
+                        let path = work_dir.join(name);
+                        let mut out = File::create(&path)?;
                         out.write_all(&buf)?;
                         panpak_core::durable::start_writeback(&out);
                         drop(out);
                         // Shared blob: never writable (defense in depth).
-                        fs::set_permissions(&btmp, fs::Permissions::from_mode(job.mode & !0o222))?;
-                        let _ = fs::rename(&btmp, &blob); // Identical content wins.
-                        link_or_copy(&blob, &job.dst, Some(&buf), job.mode)?;
+                        fs::set_permissions(&path, fs::Permissions::from_mode(job.mode & !0o222))?;
+                        written.push(name.to_string());
                         t_write += t.elapsed();
-                        fresh.push(job.dst.clone());
                     }
                 })();
                 if let Err(e) = run {
@@ -441,7 +470,7 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
                     }
                 }
                 if let Ok(mut r) = results.lock() {
-                    r.push((fresh, t_decode, t_write));
+                    r.push((written, t_decode, t_write));
                 }
             });
         }
@@ -449,12 +478,45 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
     if let Some(e) = failed.into_inner().ok().flatten() {
         return Err(e);
     }
-    let mut made = Made { fresh: Vec::new(), decode: std::time::Duration::ZERO, write: std::time::Duration::ZERO, threads };
-    for (f, d, w) in results.into_inner().unwrap_or_default() {
-        made.fresh.extend(f);
+    let mut made = Made { fresh: Vec::new(), decode: std::time::Duration::ZERO, write: std::time::Duration::ZERO, threads, blobs_written: 0 };
+    let mut written: Vec<String> = Vec::new();
+    for (w, d, t) in results.into_inner().unwrap_or_default() {
+        written.extend(w);
         made.decode += d;
-        made.write += w;
+        made.write += t;
     }
+    made.blobs_written = written.len();
+    // Publish the blobs: on disk first, then named.
+    let t = std::time::Instant::now();
+    if !written.is_empty() {
+        let in_work: Vec<PathBuf> = written.iter().map(|n| work_dir.join(n)).collect();
+        panpak_core::durable::fsync_files(&in_work, sync_threads())?;
+        par_each(&written, work_threads(), &|n: &String| {
+            let dst = blobs.join(n);
+            if fs::symlink_metadata(&dst).is_ok() {
+                // Another start named it meanwhile: that one is on disk (it was synced before it was named), this copy goes.
+                let _ = fs::remove_file(work_dir.join(n));
+                Ok(())
+            } else {
+                fs::rename(work_dir.join(n), &dst).with_context(|| format!("name the blob {n}"))
+            }
+        })?;
+        panpak_core::durable::fsync_dir(blobs)?;
+    }
+    fs::remove_dir(&work_dir).with_context(|| format!("remove {}", work_dir.display()))?;
+    // The rest of the files of the tree, linked to their blobs (every one of them is in `blobs/` now).
+    par_each(&(0..jobs.len()).collect::<Vec<_>>(), work_threads(), &|&i: &usize| {
+        let Some(name) = names[i].as_deref() else { return Ok(()) };
+        if linked[i].load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let job = &jobs[i];
+        let blob = blobs.join(name);
+        ensure_blob_readonly(&blob)?;
+        link_or_copy(&blob, &job.dst, None, job.mode)
+    })?;
+    made.write += t.elapsed();
+    // The large files were written in place: their data is made durable with the tree.
     for i in large {
         fs::set_permissions(&jobs[i].dst, fs::Permissions::from_mode(jobs[i].mode))?;
         made.fresh.push(jobs[i].dst.clone());
@@ -593,8 +655,8 @@ fn materialize_from(
         ensure!(fs::symlink_metadata(&job.dst).is_err(), "path already exists");
     }
     // Pass 1b: the files, on every core. A file whose blob is already in the store is only linked: the blob is named by the hashes of its
-    // chunks, which the index gives, so nothing of it is decoded or written. The others are decoded, written (the kernel is asked to start
-    // writing them back at once) and linked; their paths are kept for the sync below.
+    // chunks, which the index gives, so nothing of it is decoded or written. The others are decoded and written into a work folder, made durable,
+    // and only then named in `blobs/` (see `make_files`).
     let t_folders = t_pass1.elapsed();
     let t_files_pass = std::time::Instant::now();
     let made = make_files(src, chunks, &jobs, &blobs, check_blobs)?;
@@ -698,13 +760,13 @@ fn materialize_from(
     panpak_core::durable::fsync_dir(&store.join("trees"))?;
     if panpak_core::debug_enabled() {
         eprintln!(
-            "panpak: debug: folders {:.0} ms, files {:.0} ms (wall), links {:.0} ms; tree made in {:.0} ms ({} threads, {} of {} files only linked): decode {:.0} ms, write {:.0} ms (cpu time of all threads), links and times {:.0} ms, fsync {:.0} ms (files {:.0}, blobs folder {:.0}, tree folders {:.0})",
+            "panpak: debug: folders {:.0} ms, files {:.0} ms (wall), links {:.0} ms; tree made in {:.0} ms ({} threads, {} blobs written for {} files): decode {:.0} ms, write {:.0} ms (cpu time of all threads), links and times {:.0} ms, fsync {:.0} ms (files {:.0}, blobs folder {:.0}, tree folders {:.0})",
             t_folders.as_secs_f64() * 1000.0,
             t_files_wall.as_secs_f64() * 1000.0,
             t_links_only.as_secs_f64() * 1000.0,
             t_start.elapsed().as_secs_f64() * 1000.0,
             made.threads,
-            jobs.len() - durable.len(),
+            made.blobs_written,
             jobs.len(),
             t_decode.as_secs_f64() * 1000.0,
             t_write.as_secs_f64() * 1000.0,

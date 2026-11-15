@@ -11,11 +11,11 @@ Measured on one machine (Ubuntu, kernel 7.0, ext4 on LVM, 16 cores, release bina
 |---|---|
 | package (compressed, zstd, FastCDC chunks) | 53 MB |
 | tree of files in the store (hard links to `blobs/`) | 133 MB |
-| first install, from nothing | 0.46 to 0.6 s |
-| second GTK app (Ghostty) after it, 77% of the files already there | 0.28 to 0.30 s |
+| first install, from nothing | 0.44 to 0.48 s |
+| second GTK app (Ghostty) after it, 77% of the files already there | 0.24 to 0.31 s (median 0.29 s) |
 | a start (`--version` of the app, warm) | 23 ms |
 
-Of the 0.29 to 0.6 s of an install, the decoding and writing of the files are the smaller part: the rest is making 938 folders, the links, and
+Of the 0.3 to 0.5 s of an install, the decoding and writing of the files are the smaller part: the rest is making 938 folders, the links, and
 the `fsync`s that keep a power loss from leaving a link to something that is not on disk (PANPAK-FORMAT.md 6.2). A mounted image has none of that: one file is written
 and synced. That is the whole attraction.
 
@@ -52,7 +52,7 @@ path, the memory of the FUSE process (one per mounted app, resident while it run
 
 ## 4. What would be gained
 
-- **Install**: from 0.3 to 0.6 s down to the time of one write and one `fsync` of an image of 41 MB (about 0.1 s, not measured as an install). The folders, the links and the
+- **Install**: from 0.3 to 0.5 s down to the time of one write and one `fsync` of an image of 41 MB (about 0.1 s, not measured as an install). The folders, the links and the
   thousands of `fsync`s go away.
 - **Disk**: the compressed image is a third of the tree (41 MB against 133 MB for Text Editor). Shared files between apps would be shared only by an object store under it (composefs), not by squashfs;
   the hard links of identical files that the tree already has are worth more than the compression for the GTK apps that share libraries (measured in 8a: 219 MB stored for three apps whose trees sum to 380 MB).
@@ -76,7 +76,11 @@ path, the memory of the FUSE process (one per mounted app, resident while it run
 
 Not now. The one way that needs no privileges (FUSE) is slower on every read, adds a process and a failure mode per app, and gives no integrity that a tree does not give;
 the way that would give integrity (composefs with fs-verity) needs a file system feature that the default installs do not have and a privileged mount that
-a user cannot do. What the install costs today, after step 8a, is 0.3 to 0.6 s and it is spent on work that an image would also need at some point (writing the data).
+a user cannot do. What the install costs today, after step 8a, is 0.3 to 0.5 s and it is spent on work that an image would also need at some point (writing the data).
+
+To reconsider after the beta: **`systemd-mountfsd`** (mounting signed images without privileges). It needs an image signed with a key that the machine trusts and a recent systemd, so
+it does not fit today; if a distribution or Panpak itself gets a trusted signing path for images, the whole question changes (an erofs image with dm-verity, mounted for the user, with no FUSE process
+and the kernel checking every read). Not tested here.
 
 Two things in this study are worth keeping:
 

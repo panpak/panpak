@@ -656,8 +656,11 @@ to showing the key fingerprint (no trust assumed).
 One rule: **a link is made only after everything it leads to is written back to the disk.** The links are `trees/<root>` (published by a rename of
 `trees/<root>.partial`), `apps/<id>/current` and `previous`, and the record in `packages/`. The runtime makes a version durable in this order:
 
-1. the files of the tree: the data of every file written now (the kernel is asked to start the writeback of each as it is written, and an `fsync`
-   of each follows), and the folder `blobs/`;
+1. the blobs that the tree needs and `blobs/` does not have are written into a work folder of this start (`blobs/.work-<pid>-<time>/`), the kernel is asked
+   to write each back as it is written, and when all are written each is synced (several at a time), then renamed into `blobs/`, then `blobs/` is synced.
+   **A blob is visible in `blobs/` only when it is on disk**: whoever finds a blob there, at any time, may link it without syncing it again. A start
+   that is killed leaves its work folder, which the next start removes when its process is gone. The large files, which are written in place in the tree,
+   are synced with it;
 2. every folder of the tree (their entries are the hard links and links of the tree) and the mark `.complete`;
 3. the rename of `<root>.partial` to `<root>`, then `fsync` of `trees/`;
 4. the record: written to a temporary file, `fsync`, rename, `fsync` of `packages/`;
@@ -665,8 +668,7 @@ One rule: **a link is made only after everything it leads to is written back to 
 
 It never uses `syncfs`, which writes the data of every program on the file system. The `fsync`s are on the files and folders of Panpak only,
 and run on several threads, since syncs that wait for the disk together share the wait: on ext4, 938 folders took 4.4 s one after the other and
-15 to 78 ms on 16 threads; 2,233 files took 0.25 s. Blobs that are already in the store are not synced again, unless one was changed in the last
-30 seconds (it may belong to an install that is still running). A tree that a crash left half made is `<root>.partial`, never `<root>`, and the
+15 to 78 ms on 16 threads; 2,233 files took 0.25 s (on this machine, one thread). Blobs that are already in `blobs/` are not synced again, and no rule depends on the clock. A tree that a crash left half made is `<root>.partial`, never `<root>`, and the
 next start that needs it removes it (also when it was already read-only) and makes it again.
 
 ### 6.3 The record of an installed version [NORMATIVE]

@@ -10,8 +10,10 @@
   files (the reused blobs are checked against the index); `rollback` checks that the files of the previous version are there. Made durable in an order that keeps a link from
   being on disk before what it leads to (6.2): `fsync` of exactly the files and folders of Panpak, on several threads (no `syncfs`); folders one after the other took 4.4 s,
   on 16 threads 15 to 78 ms. The tree is made on up to 8 threads, large files by parts, and a file whose blob is in the store (named by its chunk hashes) is only linked.
-  Measured (ext4, this machine, 40 runs of each): Text Editor first install 0.46 to 0.6 s (the first version of this code, with a sync after every folder: 4 s); Ghostty
-  installed second, with 77% of its 2,491 files already in the store: 0.28 to 0.30 s; `install` used to take 0.08 s and leave the work to the first start (0.6 s). A tree that a killed start
+  A blob is visible in `blobs/` only when it is on disk (written into a work folder, synced, then renamed, then `blobs/` synced), so a blob that is there is linked by any later install
+  without a new sync and with no rule that depends on the clock; `tests/blob_visibility.py` kills the start between the writing and the naming (with `strace`, no hook in the program).
+  Measured (ext4, this machine, 40 runs of each): Text Editor first install 0.44 to 0.48 s, median 0.46 s (the first version of this code, with a sync after every folder: 4 s); Ghostty
+  installed second, with 77% of its 2,491 files already in the store: 0.24 to 0.31 s, median 0.29 s, 8 runs of 10 under 0.3 s; `install` used to take 0.08 s and leave the work to the first start (0.6 s). A tree that a killed start
   left read-only in `<root>.partial` could not be removed and stopped the next start: found by the interruption test, fixed. `panpak remove` also takes `<root>.lock` and `<root>.partial`.
   Tests: `tests/store_flow.py`, `tests/interrupt_8a.py` (install and update killed at 148 moments), unit tests of the stub and the core. The garbage collection of old trees, blobs and
   cache entries is step 8e.
