@@ -31,7 +31,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -173,20 +173,21 @@ fn fetch_chunks(staging: &Path, needed: &[panpak_core::Chunk], index_off: u64, f
     Ok((todo.len() as u64, bytes_in))
 }
 
-fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, allow_insecure: bool, timeout_secs: u64) -> Result<PathBuf> {
+fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, allow_insecure: bool, timeout_secs: u64, stage_only: bool) -> Result<PathBuf> {
     panpak_core::validate_app_id(app_id)?;
     remove::recover();
     let store = store_dir()?;
     // The lock of the app is held while the installed state is read and changed, and let go while the chunks come (it can take a while, and a start,
     // `remove` or another command may want the app): after the download the state is read again and must be the one that this update started from.
-    let first_lock = panpak_core::applock::lock(&store, app_id)?;
+    let mut first_lock = Some(panpak_core::applock::lock(&store, app_id)?);
     let appdir = store.join("apps").join(app_id);
     // Refuse before downloading if the launcher cannot be replaced.
     let launcher = dirs::home_dir().context("no home dir")?.join(".local/bin").join(app_id);
     check_replaceable(&launcher, "launcher", &|s| launcher_is_ours(s, app_id))?;
     let pin =
         fs::read_to_string(appdir.join("pinned-key")).context("app not installed (missing pin)")?;
-    let pin = pin.trim().to_string();
+    // The first line (a second one only exists for a moment while a key is being replaced).
+    let pin = pin.lines().next().unwrap_or_default().trim().to_string();
     let current_link = appdir.join("current");
     let current_pkg = fs::read_link(&current_link).context("missing current: reinstall")?;
     // The installed version is its record (the signed index and manifest) and its tree.
@@ -208,15 +209,12 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
         toml::from_str(std::str::from_utf8(&man_b).context("non-UTF-8 manifest")?)?;
     panpak_core::validate_manifest(&man)?;
     // The key MUST be the pin OR a succession signed by the pin.
-    // The pin only updates on verified atomic install (below).
+    // The pin only changes when the version is applied (`cmd_apply` checks the succession again).
     let new_key = man.update.as_ref().context("manifest without [update].key")?.key.trim().to_string();
-    let mut rotated_to: Option<String> = None;
     if new_key != pin {
         let u = man.update.as_ref().unwrap();
         panpak_core::verify_rotation(&pin, &new_key, u.rotation_old.as_deref(), u.rotation_sig.as_deref())
             .context("key differs from the pin and succession invalid")?;
-        println!("key rotation accepted: pin updated to {new_key}");
-        rotated_to = Some(new_key.clone());
     }
     ensure!(man.app.id == app_id, "remote id differs from the installed app");
     let (sig_b, sig_total) = http_range(&agent, &url, ft.man_off + ft.man_len, ft.man_off + ft.man_len + 63)?;
@@ -251,91 +249,222 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
         "the files of the installed version are missing from the store: run `panpak repair {app_id}` first"
     );
     check_glibc(&man)?;
-    // New permissions need a yes before anything is downloaded (current stays on a no).
-    print_isolation(&man);
+    // This version may already be staged (a background check, or an update that waited for a copy of the app to end): then nothing is downloaded.
+    // The same version is the same record, byte for byte (two versions can have one root: the root is the hash of the files, not of the manifest).
+    let root_hex_check = panpak_core::hex(&ft.root);
+    let want_record = panpak_core::record::record_bytes(&index_comp, &man_b, &sig_b, ft.root);
+    let already_staged = panpak_core::pending::staged_record(&appdir).and_then(|r| fs::read(r).ok()).is_some_and(|b| b == want_record)
+        && store.join("trees").join(&root_hex_check).join(".complete").exists();
     let added = panpak_core::permissions::added(&old_man, &man);
-    accept_new_permissions(&added, yes, accept_new, "update")?;
-
-    // What has to be downloaded: the chunks that the installed version does not have.
-    let have: std::collections::HashSet<([u8; 32], u32)> = old_chunks0.iter().map(|c| (c.hash, c.raw)).collect();
-    let needed: Vec<panpak_core::Chunk> = chunks.iter().filter(|c| !have.contains(&(c.hash, c.raw))).cloned().collect();
-    let n_reused = (chunks.len() - needed.len()) as u64;
-    let staging = store.join("staging").join(app_id).join(&root_hex);
-    drop(first_lock);
-    let (n_fetched, fetched_bytes) = fetch_chunks(&staging, &needed, ft.index_off, &mut |start, end| {
-        let (bytes, range_total) = http_range(&agent, &url, start, end - 1)?;
-        ensure!(range_total == total, "file changed during download");
-        Ok(bytes)
-    })?;
-    let downloaded = 80 + man_b.len() as u64 + sig_b.len() as u64 + index_comp.len() as u64 + fetched_bytes;
-    panpak_core::failpoint!("update.chunks_fetched");
-    let _app_lock = panpak_core::applock::lock(&store, app_id)?;
-    ensure!(
-        fs::read_link(&current_link).ok().as_deref() == Some(current_pkg.as_path()),
-        "the app changed while the update was downloaded (another panpak command ran): run `panpak update {app_id}` again; what was downloaded is kept"
-    );
-
-    // The record of the new version, then the tree and the resolution, then the links.
-    let packages = store.join("packages");
-    fs::create_dir_all(&packages)?;
-    let dest = packages.join(panpak_core::record::record_name(app_id, &man.app.version, &root_hex));
-    ensure!(dest.starts_with(&packages), "path outside the store");
-    let record = panpak_core::record::record_bytes(&index_comp, &man_b, &sig_b, ft.root);
-    panpak_core::durable::write_file(&dest, &record, 0o644)?;
-    panpak_core::failpoint!("update.record_written");
-    let stub_for_prepare = stable_stub_link(&store)?;
-    let staging_arg = staging.clone();
-    if let Err(e) = run_prepare(
-        &stub_for_prepare,
-        &[dest.as_os_str(), "--chunks".as_ref(), staging_arg.as_os_str(), "--from-record".as_ref(), current_pkg.as_os_str()],
-    ) {
-        // The record is not named by any link yet: it goes, and so does what was downloaded (a chunk that came damaged would be found there
-        // again by the next try; the stub checks every chunk against its hash only now).
-        let _ = fs::remove_file(&dest);
+    let (mut n_reused, mut n_fetched, mut downloaded) = (0u64, 0u64, 0u64);
+    if already_staged {
+        println!("version {} of {app_id} is already staged", man.app.version);
+    } else {
+        check_glibc(&man)?;
+        // New permissions need a yes before anything is downloaded (current stays on a no). A staging for later (`--stage`: the background job, with no
+        // one to ask) downloads and prepares all the same and leaves the question to whoever applies it.
+        print_isolation(&man);
+        if !stage_only {
+            accept_new_permissions(&added, yes, accept_new, "update")?;
+        }
+        // What has to be downloaded: the chunks that the installed version does not have.
+        let have: std::collections::HashSet<([u8; 32], u32)> = old_chunks0.iter().map(|c| (c.hash, c.raw)).collect();
+        let needed: Vec<panpak_core::Chunk> = chunks.iter().filter(|c| !have.contains(&(c.hash, c.raw))).cloned().collect();
+        n_reused = (chunks.len() - needed.len()) as u64;
+        let staging = store.join("staging").join(app_id).join(&root_hex);
+        drop(first_lock.take());
+        let (nf, fetched_bytes) = fetch_chunks(&staging, &needed, ft.index_off, &mut |start, end| {
+            let (bytes, range_total) = http_range(&agent, &url, start, end - 1)?;
+            ensure!(range_total == total, "file changed during download");
+            Ok(bytes)
+        })?;
+        n_fetched = nf;
+        downloaded = 80 + man_b.len() as u64 + sig_b.len() as u64 + index_comp.len() as u64 + fetched_bytes;
+        panpak_core::failpoint!("update.chunks_fetched");
+        let _app_lock = panpak_core::applock::lock(&store, app_id)?;
+        ensure!(
+            fs::read_link(&current_link).ok().as_deref() == Some(current_pkg.as_path()),
+            "the app changed while the update was downloaded (another panpak command ran): run `panpak update {app_id}` again; what was downloaded is kept"
+        );
+        // The record of the new version, then the tree and the resolution, then the link that stages it.
+        let packages = store.join("packages");
+        fs::create_dir_all(&packages)?;
+        let dest = packages.join(panpak_core::record::record_name(app_id, &man.app.version, &root_hex));
+        ensure!(dest.starts_with(&packages), "path outside the store");
+        let record = panpak_core::record::record_bytes(&index_comp, &man_b, &sig_b, ft.root);
+        panpak_core::durable::write_file(&dest, &record, 0o644)?;
+        panpak_core::failpoint!("stage.record_written");
+        let stub_for_prepare = stable_stub_link(&store)?;
+        if let Err(e) = run_prepare(
+            &stub_for_prepare,
+            &[dest.as_os_str(), "--chunks".as_ref(), staging.as_os_str(), "--from-record".as_ref(), current_pkg.as_os_str()],
+        ) {
+            // The record is not named by any link yet: it goes, and so does what was downloaded (a chunk that came damaged would be found there
+            // again by the next try; the stub checks every chunk against its hash only now).
+            let _ = fs::remove_file(&dest);
+            let _ = fs::remove_dir_all(store.join("staging").join(app_id));
+            // If the installed files themselves are damaged, say so: that is `repair`, not another update.
+            let (installed_idx, installed_entries) = panpak_core::parse_index(&old_raw)?;
+            let (bad, _) = verify_tree(&old_tree, &installed_idx, &installed_entries);
+            if !bad.is_empty() {
+                bail_code!(ErrorCode::E2007, "the files of the installed version are damaged ({} file(s) do not match the signed index, for example {}): run `panpak repair {app_id}`, then update again", bad.len(), bad[0].display());
+            }
+            return Err(e);
+        }
+        panpak_core::failpoint!("stage.prepared");
+        // The icons of the new version, from its tree, are checked before anything is staged.
+        let new_tree = store.join("trees").join(&root_hex);
+        let new_icons = icons::read_from_tree(&new_tree, &man)?;
+        icons::check_destinations(app_id, &new_icons)?;
+        // Staged: the state first, then the link (the link is what an apply looks for).
+        panpak_core::pending::write_state(&appdir, panpak_core::pending::State { needs_accept: stage_only && !added.is_empty() })?;
+        panpak_core::durable::replace_symlink(&dest, &panpak_core::pending::link_path(&appdir))?;
+        panpak_core::failpoint!("stage.pending_linked");
         let _ = fs::remove_dir_all(store.join("staging").join(app_id));
-        // If the installed files themselves are damaged, say so: that is `repair`, not another update.
-        let (installed_idx, installed_entries) = panpak_core::parse_index(&old_raw)?;
-        let (bad, _) = verify_tree(&old_tree, &installed_idx, &installed_entries);
-        if !bad.is_empty() {
-            bail_code!(ErrorCode::E2007, "the files of the installed version are damaged ({} file(s) do not match the signed index, for example {}): run `panpak repair {app_id}`, then update again", bad.len(), bad[0].display());
+    }
+    if stage_only {
+        if added.is_empty() {
+            println!("staged {app_id} {} -> {} (reused chunks {n_reused}, fetched chunks {n_fetched}); it is applied at the next start of the app when no copy runs, or by `panpak apply {app_id}`", old_man.app.version, man.app.version);
+        } else {
+            println!("staged {app_id} {} -> {}: it asks for permissions that {} does not have; it waits for you: `panpak update --accept-new-permissions {app_id}`", old_man.app.version, man.app.version, old_man.app.version);
+        }
+        return panpak_core::pending::staged_record(&appdir).context("the staged version is gone");
+    }
+    drop(first_lock.take());
+    match cmd_apply(app_id, yes, accept_new, false)? {
+        Applied::Done { dest, best_abi } => {
+            println!("updated {app_id}: {} -> {} (reused chunks {n_reused}, fetched chunks {n_fetched}, runtime {best_abi})", old_man.app.version, man.app.version);
+            println!("downloaded bytes: {downloaded}");
+            Ok(dest)
+        }
+        Applied::Skipped(why) => {
+            println!("{app_id} {} is staged and not applied yet: {why}", man.app.version);
+            panpak_core::pending::staged_record(&appdir).context("the staged version is gone")
+        }
+    }
+}
+
+/// What `apply` did.
+enum Applied {
+    Done { dest: PathBuf, best_abi: u32 },
+    /// Nothing was changed; the reason is the answer to "why not now".
+    Skipped(String),
+}
+
+/// `panpak apply [--yes] [--accept-new-permissions] <app-id>`: move `current` to the staged version. The stub runs it at the start of an app that has one
+/// (`at_start`: it asks nothing, waits for nothing, and when a copy runs or the version asks for new permissions it leaves it for later).
+fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool) -> Result<Applied> {
+    panpak_core::validate_app_id(app_id)?;
+    let store = store_dir()?;
+    let appdir = store.join("apps").join(app_id);
+    let skip = |why: &str| -> Result<Applied> { Ok(Applied::Skipped(why.to_string())) };
+    if panpak_core::pending::staged_record(&appdir).is_none() {
+        return skip("no update is staged");
+    }
+    // At a start nobody is asked to wait: another command on the app means "later".
+    let lock = if at_start { panpak_core::applock::lock_for(&store, app_id, std::time::Duration::from_millis(300)) } else { panpak_core::applock::lock(&store, app_id) };
+    let _app_lock = match lock {
+        Ok(l) => l,
+        Err(e) if at_start && panpak_core::code_of(&e, ErrorCode::E2000) == ErrorCode::E2008 => return skip("another panpak command is working on the app"),
+        Err(e) => return Err(e),
+    };
+    let Some(staged) = panpak_core::pending::staged_record(&appdir) else { return skip("no update is staged") };
+    let state = panpak_core::pending::read_state(&appdir);
+    let current_link = appdir.join("current");
+    let current_rec = fs::read_link(&current_link).context("missing current: reinstall")?;
+    let old = panpak_core::record::open_verified(&current_rec).context("unreadable record of the installed version")?;
+    let new = match panpak_core::record::open_verified(&staged) {
+        Ok(n) if n.is_record => n,
+        _ => {
+            panpak_core::pending::clear(&appdir)?;
+            return skip("the staged record is not usable; it was taken away: run `panpak update` again");
+        }
+    };
+    let new_root = panpak_core::hex(&new.footer.root);
+    // The same record as the installed one (not only the same files: a new version can have the same root).
+    if fs::read(&staged).ok() == fs::read(&current_rec).ok() {
+        panpak_core::pending::clear(&appdir)?;
+        return skip("the staged version is the installed one");
+    }
+    if !store.join("trees").join(&new_root).join(".complete").exists() {
+        panpak_core::pending::clear(&appdir)?;
+        return skip("the files of the staged version are missing; it was taken away: run `panpak update` again");
+    }
+    ensure!(new.manifest.app.id == app_id, "the staged record is of another app");
+    let old_man = &old.manifest;
+    let man = &new.manifest;
+    // The key of the staged version is the pin or a succession that the pin signed: checked again here, not trusted from the staging.
+    let pin_text = fs::read_to_string(appdir.join("pinned-key")).context("app not installed (missing pin)")?;
+    let pin = pin_text.lines().next().unwrap_or_default().trim().to_string();
+    let new_key = man.update.as_ref().context("manifest without [update].key")?.key.trim().to_string();
+    let mut rotated_to: Option<String> = None;
+    if new_key != pin {
+        let u = man.update.as_ref().unwrap();
+        panpak_core::verify_rotation(&pin, &new_key, u.rotation_old.as_deref(), u.rotation_sig.as_deref()).context("key differs from the pin and succession invalid")?;
+        rotated_to = Some(new_key.clone());
+    }
+    let added = panpak_core::permissions::added(old_man, man);
+    if !added.is_empty() {
+        if at_start {
+            return skip("it asks for permissions that the installed version does not have, and only you can accept them: `panpak update --accept-new-permissions`");
+        }
+        print_isolation(man);
+        accept_new_permissions(&added, yes, accept_new, "update")?;
+    } else if state.is_some_and(|s| s.needs_accept) && at_start {
+        // It asked for permissions when it was staged, and no longer does (the installed version changed meanwhile): nothing to wait for.
+    }
+    let launcher = dirs::home_dir().context("no home dir")?.join(".local/bin").join(app_id);
+    if let Err(e) = check_replaceable(&launcher, "launcher", &|s| launcher_is_ours(s, app_id)) {
+        if at_start {
+            return skip(&format!("{e:#}"));
         }
         return Err(e);
     }
-    panpak_core::failpoint!("update.prepared");
-    // The icons of the new version, from its tree, are checked before anything is published.
-    let new_tree = store.join("trees").join(&root_hex);
-    let new_icons = icons::read_from_tree(&new_tree, &man)?;
+    // No copy of the app may be running: two versions of one app must not run at once.
+    let _copies = match remove::lock_no_copies(app_id, "the update") {
+        Ok(l) => l,
+        Err(e) if panpak_core::code_of(&e, ErrorCode::E2000) == ErrorCode::E2002 => {
+            return skip("a copy of the app is running; it is applied at the next start when none is")
+        }
+        Err(e) => return Err(e),
+    };
+    let new_tree = store.join("trees").join(&new_root);
+    let new_icons = icons::read_from_tree(&new_tree, man)?;
     icons::check_destinations(app_id, &new_icons)?;
 
-    // Atomic switch + previous for rollback + indirection launcher.
-    // The rotated pin is written here: verified but not yet published.
-    if let Some(k) = rotated_to {
-        panpak_core::durable::write_file(&appdir.join("pinned-key"), format!("{k}\n").as_bytes(), 0o644)?;
+    // A key that is being replaced is in the pin file with the old one for the time between the two links, so that a stop at any point leaves a start that
+    // works (the stub accepts either line).
+    let pin_file = appdir.join("pinned-key");
+    if let Some(k) = &rotated_to {
+        panpak_core::durable::write_file(&pin_file, format!("{pin}\n{k}\n").as_bytes(), 0o644)?;
+        panpak_core::failpoint!("apply.pin_both");
     }
-    if fs::symlink_metadata(&current_link).is_ok() {
-        let prev_target = fs::read_link(&current_link)?;
-        panpak_core::durable::replace_symlink(&prev_target, &appdir.join("previous"))?;
+    panpak_core::durable::replace_symlink(&current_rec, &appdir.join("previous"))?;
+    panpak_core::failpoint!("apply.previous_linked");
+    panpak_core::durable::replace_symlink(&staged, &current_link)?;
+    panpak_core::failpoint!("apply.current_linked");
+    if let Some(k) = &rotated_to {
+        panpak_core::durable::write_file(&pin_file, format!("{k}\n").as_bytes(), 0o644)?;
+        eprintln!("panpak: key rotation accepted for {app_id}: pin updated to {k}");
     }
-    panpak_core::failpoint!("update.previous_linked");
-    panpak_core::durable::replace_symlink(&dest, &current_link)?;
-    panpak_core::failpoint!("update.current_linked");
-    let _ = fs::remove_dir_all(store.join("staging").join(app_id));
+    panpak_core::pending::clear(&appdir)?;
+    panpak_core::failpoint!("apply.pending_removed");
     let (best_abi, _) = best_runtime(&store)?;
     let stub = stable_stub_link(&store)?;
     ensure_stable_panpak(&store)?;
     write_replacing(&launcher, &dsk::launcher_sh(app_id, &stub, &current_link)?, 0o755, "launcher", &|s| launcher_is_ours(s, app_id))?;
     // The user folders and the URL schemes of the new version.
-    let (xdg_found, xdg_problems) = resolve_xdg_dirs(&man);
+    let (xdg_found, xdg_problems) = resolve_xdg_dirs(man);
     print_xdg_dirs(&xdg_found, &xdg_problems);
     write_xdg_pin(&appdir, &xdg_found)?;
     let desktop = desktop_path(app_id)?;
-    let schemes = manifest_schemes(&man);
-    let mimes = manifest_mime_types(&man);
+    let schemes = manifest_schemes(man);
+    let mimes = manifest_mime_types(man);
     if desktop.exists() || legacy_desktop_path(app_id)?.exists() || !schemes.is_empty() || !mimes.is_empty() {
         fs::create_dir_all(desktop.parent().unwrap())?;
         icons::install(app_id, &new_icons)?;
-        let twin = twin_state(&man);
-        let text = entry_text(&store, app_id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(&man), !new_icons.is_empty(), twin)?;
+        let twin = twin_state(man);
+        let text = entry_text(&store, app_id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(man), !new_icons.is_empty(), twin)?;
         let before = fs::read_to_string(&desktop).ok();
         write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
         note_stale_menu(before.as_deref(), &text);
@@ -344,10 +473,10 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
             refresh_desktop_database(desktop.parent().unwrap());
         }
     }
-    println!("updated {app_id}: {} -> {} (reused chunks {n_reused}, fetched chunks {n_fetched}, runtime {best_abi})",
-        old_man.app.version, man.app.version);
-    println!("downloaded bytes: {downloaded}");
-    Ok(dest)
+    if at_start {
+        eprintln!("panpak: {app_id} updated from {} to {} (it was staged)", old_man.app.version, man.app.version);
+    }
+    Ok(Applied::Done { dest: staged, best_abi })
 }
 
 /// Run `panpak-stub prepare <args>` (the stub of the installed runtime): it makes the tree and the resolution of a version, with the code that a
@@ -2488,7 +2617,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     let mut new_pin = false;
     if pin.exists() {
         let old = fs::read_to_string(&pin)?;
-        ensure_code!(old.trim() == key.trim(), ErrorCode::E1004, "key DIFFERS from TOFU pin: possible attack or changed author; manual reinstall required");
+        ensure_code!(old.lines().any(|l| l.trim() == key.trim()), ErrorCode::E1004, "key DIFFERS from TOFU pin: possible attack or changed author; manual reinstall required");
         print_isolation(&man);
         print_xdg_dirs(&xdg_found, &xdg_problems);
         // Installing over an installed app is an update: new permissions need a yes.
@@ -2983,7 +3112,7 @@ fn generic_code(sub: Option<&str>) -> ErrorCode {
         Some("pack" | "convert" | "dump-index" | "dump-manifest" | "dbus-rules") => ErrorCode::E0000,
         Some("keygen" | "release" | "install-runtime") => ErrorCode::E1000,
         Some("init" | "build") => ErrorCode::E6000,
-        Some("install" | "rollback" | "repair" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove" | "inspect" | "permissions") => ErrorCode::E2000,
+        Some("install" | "rollback" | "repair" | "apply" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove" | "inspect" | "permissions") => ErrorCode::E2000,
         Some("update") => ErrorCode::E4000,
         _ => ErrorCode::E5000,
     }
@@ -3341,6 +3470,7 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             let mut yes = false;
             let mut accept_new = false;
             let mut allow = false;
+            let mut stage = false;
             let mut insecure = false;
             let mut timeout = 30u64;
             let mut id = None;
@@ -3359,6 +3489,10 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                         allow = true;
                         i += 1;
                     }
+                    "--stage" => {
+                        stage = true;
+                        i += 1;
+                    }
                     "--allow-insecure-http" => {
                         insecure = true;
                         i += 1;
@@ -3375,7 +3509,28 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
                     }
                 }
             }
-            cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, yes, accept_new, allow, insecure, timeout)?;
+            cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, yes, accept_new, allow, insecure, timeout, stage)?;
+            Ok(())
+        }
+        Some("apply") => {
+            let (mut yes, mut accept_new, mut at_start, mut id) = (false, false, false, None);
+            for a in &args[2..] {
+                match a.as_str() {
+                    "--yes" => yes = true,
+                    "--accept-new-permissions" => accept_new = true,
+                    "--at-start" => at_start = true,
+                    x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    x => id = Some(x),
+                }
+            }
+            match cmd_apply(id.ok_or_else(|| coded(ErrorCode::E5002, "apply <app-id>"))?, yes, accept_new, at_start)? {
+                Applied::Done { .. } => {}
+                Applied::Skipped(why) => {
+                    if !at_start {
+                        println!("nothing applied: {why}");
+                    }
+                }
+            }
             Ok(())
         }
         Some("dbus-rules") => {

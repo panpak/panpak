@@ -3,7 +3,7 @@
 """Every command stopped at every named point (`panpak_core::failpoint!`, compiled only in a test build), and the store is whole afterwards.
 
 The points are read from the sources, so a point that is added is run without a change here. For each point and each command in which it can be hit
-(`install`, `update`, `rollback`, `repair`), the command is stopped there (`abort`, as a kill: no destructor runs), and then:
+(`install`, `update`, `update --stage`, the start that applies a staged update, an update that replaces the key, `rollback`, `repair`), the command is stopped there (`abort`, as a kill: no destructor runs), and then:
 
 - the app is not installed, or `current` names a record whose tree is complete and whose app starts, and `previous` too if it exists
   (for `repair`: the tree is whole or the start says PANPAK-E2007 and `panpak repair`);
@@ -43,8 +43,11 @@ def points():
 
 def commands_for(name):
     kind = name.split('.')[0]
+    if name == 'apply.pin_both':
+        return ['rotate']
     return {'install': ['install'], 'update': ['update'], 'rollback': ['rollback'], 'repair': ['repair'],
-            'prepare': ['install', 'update', 'repair'], 'durable': ['install', 'update']}[kind]
+            'stage': ['update', 'stage'], 'apply': ['update', 'apply_start'],
+            'prepare': ['install', 'update', 'stage', 'repair'], 'durable': ['install', 'update', 'stage']}[kind]
 
 
 def run(args, env, ok=True, timeout=120):
@@ -121,6 +124,26 @@ def doctor_ok(env):
     assert 'verified package: org.example.incremental' in d.stdout and 'PANPAK-E2007' not in d.stdout, d.stdout
 
 
+def pack_rotated(tmp, env, port):
+    """Version 2 signed by a second key, with the proof of the first one that the second may take its place."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    sk2 = bytes([42]) * 32
+    pub2 = Ed25519PrivateKey.from_private_bytes(sk2).public_key().public_bytes_raw().hex()
+    (tmp / 'secret2.key').write_text(sk2.hex() + '\n')
+    (tmp / 'secret2.key').chmod(0o600)
+    tree = tmp / 'tree-rotated'
+    tree.mkdir()
+    (tree / 'hello').write_text('#!/bin/sh\necho "version 2"\n')
+    (tree / 'hello').chmod(0o755)
+    (tree / 'panpak.toml').write_text(f'[app]\nid="{ID}"\nname="Test"\nversion="1.1"\nentry="hello"\n[update]\nkey="ed25519:{pub2}"\nurl="http://127.0.0.1:{port}/remote.panpak"\n')
+    rng = random.Random(5)
+    for i in range(FILES):
+        (tree / f'payload{i}').write_bytes(rng.randbytes(120_000))
+    out = tmp / 'packed-rotated.panpak'
+    run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', tmp / 'secret2.key', '--rotate-from-file', tmp / 'secret.key', '-o', out], env)
+    return out.read_bytes(), pub2
+
+
 def main():
     if not (BIN / 'panpak').exists():
         sys.exit(f'no failpoint build in {BIN}: see the top of this file')
@@ -145,7 +168,9 @@ def main():
         serve = tmp / 'serve'
         serve.mkdir()
         (serve / 'remote.panpak').write_bytes(v1)
+        vr, pub2 = pack_rotated(tmp, base, port)
         lab = Lab(tmp, env, port, v1, v2)
+        stub = BIN / 'panpak-stub'
         server = subprocess.Popen([sys.executable, ROOT / 'tests/range_server.py', serve, str(port), 'normal'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         hit = {n: [] for n in names}
         try:
@@ -180,6 +205,39 @@ def main():
                             whole(store, e, {'version 1', 'version 2'})
                             run([BIN / 'panpak', 'rollback', ID], e)
                         assert whole(store, e, {'version 1', 'version 2'}) in ('version 1', 'version 2')
+                    elif cmd == 'stage':
+                        (serve / 'remote.panpak').write_bytes(v2)
+                        lab.install_v1(e)
+                        args = [BIN / 'panpak', 'update', '--stage', '--allow-insecure-http', '--timeout', '5', ID]
+                        p = run(args, dict(e, **fp), ok=False)
+                        fired = f'failpoint {name}' in p.stderr
+                        if fired:
+                            whole(store, e, {'version 1', 'version 2'})  # a start applies what is staged
+                            run(args, e)
+                        assert whole(store, e, {'version 1', 'version 2'}) in ('version 1', 'version 2')
+                        assert run([stub, 'run', store / 'apps' / ID / 'current'], e).stdout.strip() == 'version 2', f'{name}: the staged update was not applied at a start'
+                    elif cmd == 'apply_start':
+                        (serve / 'remote.panpak').write_bytes(v2)
+                        lab.install_v1(e)
+                        run([BIN / 'panpak', 'update', '--stage', '--allow-insecure-http', '--timeout', '5', ID], e)
+                        p = run([stub, 'run', store / 'apps' / ID / 'current'], dict(e, **fp), ok=False)
+                        fired = f'failpoint {name}' in p.stderr
+                        if fired:
+                            whole(store, e, {'version 1', 'version 2'})
+                        assert run([stub, 'run', store / 'apps' / ID / 'current'], e).stdout.strip() == 'version 2', f'{name}: the staged update was not applied'
+                        assert whole(store, e, {'version 2'}) == 'version 2'
+                    elif cmd == 'rotate':
+                        (serve / 'remote.panpak').write_bytes(vr)
+                        lab.install_v1(e)
+                        args = [BIN / 'panpak', 'update', '--allow-insecure-http', '--timeout', '5', ID]
+                        p = run(args, dict(e, **fp), ok=False)
+                        fired = f'failpoint {name}' in p.stderr
+                        if fired:
+                            whole(store, e, {'version 1', 'version 2'})
+                            run(args, e)
+                        assert whole(store, e, {'version 2'}) == 'version 2', f'{name}: the update that replaces the key did not finish'
+                        pin = (store / 'apps' / ID / 'pinned-key').read_text().split()
+                        assert pin == [f'ed25519:{pub2}'], pin
                     else:  # repair
                         (serve / 'remote.panpak').write_bytes(v1)
                         lab.install_v1(e)

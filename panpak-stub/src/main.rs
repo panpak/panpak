@@ -1641,6 +1641,30 @@ fn installed_app_id(pkg: &Path) -> Option<(String, PathBuf)> {
     Some((id.to_string(), apps.to_path_buf()))
 }
 
+/// An update that was staged (`panpak update --stage`) is applied at the start of the app, before anything of the version is read: `panpak apply --at-start`
+/// moves `current` when no copy of the app runs and the version asks for nothing new; in any other case it leaves it for later. Costs one `lstat` when nothing
+/// is staged, and nothing when what is staged waits for the user (the state file says so). A failure only means that this start runs the installed version.
+fn apply_staged_update(pkg: &Path) {
+    let Some((id, apps)) = installed_app_id(pkg) else { return };
+    let appdir = apps.join(&id);
+    if fs::symlink_metadata(panpak_core::pending::link_path(&appdir)).is_err() {
+        return;
+    }
+    if panpak_core::pending::read_state(&appdir).is_some_and(|s| s.needs_accept) {
+        return;
+    }
+    let Some(store) = apps.parent() else { return };
+    let panpak = store.join("bin/panpak");
+    if !panpak.exists() {
+        return;
+    }
+    match Command::new(&panpak).args(["apply", "--at-start", &id]).stdin(std::process::Stdio::null()).status() {
+        Ok(st) if st.success() => {}
+        Ok(st) => eprintln!("panpak: the staged update of {id} was not applied ({st}); this start runs the installed version"),
+        Err(e) => eprintln!("panpak: cannot run {}: {e}", panpak.display()),
+    }
+}
+
 /// Take the shared lock of the copies of an installed app, then check that the app is still installed.
 /// `None` when the path is not that of an installed app or there is no runtime folder.
 fn start_lock(pkg: &Path) -> Result<Option<File>> {
@@ -1764,6 +1788,9 @@ fn real_main() -> Result<()> {
     };
     // Before anything of the app is read from the store: the shared lock of the copies. `panpak remove` holds the
     // exclusive one while it takes the app away, so a start in that moment waits and then finds the app gone.
+    if installed_mode {
+        apply_staged_update(&pkg);
+    }
     let early = if installed_mode { start_lock(&pkg)? } else { None };
     // `--panpak-licenses` (a stub flag, like --panpak-open): print the
     // embedded license texts of the verified package and exit.
@@ -1826,8 +1853,9 @@ fn real_main() -> Result<()> {
         let pinned = fs::read_to_string(&pin_path).context(
             "app not installed (no TOFU pin): use `panpak install`",
         )?;
+        // One key, or two for the moment in which an update replaces the key (`panpak apply`): either is the pin.
         ensure_code!(
-            pinned.trim() == key.trim(),
+            pinned.lines().any(|l| l.trim() == key.trim()),
             ErrorCode::E1004,
             "key differs from TOFU pin: unauthorized update, reinstall"
         );

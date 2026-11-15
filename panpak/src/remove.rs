@@ -134,6 +134,8 @@ struct Facts {
     has_launcher: bool,
     has_desktop: bool,
     has_icon: bool,
+    /// An update that is staged: its version, and whether it waits for the user (it asks for permissions that the installed version does not have).
+    pending: Option<(String, bool)>,
 }
 
 impl Facts {
@@ -203,6 +205,7 @@ impl Ctx {
             cache_bytes: None,
             perms: None,
             has_launcher: false,
+            pending: None,
             has_desktop: false,
             has_icon: false,
         };
@@ -216,6 +219,17 @@ impl Ctx {
             if st.kind != Kind::Dir {
                 f.problems.push("its store folder is a link or a file".into());
             } else if let Ok(d) = apps.open_dir(OsStr::new(id)) {
+                if let Ok(Some(l)) = d.lstat(OsStr::new(panpak_core::pending::LINK)) {
+                    if l.kind == Kind::Link {
+                        let target = d.read_link(OsStr::new(panpak_core::pending::LINK)).ok().and_then(|t| std::path::Path::new(&t).file_name().map(|n| n.to_string_lossy().into_owned()));
+                        let waits = read_text(&d, OsStr::new(panpak_core::pending::STATE)).is_some_and(|t| t.lines().any(|l| l.trim() == "needs_accept=1"));
+                        if let (Some(t), Some(p)) = (target, self.packages.as_ref()) {
+                            if let Some(i) = read_pkg(p, OsStr::new(&t)) {
+                                f.pending = Some((i.version, waits));
+                            }
+                        }
+                    }
+                }
                 match d.lstat(OsStr::new("current")) {
                     Ok(Some(c)) if c.kind == Kind::Link => {
                         current_pkg = d.read_link(OsStr::new("current")).ok().and_then(|t| std::path::Path::new(&t).file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -311,7 +325,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
             let opt = |v: Option<u64>| v.map_or("null".to_string(), |n| n.to_string());
             let strs = |v: &[String]| format!("[{}]", v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(","));
             out.push_str(&format!(
-                "\n  {{\"id\":{},\"name\":{},\"version\":{},\"status\":{},\"problems\":{},\"package_bytes\":{},\"tree_bytes\":{},\"data_bytes\":{},\"cache_bytes\":{},\"permissions\":{},\"packages\":{}}}",
+                "\n  {{\"id\":{},\"name\":{},\"version\":{},\"status\":{},\"problems\":{},\"package_bytes\":{},\"tree_bytes\":{},\"data_bytes\":{},\"cache_bytes\":{},\"permissions\":{},\"pending\":{},\"packages\":{}}}",
                 json_str(&f.id),
                 f.name.as_deref().map_or("null".into(), json_str),
                 f.version.as_deref().map_or("null".into(), json_str),
@@ -322,6 +336,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
                 opt(f.data_bytes),
                 opt(f.cache_bytes),
                 f.perms.as_deref().map_or("null".to_string(), panpak_core::permissions::items_json),
+                f.pending.as_ref().map_or("null".to_string(), |(v, w)| format!("{{\"version\":{},\"waits_for_you\":{}}}", json_str(v), w)),
                 strs(&f.packages),
             ));
         }
@@ -336,7 +351,14 @@ pub fn cmd_list(json: bool) -> Result<()> {
     let rows: Vec<[String; 7]> = facts
         .iter()
         .map(|f| {
-            let status = if f.problems.is_empty() { f.status().to_string() } else { format!("{}: {}", f.status(), f.problems.join(", ")) };
+            let mut status = if f.problems.is_empty() { f.status().to_string() } else { format!("{}: {}", f.status(), f.problems.join(", ")) };
+            if let Some((v, waits)) = &f.pending {
+                if *waits {
+                    status.push_str(&format!(" (update {v} waits for you: `panpak update --accept-new-permissions {}`)", f.id));
+                } else {
+                    status.push_str(&format!(" (update {v} is ready: applied at the next start)"));
+                }
+            }
             let data = f.data_bytes.unwrap_or(0) + f.cache_bytes.unwrap_or(0);
             [
                 clean(&f.id),

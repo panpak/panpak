@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Step 8c: an update can be staged and is applied at the next start.** `panpak update --stage <app id>` downloads the missing chunks, writes the record and makes the tree and the resolution, and names the record
+  with `apps/<id>/pending`; `current` does not move. `panpak apply <app id>` (and the update that `panpak update` makes when the user is there) moves `current` after checking again the signature, the pin
+  (a key succession is written as two lines in `pinned-key` for the time of the switch) and the tree, only when no copy of the app runs, and only when the version asks for no new permission that the user has not
+  accepted. The stub runs `panpak apply --at-start` at the start of an app that has a staged update (one `lstat` when none). A version that asks for new permissions is prepared and waits for the user;
+  `panpak list` shows `update <v> is ready` or `waits for you`. `panpak update` while a copy runs stages and says so instead of failing. New test points `stage.*` and `apply.*` (29 points, 66 stops in `tests/failpoints.py`,
+  with the start that applies and an update that replaces the key); `tests/store_flow.py` covers a staged update with a running copy and one that waits for permissions. PANPAK-FORMAT.md 6.6; THREAT-MODEL.md.
 - **Step 8b: locks, test points, and the order of the writes.** One lock per app (`<store>/locks/<id>.lock`) for `install`, `update`, `rollback`, `repair` and `remove`: two never change an app at once,
   a command waits for the other up to 60 s (`PANPAK-E2008`); `update` lets the lock go while the chunks come and checks `current` again before it publishes. 26 named test points
   (`panpak_core::failpoint!`, only in a build with the feature `failpoints`; `PANPAK_FAILPOINT=<name>` stops the process there with `abort`): `tests/failpoints.py` stops every command at every point

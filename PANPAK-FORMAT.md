@@ -619,6 +619,7 @@ Reference-implementation layout (paths under
   staging/<id>/<root>/   # the chunks of an update that is being downloaded, one file per chunk
   apps/<id>/current -> ../../packages/<record>
   apps/<id>/previous -> ...   # a record again, for rollback
+  apps/<id>/pending -> ...    # a staged update (§6.6), with apps/<id>/pending-state
   apps/<id>/pinned-key      # TOFU pin of the update key
   apps/<id>/update.url      # update URL (if declared)
   apps/<id>/xdg-dirs        # user folders fixed at install (§3.1.4)
@@ -720,6 +721,26 @@ A test build (the feature `failpoints` of `panpak-core`, `panpak` and `panpak-st
 (or `<name>:<n>` for the n-th hit) is set, the process stops there with `abort`, as a kill does. `tests/failpoints.py` stops every command at every point that the sources name and
 checks that the store is whole and that the command run again finishes. A release build has none of this: the macro is empty, and CI
 (`scripts/check-no-failpoints.sh`) fails if a release binary holds a name of a point, the message or the name of the variable.
+
+### 6.6 A staged update and its application [NORMATIVE for the order and the checks; the mechanism is INFORMATIVE]
+
+`panpak update --stage <app id>` does everything of an update except the last step: it checks the remote version as `update` does (the signature against the
+pin or a succession that the pin signed, the id, the runtime, the glibc, a version that is not older), downloads the chunks the installed version does not have into
+`staging/<id>/<root>/`, writes the record, makes the tree and the resolution (`panpak-stub prepare`), and then names the record with the link
+`apps/<id>/pending` (after `pending-state`, which holds `needs_accept=1` when the version asks for permissions that the installed one does not have). `current` is
+not changed, so a running copy and a start see the installed version until the staged one is applied. A version that is already staged is not downloaded again.
+
+`panpak apply <app id>` (and the update that `panpak update` makes when the user is there) moves `current` to the staged version, in this order, under the lock of the app (6.4):
+
+1. the staged record is opened and verified again (signature, root of the index); its tree must be complete; if it is the installed version, or its files are gone, the link is taken away and nothing else is done;
+2. the key of the staged version is the pin or a succession that the pin signed (checked again here, not trusted from the staging); a key that replaces the pin is written to `pinned-key` as two lines (the old key, the new) so that a stop between the next steps leaves a start that works (the stub accepts either line);
+3. **new permissions**: when the staged version asks for permissions that the installed one does not have, it is applied only when the user accepts them (`--accept-new-permissions`, or an answer at a terminal); the stub never applies such a version;
+4. the exclusive lock of the copies of the app is tried: **no copy of the app may be running** (two versions of one app never run at once); if one is, the update stays staged;
+5. `previous` is made to name the installed record, then `current` the staged one (each link written as a temporary link and renamed, then synced), the pin is written with the new key alone, `pending` and its state are removed, then the launcher, the entry, the icons and the pinned user folders of the new version are written.
+
+At the start of an installed app the stub looks for `apps/<id>/pending` (one `lstat`) and, when it is there and does not wait for the user, runs `panpak apply --at-start <id>`: it takes the locks without
+waiting, applies and says so on standard error, or leaves the update for later (a copy runs, another command is working on the app, new permissions) and the start goes on with the installed version.
+`panpak list` shows a staged update: `update <v> is ready: applied at the next start`, or `update <v> waits for you: ...`.
 
 ## 7. ABI resolution (`[abi]`) [NORMATIVE]
 

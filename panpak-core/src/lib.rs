@@ -19,6 +19,7 @@ pub mod record;
 pub mod messages;
 pub mod startfiles;
 pub mod permissions;
+pub mod pending;
 pub mod pkgenv;
 mod errors;
 mod layout;

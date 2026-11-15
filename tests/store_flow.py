@@ -5,6 +5,7 @@ the record is never a package; the files of an installed version are checked by 
 tree from the old files and the missing chunks; `rollback` and `remove` follow. Real binaries (build the release first), an isolated store,
 and a local server with Range support for the update URL.
 """
+import fcntl
 import os
 from pathlib import Path
 import shutil
@@ -34,15 +35,15 @@ def run(args, env, ok=True, timeout=60):
     return p
 
 
-def pack(tmp, env, version):
+def pack(tmp, env, version, extra=''):
     tree = tmp / f'tree{version}'
     tree.mkdir()
     (tree / 'hello').write_text(f'#!/bin/sh\necho "version {version}"\n')
     (tree / 'hello').chmod(0o755)
-    (tree / 'panpak.toml').write_text(f'[app]\nid="{ID}"\nname="Test"\nversion="{version}"\nentry="hello"\n[update]\nkey="ed25519:{PUBLIC}"\n')
+    (tree / 'panpak.toml').write_text(f'[app]\nid="{ID}"\nname="Test"\nversion="{version}"\nentry="hello"\n{extra}[update]\nkey="ed25519:{PUBLIC}"\n')
     for i in range(10):
-        # Distinct files; version 2 changes two of them.
-        n = 50 + i if (version == '2' and i in (2, 8)) else i
+        # Distinct files; version 2 changes two of them, 3 and 4 one more each.
+        n = 50 + i if (version == '2' and i in (2, 8)) or (version in ('3', '4') and i in (2, 8, 5)) else i
         (tree / f'payload{i}').write_bytes(bytes([n]) * 180000)
     out = tmp / f'packed{version}.panpak'
     run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', tmp / 'secret.key', '-o', out], env)
@@ -66,6 +67,8 @@ def main():
         sock.close()
         v1 = resign(pack(tmp, env, '1'), '1.0', port)
         v2 = resign(pack(tmp, env, '2'), '1.1', port)
+        v3 = resign(pack(tmp, env, '3'), '1.2', port)
+        v4 = resign(pack(tmp, env, '4', '[permissions]\nnetwork = true\n'), '1.3', port)
         (tmp / 'v1.panpak').write_bytes(v1)
         serve = tmp / 'serve'
         serve.mkdir()
@@ -190,6 +193,42 @@ def main():
             assert 'PANPAK-E2007' in e.stderr, e.stderr
             gone.rename(store / 'trees' / root1)
             print('update builds the tree from the old files and the missing chunks; rollback follows PASS')
+            # 5b. an update staged for later: nothing changes until the app starts with no copy running.
+            def lsout():
+                return run([BIN / 'panpak', 'list'], env).stdout
+            (serve / 'remote.panpak').write_bytes(v3)
+            r = run([BIN / 'panpak', 'update', '--stage', '--allow-insecure-http', '--timeout', '5', ID], env)
+            assert 'staged' in r.stdout and 'applied at the next start' in r.stdout, r.stdout
+            appdir = store / 'apps' / ID
+            cur2 = (appdir / 'current').readlink()
+            assert (appdir / 'pending').is_symlink() and (appdir / 'current').readlink() == cur2, 'staging does not change current'
+            assert 'update 1.2 is ready' in lsout(), lsout()
+            # A copy of the app is running (the shared lock that the copies hold): the start does not apply it.
+            copies = runtime / 'panpak' / ID
+            copies.mkdir(parents=True, exist_ok=True)
+            copies.chmod(0o700)
+            with open(copies / 'lock', 'a') as copy:
+                fcntl.flock(copy, fcntl.LOCK_SH)
+                out = run([stub, 'run', appdir / 'current'], env)
+                assert out.stdout.strip() == 'version 2' and (appdir / 'pending').is_symlink(), 'a copy runs: the update waits'
+            out = run([stub, 'run', appdir / 'current'], env)
+            assert out.stdout.strip() == 'version 3', out.stdout + out.stderr
+            assert not (appdir / 'pending').exists() and not (appdir / 'pending-state').exists() and (appdir / 'previous').readlink() == cur2
+            assert 'is ready' not in lsout()
+            assert 'ABI cache hit' in out.stderr, 'the staged version was made ready: the first start of it is a hit'
+            # A version that asks for permissions the installed one does not have waits for the user.
+            (serve / 'remote.panpak').write_bytes(v4)
+            r = run([BIN / 'panpak', 'update', '--stage', '--allow-insecure-http', '--timeout', '5', ID], env)
+            assert 'waits for you' in r.stdout, r.stdout
+            cur3 = (appdir / 'current').readlink()
+            assert run([stub, 'run', appdir / 'current'], env).stdout.strip() == 'version 3', 'it is not applied at a start'
+            assert (appdir / 'current').readlink() == cur3 and 'waits for you' in lsout(), lsout()
+            r = run([BIN / 'panpak', 'apply', ID], env, ok=False)  # asks, and there is no terminal and no yes
+            assert (appdir / 'current').readlink() == cur3, r.stdout + r.stderr
+            r = run([BIN / 'panpak', 'update', '--accept-new-permissions', '--allow-insecure-http', '--timeout', '5', ID], env)
+            assert 'already staged' in r.stdout and 'updated' in r.stdout, r.stdout
+            assert run([stub, 'run', appdir / 'current'], env).stdout.strip() == 'version 4'
+            print('an update staged for later: applied at the first start with no copy running; one that asks for new permissions waits for the user PASS')
         finally:
             server.terminate()
             server.wait(timeout=5)
