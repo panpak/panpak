@@ -672,6 +672,11 @@ pub fn cmd_remove(id: &str, purge: bool, yes: bool) -> Result<()> {
         Err(e) => return Err(coded(ErrorCode::E2002, format!("cannot take the lock of {id}: {e}"))),
     };
 
+    // And no other command of panpak is changing this app (the store may not exist: then there is nothing to change and nothing to lock).
+    let _app_lock = match dirs::data_dir().map(|d| d.join("panpak")).filter(|d| d.is_dir()) {
+        Some(store) => Some(panpak_core::applock::lock(&store, id)?),
+        None => None,
+    };
     test_pause();
     let ids = ctx.app_ids();
     let facts = ctx.facts(id, &ids);

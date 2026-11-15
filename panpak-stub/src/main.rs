@@ -488,9 +488,11 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
     made.blobs_written = written.len();
     // Publish the blobs: on disk first, then named.
     let t = std::time::Instant::now();
+    panpak_core::failpoint!("prepare.blobs_written");
     if !written.is_empty() {
         let in_work: Vec<PathBuf> = written.iter().map(|n| work_dir.join(n)).collect();
         panpak_core::durable::fsync_files(&in_work, sync_threads())?;
+        panpak_core::failpoint!("prepare.blobs_synced");
         par_each(&written, work_threads(), &|n: &String| {
             let dst = blobs.join(n);
             if fs::symlink_metadata(&dst).is_ok() {
@@ -501,6 +503,7 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
                 fs::rename(work_dir.join(n), &dst).with_context(|| format!("name the blob {n}"))
             }
         })?;
+        panpak_core::failpoint!("prepare.blobs_named");
         panpak_core::durable::fsync_dir(blobs)?;
     }
     fs::remove_dir(&work_dir).with_context(|| format!("remove {}", work_dir.display()))?;
@@ -516,6 +519,7 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
         link_or_copy(&blob, &job.dst, None, job.mode)
     })?;
     made.write += t.elapsed();
+    panpak_core::failpoint!("prepare.files_linked");
     // The large files were written in place: their data is made durable with the tree.
     for i in large {
         fs::set_permissions(&jobs[i].dst, fs::Permissions::from_mode(jobs[i].mode))?;
@@ -654,6 +658,7 @@ fn materialize_from(
     for job in &jobs {
         ensure!(fs::symlink_metadata(&job.dst).is_err(), "path already exists");
     }
+    panpak_core::failpoint!("prepare.folders_made");
     // Pass 1b: the files, on every core. A file whose blob is already in the store is only linked: the blob is named by the hashes of its
     // chunks, which the index gives, so nothing of it is decoded or written. The others are decoded and written into a work folder, made durable,
     // and only then named in `blobs/` (see `make_files`).
@@ -745,6 +750,7 @@ fn materialize_from(
     let mut all: Vec<PathBuf> = made_dirs.iter().cloned().collect();
     all.extend(entries.iter().filter(|e| !matches!(e.kind, Kind::Dir)).map(|e| e.path.clone()));
     finalize_tree(&tmp, &all)?;
+    panpak_core::failpoint!("prepare.tree_complete");
     let t_meta = t_links.elapsed();
     let t_sync = std::time::Instant::now();
     // Everything is made; now it is made durable, files first (each was asked to start its writeback as it was written, so the
@@ -756,7 +762,9 @@ fn materialize_from(
     let t_blobs = t_sync.elapsed();
     fsync_tree_dirs(&tmp)?;
     let t_dirs = t_sync.elapsed();
+    panpak_core::failpoint!("prepare.tree_synced");
     fs::rename(&tmp, &tree)?;
+    panpak_core::failpoint!("prepare.tree_renamed");
     panpak_core::durable::fsync_dir(&store.join("trees"))?;
     if panpak_core::debug_enabled() {
         eprintln!(
@@ -1708,6 +1716,7 @@ fn cmd_prepare(args: &[String]) -> Result<()> {
     // The resolution, for the tree just made: the farm and its cache entry.
     let plan = resolution::resolve(&store, &pkg, &hex(&ft.root), &tree, &man)?;
     drop(plan);
+    panpak_core::failpoint!("prepare.resolution_done");
     stage("resolution done");
     Ok(())
 }

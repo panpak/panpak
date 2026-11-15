@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Step 8b: locks, test points, and the order of the writes.** One lock per app (`<store>/locks/<id>.lock`) for `install`, `update`, `rollback`, `repair` and `remove`: two never change an app at once,
+  a command waits for the other up to 60 s (`PANPAK-E2008`); `update` lets the lock go while the chunks come and checks `current` again before it publishes. 26 named test points
+  (`panpak_core::failpoint!`, only in a build with the feature `failpoints`; `PANPAK_FAILPOINT=<name>` stops the process there with `abort`): `tests/failpoints.py` stops every command at every point
+  (46 stops) and checks that the store is whole and that the command run again finishes; CI fails if a release binary holds a point (`scripts/check-no-failpoints.sh`). `update.url` and the pin of the
+  user folders are written like the record (synced, then renamed). PANPAK-FORMAT.md 6.4 and 6.5; THREAT-MODEL.md says what the store guarantees about the installed files and what it does not.
 - **Step 8a: one copy of an app in the store, and the app is ready when `install` ends.** The store no longer keeps the package: `install` makes the tree (with
   the farm and the cache of the resolution, by `panpak-stub prepare`, the code a start uses) and keeps a record of the version (`packages/<id>-<version>-<root>.rec`: the
   signed index, manifest and signature, with the magic `PANR`; PANPAK-FORMAT.md 6.3). A record is never a package (`PANPAK-E0010` for `install`, `update` and the other readers; the stub

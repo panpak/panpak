@@ -701,6 +701,26 @@ The signed message is `manifest || root` and `root` is the hash of the raw index
   have into `staging/<id>/<root>/`, makes the new tree from the files of the old one and those chunks, checking every reused blob against the signed
   index, and only then moves `previous` and `current`.
 
+### 6.4 Locks [NORMATIVE for the order; the mechanism is INFORMATIVE]
+
+- **One lock per app** for the commands that change what is installed: `<store>/locks/<id>.lock`, `flock(LOCK_EX)`, taken by `install`, `update`,
+  `rollback`, `repair` and `remove` of that app, waited for up to 60 seconds (then `PANPAK-E2008`). It goes with the process: a command that is killed never
+  leaves it held. It is outside `apps/<id>/` because `remove` deletes that folder, and a lock file that is deleted while another process waits for it locks nothing.
+  `update` lets it go while the chunks come and takes it again before it publishes, and checks that `current` is still what it started from.
+- **The copies of the app** hold a shared lock in the runtime folder while they run (`PANPAK-E2002`); `remove` and `repair` take it exclusively and
+  do not wait for it: a command that finds a copy running stops. A start does not take the lock of the app, only the lock of the tree it builds.
+- **The tree** has its own lock, `trees/<root>.lock`, taken while a tree is made (several starts or installs that need the same tree wait, and the
+  second finds it done).
+- **Order**: the lock of the app first, then the lock of the copies (which is only tried), then the lock of a tree; so none of them waits for one that waits for it.
+
+### 6.5 Test points [INFORMATIVE]
+
+A test build (the feature `failpoints` of `panpak-core`, `panpak` and `panpak-stub`) has named points, one at each step of `install`, `update`, `rollback`,
+`repair` and of the making of a tree (`install.record_written`, `prepare.blobs_named`, `update.previous_linked`, ...). When `PANPAK_FAILPOINT=<name>`
+(or `<name>:<n>` for the n-th hit) is set, the process stops there with `abort`, as a kill does. `tests/failpoints.py` stops every command at every point that the sources name and
+checks that the store is whole and that the command run again finishes. A release build has none of this: the macro is empty, and CI
+(`scripts/check-no-failpoints.sh`) fails if a release binary holds a name of a point, the message or the name of the variable.
+
 ## 7. ABI resolution (`[abi]`) [NORMATIVE]
 
 `panpak pack` compiles `needs` by scanning `DT_NEEDED` of the ELF

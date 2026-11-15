@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
+[features]
+# Test builds only: named points at which the program aborts when `PANPAK_FAILPOINT` names them (`panpak_core::failpoint!`). A release has none.
+failpoints = []
+
 [dependencies]
 anyhow = "1"
 blake3 = "1"

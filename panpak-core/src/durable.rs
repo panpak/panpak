@@ -80,6 +80,7 @@ pub fn write_file(path: &Path, data: &[u8], mode: u32) -> Result<()> {
         f.write_all(data)?;
         f.sync_all()?;
         drop(f);
+        crate::failpoint!("durable.file_written");
         fs::rename(&tmp, path).with_context(|| format!("rename to {}", path.display()))?;
         fsync_dir(dir)
     })();
@@ -96,6 +97,7 @@ pub fn replace_symlink(target: &Path, link: &Path) -> Result<()> {
     let tmp = tmp_name(link);
     let _ = fs::remove_file(&tmp);
     std::os::unix::fs::symlink(target, &tmp).with_context(|| format!("make the link {}", tmp.display()))?;
+    crate::failpoint!("durable.link_made");
     if let Err(e) = fs::rename(&tmp, link) {
         let _ = fs::remove_file(&tmp);
         return Err(e).with_context(|| format!("rename to {}", link.display()));

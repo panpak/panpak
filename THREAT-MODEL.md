@@ -209,6 +209,18 @@ then call `PermissionStore.DeletePermission` for the app and revoke its document
 
 ### 2.5 Hardening of the app process (tested in tests/hardening.py and the unit tests)
 
+- **What the store guarantees about the installed files, and what it does not.** (PANPAK-FORMAT.md 6.2 to 6.5.)
+  *Guaranteed, and tested:* the signature and the pin are checked at every start; a version is never named (`current`, a tree, a blob) before what it leads to is on disk,
+  so a crash or a power loss leaves the app on a whole version (`tests/interrupt_8a.py`, `tests/blob_visibility.py`, `tests/failpoints.py`: every step of every command stopped);
+  a blob in `blobs/` was complete and on disk when it got its name; two commands never change one app at once (the lock of the app); `update` and `repair` check every blob they reuse
+  against the signed index; `panpak doctor <app id>` compares the whole tree with the signed index; a start whose files are gone stops with a message and a command (`PANPAK-E2007`).
+  *Not guaranteed:* that the files are what they were at install. `install` does not hash a blob that is already in the store, and a start does not hash the tree, because **a program
+  that can write the store of the user can change an installed tree** (and the launchers, the records, `panpak` itself): the signature cannot protect against what runs as the user outside the sandbox.
+  The sandboxed app cannot write the store (the tree is read-only to it, and the folders outside its own are not granted). Bit rot is not guaranteed against either, except as below.
+  *Planned (step 8d, not built):* a check in the daily background update job that reads a small part of the store each time (a budget of time or of megabytes, going round
+  all the files over the days), repairs from the chunks of the update URL where it can, and reports in `panpak doctor` and `panpak list` what it cannot. It finds silent damage; it does not
+  stop a program that is running as the user from changing a file after the check, and it will not be described as integrity protection against such a program.
+- **Test points are not in a release.** The names, the message and the variable that arms a point exist only in test builds; CI fails if a release binary holds one (`scripts/check-no-failpoints.sh`).
 - **The record of an installed version is not a package.** The store keeps the signed index and manifest of each installed version in a file with
   its own magic (`PANPAK-FORMAT.md` §6.3), not the package. A reader of packages refuses it (`PANPAK-E0010`), and the stub runs one only when its
   path resolves inside `<store>/packages/`, so a record that is copied out of the store cannot be installed, and a file put in the store cannot be

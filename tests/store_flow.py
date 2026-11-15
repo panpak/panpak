@@ -167,7 +167,19 @@ def main():
             assert out.stdout.strip() == 'version 2' and 'ABI cache hit' in out.stderr, out.stdout + out.stderr
             # The files that the two versions share are the same inodes: one copy.
             assert (store / 'trees' / root2 / 'payload0').stat().st_ino == (tree1 / 'payload0').stat().st_ino
-            r = run([BIN / 'panpak', 'rollback', ID], env)
+            # One command at a time changes an app: while another holds the lock of the app, a command waits (and changes nothing), then goes on.
+            import fcntl
+            (store / 'locks').mkdir(exist_ok=True)
+            with open(store / 'locks' / f'{ID}.lock', 'w') as held:
+                fcntl.flock(held, fcntl.LOCK_EX)
+                before_link = (store / 'apps' / ID / 'current').readlink()
+                waiting = subprocess.Popen([str(BIN / 'panpak'), 'rollback', ID], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                time.sleep(1.0)
+                assert waiting.poll() is None, 'the command did not wait for the lock of the app'
+                assert (store / 'apps' / ID / 'current').readlink() == before_link
+            out, err = waiting.communicate(timeout=30)
+            assert waiting.returncode == 0, out + err
+            assert (store / 'apps' / ID / 'current').readlink() != before_link
             assert run([stub, 'run', store / 'apps' / ID / 'current'], env).stdout.strip() == 'version 1'
             run([BIN / 'panpak', 'rollback', ID], env)
             assert run([stub, 'run', store / 'apps' / ID / 'current'], env).stdout.strip() == 'version 2'

@@ -177,6 +177,9 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     panpak_core::validate_app_id(app_id)?;
     remove::recover();
     let store = store_dir()?;
+    // The lock of the app is held while the installed state is read and changed, and let go while the chunks come (it can take a while, and a start,
+    // `remove` or another command may want the app): after the download the state is read again and must be the one that this update started from.
+    let first_lock = panpak_core::applock::lock(&store, app_id)?;
     let appdir = store.join("apps").join(app_id);
     // Refuse before downloading if the launcher cannot be replaced.
     let launcher = dirs::home_dir().context("no home dir")?.join(".local/bin").join(app_id);
@@ -258,12 +261,19 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     let needed: Vec<panpak_core::Chunk> = chunks.iter().filter(|c| !have.contains(&(c.hash, c.raw))).cloned().collect();
     let n_reused = (chunks.len() - needed.len()) as u64;
     let staging = store.join("staging").join(app_id).join(&root_hex);
+    drop(first_lock);
     let (n_fetched, fetched_bytes) = fetch_chunks(&staging, &needed, ft.index_off, &mut |start, end| {
         let (bytes, range_total) = http_range(&agent, &url, start, end - 1)?;
         ensure!(range_total == total, "file changed during download");
         Ok(bytes)
     })?;
     let downloaded = 80 + man_b.len() as u64 + sig_b.len() as u64 + index_comp.len() as u64 + fetched_bytes;
+    panpak_core::failpoint!("update.chunks_fetched");
+    let _app_lock = panpak_core::applock::lock(&store, app_id)?;
+    ensure!(
+        fs::read_link(&current_link).ok().as_deref() == Some(current_pkg.as_path()),
+        "the app changed while the update was downloaded (another panpak command ran): run `panpak update {app_id}` again; what was downloaded is kept"
+    );
 
     // The record of the new version, then the tree and the resolution, then the links.
     let packages = store.join("packages");
@@ -272,6 +282,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     ensure!(dest.starts_with(&packages), "path outside the store");
     let record = panpak_core::record::record_bytes(&index_comp, &man_b, &sig_b, ft.root);
     panpak_core::durable::write_file(&dest, &record, 0o644)?;
+    panpak_core::failpoint!("update.record_written");
     let stub_for_prepare = stable_stub_link(&store)?;
     let staging_arg = staging.clone();
     if let Err(e) = run_prepare(
@@ -290,6 +301,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
         }
         return Err(e);
     }
+    panpak_core::failpoint!("update.prepared");
     // The icons of the new version, from its tree, are checked before anything is published.
     let new_tree = store.join("trees").join(&root_hex);
     let new_icons = icons::read_from_tree(&new_tree, &man)?;
@@ -304,7 +316,9 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
         let prev_target = fs::read_link(&current_link)?;
         panpak_core::durable::replace_symlink(&prev_target, &appdir.join("previous"))?;
     }
+    panpak_core::failpoint!("update.previous_linked");
     panpak_core::durable::replace_symlink(&dest, &current_link)?;
+    panpak_core::failpoint!("update.current_linked");
     let _ = fs::remove_dir_all(store.join("staging").join(app_id));
     let (best_abi, _) = best_runtime(&store)?;
     let stub = stable_stub_link(&store)?;
@@ -413,6 +427,7 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
     panpak_core::validate_app_id(app_id)?;
     remove::recover();
     let store = store_dir()?;
+    let _app_lock = panpak_core::applock::lock(&store, app_id)?;
     let appdir = store.join("apps").join(app_id);
     let rec_path = fs::read_link(appdir.join("current")).with_context(|| format!("{app_id} is not installed (see `panpak list`)"))?;
     let rec = panpak_core::record::open_verified(&rec_path).context("unreadable record of the installed version")?;
@@ -460,6 +475,7 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
         }
     };
     println!("fetched {n} chunk(s), {bytes} bytes");
+    panpak_core::failpoint!("repair.fetched");
     // The damaged tree moves aside; the new one is made from its intact files and the chunks; only when it is there does the old one go.
     let aside = tree.with_extension(format!("damaged{}", std::process::id()));
     let had_tree = fs::symlink_metadata(&tree).is_ok();
@@ -467,6 +483,7 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
         fs::rename(&tree, &aside).context("move the damaged tree aside")?;
         let _ = fs::remove_file(tree.with_extension("readonly"));
     }
+    panpak_core::failpoint!("repair.tree_moved_aside");
     let stub = stable_stub_link(&store)?;
     let mut args: Vec<&std::ffi::OsStr> = vec![rec_path.as_os_str(), "--chunks".as_ref(), staging.as_os_str()];
     if had_tree {
@@ -479,6 +496,7 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
         }
         return Err(e);
     }
+    panpak_core::failpoint!("repair.prepared");
     if had_tree {
         remove_store_tree(&aside)?;
     }
@@ -495,6 +513,7 @@ fn good_from_tree(_tree: &Path, _chunks: &[panpak_core::Chunk], _entries: &[panp
 
 fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     panpak_core::validate_app_id(app_id)?;
+    let _app_lock = panpak_core::applock::lock(&store_dir()?, app_id)?;
     let appdir = store_dir()?.join("apps").join(app_id);
     let current = appdir.join("current");
     let previous = appdir.join("previous");
@@ -511,8 +530,9 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
         ErrorCode::E2007,
         "the files of the previous version are missing from the store: no rollback"
     );
-    // Swap current<->previous: two links, each replaced in one rename; a stop between them leaves both naming the old current.
+    // Swap current<->previous: two links, each replaced in one rename; a stop between them leaves both naming the old previous.
     panpak_core::durable::replace_symlink(&prev_t, &current)?;
+    panpak_core::failpoint!("rollback.between_links");
     panpak_core::durable::replace_symlink(&cur_t, &previous)?;
     println!("rollback {app_id}: back to {}", prev_t.display());
     Ok(prev_t)
@@ -2112,10 +2132,7 @@ fn write_xdg_pin(appdir: &Path, found: &[ResolvedDir]) -> Result<()> {
         return Ok(());
     }
     let pairs: Vec<(String, String)> = found.iter().map(|d| (d.name.clone(), d.rel.clone())).collect();
-    let tmp = appdir.join(format!(".xdg-dirs.{}", std::process::id()));
-    fs::write(&tmp, panpak_core::format_pin(&pairs))?;
-    fs::rename(&tmp, &path)?;
-    Ok(())
+    panpak_core::durable::write_file(&path, panpak_core::format_pin(&pairs).as_bytes(), 0o644)
 }
 
 /// Tell the desktop about the URL schemes of the entry (`update-desktop-database`, fixed path). A
@@ -2432,6 +2449,9 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     let ft = panpak_core::read_footer(&mut f)?;
     let (man, raw_index) = panpak_core::verify(&mut f, &ft)?;
     mark("package verified");
+    panpak_core::failpoint!("install.verified");
+    // One command at a time changes what is installed of this app (PANPAK-FORMAT.md 6.4).
+    let _app_lock = panpak_core::applock::lock(&store, &man.app.id)?;
     warn_unknown_fields(&panpak_core::unknown_manifest_keys(&mut f, &ft));
     if man.permissions.as_ref().and_then(|p| p.x11).unwrap_or(false) {
         println!("WARNING X11: this app can observe other apps' input and screen. Abstract-socket isolation will be disabled.");
@@ -2516,12 +2536,14 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     let stub = stable_stub_link(&store)?;
     run_prepare(&stub, &[pkg.as_os_str()])?;
     mark("prepared");
+    panpak_core::failpoint!("install.prepared");
     if new_pin {
         panpak_core::durable::write_file(&pin, format!("{key}\n").as_bytes(), 0o644)?;
     }
+    panpak_core::failpoint!("install.pin_written");
     write_xdg_pin(&appdir, &xdg_found)?;
     if let Some(url) = man.update.as_ref().and_then(|u| u.url.clone()) {
-        fs::write(appdir.join("update.url"), format!("{url}\n"))?;
+        panpak_core::durable::write_file(&appdir.join("update.url"), format!("{url}\n").as_bytes(), 0o644)?;
     }
 
     // One copy of the content: the tree. What stays of the package is its record (index, manifest, signature), written whole and synced
@@ -2530,10 +2552,12 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     fs::create_dir_all(&packages)?;
     let dest = packages.join(panpak_core::record::record_name(&man.app.id, &man.app.version, &panpak_core::hex(&ft.root)));
     panpak_core::durable::write_file(&dest, &panpak_core::record::make_record(&mut f, &ft)?, 0o644)?;
+    panpak_core::failpoint!("install.record_written");
     // current -> record: launchers follow it, update/rollback move it.
     let current = appdir.join("current");
     panpak_core::durable::replace_symlink(&dest, &current)?;
     mark("record and current link written");
+    panpak_core::failpoint!("install.current_linked");
     if let Some(apps) = appdir.parent() {
         panpak_core::durable::fsync_dir(apps)?;
     }
@@ -2559,6 +2583,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         refresh_desktop_database(desktop.parent().unwrap());
     }
 
+    panpak_core::failpoint!("install.launcher_written");
     mark("links, launcher, entry and icons written");
     println!("installed: {} (runtime {best_abi})", man.app.id);
     println!("launcher: {}", launcher.display());
