@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Two stale tests.** `tests/abi_cache.py` expected a change of the output of `ldconfig` to invalidate the warm cache of the resolution; the key is the identity of `/etc/ld.so.cache` since the cache was made, and a hit runs no other process, so the test now checks that. `tests/sqlite_tmpdir.py` expected the old layout of the private folders, a `SQLITE_TMPDIR` that the user's value could override and no isolated view; `tests/app_dirs.py` and `tests/view.py` check the variable today, so it is removed.
+- **Two stale tests.** `tests/abi_cache.py` expected a change of the output of `ldconfig` to invalidate the warm cache of the resolution; the key is the identity of `/etc/ld.so.cache` since the cache was made, and a hit runs no other process, so the test now checks that. The test of `SQLITE_TMPDIR` (`sqlite_tmpdir.py`) expected the old layout of the private folders, a `SQLITE_TMPDIR` that the user's value could override and no isolated view; `tests/app_dirs.py` and `tests/view.py` check the variable today, so it is removed.
 - **Step 8, defect 60: the library path of an app is valid only for its own programs.** The stub put the farm and the library folders of the package in `LD_LIBRARY_PATH` as
   absolute paths, and every program that the app started inherited it: a system program loaded the package's libraries instead of its own (`zenity` failed with `symbol lookup error`
   under qBittorrent's path; `grep` and `flatpak` on Fedora 45). The value is now `/$ORIGIN/.panpak-lib-<h>/.farm:/$ORIGIN/.panpak-lib-<h>/lib:...`: glibc replaces `$ORIGIN` with the
