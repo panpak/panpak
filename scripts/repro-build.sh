@@ -20,11 +20,12 @@ if [ "${1:-}" = "--no-remap" ]; then REMAP=0; fi
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
-# The date of the build (`panpak --build-epoch`) is SOURCE_DATE_EPOCH: when it is not set, the date of the last commit that touched the code, as
-# panpak/build.rs would take it (the same list of paths; the copies built below have no .git), else a fixed date.
+# The date of the build (`panpak --build-epoch`) is SOURCE_DATE_EPOCH. The reference one is written in REPRODUCIBLE-HASHES.md (the line
+# "SOURCE_DATE_EPOCH=<n>"): no git is needed, so a container, a shallow checkout and a tarball all build the same bytes. A normal build takes
+# the date from git instead (panpak/build.rs); it is the date of the last commit that touched the code, which is what is written in that file.
 if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
-  SOURCE_DATE_EPOCH="$(git -C "$SRC" log -1 --format=%ct -- panpak panpak-core panpak-stub Cargo.toml Cargo.lock rust-toolchain.toml .cargo scripts/zig-cc 2>/dev/null || true)"
-  case "$SOURCE_DATE_EPOCH" in ''|*[!0-9]*) SOURCE_DATE_EPOCH=1700000000 ;; esac
+  SOURCE_DATE_EPOCH="$(sed -n 's/^- `SOURCE_DATE_EPOCH=\([0-9][0-9]*\)`.*/\1/p' "$SRC/REPRODUCIBLE-HASHES.md" | head -n 1)"
+  case "$SOURCE_DATE_EPOCH" in ''|*[!0-9]*) echo "error: no SOURCE_DATE_EPOCH in REPRODUCIBLE-HASHES.md and none set" >&2; exit 1 ;; esac
 fi
 export SOURCE_DATE_EPOCH
 echo "build date (SOURCE_DATE_EPOCH): $SOURCE_DATE_EPOCH"
