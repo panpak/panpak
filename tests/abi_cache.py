@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Warm cache never bypasses signature/stub/pin; inventory invalidates it."""
+"""Warm cache never bypasses signature/stub/pin. A hit runs no other process: the system library inventory (`ldconfig -p`) is only read on a miss,
+and the key follows the identity of /etc/ld.so.cache (the unit tests of the stub cover every part of the key)."""
 import os
 from pathlib import Path
 import subprocess
@@ -30,7 +31,7 @@ def main():
         (tmp / 'secret.key').chmod(0o600)
         run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', tmp / 'secret.key', '-o', pkg], env)
         run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', pkg], env)
-        # Same mapping, changed ldconfig bytes -> miss without touching real host.
+        # A fake `ldconfig`, to see when the stub asks the system for the inventory: on a miss only.
         inventory = subprocess.run(['ldconfig', '-p'], capture_output=True, check=True).stdout
         (tmp / 'inventory').write_bytes(inventory)
         tools = tmp / 'tools'
@@ -41,8 +42,8 @@ def main():
         command = [BIN / 'panpak-stub', 'run', pkg]
         assert 'cache miss' in run(command, env).stderr
         assert 'cache hit' in run(command, env).stderr
+        # A hit does not run `ldconfig`: other output from it changes nothing until /etc/ld.so.cache itself changes.
         with (tmp / 'inventory').open('ab') as f: f.write(b'\n')
-        assert 'cache miss' in run(command, env).stderr
         assert 'cache hit' in run(command, env).stderr
         data = pkg.read_bytes()
         damaged = bytearray(data)
@@ -61,7 +62,7 @@ def main():
         pin.write_text('different-key')
         p = run(command, env, ok=False)
         assert 'cache hit' not in p.stderr and 'verified-app' not in p.stdout
-        print('ABI cache: miss/hit/inventory/signature/stub/pin PASS')
+        print('ABI cache: miss/hit/signature/stub/pin PASS')
 
 
 if __name__ == '__main__':

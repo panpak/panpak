@@ -41,7 +41,7 @@ App data: `~/.local/share/<id>`; SQLite temp: `<id>/tmp`
 - `panpak-stub/src/resolution.rs` ~170 lines (ABI plan cache)
 - `PANPAK-FORMAT.md` ~440 lines (normative), `THREAT-MODEL.md` ~170
 - `tests/*.py`: conformance runner, `incremental.py` (hostile server),
-  `x11.py`, `abi_cache.py`, `sqlite_tmpdir.py`, `mu_crash_rate.py`,
+  `x11.py`, `abi_cache.py`, `mu_crash_rate.py`,
   `joplin_fts_probe.py`, `pilot_cycle.py`, `gui_session.py`,
   `pilot_saves.py`, `kdenlive_clip.py`, `range_server.py`
 - `bench/`: `bench.py`/`measure.py` (primitives), `warm_compare.py`,
