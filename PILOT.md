@@ -63,7 +63,7 @@ except for temp).
 Fix (product, minimal blast radius): the stub creates `<appdata>/tmp`
 and points `$SQLITE_TMPDIR` there only if unset (never global
 `TMPDIR`); fork test (`sqlite_tmp_private_and_var_tmp_denied`) + e2e
-(`tests/sqlite_tmpdir.py`, since replaced by the checks of `tests/app_dirs.py` and `tests/view.py`: the variable is now always set by the runtime). After the fix, standard sandboxed run
+(the test of that time was replaced by the checks of `tests/app_dirs.py` and `tests/view.py`: the variable is now always set by the runtime). After the fix, standard sandboxed run
 (symlink included): zero FTS warnings, DB v54, 5 notes, complete FTS
 tables — parity with the original. The non-blocking fallback at
 migration v34 remains, also present upstream.
