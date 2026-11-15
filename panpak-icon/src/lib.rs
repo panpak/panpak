@@ -13,6 +13,9 @@
 //! animation and unknown chunks). The pixels and the image data are not touched, and the transparency of a palette image
 //! stays (`tRNS`). `pack` and `convert` run it; `install` only checks, so it accepts nothing but a normalized file.
 
+mod mark;
+pub use mark::mark;
+
 use flate2::{bufread::ZlibDecoder, Crc};
 use std::io::Read;
 

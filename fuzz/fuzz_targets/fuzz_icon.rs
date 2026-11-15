@@ -15,6 +15,12 @@ fuzz_target!(|data: &[u8]| {
         // A file that is acceptable already is its own normalization.
         let n = panpak_icon::normalize(data).expect("an acceptable file normalizes");
         assert!(n.data == data && n.dropped.is_empty());
+        // The mark decodes the pixels of an acceptable file: it neither panics nor allocates more than the side allows, and what it makes is
+        // acceptable, has the same side, and is the same every time.
+        if let Ok(m) = panpak_icon::mark(data) {
+            assert_eq!(panpak_icon::check(&m).expect("a marked icon is acceptable").side, icon.side);
+            assert_eq!(panpak_icon::mark(data).unwrap(), m);
+        }
     }
     // The cleaning: whatever it makes is acceptable, is stable under a second pass, and holds only the five kinds of chunk.
     if let Ok(n) = panpak_icon::normalize(data) {

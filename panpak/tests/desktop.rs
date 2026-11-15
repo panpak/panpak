@@ -22,6 +22,7 @@ fn cmd_with(bin: &Path, home: &Path, args: &[&str]) -> Command {
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("XDG_DATA_DIRS", home.join("sysdata")) // the data folders of this system must not hold an app with the id of a test
         .env("XDG_RUNTIME_DIR", home.join("run"))
         .env_remove("PANPAK_SECRET_FILE")
         .env("PANPAK_OWN_RUNTIME", "off") // the test programs have stand-in runtimes; the real one beside `panpak` must not replace them
@@ -113,6 +114,9 @@ impl Env {
     }
     fn icon(&self, side: u32) -> PathBuf {
         self.home.join(format!(".local/share/icons/hicolor/{side}x{side}/apps/panpak.{ID}.png"))
+    }
+    fn marked_icon(&self, side: u32) -> PathBuf {
+        self.home.join(format!(".local/share/icons/hicolor/{side}x{side}/apps/panpak.{ID}-marked.png"))
     }
     fn entry(&self) -> String {
         fs::read_to_string(self.home.join(format!(".local/share/applications/panpak.{ID}.desktop"))).unwrap()
@@ -282,8 +286,9 @@ fn icons_are_installed_replaced_and_removed() {
     assert!(e.install("4", toml, &[("icons/a.png", i16), ("icons/b.png", i48)]).status.success());
     let o = cli(&e.home, &["remove", ID]);
     assert!(o.status.success(), "{}", text(&o));
-    assert!(!e.icon(16).exists() && !e.icon(48).exists());
-    assert!(text(&o).contains("icons: 2 files"), "{}", text(&o));
+    assert!(!e.icon(16).exists() && !e.icon(48).exists() && !e.marked_icon(16).exists() && !e.marked_icon(48).exists());
+    // Each size has its plain file and its marked one.
+    assert!(text(&o).contains("icons: 4 files"), "{}", text(&o));
     // Files of other apps in the same folders are not touched.
     let other = e.home.join(".local/share/icons/hicolor/48x48/apps/panpak.org.example.other.png");
     fs::create_dir_all(other.parent().unwrap()).unwrap();
@@ -291,6 +296,48 @@ fn icons_are_installed_replaced_and_removed() {
     assert!(e.install("5", "", &[]).status.success());
     assert!(cli(&e.home, &["remove", ID]).status.success());
     assert!(other.is_file());
+}
+
+#[test]
+fn another_app_with_the_same_id_gives_the_entry_a_name_and_an_icon_of_its_own_and_it_follows_when_that_app_goes() {
+    let e = env("twin");
+    let (i16, i48) = (fixture("ok-16-rgba.png"), fixture("ok-48-rgba.png"));
+    let toml = "[desktop]\nicons = [\"icons/a.png\", \"icons/b.png\"]\nwm_class = \"org.example.icon\"\n";
+    let files = [("icons/a.png", i16.clone()), ("icons/b.png", i48.clone())];
+    // Alone: the plain name and icon, no note, and the marked files are ready (they are not used).
+    let o = e.install("1", toml, &files);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!text(&o).contains("same id"), "{}", text(&o));
+    let plain = e.entry();
+    assert!(plain.contains("\nName=Icon App\n") && plain.contains(&format!("\nIcon=panpak.{ID}\n")) && !plain.contains("Twin"), "{plain}");
+    assert_eq!(fs::read(e.icon(16)).unwrap(), i16, "the plain icon is the one of the package");
+    for side in [16, 48] {
+        let m = fs::read(e.marked_icon(side)).unwrap();
+        assert!(m.starts_with(b"\x89PNG") && m != fs::read(e.icon(side)).unwrap());
+        assert_eq!(fs::metadata(e.marked_icon(side)).unwrap().permissions().mode() & 0o777, 0o644);
+    }
+    // The same app installed another way appears (a Flatpak export, a distribution package): the next install says so and marks the entry.
+    let other = e.home.join("sysdata/applications");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join(format!("{ID}.desktop")), "[Desktop Entry]\nType=Application\nName=Icon App\nExec=true\n").unwrap();
+    let o = e.install("2", toml, &files);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("another app with the same id") && text(&o).contains("\"Icon App (Panpak)\""), "{}", text(&o));
+    let marked = e.entry();
+    assert!(marked.contains("\nName=Icon App (Panpak)\n") && marked.contains(&format!("\nIcon=panpak.{ID}-marked\n")), "{marked}");
+    assert_eq!(marked.lines().nth(2), Some("X-Panpak-Twin=1"), "{marked}");
+    // It goes: the entry is plain again.
+    fs::remove_file(other.join(format!("{ID}.desktop"))).unwrap();
+    let o = e.install("3", toml, &files);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!text(&o).contains("same id"), "{}", text(&o));
+    assert_eq!(e.entry(), plain, "back to the plain entry");
+    // An entry of the same id that is Panpak's own, from before the prefix, is not another app.
+    let legacy = e.home.join(format!(".local/share/applications/{ID}.desktop"));
+    fs::write(&legacy, format!("[Desktop Entry]\nType=Application\nName=Icon App\nExec={} %U\nX-Panpak-App-Id={ID}\n", e.home.join(".local/bin").join(ID).display())).unwrap();
+    let o = e.install("4", toml, &files);
+    assert!(o.status.success() && !text(&o).contains("same id"), "{}", text(&o));
+    assert!(!e.entry().contains("(Panpak)"), "{}", e.entry());
 }
 
 #[test]

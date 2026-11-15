@@ -20,6 +20,11 @@ pub const DESKTOP_VERSION: u32 = 1;
 pub const VERSION_WINDOW: usize = 128;
 pub const VERSION_KEY: &str = "X-Panpak-Desktop-Version=";
 pub const DESKTOP_MARKER: &str = "X-Panpak-App-Id=";
+/// Written right after the version, only when another app with the same id is installed (`1`): the check at the start of the app reads it from
+/// the same first bytes as the version, and compares it with what is on the disk now.
+pub const TWIN_KEY: &str = "X-Panpak-Twin=";
+/// What is added to the name when another app with the same id is installed.
+pub const TWIN_SUFFIX: &str = " (Panpak)";
 pub const LAUNCHER_MARKER: &str = "# X-Panpak-App-Id: ";
 const LAUNCHER_VERSION: &str = "# X-Panpak-Desktop-Version: ";
 
@@ -56,6 +61,11 @@ pub fn legacy_desktop_path(app_id: &str) -> Result<PathBuf> {
 /// The icon name of an app that has an icon file of its own.
 pub fn icon_name(app_id: &str) -> String {
     format!("panpak.{app_id}")
+}
+/// The icon name of the marked variant (a badge in the corner), used while another app with the same id is installed. An icon theme that has no
+/// file of this name falls back to the plain one (it drops the part after the last dash).
+pub fn marked_icon_name(app_id: &str) -> String {
+    format!("panpak.{app_id}-marked")
 }
 /// The themed icon that every icon theme has, for an app without an icon.
 pub const GENERIC_ICON: &str = "application-x-executable";
@@ -120,6 +130,11 @@ pub struct Entry<'a> {
     pub panpak: Option<&'a Path>,
     /// Whether an icon file of the app is installed.
     pub icon: bool,
+    /// Another app with the same id is installed (see [`find_twin`]): the name gets [`TWIN_SUFFIX`], the entry carries [`TWIN_KEY`], and the icon is the
+    /// marked variant when `marked` says its files are installed.
+    pub twin: bool,
+    /// The marked variant of the icon is installed.
+    pub marked: bool,
 }
 
 /// `MimeType` is made of the URL schemes and of `desktop.mime_types`; nothing else, and never
@@ -155,10 +170,15 @@ pub fn desktop_file(e: &Entry) -> Result<String> {
         ),
         None => ("", String::new()),
     };
-    let icon = if e.icon { icon_name(e.app_id) } else { GENERIC_ICON.to_string() };
+    let icon = match (e.icon, e.twin && e.marked) {
+        (true, true) => marked_icon_name(e.app_id),
+        (true, false) => icon_name(e.app_id),
+        _ => GENERIC_ICON.to_string(),
+    };
+    let (name, twin) = if e.twin { (format!("{}{TWIN_SUFFIX}", e.name), format!("{TWIN_KEY}1\n")) } else { (e.name.to_string(), String::new()) };
     Ok(format!(
-        "[Desktop Entry]\n{VERSION_KEY}{DESKTOP_VERSION}\nType=Application\nName={}\nExec={} %U\nIcon={}\nTerminal=false\nCategories=Utility;\n{mime}{class}{actions}{DESKTOP_MARKER}{}\n{action}",
-        desktop_string(e.name)?,
+        "[Desktop Entry]\n{VERSION_KEY}{DESKTOP_VERSION}\n{twin}Type=Application\nName={}\nExec={} %U\nIcon={}\nTerminal=false\nCategories=Utility;\n{mime}{class}{actions}{DESKTOP_MARKER}{}\n{action}",
+        desktop_string(&name)?,
         desktop_exec_arg(path_text(e.launcher)?)?,
         desktop_string(&icon)?,
         desktop_string(e.app_id)?
@@ -219,9 +239,9 @@ pub fn desktop_is_ours(content: &str, app_id: &str, launcher: &Path) -> bool {
         || (content.starts_with("[Desktop Entry]\nType=Application\n") && content.lines().any(|l| l == format!("Exec={} %U", launcher.display())))
 }
 
-/// The version in the first bytes of an entry. Only a line that ends inside the window counts; an entry whose
-/// version is further in, or that has none, is read as old and gets rewritten.
-pub fn entry_version(head: &[u8]) -> Option<u32> {
+/// The value of the key `key` (with its `=`) in the first bytes of an entry. Only a line that ends inside the window counts; one that is further in
+/// is not seen.
+fn window_value<'a>(head: &'a [u8], key: &str) -> Option<&'a [u8]> {
     let head = &head[..head.len().min(VERSION_WINDOW)];
     let mut lines = head.split(|&b| b == b'\n').peekable();
     while let Some(l) = lines.next() {
@@ -229,11 +249,87 @@ pub fn entry_version(head: &[u8]) -> Option<u32> {
         if lines.peek().is_none() {
             break;
         }
-        if let Some(v) = l.strip_prefix(VERSION_KEY.as_bytes()) {
-            return std::str::from_utf8(v).ok()?.parse().ok();
+        if let Some(v) = l.strip_prefix(key.as_bytes()) {
+            return Some(v);
         }
     }
     None
+}
+
+/// The version in the first bytes of an entry. An entry whose version is further in, or that has none, is read as old and gets rewritten.
+pub fn entry_version(head: &[u8]) -> Option<u32> {
+    std::str::from_utf8(window_value(head, VERSION_KEY)?).ok()?.parse().ok()
+}
+
+/// Whether the first bytes of an entry say that it was written while another app with the same id was installed.
+pub fn entry_twin(head: &[u8]) -> bool {
+    window_value(head, TWIN_KEY) == Some(b"1")
+}
+
+/// The folders whose `<id>.desktop` the desktop may know the same app by: the user's own, the Flatpak exports (user and system), the data folders of
+/// the system (`XDG_DATA_DIRS`) and the snap one. Only the names are built here.
+pub fn twin_dirs() -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = Vec::new();
+    if let Some(d) = dirs::data_dir() {
+        v.push(d.join("applications"));
+        v.push(d.join("flatpak/exports/share/applications"));
+    }
+    v.push(PathBuf::from("/var/lib/flatpak/exports/share/applications"));
+    let xdg = std::env::var("XDG_DATA_DIRS").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
+    for d in xdg.split(':').filter(|d| d.starts_with('/')) {
+        v.push(Path::new(d).join("applications"));
+    }
+    v.push(PathBuf::from("/var/lib/snapd/desktop/applications"));
+    let mut seen = Vec::new();
+    v.retain(|p| {
+        let new = !seen.contains(p);
+        seen.push(p.clone());
+        new
+    });
+    v
+}
+
+/// The `<name>.desktop` of another app that the desktop would take for this one: a file of that name in one of `dirs`, for the id of the app and for
+/// its window class (the desktop matches a window to an entry by the class the window carries). The legacy entry that Panpak itself wrote under
+/// `<id>.desktop` (`ours`) does not count. Each folder costs one `stat` per name.
+pub fn find_twin(dirs: &[PathBuf], app_id: &str, wm_class: Option<&str>, ours: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    let mut names = vec![app_id];
+    if let Some(w) = wm_class.filter(|w| *w != app_id && !w.contains('/')) {
+        names.push(w);
+    }
+    for d in dirs {
+        for n in &names {
+            let p = d.join(format!("{n}.desktop"));
+            if fs::metadata(&p).is_ok_and(|m| m.is_file()) && !ours(&p) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// [`find_twin`] with the folders of this system.
+pub fn twin_of(app_id: &str, wm_class: Option<&str>) -> Option<PathBuf> {
+    let legacy = legacy_desktop_path(app_id).ok();
+    let launcher = launcher_path(app_id).ok();
+    find_twin(&twin_dirs(), app_id, wm_class, |p| {
+        // The entry Panpak wrote before the prefix: it is ours, not another app's.
+        legacy.as_deref() == Some(p)
+            && launcher.as_deref().is_some_and(|l| read_limited_path(p, 1 << 20).is_some_and(|t| desktop_is_ours(&t, app_id, l)))
+    })
+}
+
+fn read_limited_path(p: &Path, max: usize) -> Option<String> {
+    let mut f = fs::File::open(p).ok()?;
+    String::from_utf8(read_limited(&mut f, max)?).ok()
+}
+
+/// Whether the marked icon of the app is installed (any size) in the icon folder that goes with `entry_dir` (`<data>/applications`).
+pub fn marked_icon_installed(entry_dir: &Path, app_id: &str) -> bool {
+    let Some(hicolor) = entry_dir.parent().map(|d| d.join("icons/hicolor")) else { return false };
+    let Ok(rd) = fs::read_dir(&hicolor) else { return false };
+    let file = format!("{}.png", marked_icon_name(app_id));
+    rd.flatten().any(|e| fs::symlink_metadata(e.path().join("apps").join(&file)).is_ok_and(|m| m.file_type().is_file()))
 }
 
 /// Write `data` next to `path` under a hidden temporary name (created with `O_EXCL` and `O_NOFOLLOW`), sync it,
@@ -283,7 +379,7 @@ pub enum Refresh {
     Missing,
     /// The file is a link, not a regular file, too large, or not written by panpak for this app.
     NotOurs,
-    /// The entry and the launcher were older and are rewritten.
+    /// The entry and the launcher were older, or the entry did not say what the disk says about another app with the same id: rewritten.
     Rewritten,
 }
 
@@ -297,7 +393,7 @@ fn read_limited(f: &mut fs::File, max: usize) -> Option<Vec<u8>> {
 /// [`VERSION_WINDOW`] bytes and closes it. `store` is the per-user store, `launcher` the path of the launcher; the stable stub link must be there for
 /// the launcher to work, otherwise nothing is touched.
 #[allow(clippy::too_many_arguments)] // every field of the entry
-pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &str, name: &str, schemes: &[String], mime_types: &[String], wm_class: Option<&str>) -> Result<Refresh> {
+pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &str, name: &str, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, twin: bool) -> Result<Refresh> {
     let path = entry_dir.join(format!("panpak.{app_id}.desktop"));
     let mut f = match fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
         Ok(f) => f,
@@ -307,7 +403,8 @@ pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &s
     };
     let mut head = [0u8; VERSION_WINDOW];
     let n = f.read_at(&mut head, 0)?;
-    if entry_version(&head[..n]).is_some_and(|v| v >= DESKTOP_VERSION) {
+    // Current: the version is the one of this template, and the entry says the same about another app with the same id as the disk does now.
+    if entry_version(&head[..n]).is_some_and(|v| v >= DESKTOP_VERSION) && entry_twin(&head[..n]) == twin {
         return Ok(Refresh::Current);
     }
     // Older, or the version is not where it should be: read it all and see whether panpak wrote it.
@@ -322,10 +419,10 @@ pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &s
     drop(f);
     let stub = stable_stub(store);
     ensure!(fs::symlink_metadata(&stub).is_ok(), "no stable stub in the store at {}", stub.display());
-    let have_icon = old.lines().any(|l| l.strip_prefix("Icon=") == Some(icon_name(app_id).as_str()));
+    let have_icon = old.lines().any(|l| matches!(l.strip_prefix("Icon="), Some(i) if i == icon_name(app_id) || i == marked_icon_name(app_id)));
     let panpak = stable_panpak(store);
     let panpak = fs::metadata(&panpak).is_ok_and(|m| m.is_file()).then_some(panpak);
-    let text = desktop_file(&Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon: have_icon })?;
+    let text = desktop_file(&Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon: have_icon, twin, marked: twin && marked_icon_installed(entry_dir, app_id) })?;
     // The launcher first: the entry must never name one that is older than itself.
     let current = store.join("apps").join(app_id).join("current");
     let sh = launcher_sh(app_id, &stub, &current)?;
@@ -346,7 +443,7 @@ mod tests {
     use super::*;
 
     fn entry<'a>(l: &'a Path, name: &'a str) -> Entry<'a> {
-        Entry { app_id: "org.x", name, launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false }
+        Entry { app_id: "org.x", name, launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false, marked: false }
     }
 
     #[test]
@@ -533,12 +630,106 @@ mod tests {
             self.apps.join("panpak.org.x.desktop")
         }
         fn current(&self) -> String {
-            let e = Entry { app_id: "org.x", name: "X", launcher: &self.launcher, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false };
+            let e = Entry { app_id: "org.x", name: "X", launcher: &self.launcher, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false, marked: false };
             desktop_file(&e).unwrap()
         }
         fn refresh(&self) -> Result<Refresh> {
-            refresh_entry(&self.store, &self.apps, &self.launcher, "org.x", "X", &[], &[], None)
+            refresh_entry(&self.store, &self.apps, &self.launcher, "org.x", "X", &[], &[], None, false)
         }
+        fn refresh_twin(&self, twin: bool) -> Result<Refresh> {
+            refresh_entry(&self.store, &self.apps, &self.launcher, "org.x", "X", &[], &[], None, twin)
+        }
+    }
+
+    #[test]
+    fn another_app_with_the_same_id_changes_the_name_the_icon_and_one_line_in_the_first_bytes() {
+        let l = Path::new("/home/u/.local/bin/org.x");
+        let plain = desktop_file(&Entry { icon: true, ..entry(l, "X") }).unwrap();
+        assert!(plain.contains("\nName=X\n") && !plain.contains("Twin") && plain.contains("\nIcon=panpak.org.x\n"));
+        assert!(!entry_twin(plain.as_bytes()));
+        let twin = desktop_file(&Entry { icon: true, twin: true, marked: true, ..entry(l, "X") }).unwrap();
+        assert!(twin.contains("\nName=X (Panpak)\n") && twin.contains("\nIcon=panpak.org.x-marked\n"), "{twin}");
+        // The line is in the window the start of an app reads, with the version, and the version is still found.
+        assert!(entry_twin(&twin.as_bytes()[..VERSION_WINDOW]) && entry_version(twin.as_bytes()) == Some(DESKTOP_VERSION));
+        // The name of the app is checked as before, with the suffix.
+        if let Ok(d) = desktop_file(&Entry { twin: true, ..entry(l, "X\nExec=y") }) {
+            assert!(!d.lines().any(|l| l == "Exec=y") && d.lines().filter(|l| l.starts_with("Name=")).count() == 1, "{d}");
+        }
+        // Without the marked files the plain icon stays; without an icon, the generic one.
+        let no_marked = desktop_file(&Entry { icon: true, twin: true, marked: false, ..entry(l, "X") }).unwrap();
+        assert!(no_marked.contains("\nIcon=panpak.org.x\n") && no_marked.contains("Name=X (Panpak)"));
+        assert!(desktop_file(&Entry { twin: true, marked: true, ..entry(l, "X") }).unwrap().contains("\nIcon=application-x-executable\n"));
+    }
+
+    #[test]
+    fn the_start_of_an_app_follows_the_other_app_coming_and_going_and_does_not_rewrite_otherwise() {
+        let lab = lab("twin");
+        fs::write(lab.entry_path(), lab.current()).unwrap();
+        fs::write(&lab.launcher, "#!/bin/sh\n# X-Panpak-App-Id: org.x\n").unwrap();
+        assert_eq!(lab.refresh_twin(false).unwrap(), Refresh::Current);
+        // The other app comes: the entry is rewritten once, with the suffix; the next start finds it as it should be.
+        assert_eq!(lab.refresh_twin(true).unwrap(), Refresh::Rewritten);
+        let text = fs::read_to_string(lab.entry_path()).unwrap();
+        assert!(text.contains("\nName=X (Panpak)\n") && entry_twin(text.as_bytes()), "{text}");
+        assert_eq!(lab.refresh_twin(true).unwrap(), Refresh::Current);
+        // It goes: back to the plain name.
+        assert_eq!(lab.refresh_twin(false).unwrap(), Refresh::Rewritten);
+        let text = fs::read_to_string(lab.entry_path()).unwrap();
+        assert!(text.contains("\nName=X\n") && !entry_twin(text.as_bytes()), "{text}");
+        assert_eq!(lab.refresh_twin(false).unwrap(), Refresh::Current);
+        // An entry that is not Panpak's is not touched, whatever the other app does.
+        fs::write(lab.entry_path(), "[Desktop Entry]\nX-Panpak-Desktop-Version=1\nType=Application\nName=Mine\n").unwrap();
+        assert_eq!(lab.refresh_twin(true).unwrap(), Refresh::NotOurs);
+        assert!(fs::read_to_string(lab.entry_path()).unwrap().contains("Name=Mine"));
+    }
+
+    /// What the check at the start of an app costs (`cargo test --release -p panpak-core twin_check_cost -- --ignored --nocapture`).
+    #[test]
+    #[ignore = "a measurement, not a test"]
+    fn twin_check_cost() {
+        let t = std::time::Instant::now();
+        let dirs = twin_dirs();
+        println!("twin_dirs: {:.1} us", t.elapsed().as_secs_f64() * 1e6);
+        let t = std::time::Instant::now();
+        std::hint::black_box(find_twin(&dirs, "org.example.nothing", Some("Example"), |_| false));
+        println!("find_twin, first: {:.1} us", t.elapsed().as_secs_f64() * 1e6);
+        let t = std::time::Instant::now();
+        let first = twin_of("org.example.nothing", Some("Example"));
+        let first_us = t.elapsed().as_secs_f64() * 1e6;
+        let n = 20_000;
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            std::hint::black_box(twin_of("org.example.nothing", Some("Example")));
+        }
+        let each = t.elapsed().as_secs_f64() * 1e6 / f64::from(n);
+        println!("twin check: {} folders, {} stat calls, first call {first_us:.1} us, then {each:.2} us each (found: {first:?})", dirs.len(), dirs.len() * 2, );
+    }
+
+    #[test]
+    fn the_other_app_is_found_by_its_id_or_its_window_class_and_the_old_entry_of_panpak_is_not_one() {
+        let root = scratch("find-twin");
+        let (a, b) = (root.join("a"), root.join("b"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        let dirs = vec![a.clone(), b.clone(), root.join("missing")];
+        let no = |_: &Path| false;
+        assert_eq!(find_twin(&dirs, "org.x", Some("OrgX"), no), None);
+        fs::write(b.join("org.x.desktop"), "[Desktop Entry]\n").unwrap();
+        assert_eq!(find_twin(&dirs, "org.x", None, no), Some(b.join("org.x.desktop")));
+        // The class counts too (the desktop matches a window to an entry by the class), the id of another app does not.
+        fs::remove_file(b.join("org.x.desktop")).unwrap();
+        fs::write(a.join("OrgX.desktop"), "[Desktop Entry]\n").unwrap();
+        assert_eq!(find_twin(&dirs, "org.x", Some("OrgX"), no), Some(a.join("OrgX.desktop")));
+        assert_eq!(find_twin(&dirs, "org.x", Some("Other"), no), None);
+        // A folder with the name, and a file that `ours` claims, are not another app.
+        fs::remove_file(a.join("OrgX.desktop")).unwrap();
+        fs::create_dir_all(a.join("org.x.desktop")).unwrap();
+        assert_eq!(find_twin(&dirs, "org.x", None, no), None);
+        fs::remove_dir(a.join("org.x.desktop")).unwrap();
+        fs::write(a.join("org.x.desktop"), "x").unwrap();
+        assert_eq!(find_twin(&dirs, "org.x", None, |p| p == a.join("org.x.desktop")), None);
+        // A class that is not a plain name is not searched for.
+        assert_eq!(find_twin(&dirs, "org.x", Some("../a/org.x"), |_| false).map(|p| p.file_name().unwrap().to_owned()), Some("org.x.desktop".into()));
     }
 
     /// An entry as 7a wrote it: no version, no icon.

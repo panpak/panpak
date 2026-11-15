@@ -77,10 +77,11 @@ and in file dialogs, Qt in KDE). Rules, applied by `install` and `update` before
   is a second decoder path that no icon needs.
 - The `IDAT` data is inflated with a bounded inflater (`flate2` is already a dependency of the CLI, the stub
   does not use this code) and must give exactly `height * (1 + row bytes)` bytes, no more and no less. A
-  decompression bomb stops at that bound. We do not decode pixels; we only prove that a standard decoder
+  decompression bomb stops at that bound. The check does not decode pixels; it only proves that a standard decoder
   will find the stream it expects.
 - The file is written as read, after the check. Nothing is re-encoded: a re-encoder would be a second
-  parser to trust.
+  parser to trust. The one exception is the marked variant of section 9, which `install` makes from a file that
+  passed the check (pixels decoded, a badge drawn, a new PNG written, checked again); the plain file stays as read.
 - The destination is never a link and never followed (`O_NOFOLLOW`, rename into place). If `panpak.<id>.png`
   exists and is a link or not a regular file, install stops with `PANPAK-E2001`, as for the launcher.
 - Fuzz target `fuzz_icon` on the validator (same corpus style as `fuzz_wayland`), plus unit tests for each rule
@@ -603,3 +604,36 @@ So the stale-lock rule of PANPAK-FORMAT.md §9.4 works for a hard kill. The gap 
 Proposal, not applied (it changes the rule of §9.4): when the last copy ends, the outer runtime, which holds the exclusive lock at that moment, runs the same search for stale locks on the private folders
 (depth 3, no links followed) before it removes the mark, so a lock file left by a copy that ended on a signal or with status 0 is gone before anyone can start. The cost is at exit, not at start (a walk of a few
 small folders), and the start does not change. The alternative, to keep the mark whenever the app ended on a signal, costs a search at the next start and leaves the stale file in the meantime.
+
+## 9. Another app with the same id (defect 51)
+
+**The problem.** The native Text Editor (a Flatpak, a distribution package) and ours have the same name, the same icon and the same window class
+(`org.gnome.TextEditor`). The desktop lists two entries that look alike, and a window of ours can be attached to the entry of the other one
+(section 8.5, and the report of step 11b): a click on the dock icon then starts the other app.
+
+**What is done (no change to the window, no proxy).** Only the entry of the menu changes, and only while there is another app with the same id:
+
+- the name is `<Name> (Panpak)`;
+- the icon is a marked variant: the icon of the package with a round badge in the lower right corner (`panpak.<id>-marked`, next to `panpak.<id>`);
+- `install` and `update` print one line: `NOTE: <path> is another app with the same id. To tell the two apart, the menu shows this one as "<Name> (Panpak)", with a mark on its icon`;
+- with no other app the entry is as before (no suffix, plain icon, no line).
+
+**How "another app" is decided.** A file `<id>.desktop`, or `<window class>.desktop` when the package sets `wm_class`, in the user's applications folder, in the Flatpak
+exports (user and system), in the folders of `XDG_DATA_DIRS` or in the snap one. The entry that Panpak itself wrote under that name before the `panpak.` prefix is not
+another app. Apps found by another way (a different file name with the same `StartupWMClass`) are not seen.
+
+**It follows the situation.** The check is made in three places: `install` and `update` (they write the entry), and at every start of the app, in the same step that
+reads the version of the entry (the first 128 bytes): when the entry says something else than the disk does now (the line `X-Panpak-Twin=1` is there or is not), it is rewritten
+once, in one rename, like the lazy update of section 3. The other app can be installed after ours, or removed, in any order. The icon files of both variants are always
+written by `install`, so a change only rewrites the entry (an install from before this change has no marked file: the name changes and the icon stays plain, until the next `update`).
+GNOME Shell keeps the entry it had for an app that was started in the session (section 8.5), so the new name shows at the next login at the latest.
+
+**The mark.** `panpak_icon::mark` decodes an icon that `check` accepted (8 bits, square, 16 to 1024 pixels; the data inflate to the size the header says), draws
+the badge with whole-number arithmetic (the same bytes on every machine), and writes an RGBA PNG that `check` accepts too. It is the one place where pixels are decoded; the
+input is bounded by the checks above, and the fuzz target `fuzz_icon` runs it. An icon that would be over 256 KiB with the badge has no marked variant, and the plain one is used.
+
+**Cost of the check at the start** (`cargo test --release -p panpak-core twin_check_cost -- --ignored --nocapture`, 8 folders, 16 `stat` calls, no other app): the first call
+in a fresh process 27 to 60 microseconds (three runs), then about 23 microseconds. The start of an app costs about 25 ms before this (section 8.3), so the check is about 0.2 %.
+
+**Not solved here.** The window of the app still carries the class of the app; whether the desktop attaches it to its own entry or to the other one is measured on a
+real desktop (with and without dash-to-dock) before anything more is decided.
