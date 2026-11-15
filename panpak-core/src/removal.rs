@@ -25,10 +25,15 @@ pub struct Journal {
     pub roots: Vec<String>,
 }
 
+/// The temporary file of a record that was being written (`<record>.tmp<process number>`): what a kill leaves, and nothing else.
+pub fn is_record_tmp(n: &str) -> bool {
+    n.rsplit_once(".rec.tmp").is_some_and(|(_, d)| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// A record file name as the store writes it: `<id>-<version>-<root start>.rec`, plain characters only.
 pub fn valid_package_name(n: &str) -> bool {
     n.len() <= 255
-        && n.ends_with(".rec")
+        && (n.ends_with(".rec") || is_record_tmp(n))
         && !n.starts_with('.')
         && n.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'))
         && !n.contains("..")
@@ -116,6 +121,15 @@ mod tests {
     fn a_journal_survives_a_round_trip() {
         let j = sample();
         assert_eq!(Journal::parse(j.render().as_bytes()).unwrap(), j);
+    }
+
+    #[test]
+    fn the_temporary_file_of_a_record_is_a_name_of_the_store_too() {
+        assert!(valid_package_name("org.example.app-1.0-0123456789ab.rec.tmp12794"));
+        assert!(is_record_tmp("a.b-1-ab.rec.tmp1"));
+        for n in ["a.b-1-ab.rec.tmp", "a.b-1-ab.rec.tmpx", "a.b-1-ab.rec.tmp1/../x", "a.b-1-ab.panpak.tmp1", "a.b.tmp1"] {
+            assert!(!valid_package_name(n), "{n}");
+        }
     }
 
     #[test]

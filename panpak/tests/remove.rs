@@ -274,6 +274,18 @@ fn a_shared_tree_stays_while_another_package_uses_it() {
 }
 
 #[test]
+fn the_temporary_file_of_a_record_that_a_kill_left_goes_with_the_app() {
+    let e = env("rectmp");
+    e.install(A, "1", "a");
+    let left = e.store().join("packages").join(format!("{}.tmp4242", rec_of(&e, A, "1")));
+    fs::write(&left, "half a record").unwrap();
+    let o = e.remove(&[A]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!text(&o).contains("unreadable"), "{}", text(&o));
+    assert!(names(&e.store().join("packages")).is_empty(), "{:?}", names(&e.store().join("packages")));
+}
+
+#[test]
 fn an_id_that_is_a_prefix_of_another_does_not_take_its_packages() {
     let e = env("prefix");
     e.install("org.example.app", "1", "a");

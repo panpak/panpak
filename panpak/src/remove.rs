@@ -10,7 +10,7 @@ use panpak_core::{
     coded, ensure_code,
     i18n::{self, tr},
     messages as m,
-    removal::{valid_package_name, Journal, JOURNAL_FILE, MAX_JOURNAL_BYTES},
+    removal::{is_record_tmp, valid_package_name, Journal, JOURNAL_FILE, MAX_JOURNAL_BYTES},
     safefs::{Dir, Kind},
     ErrorCode,
 };
@@ -254,7 +254,7 @@ impl Ctx {
                     if !f.roots.contains(&i.root) {
                         f.roots.push(i.root);
                     }
-                } else {
+                } else if !is_record_tmp(&n) {
                     f.problems.push(format!("package {n} is unreadable"));
                 }
                 f.packages.push(n);
