@@ -25,10 +25,10 @@ pub struct Journal {
     pub roots: Vec<String>,
 }
 
-/// A package file name as the store writes it: `<id>-<version>.panpak`, plain characters only.
+/// A record file name as the store writes it: `<id>-<version>-<root start>.rec`, plain characters only.
 pub fn valid_package_name(n: &str) -> bool {
     n.len() <= 255
-        && n.ends_with(".panpak")
+        && n.ends_with(".rec")
         && !n.starts_with('.')
         && n.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'))
         && !n.contains("..")
@@ -109,7 +109,7 @@ mod tests {
     use super::*;
 
     fn sample() -> Journal {
-        Journal { app_id: "org.example.app".into(), packages: vec!["org.example.app-1.0.panpak".into()], roots: vec!["a".repeat(64)] }
+        Journal { app_id: "org.example.app".into(), packages: vec!["org.example.app-1.0-0123456789ab.rec".into()], roots: vec!["a".repeat(64)] }
     }
 
     #[test]
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn names_that_could_leave_the_folder_are_refused() {
-        for p in ["../x.panpak", "a/b.panpak", "/etc/passwd.panpak", ".hidden.panpak", "a..b.panpak", "x", "x.panpak\n", "a b.panpak", ""] {
+        for p in ["../x.rec", "a/b.rec", "/etc/passwd.rec", ".hidden.rec", "a..b.rec", "x", "x.rec\n", "a b.panpak", ""] {
             let t = format!("{JOURNAL_MAGIC}\napp org.example.app\npackage {p}\n");
             assert!(Journal::parse(t.as_bytes()).is_err(), "{p:?}");
         }
@@ -136,7 +136,7 @@ mod tests {
         assert!(Journal::parse(ok.replace("panpak-removal 1", "panpak-removal 2").as_bytes()).is_err());
         assert!(Journal::parse(format!("{ok}extra line\n").as_bytes()).is_err());
         assert!(Journal::parse(format!("{ok}app org.example.other\n").as_bytes()).is_err());
-        assert!(Journal::parse(format!("{JOURNAL_MAGIC}\npackage x.panpak\n").as_bytes()).is_err());
+        assert!(Journal::parse(format!("{JOURNAL_MAGIC}\npackage x.rec\n").as_bytes()).is_err());
         assert!(Journal::parse(b"").is_err());
         assert!(Journal::parse(&[0xff, 0xfe]).is_err());
         assert!(Journal::parse(&vec![b'x'; MAX_JOURNAL_BYTES + 1]).is_err());
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn duplicates_are_kept_once() {
-        let t = format!("{JOURNAL_MAGIC}\napp org.example.app\npackage a.panpak\npackage a.panpak\n");
+        let t = format!("{JOURNAL_MAGIC}\napp org.example.app\npackage a.rec\npackage a.rec\n");
         assert_eq!(Journal::parse(t.as_bytes()).unwrap().packages.len(), 1);
     }
 }

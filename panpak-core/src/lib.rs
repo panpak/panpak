@@ -11,7 +11,9 @@ pub mod chooserhost;
 pub mod docshare;
 pub mod filechooser;
 pub mod i18n;
+pub mod durable;
 pub mod libpath;
+pub mod record;
 pub mod messages;
 pub mod startfiles;
 pub mod permissions;
@@ -932,6 +934,7 @@ pub fn read_footer(f: &mut File) -> Result<Footer> {
 pub fn parse_footer(size: u64, b: &[u8]) -> Result<Footer> {
     ensure!(size > FOOTER_LEN, "file too short to be a .panpak: incomplete or corrupt file, redownload it");
     ensure!(b.len() == FOOTER_LEN as usize, "truncated footer: incomplete or corrupt file, redownload it");
+    crate::ensure_code!(&b[0..8] != record::RECORD_MAGIC, ErrorCode::E0010, "{}", record::NOT_A_PACKAGE);
     crate::ensure_code!(&b[0..8] == MAGIC, ErrorCode::E0001, "wrong magic: not a panpak file");
     let mut r = Reader::new(&b[8..]);
     let version = r.u32()?;

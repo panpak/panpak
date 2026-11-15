@@ -123,6 +123,10 @@ impl Env {
     }
     /// What an app leaves in the store once it has run: an unpacked tree and a farm, read-only like the real ones.
     fn fake_tree(&self, root: &str) {
+        // `install` makes the real tree now (and its farm): nothing to fake.
+        if self.store().join("trees").join(root).join(".complete").exists() {
+            return;
+        }
         let t = self.store().join("trees").join(root);
         fs::create_dir_all(t.join("bin/sub")).unwrap();
         fs::write(t.join("bin/sub/file"), "x").unwrap();
@@ -153,6 +157,12 @@ impl Env {
 fn root_of(pkg: &Path) -> String {
     let b = fs::read(pkg).unwrap();
     b[b.len() - 32..].iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// The file name of the record that `install` made for `id` at `version` (`<id>-<version>-<start of the root>.rec`).
+fn rec_of(e: &Env, id: &str, version: &str) -> String {
+    let prefix = format!("{id}-{version}-");
+    names(&e.store().join("packages")).into_iter().find(|n| n.starts_with(&prefix) && n.ends_with(".rec")).unwrap_or_else(|| panic!("no record for {id} {version}: {:?}", names(&e.store().join("packages"))))
 }
 
 fn names(dir: &Path) -> Vec<String> {
@@ -258,7 +268,7 @@ fn a_shared_tree_stays_while_another_package_uses_it() {
     let o = e.remove(&[A]);
     assert!(o.status.success(), "{}", text(&o));
     assert!(e.store().join("trees").join(&ra).exists() && e.store().join("farms").join(&ra).exists(), "B still uses it");
-    assert!(names(&e.store().join("packages")) == vec![format!("{B}-1.panpak")]);
+    assert!(names(&e.store().join("packages")) == vec![rec_of(&e, B, "1")]);
     assert!(e.remove(&[B]).status.success());
     assert!(!e.store().join("trees").join(&ra).exists() && !e.store().join("farms").join(&ra).exists());
 }
@@ -270,7 +280,7 @@ fn an_id_that_is_a_prefix_of_another_does_not_take_its_packages() {
     e.install("org.example.app-extra", "1", "b");
     let o = e.remove(&["org.example.app"]);
     assert!(o.status.success(), "{}", text(&o));
-    assert_eq!(names(&e.store().join("packages")), vec!["org.example.app-extra-1.panpak".to_string()]);
+    assert_eq!(names(&e.store().join("packages")), vec![rec_of(&e, "org.example.app-extra", "1")]);
     assert!(e.store().join("apps/org.example.app-extra/current").exists());
 }
 
@@ -281,7 +291,7 @@ fn old_versions_and_the_previous_link_go_with_the_app() {
     e.install(A, "2", "b");
     assert_eq!(names(&e.store().join("packages")).len(), 2);
     fs::write(e.store().join("apps").join(A).join("update.url"), "https://example.invalid/\n").unwrap();
-    symlink(e.store().join("packages").join(format!("{A}-1.panpak")), e.store().join("apps").join(A).join("previous")).unwrap();
+    symlink(e.store().join("packages").join(rec_of(&e, A, "1")), e.store().join("apps").join(A).join("previous")).unwrap();
     assert!(e.remove(&[A]).status.success());
     assert!(names(&e.store().join("packages")).is_empty());
     assert!(!e.store().join("apps").join(A).exists());
@@ -441,7 +451,7 @@ fn a_removal_killed_after_the_move_is_finished_by_the_next_command() {
         assert!(!o.status.success(), "the process was killed");
         // Killed after the rename: the app is already out of apps/, the rest is waiting in removing/.
         assert!(!e.store().join("apps").join(A).exists());
-        assert!(e.store().join("packages").join(format!("{A}-1.panpak")).exists());
+        assert!(e.store().join("packages").join(rec_of(&e, A, "1")).exists());
         assert!(e.store().join("trees").join(&root).exists());
         assert_eq!(names(&e.store().join("removing")).len(), 1);
         let o = cli(&e.home, next);
@@ -463,7 +473,7 @@ fn a_removal_killed_before_the_move_leaves_the_app_installed() {
     let o = cli(&e.home, &["list"]);
     assert!(o.status.success(), "{}", text(&o));
     assert!(e.store().join("apps").join(A).join("current").exists());
-    assert!(e.store().join("packages").join(format!("{A}-1.panpak")).exists());
+    assert!(e.store().join("packages").join(rec_of(&e, A, "1")).exists());
     assert!(e.store().join("trees").join(&root).exists());
     // And the app can be removed afterwards.
     assert!(e.remove(&[A]).status.success());
@@ -478,7 +488,7 @@ fn a_reinstall_after_an_interrupted_removal_is_not_hit_by_it() {
     assert!(!o.status.success());
     // `install` finishes the old removal first, then writes the new package.
     e.install(A, "1", "a");
-    assert!(e.store().join("packages").join(format!("{A}-1.panpak")).exists());
+    assert!(e.store().join("packages").join(rec_of(&e, A, "1")).exists());
     assert!(e.store().join("apps").join(A).join("current").exists());
     assert!(names(&e.store().join("removing")).is_empty());
 }
@@ -493,7 +503,7 @@ fn a_damaged_journal_deletes_nothing_it_names() {
     let o = cli(&e.home, &["list"]);
     assert!(o.status.success());
     assert!(String::from_utf8_lossy(&o.stderr).contains("could not finish"), "{}", text(&o));
-    assert!(e.home.join("secret.key").exists() && e.store().join("packages").join(format!("{A}-1.panpak")).exists());
+    assert!(e.home.join("secret.key").exists() && e.store().join("packages").join(rec_of(&e, A, "1")).exists());
 }
 
 #[test]

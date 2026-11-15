@@ -512,10 +512,11 @@ A client updating a package MUST:
   the key in the remote manifest: an attacker could self-sign);
 - refuse versions older than the installed one, unless explicit
   `--allow-downgrade`;
-- assemble the new `.panpak` (missing parts via Range, chunks already
-  present copied from the local package), verify it fully as in §5,
-  and only then move `current` (the previous version stays in
-  `previous`; `panpak rollback` swaps them). Installed launchers use
+- fetch only the chunks that the installed version does not have (Range;
+  the others are read from the files of its tree, and every blob that is
+  reused is checked against the signed index, §6.3), make the new tree,
+  verify as in §5, and only then move `current` (the previous version stays
+  in `previous`; `panpak rollback` swaps them). Installed launchers use
   the runtime through `bin/panpak-stub` (§6) and the stub verifies its pin at every
   start; direct execution of a `.panpak` only shows the fingerprint.
 
@@ -607,15 +608,17 @@ Reference-implementation layout (paths under
 ```
 ~/.local/share/panpak/
   chunks/<hash>          # (reserved: verified raw-chunk cache)
-  blobs/<filehash>-<mode> # whole verified files, shared via hardlink across trees
+  blobs/<name>-<mode>      # whole verified files, shared via hardlink across trees; <name> is the BLAKE3 of the mode and the chunk hashes of the file
   trees/<root_hash>/     # materialized tree (hardlinks from identical blobs)
   farms/<root_hash>/     # ABI symlink farm: one link per SONAME (host or bundle, §7)
   runtimes/<abi>/panpak-stub  # installed runtimes (`panpak install-runtime`)
   bin/panpak-stub -> ../runtimes/<abi>/panpak-stub  # the best installed ABI; launchers use this path
   bin/panpak              # the CLI, for the menu action "Uninstall"; written by `install-runtime`
-  packages/<id>-<ver>.panpak  # installed packages (signed, verified)
-  apps/<id>/current -> ../../trees/<root_hash>
-  apps/<id>/previous -> ...   # for rollback
+  packages/<id>-<ver>-<root start>.rec  # the record of an installed version (§6.3); the store keeps no copy of the package
+  abi-cache/             # the cached resolutions (§7)
+  staging/<id>/<root>/   # the chunks of an update that is being downloaded, one file per chunk
+  apps/<id>/current -> ../../packages/<record>
+  apps/<id>/previous -> ...   # a record again, for rollback
   apps/<id>/pinned-key      # TOFU pin of the update key
   apps/<id>/update.url      # update URL (if declared)
   apps/<id>/xdg-dirs        # user folders fixed at install (§3.1.4)
@@ -647,6 +650,54 @@ The stub MUST refuse packages with `min_runtime` above its own
 launcher MUST run the package only through the installed runtime;
 direct execution of the `.panpak` file is allowed but MUST be limited
 to showing the key fingerprint (no trust assumed).
+
+### 6.2 Making the store durable [NORMATIVE for the order; the mechanism is INFORMATIVE]
+
+One rule: **a link is made only after everything it leads to is written back to the disk.** The links are `trees/<root>` (published by a rename of
+`trees/<root>.partial`), `apps/<id>/current` and `previous`, and the record in `packages/`. The runtime makes a version durable in this order:
+
+1. the files of the tree: the data of every file written now (the kernel is asked to start the writeback of each as it is written, and an `fsync`
+   of each follows), and the folder `blobs/`;
+2. every folder of the tree (their entries are the hard links and links of the tree) and the mark `.complete`;
+3. the rename of `<root>.partial` to `<root>`, then `fsync` of `trees/`;
+4. the record: written to a temporary file, `fsync`, rename, `fsync` of `packages/`;
+5. only then the link `current` (written as a temporary link and renamed, then `fsync` of the folder).
+
+It never uses `syncfs`, which writes the data of every program on the file system. The `fsync`s are on the files and folders of Panpak only,
+and run on several threads, since syncs that wait for the disk together share the wait: on ext4, 938 folders took 4.4 s one after the other and
+15 to 78 ms on 16 threads; 2,233 files took 0.25 s. Blobs that are already in the store are not synced again, unless one was changed in the last
+30 seconds (it may belong to an install that is still running). A tree that a crash left half made is `<root>.partial`, never `<root>`, and the
+next start that needs it removes it (also when it was already read-only) and makes it again.
+
+### 6.3 The record of an installed version [NORMATIVE]
+
+The store keeps one copy of the content of an app: its tree. What stays of the package is the part that a start needs, in a file with its own
+magic: the compressed index, the manifest, the signature and a footer, in this order,
+
+```
++---------------------------+
+| index (zstd)              |  index_off = 0
++---------------------------+
+| manifest.toml | sig (64)  |
++---------------------------+
+| footer (80 bytes)         |  magic `PANR\0\1\0\0`, the fields of §2 with index_off = 0
++---------------------------+
+```
+
+The signed message is `manifest || root` and `root` is the hash of the raw index, so the signature of the package is the signature of the record and
+`verify` reads a record as it reads a package. A record has no stub and no chunks.
+
+- A reader of **packages** (`install`, `update`, `doctor <package>`, `licenses`, every other use of the footer of §2) MUST refuse a record with
+  `PANPAK-E0010`: the magic differs from §2 in its third byte, so no other reader takes one for the other.
+- `panpak-stub run` runs a record only when the path resolves to a file directly inside `<store>/packages/`; anywhere else it is `PANPAK-E0010`. A
+  record cannot leave the store and be used as a package, and a package cannot be put in the store and run as a record.
+- A start with a record needs `trees/<root>/.complete`; without it the start stops with `PANPAK-E2007` (the record holds no chunks to make the tree
+  again). `panpak repair <app id>` makes the files right again: the tree is compared with the signed index, the chunks that intact files hold are
+  kept, and the others come from the update URL of the app (refused if it now serves another version) or from a package given with `--from`.
+- `install` makes the app ready: `panpak-stub prepare` verifies, makes the tree and the resolution (the farm and its cache entry) with the code and
+  the stub identity of a start, so that the first start is a cache hit. `update` downloads only the chunks that the installed version does not
+  have into `staging/<id>/<root>/`, makes the new tree from the files of the old one and those chunks, checking every reused blob against the signed
+  index, and only then moves `previous` and `current`.
 
 ## 7. ABI resolution (`[abi]`) [NORMATIVE]
 

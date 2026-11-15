@@ -42,6 +42,24 @@ pub fn read_from_package(f: &mut File, raw_index: &[u8], man: &panpak_core::Mani
     Ok(out)
 }
 
+/// The same, from the tree of an installed version (an update has no package file: the icons are files of the tree it just made).
+pub fn read_from_tree(tree: &Path, man: &panpak_core::Manifest) -> Result<Vec<Checked>> {
+    use std::io::Read;
+    let mut out: Vec<Checked> = Vec::new();
+    for path in man.desktop.as_ref().and_then(|d| d.icons.as_deref()).unwrap_or_default() {
+        let file = tree.join(panpak_core::safe_path(path)?);
+        let meta = fs::symlink_metadata(&file).with_context(|| format!("icon {path}"))?;
+        anyhow::ensure!(meta.file_type().is_file() && meta.len() <= panpak_icon::MAX_FILE as u64, "icon {path}: not a regular file of the size the format allows");
+        let mut data = Vec::new();
+        File::open(&file).with_context(|| format!("icon {path}"))?.take(panpak_icon::MAX_FILE as u64 + 1).read_to_end(&mut data)?;
+        let side = panpak_icon::check(&data).map_err(|why| anyhow::anyhow!("icon {path}: {why}"))?.side;
+        if !out.iter().any(|c| c.side == side) {
+            out.push(Checked { side, data });
+        }
+    }
+    Ok(out)
+}
+
 /// A destination that is a link or not a regular file is not replaced.
 fn check_destination(path: &Path) -> Result<()> {
     match fs::symlink_metadata(path) {

@@ -176,8 +176,12 @@ fn resolve_in(
     let mut needs = a.and_then(|v| v.needs.clone()).unwrap_or_default();
     let prefer = a.and_then(|v| v.prefer_host.clone()).unwrap_or_default();
     let allowed = a.and_then(|v| v.allow_missing.clone()).unwrap_or_default();
+    let t_b = std::time::Instant::now();
     let bundled = abi::bundled_libs(tree);
+    trace(&format!("bundled inventory of the tree: {} us", t_b.elapsed().as_micros()));
+    let t_i = std::time::Instant::now();
     let inv = inventory();
+    trace(&format!("host inventory: {} us", t_i.elapsed().as_micros()));
     // Without a reliable host inventory nothing is cached.
     let cacheable = inv.is_some();
     let host = inv.unwrap_or_else(abi::host_libs);
@@ -228,7 +232,9 @@ fn resolve_in(
             eprintln!("panpak:   {file}: {sym}");
         }
     }
+    let t_a = std::time::Instant::now();
     let plan = abi::apply(store, root, tree, decisions, &bundled)?;
+    trace(&format!("farm made: {} us", t_a.elapsed().as_micros()));
     if let (Some(key), Some(path)) = (key, cache_path) {
         // Every file the decision depends on, plus the farm links and the folders of the plan:
         // a replaced or deleted link, or a system library updated in place, is a miss.

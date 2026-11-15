@@ -209,6 +209,12 @@ then call `PermissionStore.DeletePermission` for the app and revoke its document
 
 ### 2.5 Hardening of the app process (tested in tests/hardening.py and the unit tests)
 
+- **The record of an installed version is not a package.** The store keeps the signed index and manifest of each installed version in a file with
+  its own magic (`PANPAK-FORMAT.md` §6.3), not the package. A reader of packages refuses it (`PANPAK-E0010`), and the stub runs one only when its
+  path resolves inside `<store>/packages/`, so a record that is copied out of the store cannot be installed, and a file put in the store cannot be
+  taken for a package. Tested: `panpak-core` unit tests, `tests/store_flow.py`. What it does not do: a program that can write the user's store
+  (the app cannot: it has no access to it) could replace a tree; the signature is checked at every start, the tree is not hashed at every start
+  (`panpak doctor <app id>` compares it with the signed index, `panpak repair` makes it right).
 - **The library path reaches only the app's own programs.** `LD_LIBRARY_PATH` of the app is `/$ORIGIN/.panpak-lib-<h>/...`
   (`PANPAK-FORMAT.md` §7.1), not a list of paths of the store. A system program that the app starts inherits the text but
   finds no such folder next to itself, and uses its own libraries (before this, it loaded the package's: a defect, and a way

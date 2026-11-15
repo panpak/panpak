@@ -16,4 +16,13 @@ fuzz_target!(|data: &[u8]| {
     }
     // Wrong lengths: must fail with an error, never panic.
     let _ = panpak_core::parse_footer(size, body);
+    // The footer of a record (an installed version) is read by the same rules, with its own magic.
+    if body.len() >= 80 {
+        let mut rec = body[..80].to_vec();
+        rec[..8].copy_from_slice(panpak_core::record::RECORD_MAGIC);
+        if let Ok(ft) = panpak_core::record::parse_record_footer(size, &rec) {
+            let _ = panpak_core::check_layout(size, &ft);
+        }
+    }
+    let _ = panpak_core::record::parse_record_footer(size, body);
 });

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Step 8a: one copy of an app in the store, and the app is ready when `install` ends.** The store no longer keeps the package: `install` makes the tree (with
+  the farm and the cache of the resolution, by `panpak-stub prepare`, the code a start uses) and keeps a record of the version (`packages/<id>-<version>-<root>.rec`: the
+  signed index, manifest and signature, with the magic `PANR`; PANPAK-FORMAT.md 6.3). A record is never a package (`PANPAK-E0010` for `install`, `update` and the other readers; the stub
+  runs one only from `packages/`). A start whose files are gone says `PANPAK-E2007`; `panpak repair <app id>` makes them right from the update URL (or `--from <package>`),
+  `panpak doctor <app id>` compares the tree with the signed index. `update` downloads only the chunks the installed version does not have and builds the new tree from its
+  files (the reused blobs are checked against the index); `rollback` checks that the files of the previous version are there. Made durable in an order that keeps a link from
+  being on disk before what it leads to (6.2): `fsync` of exactly the files and folders of Panpak, on several threads (no `syncfs`); folders one after the other took 4.4 s,
+  on 16 threads 15 to 78 ms. The tree is made on up to 8 threads, large files by parts, and a file whose blob is in the store (named by its chunk hashes) is only linked.
+  Measured (ext4, this machine, 40 runs of each): Text Editor first install 0.46 to 0.6 s (the first version of this code, with a sync after every folder: 4 s); Ghostty
+  installed second, with 77% of its 2,491 files already in the store: 0.28 to 0.30 s; `install` used to take 0.08 s and leave the work to the first start (0.6 s). A tree that a killed start
+  left read-only in `<root>.partial` could not be removed and stopped the next start: found by the interruption test, fixed. `panpak remove` also takes `<root>.lock` and `<root>.partial`.
+  Tests: `tests/store_flow.py`, `tests/interrupt_8a.py` (install and update killed at 148 moments), unit tests of the stub and the core. The garbage collection of old trees, blobs and
+  cache entries is step 8e.
 - **Two stale tests.** `tests/abi_cache.py` expected a change of the output of `ldconfig` to invalidate the warm cache of the resolution; the key is the identity of `/etc/ld.so.cache` since the cache was made, and a hit runs no other process, so the test now checks that. The test of `SQLITE_TMPDIR` (`sqlite_tmpdir.py`) expected the old layout of the private folders, a `SQLITE_TMPDIR` that the user's value could override and no isolated view; `tests/app_dirs.py` and `tests/view.py` check the variable today, so it is removed.
 - **Step 8, defect 60: the library path of an app is valid only for its own programs.** The stub put the farm and the library folders of the package in `LD_LIBRARY_PATH` as
   absolute paths, and every program that the app started inherited it: a system program loaded the package's libraries instead of its own (`zenity` failed with `symbol lookup error`

@@ -104,9 +104,9 @@ def main():
         stub = min([c[1] for c in chunks], default=ft[3])
         old_stub = min([c[1] for c in old_chunks], default=index(old)[0][3])
         stub_reuse = old[:old_stub] == new[:stub]
+        # What an update downloads: the footer, the manifest, the signature, the index and the chunks that the installed version does not have.
+        # The stub of the new package is never downloaded: the runtime is installed, and the store keeps no copy of the stub of a package.
         analytical = 80 + ft[4] + ft[6] + 64 + sum(end - start for start, end in missing)
-        if not stub_reuse:
-            analytical += stub
         store = tmp / 'data/panpak'
         current = store / 'apps/org.example.incremental/current'
         run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'old.panpak'], env)
@@ -121,16 +121,21 @@ def main():
                 log = tmp / 'ranges.jsonl'
                 log.unlink(missing_ok=True)
                 if mode == 'normal':
-                    # Signature/root remain valid but a reused local chunk is bad.
-                    reused = next(c for c in old_chunks if any(c[0] == n[0] for n in chunks))
-                    local = current.resolve()
-                    damaged = bytearray(local.read_bytes())
-                    damaged[reused[1]] ^= 255
-                    local.write_bytes(damaged)
-                    run([BIN / 'panpak', 'update', '--allow-insecure-http', '--timeout', '2',
-                         'org.example.incremental'], env, ok=False)
+                    # Signature and root remain valid but a file of the installed tree, holding a chunk that the update would reuse, is damaged:
+                    # the update must stop and say so, and `current` must stay.
+                    root = current.resolve().read_bytes()[-32:].hex()
+                    victim = store / 'trees' / root / 'payload0'
+                    original = victim.read_bytes()
+                    victim.chmod(0o644)
+                    victim.write_bytes(bytes([original[0] ^ 255]) + original[1:])
+                    victim.chmod(0o444)
+                    failed = run([BIN / 'panpak', 'update', '--allow-insecure-http', '--timeout', '2',
+                                  'org.example.incremental'], env, ok=False)
+                    assert 'panpak repair' in failed.stderr, failed.stderr
                     assert current.readlink() == before
-                    local.write_bytes(old)
+                    victim.chmod(0o644)
+                    victim.write_bytes(original)
+                    victim.chmod(0o444)
                     time.sleep(0.1)
                     log.unlink(missing_ok=True)
                 result = run([BIN / 'panpak', 'update', '--allow-insecure-http', '--timeout', '2',
@@ -141,7 +146,11 @@ def main():
                     rows = [json.loads(l) for l in log.read_text().splitlines()]
                     actual = sum(r['bytes'] for r in rows)
                     assert actual == analytical, (actual, analytical)
-                    assert current.resolve().read_bytes() == new
+                    new_root = new[-32:].hex()
+                    assert current.readlink() != before and current.resolve().name.endswith('.rec')
+                    assert (store / 'trees' / new_root / '.complete').exists(), 'the tree of the new version is made by the update'
+                    assert (store / 'trees' / new_root / 'payload2').read_bytes() == bytes([52]) * 180000
+                    assert not (store / 'staging').exists() or not any((store / 'staging').iterdir()), 'the download folder is gone'
                     print(json.dumps({'analytical_bytes': analytical, 'downloaded_bytes': actual,
                                       'full_package_bytes': len(new), 'requests': len(rows),
                                       'missing_chunks': len(missing), 'total_chunks': len(chunks),

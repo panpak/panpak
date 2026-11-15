@@ -3,7 +3,9 @@
 // Build: cargo build --release --target x86_64-unknown-linux-musl
 use anyhow::{bail, ensure, Context, Result};
 use panpak_core::{bail_code, coded, ensure_code, ErrorCode};
-use panpak_core::{hex, ChunkDecoder, parse_index, read_at, read_footer, verify, Chunk, Entry, Kind};
+use panpak_core::{hex, ChunkDecoder, parse_index, verify, Chunk, Entry, Kind};
+#[cfg(test)]
+use panpak_core::read_footer;
 use std::{
     fs::{self, File, OpenOptions},
     io::Write,
@@ -49,11 +51,108 @@ fn mkdir_secure(base: &Path, rel: &Path) -> Result<()> {
     Ok(())
 }
 
-fn chunk_bytes<'a>(f: &mut File, c: &Chunk, dec: &mut ChunkDecoder, scratch: &'a mut Vec<u8>) -> Result<&'a [u8]> {
-    // Cap = declared raw (validated by the parser: <= 1 MiB).
-    dec.decode(&read_at(f, c.off, c.comp as u64)?[..], c.raw as u64, scratch)?;
-    panpak_core::verify_chunk(c, scratch)?;
-    Ok(scratch)
+/// Run `f` on every item, on `threads` threads, stopping at the first error.
+fn par_each<T: Sync>(items: &[T], threads: usize, f: &(dyn Fn(&T) -> Result<()> + Sync)) -> Result<()> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failed: std::sync::Mutex<Option<anyhow::Error>> = std::sync::Mutex::new(None);
+    std::thread::scope(|s| {
+        for _ in 0..threads.max(1).min(items.len().max(1)) {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(item) = items.get(i) else { break };
+                if failed.lock().map(|e| e.is_some()).unwrap_or(true) {
+                    break;
+                }
+                if let Err(e) = f(item) {
+                    if let Ok(mut slot) = failed.lock() {
+                        slot.get_or_insert(e);
+                    }
+                    break;
+                }
+            });
+        }
+    });
+    match failed.into_inner().ok().flatten() {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Where the bytes of a chunk come from when a tree is made: the package itself (`install`, a start of a package file), or what an update
+/// downloaded together with the files of the tree it replaces (`prepare --chunks`). Shared by the threads that make the files: it holds no
+/// state that changes (a package is read with `pread`), and every thread brings its own decoder and buffer.
+trait ChunkSource: Sync {
+    /// The raw bytes of chunk `c`, checked against its hash.
+    fn raw<'a>(&self, c: &Chunk, dec: &mut ChunkDecoder, scratch: &'a mut Vec<u8>) -> Result<&'a [u8]>;
+}
+
+/// The chunks of an open package file.
+struct PackageChunks<'f> {
+    f: &'f File,
+}
+
+impl ChunkSource for PackageChunks<'_> {
+    fn raw<'a>(&self, c: &Chunk, dec: &mut ChunkDecoder, scratch: &'a mut Vec<u8>) -> Result<&'a [u8]> {
+        use std::os::unix::fs::FileExt;
+        let mut comp = vec![0u8; c.comp as usize];
+        self.f.read_exact_at(&mut comp, c.off)?;
+        // Cap = declared raw (validated by the parser: <= 1 MiB).
+        dec.decode(&comp, c.raw as u64, scratch)?;
+        panpak_core::verify_chunk(c, scratch)?;
+        Ok(scratch)
+    }
+}
+
+/// The chunks of an update: the ones that were downloaded (a file `<hash in hex>` of the folder, the compressed chunk as it is in the
+/// package) and the ones that the files of an installed tree already hold (found by the index of that version). A chunk is checked against
+/// its hash wherever it comes from; one that is in neither is an error that says which.
+struct StagedChunks {
+    dir: Option<PathBuf>,
+    /// hash -> (file of the old tree, offset in it, raw length)
+    old: std::collections::HashMap<[u8; 32], (PathBuf, u64, u32)>,
+}
+
+impl StagedChunks {
+    /// `old_tree` and the index of its version (`old_chunks`, `old_entries`): where each of its chunks is in its files.
+    fn new(dir: Option<PathBuf>, old: Option<(&Path, &[Chunk], &[Entry])>) -> Self {
+        let mut map = std::collections::HashMap::new();
+        if let Some((tree, chunks, entries)) = old {
+            for e in entries {
+                let Kind::File { chunks: ids } = &e.kind else { continue };
+                let mut off = 0u64;
+                for &id in ids {
+                    let c = &chunks[id as usize];
+                    map.entry(c.hash).or_insert_with(|| (tree.join(&e.path), off, c.raw));
+                    off += c.raw as u64;
+                }
+            }
+        }
+        Self { dir, old: map }
+    }
+}
+
+impl ChunkSource for StagedChunks {
+    fn raw<'a>(&self, c: &Chunk, dec: &mut ChunkDecoder, scratch: &'a mut Vec<u8>) -> Result<&'a [u8]> {
+        use std::os::unix::fs::FileExt;
+        if let Some((path, off, len)) = self.old.get(&c.hash) {
+            if *len == c.raw {
+                // A damaged file of the old tree is not an error here: the chunk is looked for in the download next.
+                let mut bytes = vec![0u8; *len as usize];
+                if File::open(path).and_then(|f| f.read_exact_at(&mut bytes, *off)).is_ok() && panpak_core::verify_chunk(c, &bytes).is_ok() {
+                    scratch.clear();
+                    scratch.extend_from_slice(&bytes);
+                    return Ok(scratch);
+                }
+            }
+        }
+        let dir = self.dir.as_ref().with_context(|| format!("chunk {} is not in the files of the installed version and no download was given", hex(&c.hash)))?;
+        let file = dir.join(hex(&c.hash));
+        let comp = fs::read(&file).with_context(|| format!("chunk {} is neither in the installed files nor in {}", hex(&c.hash), dir.display()))?;
+        ensure!(comp.len() == c.comp as usize, "chunk {}: the downloaded file has {} bytes, the index says {}", hex(&c.hash), comp.len(), c.comp);
+        dec.decode(&comp, c.raw as u64, scratch)?;
+        panpak_core::verify_chunk(c, scratch)?;
+        Ok(scratch)
+    }
 }
 
 /// Write the shared blob (atomic) and link it with a hardlink;
@@ -112,31 +211,278 @@ fn ensure_tree_readonly(tree: &Path) -> Result<()> {
 /// With one time for everything such a cache is never older. Files that are shared between trees (hard links of the blobs) get the same time in each.
 pub const TREE_MTIME: i64 = 946_684_800;
 
-fn set_tree_times(root: &Path) -> Result<()> {
+/// Give every entry of a tree the one time (`TREE_MTIME`) and take the write bits from the files and folders (a link has neither). The entries are
+/// the ones that were made (the folders, the files and the links), so nothing is walked, and the work is shared between threads: it is a few thousand system calls on different inodes.
+fn finalize_tree(root: &Path, paths: &[PathBuf]) -> Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    fn one(p: &Path) {
-        let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else { return };
+    fn one(p: &Path) -> Result<()> {
+        let c = std::ffi::CString::new(p.as_os_str().as_bytes()).context("path with a NUL")?;
         let t = libc::timespec { tv_sec: TREE_MTIME, tv_nsec: 0 };
         // SAFETY: utimensat(2) with a NUL-terminated path and two valid timespecs; the link itself is changed, never what it points to.
         unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), [t, t].as_ptr(), libc::AT_SYMLINK_NOFOLLOW) };
-    }
-    fn walk(dir: &Path) -> Result<()> {
-        for e in fs::read_dir(dir)? {
-            let e = e?;
-            if e.file_type()?.is_dir() {
-                walk(&e.path())?;
+        let m = fs::symlink_metadata(p)?;
+        if !m.file_type().is_symlink() {
+            let mode = m.permissions().mode();
+            if mode & 0o222 != 0 {
+                fs::set_permissions(p, fs::Permissions::from_mode(mode & !0o222))?;
             }
-            one(&e.path());
         }
         Ok(())
     }
-    walk(root)?;
-    one(root);
-    Ok(())
+    let threads = work_threads().min(paths.len().max(1));
+    let per = paths.len().div_ceil(threads.max(1)).max(1);
+    let failed: std::sync::Mutex<Option<anyhow::Error>> = std::sync::Mutex::new(None);
+    std::thread::scope(|s| {
+        for part in paths.chunks(per) {
+            let failed = &failed;
+            s.spawn(move || {
+                for rel in part {
+                    if let Err(err) = one(&root.join(rel)) {
+                        if let Ok(mut f) = failed.lock() {
+                            f.get_or_insert(err);
+                        }
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    if let Some(e) = failed.into_inner().ok().flatten() {
+        return Err(e);
+    }
+    // The mark and the root last: they are not entries of the index (and a folder's own time does not change when its entries do not).
+    one(&root.join(".complete"))?;
+    one(root)
 }
 
-/// Materialize the tree into the store; chunks are verified before use.
-/// Identical files (by content+mode) share the same inode from store/blobs.
+/// One file of a tree to make: where, from which chunks of the index, with which mode.
+struct FileJob<'a> {
+    dst: PathBuf,
+    ids: &'a [u32],
+    mode: u32,
+}
+
+struct Made {
+    /// The files that were written now (not only linked): the ones whose data must be made durable.
+    fresh: Vec<PathBuf>,
+    decode: std::time::Duration,
+    write: std::time::Duration,
+    threads: usize,
+}
+
+/// How many threads make the files of a tree and sync them: the cores, at most 8 (the work is decoding, which uses a core each, and system
+/// calls on different files).
+fn sync_threads() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(2, 8) * 2
+}
+
+fn work_threads() -> usize {
+    // `PANPAK_THREADS` is for measuring (and for a machine where the default is wrong).
+    if let Some(n) = std::env::var("PANPAK_THREADS").ok().and_then(|v| v.parse::<usize>().ok()).filter(|n| (1..=64).contains(n)) {
+        return n;
+    }
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 8)
+}
+
+/// The name of the blob of a file: the hash of its chunk hashes and its mode. The index gives it, so whether the blob is in the store is
+/// known without reading the file: two files with the same chunks have the same bytes (the hash of each chunk is checked when it is decoded).
+fn blob_name(chunks: &[Chunk], ids: &[u32], mode: u32) -> String {
+    let mut h = blake3::Hasher::new();
+    h.update(b"panpak-blob-v2");
+    h.update(&mode.to_le_bytes());
+    for &id in ids {
+        h.update(&chunks[id as usize].hash);
+    }
+    format!("{}-{mode:o}", hex(h.finalize().as_bytes()))
+}
+
+/// Does the blob hold the chunks that the index lists for the file: every chunk, read from the blob, has the hash of the index?
+fn blob_matches(blob: &Path, chunks: &[Chunk], ids: &[u32]) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = File::open(blob) else { return false };
+    let mut buf = Vec::new();
+    for &id in ids {
+        let c = &chunks[id as usize];
+        buf.clear();
+        match (&mut f).take(c.raw as u64).read_to_end(&mut buf) {
+            Ok(n) if n == c.raw as usize && panpak_core::verify_chunk(c, &buf).is_ok() => {}
+            _ => return false,
+        }
+    }
+    // Nothing after the last chunk.
+    let mut extra = [0u8; 1];
+    matches!(f.read(&mut extra), Ok(0))
+}
+
+/// One piece of work for the threads that make the files.
+enum Work {
+    /// A file whose blob is made or linked by one thread.
+    Small(usize),
+    /// Chunks `from..to` of a large file, written at `off` (the file was made and sized beforehand): its chunks are decoded and written by
+    /// several threads at once.
+    Part { job: usize, from: usize, to: usize, off: u64 },
+}
+
+/// The chunks of a large file that one piece of work takes.
+const PART_CHUNKS: usize = 16;
+
+fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: &Path, check_blobs: bool) -> Result<Made> {
+    use std::os::unix::fs::FileExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Large files first (they are the long pieces), then the small ones.
+    let mut work: Vec<Work> = Vec::new();
+    let mut large: Vec<usize> = Vec::new();
+    for (i, job) in jobs.iter().enumerate() {
+        let total: u64 = job.ids.iter().map(|&id| chunks[id as usize].raw as u64).sum();
+        if total > MAX_ASSEMBLE {
+            let f = File::create(&job.dst)?;
+            f.set_len(total)?;
+            let mut off = 0u64;
+            for (n, group) in job.ids.chunks(PART_CHUNKS).enumerate() {
+                work.push(Work::Part { job: i, from: n * PART_CHUNKS, to: n * PART_CHUNKS + group.len(), off });
+                off += group.iter().map(|&id| chunks[id as usize].raw as u64).sum::<u64>();
+            }
+            large.push(i);
+        }
+    }
+    for (i, job) in jobs.iter().enumerate() {
+        let total: u64 = job.ids.iter().map(|&id| chunks[id as usize].raw as u64).sum();
+        if total <= MAX_ASSEMBLE {
+            work.push(Work::Small(i));
+        }
+    }
+    let next = AtomicUsize::new(0);
+    let failed: std::sync::Mutex<Option<anyhow::Error>> = std::sync::Mutex::new(None);
+    let threads = work_threads().min(work.len().max(1));
+    let results: std::sync::Mutex<Vec<(Vec<PathBuf>, std::time::Duration, std::time::Duration)>> = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                let mut fresh = Vec::new();
+                let (mut t_decode, mut t_write) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
+                let run = (|| -> Result<()> {
+                    let mut dec = ChunkDecoder::new()?;
+                    let mut scratch = Vec::new();
+                    let mut buf: Vec<u8> = Vec::new();
+                    loop {
+                        let w = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = work.get(w) else { return Ok(()) };
+                        if failed.lock().map(|f| f.is_some()).unwrap_or(true) {
+                            return Ok(());
+                        }
+                        let i = match item {
+                            Work::Part { job, from, to, off } => {
+                                let job = &jobs[*job];
+                                let out = OpenOptions::new().write(true).open(&job.dst)?;
+                                let mut at = *off;
+                                for &id in &job.ids[*from..*to] {
+                                    let t = std::time::Instant::now();
+                                    let raw = src.raw(&chunks[id as usize], &mut dec, &mut scratch)?;
+                                    t_decode += t.elapsed();
+                                    let t = std::time::Instant::now();
+                                    out.write_all_at(raw, at)?;
+                                    at += raw.len() as u64;
+                                    t_write += t.elapsed();
+                                }
+                                panpak_core::durable::start_writeback(&out);
+                                continue;
+                            }
+                            Work::Small(i) => *i,
+                        };
+                        let job = &jobs[i];
+                        let blob = blobs.join(blob_name(chunks, job.ids, job.mode));
+                        let t = std::time::Instant::now();
+                        let mut existing = fs::symlink_metadata(&blob).ok();
+                        if existing.is_some() && check_blobs && !blob_matches(&blob, chunks, job.ids) {
+                            // An update or a repair: a blob that is not what the signed index says is not used. It is taken out of the store (the
+                            // other trees that hold it keep their copy of the inode, which `repair` of those apps finds) and made again below.
+                            fs::remove_file(&blob)?;
+                            existing = None;
+                        }
+                        if let Some(m) = existing {
+                            ensure_blob_readonly(&blob)?;
+                            // A blob that was changed a moment ago may belong to a start that has not synced it yet (two installs at once):
+                            // its data is made durable here too, so that this tree never names data that is not on disk.
+                            let recent = {
+                                use std::os::unix::fs::MetadataExt;
+                                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+                                now - m.ctime() < 30
+                            };
+                            link_or_copy(&blob, &job.dst, None, job.mode)?;
+                            t_write += t.elapsed();
+                            if recent {
+                                fresh.push(job.dst.clone());
+                            }
+                            continue;
+                        }
+                        buf.clear();
+                        for &id in job.ids {
+                            buf.extend_from_slice(src.raw(&chunks[id as usize], &mut dec, &mut scratch)?);
+                        }
+                        t_decode += t.elapsed();
+                        let t = std::time::Instant::now();
+                        // Another tree (another lock), or another thread of this one, may be writing the same blob: a name of its own.
+                        let btmp = blob.with_extension(format!("part{}-{i}", std::process::id()));
+                        let mut out = File::create(&btmp)?;
+                        out.write_all(&buf)?;
+                        panpak_core::durable::start_writeback(&out);
+                        drop(out);
+                        // Shared blob: never writable (defense in depth).
+                        fs::set_permissions(&btmp, fs::Permissions::from_mode(job.mode & !0o222))?;
+                        let _ = fs::rename(&btmp, &blob); // Identical content wins.
+                        link_or_copy(&blob, &job.dst, Some(&buf), job.mode)?;
+                        t_write += t.elapsed();
+                        fresh.push(job.dst.clone());
+                    }
+                })();
+                if let Err(e) = run {
+                    if let Ok(mut f) = failed.lock() {
+                        f.get_or_insert(e);
+                    }
+                }
+                if let Ok(mut r) = results.lock() {
+                    r.push((fresh, t_decode, t_write));
+                }
+            });
+        }
+    });
+    if let Some(e) = failed.into_inner().ok().flatten() {
+        return Err(e);
+    }
+    let mut made = Made { fresh: Vec::new(), decode: std::time::Duration::ZERO, write: std::time::Duration::ZERO, threads };
+    for (f, d, w) in results.into_inner().unwrap_or_default() {
+        made.fresh.extend(f);
+        made.decode += d;
+        made.write += w;
+    }
+    for i in large {
+        fs::set_permissions(&jobs[i].dst, fs::Permissions::from_mode(jobs[i].mode))?;
+        made.fresh.push(jobs[i].dst.clone());
+    }
+    made.fresh.sort();
+    Ok(made)
+}
+
+/// Remove what a start that was killed left in `<root>.partial`. Its folders may already be read-only (the last steps before the publish take the
+/// write bits away), and a read-only folder cannot lose its entries: they are made writable first. Links are never followed.
+fn remove_partial_tree(path: &Path) -> Result<()> {
+    if fs::symlink_metadata(path).is_err() {
+        return Ok(());
+    }
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        let Ok(m) = fs::symlink_metadata(&p) else { continue };
+        if m.is_dir() {
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o755))?;
+            for e in fs::read_dir(&p)? {
+                stack.push(e?.path());
+            }
+        }
+    }
+    fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))
+}
+
+/// Materialize the tree of a package file into the store (see `materialize_from`).
 fn materialize(
     f: &mut File,
     store: &Path,
@@ -144,15 +490,30 @@ fn materialize(
     chunks: &[Chunk],
     entries: &[Entry],
 ) -> Result<PathBuf> {
+    materialize_from(&PackageChunks { f: &*f }, store, root, chunks, entries, false)
+}
+
+/// Materialize the tree into the store; chunks are verified before use.
+/// Identical files (by content+mode) share the same inode from store/blobs.
+///
+/// Durable in this order (PANPAK-FORMAT.md 6.2): the data of every file is written back, then the folders of the tree, and only then
+/// is the tree published with a rename and the `trees` folder synced: nothing that names the tree can be on disk before the tree.
+fn materialize_from(
+    src: &dyn ChunkSource,
+    store: &Path,
+    root: &[u8; 32],
+    chunks: &[Chunk],
+    entries: &[Entry],
+    check_blobs: bool,
+) -> Result<PathBuf> {
     use std::collections::HashMap;
     let tree = store.join("trees").join(hex(root));
     if tree.join(".complete").exists() {
         ensure_tree_readonly(&tree)?;
         return Ok(tree);
     } // Fast startup.
-    // One zstd context and one buffer for every chunk of the package.
-    let mut dec = ChunkDecoder::new()?;
-    let mut scratch = Vec::new();
+    // Where the time goes (shown with PANPAK_DEBUG): decoding the chunks, writing files and links, making the tree durable.
+    let t_start = std::time::Instant::now();
     // One builder per tree: starts that overlap on a store without the tree wait here, then find it done.
     // The lock goes with the file descriptor, so a builder that dies never leaves the others stuck.
     fs::create_dir_all(store.join("trees"))?;
@@ -166,56 +527,81 @@ fn materialize(
     // Under the lock nobody else writes here: a folder from a start that was killed is removed, and the
     // new one is built apart and published with one rename.
     let tmp = tree.with_extension("partial");
-    let _ = fs::remove_dir_all(&tmp);
+    remove_partial_tree(&tmp)?;
     fs::create_dir_all(&tmp)?;
     let blobs = store.join("blobs");
     fs::create_dir_all(&blobs)?;
 
-    // Pass 1: dirs and files. No symlink exists yet in tmp.
+    // Pass 1: the folders (one thread) and the list of the files to make. No symlink exists yet in tmp.
+    let t_pass1 = std::time::Instant::now();
+    let mut jobs: Vec<FileJob> = Vec::new();
+    // The folders: every one the index names and every parent of a file, made level by level (a level needs the one above), the folders of a level
+    // on several threads. The tree is a folder that this start has just made, under its lock, and holds no link yet (links come after the files),
+    // so a plain `mkdir` is safe; `mkdir_secure`, which checks every component of the path, was a third of the time of making 940 folders.
+    let mut dir_modes: HashMap<&Path, u32> = HashMap::new();
+    let mut made_dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let add_with_parents = |p: &Path, set: &mut std::collections::BTreeSet<PathBuf>| {
+        let mut cur = Some(p);
+        while let Some(c) = cur {
+            if c.as_os_str().is_empty() || !set.insert(c.to_path_buf()) {
+                break;
+            }
+            cur = c.parent();
+        }
+    };
+    let mut seen: std::collections::HashSet<&Path> = std::collections::HashSet::new();
     for e in entries {
-        let dst = tmp.join(&e.path);
+        ensure!(seen.insert(e.path.as_path()), "path already exists");
         match &e.kind {
             Kind::Dir => {
-                mkdir_secure(&tmp, &e.path)?;
-                fs::set_permissions(&dst, fs::Permissions::from_mode(e.mode))?;
+                dir_modes.insert(&e.path, e.mode);
+                add_with_parents(&e.path, &mut made_dirs);
             }
-            Kind::Link(_) => {}
-            Kind::File { chunks: ids } => {
+            Kind::Link(_) => {
                 if let Some(parent) = e.path.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        mkdir_secure(&tmp, parent)?;
-                    }
+                    add_with_parents(parent, &mut made_dirs);
                 }
-                ensure!(fs::symlink_metadata(&dst).is_err(), "path already exists");
-                let total: u64 = ids.iter().map(|&i| chunks[i as usize].raw as u64).sum();
-                if total <= MAX_ASSEMBLE {
-                    let mut buf = Vec::with_capacity(total as usize);
-                    for &id in ids {
-                        buf.extend_from_slice(chunk_bytes(f, &chunks[id as usize], &mut dec, &mut scratch)?);
-                    }
-                    let fid = hex(blake3::hash(&buf).as_bytes());
-                    let blob = blobs.join(format!("{fid}-{:o}", e.mode));
-                    if !blob.exists() {
-                        // Another tree (another lock) may be writing the same blob: a name of its own.
-                        let btmp = blob.with_extension(format!("part{}", std::process::id()));
-                        fs::write(&btmp, &buf)?;
-                        // Shared blob: never writable (defense in depth).
-                        fs::set_permissions(&btmp, fs::Permissions::from_mode(e.mode & !0o222))?;
-                        let _ = fs::rename(&btmp, &blob); // Identical content wins.
-                    } else {
-                        ensure_blob_readonly(&blob)?;
-                    }
-                    link_or_copy(&blob, &dst, Some(&buf), e.mode)?;
-                } else {
-                    let mut out = File::create(&dst)?;
-                    for &id in ids {
-                        out.write_all(chunk_bytes(f, &chunks[id as usize], &mut dec, &mut scratch)?)?;
-                    }
-                    fs::set_permissions(&dst, fs::Permissions::from_mode(e.mode))?;
+            }
+            Kind::File { chunks: ids } => {
+                let dst = tmp.join(&e.path);
+                if let Some(parent) = e.path.parent() {
+                    add_with_parents(parent, &mut made_dirs);
                 }
+                jobs.push(FileJob { dst, ids, mode: e.mode });
             }
         }
     }
+    let mut levels: Vec<Vec<&PathBuf>> = Vec::new();
+    for d in &made_dirs {
+        let depth = d.components().count();
+        if levels.len() < depth {
+            levels.resize_with(depth, Vec::new);
+        }
+        levels[depth - 1].push(d);
+    }
+    for level in &levels {
+        par_each(level, work_threads(), &|rel: &&PathBuf| {
+            let path = tmp.join(rel.as_path());
+            fs::create_dir(&path).with_context(|| format!("make the folder {}", path.display()))?;
+            if let Some(mode) = dir_modes.get(rel.as_path()) {
+                fs::set_permissions(&path, fs::Permissions::from_mode(*mode))?;
+            }
+            Ok(())
+        })?;
+    }
+    for job in &jobs {
+        ensure!(fs::symlink_metadata(&job.dst).is_err(), "path already exists");
+    }
+    // Pass 1b: the files, on every core. A file whose blob is already in the store is only linked: the blob is named by the hashes of its
+    // chunks, which the index gives, so nothing of it is decoded or written. The others are decoded, written (the kernel is asked to start
+    // writing them back at once) and linked; their paths are kept for the sync below.
+    let t_folders = t_pass1.elapsed();
+    let t_files_pass = std::time::Instant::now();
+    let made = make_files(src, chunks, &jobs, &blobs, check_blobs)?;
+    let t_files_wall = t_files_pass.elapsed();
+    let t_after = std::time::Instant::now();
+    let durable = made.fresh;
+    let (t_decode, t_write) = (made.decode, made.write);
 
     // Pass 2: symlinks, checking the target RESOLVED against the
     // link's directory (spec §5.5): a relative target with leading ".."
@@ -290,14 +676,66 @@ fn materialize(
     let farm_link = tmp.join(panpak_core::libpath::FARM_LINK);
     ensure!(fs::symlink_metadata(&farm_link).is_err(), "the package has a path that the runtime keeps for the farm: {}", panpak_core::libpath::FARM_LINK);
     std::os::unix::fs::symlink(panpak_core::libpath::farm_target(&hex(root)), &farm_link)?;
+    let t_links_only = t_after.elapsed();
+    let t_links = std::time::Instant::now();
     File::create(tmp.join(".complete"))?;
-    set_tree_times(&tmp)?;
-    // Non-writable tree before publishing it (defense in depth).
-    strip_write_bits(&tmp)?;
+    // One time for everything, and nothing writable, before the tree is published (defense in depth).
+    let mut all: Vec<PathBuf> = made_dirs.iter().cloned().collect();
+    all.extend(entries.iter().filter(|e| !matches!(e.kind, Kind::Dir)).map(|e| e.path.clone()));
+    finalize_tree(&tmp, &all)?;
+    let t_meta = t_links.elapsed();
+    let t_sync = std::time::Instant::now();
+    // Everything is made; now it is made durable, files first (each was asked to start its writeback as it was written, so the
+    // `fsync`s here mostly wait for writes that are already under way), then the blobs folder, then every folder of the tree and the mark.
+    panpak_core::durable::fsync_files(&durable, sync_threads())?;
+    let t_files = t_sync.elapsed();
+    panpak_core::durable::fsync_file(&tmp.join(".complete"))?;
+    panpak_core::durable::fsync_dir(&blobs)?;
+    let t_blobs = t_sync.elapsed();
+    fsync_tree_dirs(&tmp)?;
+    let t_dirs = t_sync.elapsed();
     fs::rename(&tmp, &tree)?;
+    panpak_core::durable::fsync_dir(&store.join("trees"))?;
+    if panpak_core::debug_enabled() {
+        eprintln!(
+            "panpak: debug: folders {:.0} ms, files {:.0} ms (wall), links {:.0} ms; tree made in {:.0} ms ({} threads, {} of {} files only linked): decode {:.0} ms, write {:.0} ms (cpu time of all threads), links and times {:.0} ms, fsync {:.0} ms (files {:.0}, blobs folder {:.0}, tree folders {:.0})",
+            t_folders.as_secs_f64() * 1000.0,
+            t_files_wall.as_secs_f64() * 1000.0,
+            t_links_only.as_secs_f64() * 1000.0,
+            t_start.elapsed().as_secs_f64() * 1000.0,
+            made.threads,
+            jobs.len() - durable.len(),
+            jobs.len(),
+            t_decode.as_secs_f64() * 1000.0,
+            t_write.as_secs_f64() * 1000.0,
+            t_meta.as_secs_f64() * 1000.0,
+            t_sync.elapsed().as_secs_f64() * 1000.0,
+            t_files.as_secs_f64() * 1000.0,
+            (t_blobs - t_files).as_secs_f64() * 1000.0,
+            (t_dirs - t_blobs).as_secs_f64() * 1000.0
+        );
+    }
     File::create(tree.with_extension("readonly"))?;
     drop(lock);
     Ok(tree)
+}
+
+/// `fsync` of every folder of a tree (links, files and folders made in them are entries of their folder). A folder is synced on its own
+/// (a rule of the file system, not of ours), and a sync that waits for the disk costs the same however little it has to write: 938 folders one
+/// after the other took 5 ms each. Several at a time wait for the same write of the disk together, so a few threads do them.
+fn fsync_tree_dirs(root: &Path) -> Result<()> {
+    let mut dirs = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in fs::read_dir(&d)? {
+            let e = e?;
+            if e.file_type()?.is_dir() {
+                stack.push(e.path());
+            }
+        }
+        dirs.push(d);
+    }
+    panpak_core::durable::fsync_dirs(&dirs, sync_threads())
 }
 
 /// Blob from a previous version (still writable): strip the write bits.
@@ -1090,6 +1528,38 @@ fn main() {
     }
 }
 
+/// The tree of a record: it must be there and complete (`PANPAK-E2007` otherwise: a record holds no chunks to make it again).
+fn existing_tree(store: &Path, root: &[u8; 32]) -> Result<PathBuf> {
+    let tree = store.join("trees").join(hex(root));
+    ensure_code!(
+        tree.join(".complete").exists(),
+        ErrorCode::E2007,
+        "the files of the app are missing from the store ({}); run `panpak repair <app id>` to fetch them again",
+        tree.display()
+    );
+    ensure_tree_readonly(&tree)?;
+    Ok(tree)
+}
+
+/// The embedded licenses of a version, read from its tree (the files under `.panpak/licenses`, as the index lists them).
+fn read_tree_licenses(tree: &Path, raw_index: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    const MAX_TOTAL: usize = 16 << 20;
+    let (_chunks, entries) = parse_index(raw_index)?;
+    let mut out = Vec::new();
+    let mut total = 0usize;
+    for e in &entries {
+        if !matches!(e.kind, Kind::File { .. }) {
+            continue;
+        }
+        let Ok(rest) = e.path.strip_prefix(panpak_core::LICENSES_DIR) else { continue };
+        let data = fs::read(tree.join(&e.path)).with_context(|| format!("read {}", e.path.display()))?;
+        total += data.len();
+        ensure!(total <= MAX_TOTAL, "embedded licenses too large");
+        out.push((rest.to_string_lossy().into_owned(), data));
+    }
+    Ok(out)
+}
+
 /// The id of an installed app from the path of its package (`<store>/apps/<id>/current`), when the path has that shape.
 fn installed_app_id(pkg: &Path) -> Option<(String, PathBuf)> {
     let dir = pkg.parent()?;
@@ -1113,6 +1583,71 @@ fn start_lock(pkg: &Path) -> Result<Option<File>> {
         _ => bail_code!(ErrorCode::E2004, "{id} was removed (or is being removed): nothing to start"),
     }
     Ok(Some(lock))
+}
+
+/// `panpak-stub prepare <package or record> [--chunks <folder>] [--from-record <record> | --from-tree <folder>]`: everything the first start does before the sandbox, so that
+/// the app is ready when `install` or `update` ends: the package (or the record) is verified, the tree is made if it is not there, and
+/// the resolution (the farm and the cache of it) is made with the same code and the same stub identity that a start uses, so the first start is a
+/// hit. Nothing of the app is run. For a package the chunks come from the file; for a record they come from the folder `--chunks`
+/// (what an update downloaded, a file per chunk named by its hash) and from the files of the tree of `--from-record` (the version being replaced,
+/// or the same one when `repair` makes the tree again, from `--from-tree`: the damaged tree, moved aside, whose intact files are used).
+fn cmd_prepare(args: &[String]) -> Result<()> {
+    let pkg = PathBuf::from(args.first().ok_or_else(|| coded(ErrorCode::E5002, "usage: panpak-stub prepare <package or record> [--chunks <folder>] [--from-record <record>]"))?);
+    let (mut chunks_dir, mut from_record, mut from_tree) = (None, None, None);
+    let mut it = args[1..].iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--chunks" => chunks_dir = Some(PathBuf::from(it.next().ok_or_else(|| coded(ErrorCode::E5002, "--chunks needs a folder"))?)),
+            "--from-record" => from_record = Some(PathBuf::from(it.next().ok_or_else(|| coded(ErrorCode::E5002, "--from-record needs a record"))?)),
+            "--from-tree" => from_tree = Some(PathBuf::from(it.next().ok_or_else(|| coded(ErrorCode::E5002, "--from-tree needs a folder"))?)),
+            other => bail_code!(ErrorCode::E5001, "unknown option {other}"),
+        }
+    }
+    let store = dirs::data_dir().context("no data dir")?.join("panpak");
+    let mut f = File::open(&pkg)?;
+    let (ft, is_record) = panpak_core::record::read_any_footer(&mut f)?;
+    let (man, raw_index) = verify(&mut f, &ft)?;
+    panpak_core::check_runtime(&man, panpak_core::RUNTIME_ABI)?;
+    let (chunks, entries) = parse_index(&raw_index)?;
+    let tree = if is_record {
+        panpak_core::record::ensure_in_store(&pkg, &store)?;
+        let root = hex(&ft.root);
+        if store.join("trees").join(&root).join(".complete").exists() {
+            existing_tree(&store, &ft.root)?
+        } else {
+            // The files of the version that is replaced, found by its index.
+            let old = match (&from_record, &from_tree) {
+                (None, Some(t)) => {
+                    // The same version again: the files that are still right are used, the index is this record's.
+                    let trees = fs::canonicalize(store.join("trees"))?;
+                    ensure!(fs::canonicalize(t)?.parent() == Some(trees.as_path()), "--from-tree must be a folder of the store's trees");
+                    Some((t.clone(), chunks.clone(), entries.clone()))
+                }
+                (Some(r), _) => {
+                    panpak_core::record::ensure_in_store(r, &store)?;
+                    let mut of = File::open(r)?;
+                    let (oft, o_rec) = panpak_core::record::read_any_footer(&mut of)?;
+                    ensure!(o_rec, "--from-record needs a record");
+                    let (_oman, oraw) = verify(&mut of, &oft)?;
+                    let (ochunks, oentries) = parse_index(&oraw)?;
+                    Some((store.join("trees").join(hex(&oft.root)), ochunks, oentries))
+                }
+                (None, None) => None,
+            };
+            let src = StagedChunks::new(chunks_dir, old.as_ref().map(|(t, c, e)| (t.as_path(), c.as_slice(), e.as_slice())));
+            materialize_from(&src, &store, &ft.root, &chunks, &entries, true)?
+        }
+    } else {
+        let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
+        panpak_core::verify_stub_range(&mut f, stub_len, &man)?;
+        materialize(&mut f, &store, &ft.root, &chunks, &entries)?
+    };
+    stage("tree ready");
+    // The resolution, for the tree just made: the farm and its cache entry.
+    let plan = resolution::resolve(&store, &pkg, &hex(&ft.root), &tree, &man)?;
+    drop(plan);
+    stage("resolution done");
+    Ok(())
 }
 
 fn real_main() -> Result<()> {
@@ -1143,6 +1678,10 @@ fn real_main() -> Result<()> {
             .ok_or_else(|| coded(ErrorCode::E5002, "usage: panpak-stub --panpak-inner <fd>"))?;
         return run_inner(fd);
     }
+    // `panpak-stub prepare ...`: what `panpak install` and `panpak update` run so that the app is ready when they end (see `cmd_prepare`).
+    if args.get(1).map(|s| s.as_str()) == Some("prepare") {
+        return cmd_prepare(&args[2..]);
+    }
     // Two modes: self-contained package (current_exe) or installed runtime
     // (`stub run <package> [args...]`, used by `panpak install` launchers).
     let installed_mode = args.get(1).map(|s| s.as_str()) == Some("run");
@@ -1159,9 +1698,16 @@ fn real_main() -> Result<()> {
     // embedded license texts of the verified package and exit.
     if app_args.iter().any(|a| a == "--panpak-licenses") {
         let mut f = File::open(&pkg)?;
-        let ft = read_footer(&mut f)?;
+        let (ft, is_record) = panpak_core::record::read_any_footer(&mut f)?;
         let (_man, raw_index) = verify(&mut f, &ft)?;
-        let files = panpak_core::read_package_licenses(&mut f, &raw_index)?;
+        let files = if is_record {
+            // A record holds no chunks: the licenses are files of the tree.
+            let store = dirs::data_dir().context("no data dir")?.join("panpak");
+            panpak_core::record::ensure_in_store(&pkg, &store)?;
+            read_tree_licenses(&store.join("trees").join(hex(&ft.root)), &raw_index)?
+        } else {
+            panpak_core::read_package_licenses(&mut f, &raw_index)?
+        };
         ensure!(!files.is_empty(), "package has no embedded licenses");
         for (name, data) in files {
             println!("===== {name} =====");
@@ -1178,7 +1724,9 @@ fn real_main() -> Result<()> {
     let theme_query = if std::env::var_os("GTK_THEME").is_none() { find_gsettings().map(|g| InterfaceQuery::start(&g, GSETTINGS_TIMEOUT)) } else { None };
     stage("started");
     let mut f = File::open(&pkg)?;
-    let ft = read_footer(&mut f)?;
+    // A package, or the record of an installed version (no stub, no chunks: the tree is the only copy of the files).
+    let (ft, is_record) = panpak_core::record::read_any_footer(&mut f)?;
+    ensure_code!(!is_record || installed_mode, ErrorCode::E0010, "{}", panpak_core::record::NOT_A_PACKAGE);
     let (man, raw_index) = verify(&mut f, &ft)?;
     panpak_core::check_runtime(&man, panpak_core::RUNTIME_ABI)?;
     // The filtered session bus takes 15 to 25 ms to come up (a systemd scope, the proxy): its checks are made now and
@@ -1195,6 +1743,9 @@ fn real_main() -> Result<()> {
     let layer_ok = matches!(dbus_early, Some(Ok(_)));
 
     let store = dirs::data_dir().context("no data dir")?.join("panpak");
+    if is_record {
+        panpak_core::record::ensure_in_store(&pkg, &store)?;
+    }
     // TOFU (spec §3.2): if the app is installed (pinned key), the signature
     // must match the pin; on direct run show the fingerprint.
     let key = &man.update.as_ref().context("manifest without [update].key")?.key;
@@ -1220,11 +1771,16 @@ fn real_main() -> Result<()> {
     let (chunks, entries) = parse_index(&raw_index)?;
     // The stub being run (ourselves in direct-mode, never the one in the file in
     // run-mode) must match the signed one: no other stub runs.
-    let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
     stage("index parsed");
-    panpak_core::verify_stub_range(&mut f, stub_len, &man)?;
-    stage("stub range verified");
-    let tree = materialize(&mut f, &store, &ft.root, &chunks, &entries)?;
+    let tree = if is_record {
+        // The stub that runs is the installed runtime, and the stub of the package was checked when it was installed: a record has none.
+        existing_tree(&store, &ft.root)?
+    } else {
+        let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
+        panpak_core::verify_stub_range(&mut f, stub_len, &man)?;
+        stage("stub range verified");
+        materialize(&mut f, &store, &ft.root, &chunks, &entries)?
+    };
     stage("tree ready");
 
     // On cache hit, no bundle inventory or transitive parsing when warm.
@@ -2358,6 +2914,157 @@ mod tests {
         for p in [tree.clone(), tree.join("bin"), tree.join("bin/hello"), tree.join(".complete")] {
             assert_eq!(fs::symlink_metadata(&p).unwrap().mtime(), TREE_MTIME, "{}", p.display());
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Chunks held in memory, by hash: a source for the tests of `materialize_from`.
+    struct MemChunks(std::collections::HashMap<[u8; 32], Vec<u8>>);
+
+    impl ChunkSource for MemChunks {
+        fn raw<'a>(&self, c: &Chunk, _dec: &mut ChunkDecoder, scratch: &'a mut Vec<u8>) -> Result<&'a [u8]> {
+            let data = self.0.get(&c.hash).context("no such chunk in the test source")?;
+            scratch.clear();
+            scratch.extend_from_slice(data);
+            panpak_core::verify_chunk(c, scratch)?;
+            Ok(scratch)
+        }
+    }
+
+    /// An index and a source for files made of the given lists of chunks of `size` bytes each (the content of chunk `n` is `n` repeated with
+    /// a changing byte, so that two chunks are never alike): `(name, mode, chunk numbers)`.
+    fn mem_package(files: &[(&str, u32, &[u8])], size: usize) -> (Vec<Chunk>, Vec<Entry>, MemChunks) {
+        let mut chunks: Vec<Chunk> = Vec::new();
+        let mut data = std::collections::HashMap::new();
+        let mut entries = Vec::new();
+        for (name, mode, numbers) in files {
+            let mut ids = Vec::new();
+            for &n in *numbers {
+                let bytes: Vec<u8> = (0..size).map(|i| (i as u8).wrapping_mul(7).wrapping_add(n).wrapping_add((i >> 8) as u8)).collect();
+                let hash = *blake3::hash(&bytes).as_bytes();
+                let id = match chunks.iter().position(|c| c.hash == hash) {
+                    Some(id) => id,
+                    None => {
+                        chunks.push(Chunk { hash, off: 0, comp: 1, raw: size as u32 });
+                        data.insert(hash, bytes);
+                        chunks.len() - 1
+                    }
+                };
+                ids.push(id as u32);
+            }
+            entries.push(Entry { path: PathBuf::from(name), mode: *mode, kind: Kind::File { chunks: ids } });
+        }
+        (chunks, entries, MemChunks(data))
+    }
+
+    #[test]
+    fn a_large_file_is_made_by_several_threads_and_reads_back_whole() {
+        let dir = tmpdir("large");
+        // 40 chunks of 300,000 bytes: 12 MB, above the size that one thread assembles in memory; and a small file next to it.
+        let numbers: Vec<u8> = (0..40).collect();
+        let (chunks, entries, src) = mem_package(&[("big", 0o755, &numbers), ("small", 0o644, &[3, 4])], 300_000);
+        let root = [9u8; 32];
+        let tree = materialize_from(&src, &dir.join("store"), &root, &chunks, &entries, false).unwrap();
+        let mut want = Vec::new();
+        for &id in match &entries[0].kind { Kind::File { chunks } => chunks, _ => unreachable!() } {
+            want.extend_from_slice(src.0.get(&chunks[id as usize].hash).unwrap());
+        }
+        assert_eq!(fs::read(tree.join("big")).unwrap(), want, "the parts are written at their places");
+        assert_eq!(fs::metadata(tree.join("big")).unwrap().permissions().mode() & 0o777, 0o555, "executable, not writable");
+        assert_eq!(fs::read(tree.join("small")).unwrap().len(), 600_000);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn blobs_are_named_by_the_chunks_and_a_file_that_is_there_is_only_linked() {
+        let (chunks, entries, _src) = mem_package(&[("a", 0o644, &[1, 2]), ("b", 0o644, &[1, 2]), ("c", 0o755, &[1, 2]), ("d", 0o644, &[2, 1])], 1000);
+        let ids = |i: usize| match &entries[i].kind { Kind::File { chunks } => chunks.clone(), _ => unreachable!() };
+        assert_eq!(blob_name(&chunks, &ids(0), 0o644), blob_name(&chunks, &ids(1), 0o644), "same chunks, same blob");
+        assert_ne!(blob_name(&chunks, &ids(0), 0o644), blob_name(&chunks, &ids(2), 0o755), "the mode is part of the name");
+        assert_ne!(blob_name(&chunks, &ids(0), 0o644), blob_name(&chunks, &ids(3), 0o644), "the order of the chunks is part of the name");
+        let dir = tmpdir("blobs");
+        let store = dir.join("store");
+        let (c1, e1, s1) = mem_package(&[("lib", 0o644, &[1, 2, 3])], 4000);
+        let t1 = materialize_from(&s1, &store, &[1u8; 32], &c1, &e1, false).unwrap();
+        // A second tree with the same file (and one more): the file is the same inode, and nothing was decoded for it (a source that has no
+        // chunks at all serves the file that is there).
+        let (c2, e2, s2) = mem_package(&[("lib", 0o644, &[1, 2, 3])], 4000);
+        let empty = MemChunks(std::collections::HashMap::new());
+        let t2 = materialize_from(&empty, &store, &[2u8; 32], &c2, &e2, false).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(fs::metadata(t1.join("lib")).unwrap().ino(), fs::metadata(t2.join("lib")).unwrap().ino());
+        assert_eq!(fs::read(t2.join("lib")).unwrap(), fs::read(t1.join("lib")).unwrap());
+        // A blob that is damaged is used as it is when nothing asks to check, and replaced when an update or a repair does.
+        let blob = fs::read_dir(store.join("blobs")).unwrap().next().unwrap().unwrap().path();
+        fs::set_permissions(&blob, fs::Permissions::from_mode(0o644)).unwrap();
+        let mut bad = fs::read(&blob).unwrap();
+        bad[0] ^= 0xff;
+        fs::write(&blob, &bad).unwrap();
+        let t3 = materialize_from(&empty, &store, &[3u8; 32], &c2, &e2, false).unwrap();
+        assert_eq!(fs::read(t3.join("lib")).unwrap(), bad, "unchecked: the blob that is there");
+        let t4 = materialize_from(&s2, &store, &[4u8; 32], &c2, &e2, true).unwrap();
+        assert_ne!(fs::read(t4.join("lib")).unwrap(), bad);
+        assert_eq!(fs::read(t4.join("lib")).unwrap().len(), 12_000);
+        assert_eq!(blake3::hash(&fs::read(t4.join("lib")).unwrap()), {
+            let mut all = Vec::new();
+            for n in [1u8, 2, 3] {
+                all.extend_from_slice(s2.0.values().find(|v| v[0] == (0u8.wrapping_add(n))).unwrap());
+            }
+            blake3::hash(&all)
+        });
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_update_takes_the_chunks_it_has_from_the_old_tree_and_the_rest_from_the_download() {
+        let dir = tmpdir("staged");
+        let store = dir.join("store");
+        // Version 1 has chunks 1 2 3 in one file and 4 in another. Version 2 keeps the first file but for chunk 2, which changes to 5.
+        let (c1, e1, s1) = mem_package(&[("lib", 0o644, &[1, 2, 3]), ("other", 0o644, &[4])], 5000);
+        let old_tree = materialize_from(&s1, &store, &[1u8; 32], &c1, &e1, false).unwrap();
+        let (c2, e2, s2) = mem_package(&[("lib", 0o644, &[1, 5, 3]), ("other", 0o644, &[4])], 5000);
+        // The download folder holds the compressed chunk that the old tree does not have.
+        let new_hash = *blake3::hash(s2.0.values().find(|v| v[0] == 5).unwrap()).as_bytes();
+        let comp = zstd::encode_all(&s2.0[&new_hash][..], 3).unwrap();
+        let mut c2 = c2;
+        for c in c2.iter_mut() {
+            if c.hash == new_hash {
+                c.comp = comp.len() as u32;
+            }
+        }
+        let dl = dir.join("download");
+        fs::create_dir_all(&dl).unwrap();
+        // Not there yet: an error that names the chunk.
+        let staged = StagedChunks::new(Some(dl.clone()), Some((old_tree.as_path(), &c1, &e1)));
+        let err = materialize_from(&staged, &store, &[2u8; 32], &c2, &e2, true).unwrap_err();
+        assert!(format!("{err:#}").contains(&hex(&new_hash)), "{err:#}");
+        // The chunk comes, but with the wrong size: refused.
+        fs::write(dl.join(hex(&new_hash)), &comp[..comp.len() - 1]).unwrap();
+        assert!(materialize_from(&staged, &store, &[2u8; 32], &c2, &e2, true).is_err());
+        fs::write(dl.join(hex(&new_hash)), &comp).unwrap();
+        let new_tree = materialize_from(&staged, &store, &[2u8; 32], &c2, &e2, true).unwrap();
+        let mut want = Vec::new();
+        for n in [1u8, 5, 3] {
+            want.extend_from_slice(s2.0.values().find(|v| v[0] == n).unwrap());
+        }
+        assert_eq!(fs::read(new_tree.join("lib")).unwrap(), want);
+        // A damaged file of the old tree is not used for the chunks it holds: they must come from the download.
+        let mut damaged = fs::read(old_tree.join("other")).unwrap();
+        damaged[10] ^= 1;
+        fs::set_permissions(old_tree.join("other"), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(old_tree.join("other"), &damaged).unwrap();
+        let (c4, e4, _s4) = mem_package(&[("again", 0o644, &[4, 9])], 5000);
+        let staged = StagedChunks::new(Some(dl.clone()), Some((old_tree.as_path(), &c1, &e1)));
+        let err = materialize_from(&staged, &store, &[3u8; 32], &c4, &e4, true).unwrap_err();
+        assert!(format!("{err:#}").contains("neither in the installed files nor in"), "{err:#}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_record_without_its_tree_stops_with_a_code_that_says_how_to_go_on() {
+        let dir = tmpdir("no-tree");
+        let err = existing_tree(&dir, &[7u8; 32]).unwrap_err();
+        assert_eq!(panpak_core::code_of(&err, ErrorCode::E2000), ErrorCode::E2007);
+        assert!(format!("{err}").contains("panpak repair"), "{err}");
         let _ = fs::remove_dir_all(&dir);
     }
 

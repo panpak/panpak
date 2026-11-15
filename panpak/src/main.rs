@@ -31,7 +31,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -137,8 +137,43 @@ fn coalesce_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 /// local package (byte-identical), index/manifest/footer from remote.
 /// Only missing chunks travel the network. Full verification of the assembled
 /// file before publishing it; current stays intact on error.
+/// Download the chunks `needed` into `staging`, one file per chunk named by its hash (the compressed bytes as they are in the package; the
+/// stub checks each against its hash when it uses it, so nothing here is trusted). A file that is already there with the right size is kept: a
+/// download that was interrupted goes on from where it stopped. `fetch(start, end)` returns the bytes `start..end` of the package;
+/// neighbouring chunks are asked in one request. Returns how many chunks were fetched now and how many bytes came.
+fn fetch_chunks(staging: &Path, needed: &[panpak_core::Chunk], index_off: u64, fetch: &mut dyn FnMut(u64, u64) -> Result<Vec<u8>>) -> Result<(u64, u64)> {
+    fs::create_dir_all(staging)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut todo: Vec<&panpak_core::Chunk> = Vec::new();
+    for c in needed {
+        let end = c.off.checked_add(c.comp as u64).context("chunk exceeds u64")?;
+        ensure!(end <= index_off, "chunk outside region: {c:?}");
+        if !seen.insert(c.hash) {
+            continue;
+        }
+        if fs::metadata(staging.join(panpak_core::hex(&c.hash))).is_ok_and(|m| m.len() == c.comp as u64) {
+            continue;
+        }
+        todo.push(c);
+    }
+    todo.sort_by_key(|c| c.off);
+    let mut bytes_in = 0u64;
+    for (start, end) in coalesce_ranges(todo.iter().map(|c| (c.off, c.off + c.comp as u64)).collect()) {
+        let bytes = fetch(start, end)?;
+        ensure!(bytes.len() as u64 == end - start, "a range came back with {} bytes instead of {}", bytes.len(), end - start);
+        bytes_in += bytes.len() as u64;
+        for c in todo.iter().filter(|c| c.off >= start && c.off + c.comp as u64 <= end) {
+            let part = &bytes[(c.off - start) as usize..(c.off - start) as usize + c.comp as usize];
+            let name = staging.join(panpak_core::hex(&c.hash));
+            let tmp = name.with_extension("part");
+            fs::write(&tmp, part)?;
+            fs::rename(&tmp, &name)?;
+        }
+    }
+    Ok((todo.len() as u64, bytes_in))
+}
+
 fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, allow_insecure: bool, timeout_secs: u64) -> Result<PathBuf> {
-    use std::collections::HashMap;
     panpak_core::validate_app_id(app_id)?;
     remove::recover();
     let store = store_dir()?;
@@ -151,12 +186,10 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     let pin = pin.trim().to_string();
     let current_link = appdir.join("current");
     let current_pkg = fs::read_link(&current_link).context("missing current: reinstall")?;
-    let mut old_f = File::open(&current_pkg).context("unreadable current package")?;
-    let old_ft = panpak_core::read_footer(&mut old_f)?;
-    let (old_man, old_raw) = panpak_core::verify(&mut old_f, &old_ft)?;
+    // The installed version is its record (the signed index and manifest) and its tree.
+    let old = panpak_core::record::open_verified(&current_pkg).context("unreadable record of the installed version")?;
+    let (old_ft, old_man, old_raw) = (old.footer, old.manifest, old.raw_index);
     let (old_chunks0, _) = panpak_core::parse_index(&old_raw)?;
-    let old_stub_len = old_chunks0.iter().map(|c| c.off).min().unwrap_or(old_ft.index_off);
-    panpak_core::verify_stub_range(&mut old_f, old_stub_len, &old_man)?;
     let url = old_man.update.as_ref().and_then(|u| u.url.clone()).context("manifest without [update].url")?;
     let agent = agent_for(&url, allow_insecure, timeout_secs)?;
 
@@ -205,123 +238,74 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     ensure!(total3 == total, "file changed during download");
     let index_raw = panpak_core::decode_capped(&index_comp, panpak_core::MAX_INDEX_RAW)?;
     ensure_code!(blake3::hash(&index_raw).as_bytes() == &ft.root, ErrorCode::E0004, "remote root hash mismatch: corrupt or tampered download, retry; if it persists do not trust the file");
-    let (chunks, entries) = panpak_core::parse_index(&index_raw)?;
-    let _ = entries;
+    let (chunks, _entries) = panpak_core::parse_index(&index_raw)?;
+    let root_hex = panpak_core::hex(&ft.root);
+    // The files of the installed version are what the unchanged chunks are taken from: they must be there.
+    let old_tree = store.join("trees").join(panpak_core::hex(&old_ft.root));
+    ensure_code!(
+        old_tree.join(".complete").exists(),
+        ErrorCode::E2007,
+        "the files of the installed version are missing from the store: run `panpak repair {app_id}` first"
+    );
+    check_glibc(&man)?;
+    // New permissions need a yes before anything is downloaded (current stays on a no).
+    print_isolation(&man);
+    let added = panpak_core::permissions::added(&old_man, &man);
+    accept_new_permissions(&added, yes, accept_new, "update")?;
 
-    // Map old chunks (hash -> (off, comp, raw)) from the local package.
-    let old_index_raw = {
-        let comp = panpak_core::read_at(&mut old_f, old_ft.index_off, old_ft.index_len)?;
-        panpak_core::decode_capped(&comp, panpak_core::MAX_INDEX_RAW)?
-    };
-    let (old_chunks, _) = panpak_core::parse_index(&old_index_raw)?;
-    let mut old_map: HashMap<[u8; 32], (u64, u32, u32)> = HashMap::new();
-    for c in &old_chunks {
-        old_map.entry(c.hash).or_insert((c.off, c.comp, c.raw));
-    }
-
-    // Sparse assembly into the temp file, CONFINED in packages/
-    // (id and version are sanitized; the canonical path must stay inside).
-    let safe_ver: String = man.app.version.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || ".-_".contains(c) { c } else { '_' })
-        .collect();
-    ensure!(!safe_ver.is_empty(), "empty version");
-    let dest = store.join("packages").join(format!("{app_id}-{safe_ver}.panpak"));
-    ensure!(dest.starts_with(store.join("packages")), "path outside staging");
-    let tmp = dest.with_extension("panpak.tmp");
-    let _ = fs::remove_file(&tmp);
-    let mut out = File::create(&tmp)?;
-    out.set_len(total)?;
-    let mut at = |off: u64, data: &[u8]| -> Result<()> {
-        use std::io::{Seek, SeekFrom, Write};
-        out.seek(SeekFrom::Start(off))?;
-        out.write_all(data)?;
-        Ok(())
-    };
-    let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
-    let same_stub = old_stub_len == stub_len
-        && old_man.runtime.as_ref().and_then(|r| r.stub_hash.as_ref())
-            == man.runtime.as_ref().and_then(|r| r.stub_hash.as_ref());
-    let mut missing = Vec::new();
-    if same_stub {
-        // Old hash already verified and new hash authenticated by the signature.
-        for (start, end) in coalesce_ranges(vec![(0, stub_len)]) {
-            at(start, &panpak_core::read_at(&mut old_f, start, end - start)?)?;
-        }
-    } else {
-        missing.push((0, stub_len));
-    }
-    let mut n_fetched = 0u64;
-    let mut n_reused = 0u64;
-    for c in &chunks {
-        let chunk_end = c.off.checked_add(c.comp as u64).context("chunk exceeds u64")?;
-        ensure!(chunk_end <= ft.index_off, "chunk outside region: {c:?}");
-        match old_map.get(&c.hash) {
-            Some(&(o_off, o_comp, o_raw)) if o_comp == c.comp && o_raw == c.raw => {
-                let bytes = panpak_core::read_at(&mut old_f, o_off, o_comp as u64)?;
-                at(c.off, &bytes)?;
-                n_reused += 1;
-            }
-            _ => {
-                missing.push((c.off, chunk_end));
-                n_fetched += 1;
-            }
-        }
-    }
-    let mut downloaded = 80 + man_b.len() as u64 + sig_b.len() as u64 + index_comp.len() as u64;
-    for (start, end) in coalesce_ranges(missing) {
+    // What has to be downloaded: the chunks that the installed version does not have.
+    let have: std::collections::HashSet<([u8; 32], u32)> = old_chunks0.iter().map(|c| (c.hash, c.raw)).collect();
+    let needed: Vec<panpak_core::Chunk> = chunks.iter().filter(|c| !have.contains(&(c.hash, c.raw))).cloned().collect();
+    let n_reused = (chunks.len() - needed.len()) as u64;
+    let staging = store.join("staging").join(app_id).join(&root_hex);
+    let (n_fetched, fetched_bytes) = fetch_chunks(&staging, &needed, ft.index_off, &mut |start, end| {
         let (bytes, range_total) = http_range(&agent, &url, start, end - 1)?;
         ensure!(range_total == total, "file changed during download");
-        downloaded += bytes.len() as u64;
-        at(start, &bytes)?;
-    }
-    at(ft.index_off, &index_comp)?;
-    let mut man_sig = man_b.clone();
-    man_sig.extend_from_slice(&sig_b);
-    at(ft.man_off, &man_sig)?;
-    at(total - panpak_core::FOOTER_LEN, &foot)?;
-    drop(out);
+        Ok(bytes)
+    })?;
+    let downloaded = 80 + man_b.len() as u64 + sig_b.len() as u64 + index_comp.len() as u64 + fetched_bytes;
 
-    // Full verification BEFORE publishing (current intact on failure).
-    // Includes the assembled stub: never publish mismatching stubs.
-    let mut vf = File::open(&tmp)?;
-    let vft = panpak_core::read_footer(&mut vf)?;
-    let (vman, vraw) = panpak_core::verify(&mut vf, &vft)?;
-    warn_unknown_fields(&panpak_core::unknown_manifest_keys(&mut vf, &vft));
-    let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
-    panpak_core::verify_stub_range(&mut vf, stub_len, &vman)?;
-    // Reused chunks too: the local store could be damaged.
-    let (mut dec, mut raw) = (panpak_core::ChunkDecoder::new()?, Vec::new());
-    for c in &chunks {
-        let comp = panpak_core::read_at(&mut vf, c.off, c.comp as u64)?;
-        dec.decode(&comp, c.raw as u64, &mut raw)?;
-        panpak_core::verify_chunk(c, &raw)?;
-    }
-    if let Err(e) = check_glibc(&vman) {
-        let _ = fs::remove_file(&tmp);
+    // The record of the new version, then the tree and the resolution, then the links.
+    let packages = store.join("packages");
+    fs::create_dir_all(&packages)?;
+    let dest = packages.join(panpak_core::record::record_name(app_id, &man.app.version, &root_hex));
+    ensure!(dest.starts_with(&packages), "path outside the store");
+    let record = panpak_core::record::record_bytes(&index_comp, &man_b, &sig_b, ft.root);
+    panpak_core::durable::write_file(&dest, &record, 0o644)?;
+    let stub_for_prepare = stable_stub_link(&store)?;
+    let staging_arg = staging.clone();
+    if let Err(e) = run_prepare(
+        &stub_for_prepare,
+        &[dest.as_os_str(), "--chunks".as_ref(), staging_arg.as_os_str(), "--from-record".as_ref(), current_pkg.as_os_str()],
+    ) {
+        // The record is not named by any link yet: it goes, and so does what was downloaded (a chunk that came damaged would be found there
+        // again by the next try; the stub checks every chunk against its hash only now).
+        let _ = fs::remove_file(&dest);
+        let _ = fs::remove_dir_all(store.join("staging").join(app_id));
+        // If the installed files themselves are damaged, say so: that is `repair`, not another update.
+        let (installed_idx, installed_entries) = panpak_core::parse_index(&old_raw)?;
+        let (bad, _) = verify_tree(&old_tree, &installed_idx, &installed_entries);
+        if !bad.is_empty() {
+            bail_code!(ErrorCode::E2007, "the files of the installed version are damaged ({} file(s) do not match the signed index, for example {}): run `panpak repair {app_id}`, then update again", bad.len(), bad[0].display());
+        }
         return Err(e);
     }
-    // The icons of the new version are checked before anything is published.
-    let new_icons = icons::read_from_package(&mut vf, &vraw, &vman)?;
+    // The icons of the new version, from its tree, are checked before anything is published.
+    let new_tree = store.join("trees").join(&root_hex);
+    let new_icons = icons::read_from_tree(&new_tree, &man)?;
     icons::check_destinations(app_id, &new_icons)?;
-    // New permissions need a yes before the update is published (current stays on a no).
-    print_isolation(&vman);
-    let added = panpak_core::permissions::added(&old_man, &vman);
-    if let Err(e) = accept_new_permissions(&added, yes, accept_new, "update") {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-    fs::rename(&tmp, &dest)?;
 
     // Atomic switch + previous for rollback + indirection launcher.
-    // The rotated pin is written here: verified file but not yet published.
+    // The rotated pin is written here: verified but not yet published.
     if let Some(k) = rotated_to {
-        fs::write(appdir.join("pinned-key"), format!("{k}\n"))?;
+        panpak_core::durable::write_file(&appdir.join("pinned-key"), format!("{k}\n").as_bytes(), 0o644)?;
     }
-    if current_link.exists() || fs::symlink_metadata(&current_link).is_ok() {
+    if fs::symlink_metadata(&current_link).is_ok() {
         let prev_target = fs::read_link(&current_link)?;
-        symlink_atomic(&prev_target, &appdir.join("previous"))?;
+        panpak_core::durable::replace_symlink(&prev_target, &appdir.join("previous"))?;
     }
-    symlink_atomic(&dest, &current_link)?;
+    panpak_core::durable::replace_symlink(&dest, &current_link)?;
+    let _ = fs::remove_dir_all(store.join("staging").join(app_id));
     let (best_abi, _) = best_runtime(&store)?;
     let stub = stable_stub_link(&store)?;
     ensure_stable_panpak(&store)?;
@@ -352,6 +336,163 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     Ok(dest)
 }
 
+/// Run `panpak-stub prepare <args>` (the stub of the installed runtime): it makes the tree and the resolution of a version, with the code that a
+/// start uses. Its messages are shown as they are.
+fn run_prepare(stub: &Path, args: &[&std::ffi::OsStr]) -> Result<()> {
+    let st = std::process::Command::new(stub)
+        .arg("prepare")
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .status()
+        .with_context(|| format!("run {}", stub.display()))?;
+    ensure!(st.success(), "making the app ready failed ({st}); nothing was installed");
+    Ok(())
+}
+
+/// What is wrong with a tree compared with the signed index of its version: the files that are missing, of another size, with another content, or
+/// of another kind, and the hashes of the chunks that are right (a damaged file may still hold some). The tree is read, never changed.
+fn verify_tree(tree: &Path, chunks: &[panpak_core::Chunk], entries: &[panpak_core::Entry]) -> (Vec<PathBuf>, std::collections::HashSet<[u8; 32]>) {
+    use panpak_core::Kind;
+    use std::io::Read;
+    let mut bad = Vec::new();
+    let mut good = std::collections::HashSet::new();
+    for e in entries {
+        let path = tree.join(&e.path);
+        let ok = match &e.kind {
+            Kind::Dir => fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()),
+            Kind::Link(t) => fs::read_link(&path).is_ok_and(|l| l.to_str() == Some(t.as_str())),
+            Kind::File { chunks: ids } => (|| -> Result<bool> {
+                let meta = fs::symlink_metadata(&path)?;
+                let want: u64 = ids.iter().map(|&i| chunks[i as usize].raw as u64).sum();
+                let mut all = meta.file_type().is_file() && meta.len() == want && (meta.permissions().mode() & 0o111 != 0) == (e.mode & 0o111 != 0);
+                if !meta.file_type().is_file() {
+                    return Ok(false);
+                }
+                let mut f = File::open(&path)?;
+                let mut buf = Vec::new();
+                for &id in ids {
+                    let c = &chunks[id as usize];
+                    buf.clear();
+                    let n = (&mut f).take(c.raw as u64).read_to_end(&mut buf)?;
+                    if n == c.raw as usize && panpak_core::verify_chunk(c, &buf).is_ok() {
+                        good.insert(c.hash);
+                    } else {
+                        all = false;
+                    }
+                }
+                Ok(all)
+            })()
+            .unwrap_or(false),
+        };
+        if !ok {
+            bad.push(e.path.clone());
+        }
+    }
+    (bad, good)
+}
+
+/// Remove a tree of the store: its folders are not writable, so they are made writable first.
+fn remove_store_tree(path: &Path) -> Result<()> {
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        let Ok(m) = fs::symlink_metadata(&p) else { continue };
+        if m.is_dir() {
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o755))?;
+            for e in fs::read_dir(&p)? {
+                stack.push(e?.path());
+            }
+        }
+    }
+    fs::remove_dir_all(path).with_context(|| format!("remove {}", path.display()))
+}
+
+/// `panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>`: make the files of the installed version right again. The tree is
+/// compared with the signed index; the chunks that the intact files hold are kept, the others come from the update URL of the app (the same version:
+/// refused if the server now serves another) or from the package file named by `--from`. A copy that runs stops the repair.
+fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_secs: u64) -> Result<()> {
+    panpak_core::validate_app_id(app_id)?;
+    remove::recover();
+    let store = store_dir()?;
+    let appdir = store.join("apps").join(app_id);
+    let rec_path = fs::read_link(appdir.join("current")).with_context(|| format!("{app_id} is not installed (see `panpak list`)"))?;
+    let rec = panpak_core::record::open_verified(&rec_path).context("unreadable record of the installed version")?;
+    ensure!(rec.is_record, "the installed version is not kept as a record: reinstall the app");
+    let (chunks, entries) = panpak_core::parse_index(&rec.raw_index)?;
+    let root_hex = panpak_core::hex(&rec.footer.root);
+    let tree = store.join("trees").join(&root_hex);
+    let complete = tree.join(".complete").exists();
+    let (bad, good) = if complete { verify_tree(&tree, &chunks, &entries) } else { (Vec::new(), good_from_tree(&tree, &chunks, &entries)) };
+    if complete && bad.is_empty() {
+        println!("{app_id} {}: the files match the signed index; nothing to repair", rec.manifest.app.version);
+        return Ok(());
+    }
+    if complete {
+        println!("{app_id}: {} file(s) of the tree are missing or do not match the signed index, for example {}", bad.len(), bad.iter().take(3).map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "));
+    } else {
+        println!("{app_id}: the files of version {} are not in the store", rec.manifest.app.version);
+    }
+    let _lock = remove::lock_no_copies(app_id, "the repair")?;
+    // The chunks that no intact file holds.
+    let needed: Vec<panpak_core::Chunk> = chunks.iter().filter(|c| !good.contains(&c.hash)).cloned().collect();
+    let staging = store.join("staging").join(app_id).join(&root_hex);
+    let (n, bytes) = match from {
+        Some(pkg) => {
+            let mut pf = File::open(pkg).with_context(|| format!("open {}", pkg.display()))?;
+            let pft = panpak_core::read_footer(&mut pf)?;
+            let (_pman, praw) = panpak_core::verify(&mut pf, &pft)?;
+            ensure!(pft.root == rec.footer.root, "{} is not the installed version (another root hash): repair needs the package of the same version", pkg.display());
+            // The same root hash means the same index, so the offsets of the chunks in the record's index are the offsets in this file.
+            let _ = praw;
+            fetch_chunks(&staging, &needed, pft.index_off, &mut |start, end| panpak_core::read_at(&mut pf, start, end - start))?
+        }
+        None => {
+            let url = fs::read_to_string(appdir.join("update.url")).ok().map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+            let url = url.context("the app has no update URL: give the package of the same version with --from <package>")?;
+            let agent = agent_for(&url, allow_insecure, timeout_secs)?;
+            let (foot, total) = http_suffix(&agent, &url, panpak_core::FOOTER_LEN)?;
+            let rft = panpak_core::parse_footer(total, &foot)?;
+            ensure!(rft.root == rec.footer.root, "the update URL serves another version now (another root hash): run `panpak update {app_id}` instead, or give the package of the installed version with --from <package>");
+            fetch_chunks(&staging, &needed, rft.index_off, &mut |start, end| {
+                let (b, t) = http_range(&agent, &url, start, end - 1)?;
+                ensure!(t == total, "file changed during download");
+                Ok(b)
+            })?
+        }
+    };
+    println!("fetched {n} chunk(s), {bytes} bytes");
+    // The damaged tree moves aside; the new one is made from its intact files and the chunks; only when it is there does the old one go.
+    let aside = tree.with_extension(format!("damaged{}", std::process::id()));
+    let had_tree = fs::symlink_metadata(&tree).is_ok();
+    if had_tree {
+        fs::rename(&tree, &aside).context("move the damaged tree aside")?;
+        let _ = fs::remove_file(tree.with_extension("readonly"));
+    }
+    let stub = stable_stub_link(&store)?;
+    let mut args: Vec<&std::ffi::OsStr> = vec![rec_path.as_os_str(), "--chunks".as_ref(), staging.as_os_str()];
+    if had_tree {
+        args.push("--from-tree".as_ref());
+        args.push(aside.as_os_str());
+    }
+    if let Err(e) = run_prepare(&stub, &args) {
+        if had_tree && !tree.exists() {
+            let _ = fs::rename(&aside, &tree);
+        }
+        return Err(e);
+    }
+    if had_tree {
+        remove_store_tree(&aside)?;
+    }
+    let _ = fs::remove_dir_all(store.join("staging").join(app_id));
+    println!("repaired {app_id} {}", rec.manifest.app.version);
+    Ok(())
+}
+
+/// The chunks of a tree that is not marked complete (a tree that was never finished is not in the store under its name, so this is only for
+/// a folder somebody left): none are trusted.
+fn good_from_tree(_tree: &Path, _chunks: &[panpak_core::Chunk], _entries: &[panpak_core::Entry]) -> std::collections::HashSet<[u8; 32]> {
+    std::collections::HashSet::new()
+}
+
 fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     panpak_core::validate_app_id(app_id)?;
     let appdir = store_dir()?.join("apps").join(app_id);
@@ -359,12 +500,20 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     let previous = appdir.join("previous");
     let cur_t = fs::read_link(&current).context("missing current")?;
     let prev_t = fs::read_link(&previous).context("missing previous: no update to roll back")?;
-    // Atomic swap: current<->previous.
-    let swap_tmp = appdir.join("current.swap");
-    let _ = fs::remove_file(&swap_tmp);
-    std::os::unix::fs::symlink(&prev_t, &swap_tmp)?;
-    fs::rename(&swap_tmp, &current)?;
-    symlink_atomic(&cur_t, &previous)?;
+    // The files of the version that comes back must still be there.
+    let store = store_dir()?;
+    let (pft, _) = {
+        let mut pf = File::open(&prev_t).with_context(|| format!("open {}", prev_t.display()))?;
+        panpak_core::record::read_any_footer(&mut pf)?
+    };
+    ensure_code!(
+        store.join("trees").join(panpak_core::hex(&pft.root)).join(".complete").exists(),
+        ErrorCode::E2007,
+        "the files of the previous version are missing from the store: no rollback"
+    );
+    // Swap current<->previous: two links, each replaced in one rename; a stop between them leaves both naming the old current.
+    panpak_core::durable::replace_symlink(&prev_t, &current)?;
+    panpak_core::durable::replace_symlink(&cur_t, &previous)?;
     println!("rollback {app_id}: back to {}", prev_t.display());
     Ok(prev_t)
 }
@@ -2167,9 +2316,7 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
     let given = Path::new(arg);
     let path = if given.is_file() { given.to_path_buf() } else { store_dir()?.join("apps").join(arg).join("current") };
     ensure_code!(path.exists(), ErrorCode::E5001, "{arg}: not a package file and not an installed app (see `panpak list`)");
-    let mut f = File::open(&path).with_context(|| format!("open {}", path.display()))?;
-    let ft = panpak_core::read_footer(&mut f)?;
-    let (man, _) = panpak_core::verify(&mut f, &ft)?;
+    let man = panpak_core::record::open_verified(&path)?.manifest;
     let key = man.update.as_ref().map(|u| u.key.clone()).unwrap_or_default();
     let fp = panpak_core::parse_pubkey(&key).map(|vk| panpak_core::fingerprint(&vk)).unwrap_or_else(|_| "?".into());
     let (lang, style) = (panpak_core::i18n::current(), perm_style());
@@ -2236,10 +2383,8 @@ fn accept_new_permissions(added: &[panpak_core::permissions::Item], yes: bool, a
 
 /// The manifest of the version installed now, if there is one.
 fn installed_manifest(appdir: &Path) -> Option<panpak_core::Manifest> {
-    let pkg = fs::read_link(appdir.join("current")).ok()?;
-    let mut f = File::open(pkg).ok()?;
-    let ft = panpak_core::read_footer(&mut f).ok()?;
-    panpak_core::verify(&mut f, &ft).ok().map(|(m, _)| m)
+    let rec = fs::read_link(appdir.join("current")).ok()?;
+    panpak_core::record::open_verified(&rec).ok().map(|o| o.manifest)
 }
 
 /// `panpak data path|clear <app-id>`: the private folders of an app.
@@ -2265,6 +2410,12 @@ fn cmd_data(action: &str, app_id: &str, yes: bool) -> Result<()> {
 }
 
 fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Path>) -> Result<PathBuf> {
+    let t0 = std::time::Instant::now();
+    let mark = |what: &str| {
+        if panpak_core::debug_enabled() {
+            eprintln!("panpak: debug: install +{:6.1} ms  {what}", t0.elapsed().as_secs_f64() * 1000.0);
+        }
+    };
     // A removal that was interrupted is finished first: it must not delete what this install writes.
     remove::recover();
     let store = store_dir()?;
@@ -2276,9 +2427,11 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         eprintln!("panpak: --runtime accepts an unverified local build (use only in development)");
         cmd_install_runtime(rt, None, true)?;
     }
+    mark("runtime ready");
     let mut f = File::open(pkg).with_context(|| format!("open {}", pkg.display()))?;
     let ft = panpak_core::read_footer(&mut f)?;
     let (man, raw_index) = panpak_core::verify(&mut f, &ft)?;
+    mark("package verified");
     warn_unknown_fields(&panpak_core::unknown_manifest_keys(&mut f, &ft));
     if man.permissions.as_ref().and_then(|p| p.x11).unwrap_or(false) {
         println!("WARNING X11: this app can observe other apps' input and screen. Abstract-socket isolation will be disabled.");
@@ -2312,6 +2465,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     // The user folders the manifest asks for, found now in the real user-dirs.dirs.
     let (xdg_found, xdg_problems) = resolve_xdg_dirs(&man);
     let pin = appdir.join("pinned-key");
+    let mut new_pin = false;
     if pin.exists() {
         let old = fs::read_to_string(&pin)?;
         ensure_code!(old.trim() == key.trim(), ErrorCode::E1004, "key DIFFERS from TOFU pin: possible attack or changed author; manual reinstall required");
@@ -2354,28 +2508,37 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
             std::io::stdin().read_line(&mut ans)?;
             ensure_code!(tofu_confirmation(&ans), ErrorCode::E1003, "installation cancelled: key not trusted");
         }
-        fs::write(&pin, format!("{key}\n"))?;
+        new_pin = true;
+    }
+    // The app is made ready now: the tree, the farm and the cache of the resolution (the first start has nothing left to make), with the
+    // runtime that will run it. A failure here leaves no pin, no record, no link.
+    mark("checks done");
+    let stub = stable_stub_link(&store)?;
+    run_prepare(&stub, &[pkg.as_os_str()])?;
+    mark("prepared");
+    if new_pin {
+        panpak_core::durable::write_file(&pin, format!("{key}\n").as_bytes(), 0o644)?;
     }
     write_xdg_pin(&appdir, &xdg_found)?;
     if let Some(url) = man.update.as_ref().and_then(|u| u.url.clone()) {
         fs::write(appdir.join("update.url"), format!("{url}\n"))?;
     }
 
-    let safe_ver: String = man
-        .app
-        .version
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || ".-_".contains(c) { c } else { '_' })
-        .collect();
-    let dest = store.join("packages").join(format!("{}-{safe_ver}.panpak", man.app.id));
-    fs::create_dir_all(dest.parent().unwrap())?;
-    fs::copy(pkg, &dest)?;
-    // current -> package: launchers follow it, update/rollback move it.
+    // One copy of the content: the tree. What stays of the package is its record (index, manifest, signature), written whole and synced
+    // before `current` names it; the tree it describes was synced by `prepare`.
+    let packages = store.join("packages");
+    fs::create_dir_all(&packages)?;
+    let dest = packages.join(panpak_core::record::record_name(&man.app.id, &man.app.version, &panpak_core::hex(&ft.root)));
+    panpak_core::durable::write_file(&dest, &panpak_core::record::make_record(&mut f, &ft)?, 0o644)?;
+    // current -> record: launchers follow it, update/rollback move it.
     let current = appdir.join("current");
-    symlink_atomic(&dest, &current)?;
+    panpak_core::durable::replace_symlink(&dest, &current)?;
+    mark("record and current link written");
+    if let Some(apps) = appdir.parent() {
+        panpak_core::durable::fsync_dir(apps)?;
+    }
 
     fs::create_dir_all(launcher.parent().unwrap())?;
-    let stub = stable_stub_link(&store)?;
     ensure_stable_panpak(&store)?;
     write_replacing(&launcher, &dsk::launcher_sh(&man.app.id, &stub, &current)?, 0o755, "launcher", &|s| launcher_is_ours(s, &man.app.id))?;
     fs::create_dir_all(desktop.parent().unwrap())?;
@@ -2396,6 +2559,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         refresh_desktop_database(desktop.parent().unwrap());
     }
 
+    mark("links, launcher, entry and icons written");
     println!("installed: {} (runtime {best_abi})", man.app.id);
     println!("launcher: {}", launcher.display());
     Ok(launcher)
@@ -2535,21 +2699,32 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
     // Package: COMPLETE verification (including every chunk: a doctor that
     // approved corrupt chunks would lie; see conformance/invalid-chunk.panpak).
     if let Some(pkg) = pkg {
-        let mut f = File::open(pkg).with_context(|| format!("open {}", pkg.display()))?;
-        let checked = panpak_core::read_footer(&mut f).and_then(|ft| {
-            panpak_core::verify(&mut f, &ft).and_then(|(man, raw)| {
-                panpak_core::parse_index(&raw).and_then(|(chunks, entries)| {
-                    let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
-                    panpak_core::verify_stub_range(&mut f, stub_len, &man)?;
-                    let (mut dec, mut raw) = (panpak_core::ChunkDecoder::new()?, Vec::new());
-                    for c in &chunks {
-                        let comp = panpak_core::read_at(&mut f, c.off, c.comp as u64)?;
-                        dec.decode(&comp, c.raw as u64, &mut raw)?;
-                        panpak_core::verify_chunk(c, &raw)?;
-                    }
-                    Ok((ft, man, entries))
-                })
-            })
+        // A package file is verified whole; the record of an installed app is verified, and its tree is compared with the signed index.
+        let checked = panpak_core::record::open_verified(pkg).and_then(|mut o| {
+            let (chunks, entries) = panpak_core::parse_index(&o.raw_index)?;
+            if o.is_record {
+                let tree = store.join("trees").join(panpak_core::hex(&o.footer.root));
+                ensure_code!(tree.join(".complete").exists(), ErrorCode::E2007, "the files of the app are missing from the store: run `panpak repair {}`", o.manifest.app.id);
+                let (bad, _) = verify_tree(&tree, &chunks, &entries);
+                ensure_code!(
+                    bad.is_empty(),
+                    ErrorCode::E2007,
+                    "{} file(s) of the tree do not match the signed index, for example {}: run `panpak repair {}`",
+                    bad.len(),
+                    bad.iter().take(3).map(|p| p.display().to_string()).collect::<Vec<_>>().join(", "),
+                    o.manifest.app.id
+                );
+            } else {
+                let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(o.footer.index_off);
+                panpak_core::verify_stub_range(&mut o.file, stub_len, &o.manifest)?;
+                let (mut dec, mut raw) = (panpak_core::ChunkDecoder::new()?, Vec::new());
+                for c in &chunks {
+                    let comp = panpak_core::read_at(&mut o.file, c.off, c.comp as u64)?;
+                    dec.decode(&comp, c.raw as u64, &mut raw)?;
+                    panpak_core::verify_chunk(c, &raw)?;
+                }
+            }
+            Ok((o.footer, o.manifest, entries))
         });
         match checked {
             Ok((ft, man, entries)) => {
@@ -2783,7 +2958,7 @@ fn generic_code(sub: Option<&str>) -> ErrorCode {
         Some("pack" | "convert" | "dump-index" | "dump-manifest" | "dbus-rules") => ErrorCode::E0000,
         Some("keygen" | "release" | "install-runtime") => ErrorCode::E1000,
         Some("init" | "build") => ErrorCode::E6000,
-        Some("install" | "rollback" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove" | "inspect" | "permissions") => ErrorCode::E2000,
+        Some("install" | "rollback" | "repair" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove" | "inspect" | "permissions") => ErrorCode::E2000,
         Some("update") => ErrorCode::E4000,
         _ => ErrorCode::E5000,
     }
@@ -2906,6 +3081,21 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             ensure_code!(args.len() <= 3, ErrorCode::E5001, "licenses [package]\n{usage}", usage = usage());
             cmd_licenses(args.get(2).map(Path::new))
         }
+        Some("repair") => {
+            let (mut from, mut insecure, mut timeout, mut id) = (None, false, 30u64, None);
+            let mut it = args[2..].iter();
+            while let Some(a) = it.next() {
+                match a.as_str() {
+                    "--from" => from = Some(PathBuf::from(it.next().ok_or_else(|| coded(ErrorCode::E5002, "--from needs a package"))?)),
+                    "--allow-insecure-http" => insecure = true,
+                    "--timeout" => timeout = it.next().and_then(|v| v.parse().ok()).ok_or_else(|| coded(ErrorCode::E5002, "--timeout needs a number of seconds"))?,
+                    x if x.starts_with("--") => bail_code!(ErrorCode::E5001, "unknown option {x}"),
+                    x => id = Some(x.to_string()),
+                }
+            }
+            let id = id.ok_or_else(|| coded(ErrorCode::E5002, "repair [--from <package>] <app-id>"))?;
+            cmd_repair(&id, from.as_deref(), insecure, timeout)
+        }
         Some("rollback") => {
             let id = args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "rollback <app-id>"))?;
             cmd_rollback(id)?;
@@ -3024,7 +3214,15 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             (None, _) => bail_code!(ErrorCode::E5002, "desktop-integration install|remove"),
         },
         Some("doctor") => {
-            let pkg = args.get(2).map(PathBuf::from);
+            // A package file, or the id of an installed app (its record and its tree are checked).
+            let pkg = args.get(2).map(|a| {
+                let given = PathBuf::from(a);
+                if given.is_file() || a.contains('/') || panpak_core::validate_app_id(a).is_err() {
+                    given
+                } else {
+                    store_dir().map(|s| s.join("apps").join(a).join("current")).unwrap_or(given)
+                }
+            });
             let rc = cmd_doctor(pkg.as_deref())?;
             if !rc {
                 std::process::exit(1);

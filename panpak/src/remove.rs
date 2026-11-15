@@ -103,7 +103,7 @@ struct PkgInfo {
 
 fn read_pkg(packages: &Dir, name: &OsStr) -> Option<PkgInfo> {
     let mut f = packages.open_file(name).ok()?;
-    let ft = panpak_core::read_footer(&mut f).ok()?;
+    let (ft, _) = panpak_core::record::read_any_footer(&mut f).ok()?;
     let (m, _) = panpak_core::verify(&mut f, &ft).ok()?;
     let perms = panpak_core::permissions::items(&m);
     Some(PkgInfo { id: m.app.id, name: m.app.name, version: m.app.version, root: panpak_core::hex(&ft.root), perms })
@@ -451,7 +451,7 @@ fn roots_in_use(packages: &Option<Dir>) -> HashSet<String> {
     if let Some(p) = packages {
         for n in package_names(packages) {
             if let Ok(mut f) = p.open_file(OsStr::new(&n)) {
-                if let Ok(ft) = panpak_core::read_footer(&mut f) {
+                if let Ok((ft, _)) = panpak_core::record::read_any_footer(&mut f) {
                     set.insert(panpak_core::hex(&ft.root));
                 }
             }
@@ -466,7 +466,7 @@ fn roots_of_other_packages(packages: &Option<Dir>, ours: &[String]) -> HashSet<S
     if let Some(p) = packages {
         for n in package_names(packages).into_iter().filter(|n| !ours.contains(n)) {
             if let Ok(mut f) = p.open_file(OsStr::new(&n)) {
-                if let Ok(ft) = panpak_core::read_footer(&mut f) {
+                if let Ok((ft, _)) = panpak_core::record::read_any_footer(&mut f) {
                     set.insert(panpak_core::hex(&ft.root));
                 }
             }
@@ -496,7 +496,7 @@ fn finish_journal(ctx: &Ctx, j: &Journal, out: &mut Vec<String>) -> Result<()> {
             continue;
         }
         let mut gone = false;
-        for (dir, name) in [(&ctx.trees, r.clone()), (&ctx.trees, format!("{r}.readonly")), (&ctx.farms, r.clone())] {
+        for (dir, name) in [(&ctx.trees, r.clone()), (&ctx.trees, format!("{r}.readonly")), (&ctx.trees, format!("{r}.lock")), (&ctx.trees, format!("{r}.partial")), (&ctx.farms, r.clone())] {
             if let Some(d) = dir {
                 match d.remove_all(OsStr::new(&name)) {
                     Ok(rm) => {
@@ -633,6 +633,22 @@ fn leave_app_scope(id: &str) {
         .and_then(|mut c| panpak_core::dbus::start_scope(&mut c, &format!("panpak-remove-{id}-{}.scope", std::process::id()), &format!("Panpak: removing {id}"), std::process::id(), Some("app.slice")));
     if let Err(e) = moved {
         eprintln!("panpak: could not leave the scope of {id}: {e:#}");
+    }
+}
+
+/// The lock that the copies of an app hold while they run, taken exclusively: while it is ours no copy is running and none starts
+/// (a start waits for it). For `repair` and the like, which replace the files of the app. `what` says what it was for, in the message.
+pub fn lock_no_copies(id: &str, what: &str) -> Result<std::fs::File> {
+    panpak_core::validate_app_id(id)?;
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from) else {
+        return Err(coded(ErrorCode::E2002, format!("XDG_RUNTIME_DIR is not set: cannot tell whether a copy of {id} is running, so {what} was not done")));
+    };
+    let rt_panpak = Dir::open_path(&runtime).and_then(|d| d.create_dir(OsStr::new("panpak"))).map_err(|e| coded(ErrorCode::E2002, format!("cannot use {}: {e}", runtime.display())))?;
+    let rt_app = rt_panpak.create_dir(OsStr::new(id)).map_err(|e| coded(ErrorCode::E2002, format!("cannot use the runtime folder of {id}: {e}")))?;
+    match rt_app.lock_file(OsStr::new("lock")) {
+        Ok(Some(f)) => Ok(f),
+        Ok(None) => Err(coded(ErrorCode::E2002, format!("a copy of {id} is running: close it (all its windows and background processes) and run the command again; {what} was not done"))),
+        Err(e) => Err(coded(ErrorCode::E2002, format!("cannot take the lock of {id}: {e}"))),
     }
 }
 
