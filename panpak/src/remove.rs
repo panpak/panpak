@@ -136,6 +136,8 @@ struct Facts {
     has_icon: bool,
     /// An update that is staged: its version, and whether it waits for the user (it asks for permissions that the installed version does not have).
     pending: Option<(String, bool)>,
+    /// When the background verification last came to the end of the files of the installed version.
+    last_round: Option<u64>,
 }
 
 impl Facts {
@@ -206,6 +208,7 @@ impl Ctx {
             perms: None,
             has_launcher: false,
             pending: None,
+            last_round: None,
             has_desktop: false,
             has_icon: false,
         };
@@ -219,6 +222,11 @@ impl Ctx {
             if st.kind != Kind::Dir {
                 f.problems.push("its store folder is a link or a file".into());
             } else if let Ok(d) = apps.open_dir(OsStr::new(id)) {
+                let bg = read_text(&d, OsStr::new(panpak_core::bgstate::FILE)).map(|t| panpak_core::bgstate::parse(&t)).unwrap_or_default();
+                if bg.damaged > 0 {
+                    f.problems.push(format!("{} file(s) do not match the signed index (for example {}): run `panpak repair {id}`", bg.damaged, bg.damaged_first));
+                }
+                f.last_round = (bg.last_round > 0).then_some(bg.last_round);
                 if let Ok(Some(l)) = d.lstat(OsStr::new(panpak_core::pending::LINK)) {
                     if l.kind == Kind::Link {
                         let target = d.read_link(OsStr::new(panpak_core::pending::LINK)).ok().and_then(|t| std::path::Path::new(&t).file_name().map(|n| n.to_string_lossy().into_owned()));
@@ -325,7 +333,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
             let opt = |v: Option<u64>| v.map_or("null".to_string(), |n| n.to_string());
             let strs = |v: &[String]| format!("[{}]", v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(","));
             out.push_str(&format!(
-                "\n  {{\"id\":{},\"name\":{},\"version\":{},\"status\":{},\"problems\":{},\"package_bytes\":{},\"tree_bytes\":{},\"data_bytes\":{},\"cache_bytes\":{},\"permissions\":{},\"pending\":{},\"packages\":{}}}",
+                "\n  {{\"id\":{},\"name\":{},\"version\":{},\"status\":{},\"problems\":{},\"package_bytes\":{},\"tree_bytes\":{},\"data_bytes\":{},\"cache_bytes\":{},\"permissions\":{},\"pending\":{},\"verified_round\":{},\"packages\":{}}}",
                 json_str(&f.id),
                 f.name.as_deref().map_or("null".into(), json_str),
                 f.version.as_deref().map_or("null".into(), json_str),
@@ -337,6 +345,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
                 opt(f.cache_bytes),
                 f.perms.as_deref().map_or("null".to_string(), panpak_core::permissions::items_json),
                 f.pending.as_ref().map_or("null".to_string(), |(v, w)| format!("{{\"version\":{},\"waits_for_you\":{}}}", json_str(v), w)),
+                f.last_round.map_or("null".to_string(), |n| n.to_string()),
                 strs(&f.packages),
             ));
         }

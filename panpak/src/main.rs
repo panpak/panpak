@@ -8,6 +8,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+mod background;
 mod happy;
 mod icons;
 mod remove;
@@ -31,7 +32,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak config [show] | config set <background.updates|background.verify_mb> <value>\n  panpak background [--force] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day)\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -317,7 +318,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
         let new_icons = icons::read_from_tree(&new_tree, &man)?;
         icons::check_destinations(app_id, &new_icons)?;
         // Staged: the state first, then the link (the link is what an apply looks for).
-        panpak_core::pending::write_state(&appdir, panpak_core::pending::State { needs_accept: stage_only && !added.is_empty() })?;
+        panpak_core::pending::write_state(&appdir, panpak_core::pending::State { needs_accept: stage_only && !added.is_empty(), security: panpak_core::record::open_verified(&dest).is_ok_and(|o| panpak_core::record::security_mark(&o)) })?;
         panpak_core::durable::replace_symlink(&dest, &panpak_core::pending::link_path(&appdir))?;
         panpak_core::failpoint!("stage.pending_linked");
         let _ = fs::remove_dir_all(store.join("staging").join(app_id));
@@ -568,6 +569,7 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
     let (bad, good) = if complete { verify_tree(&tree, &chunks, &entries) } else { (Vec::new(), good_from_tree(&tree, &chunks, &entries)) };
     if complete && bad.is_empty() {
         println!("{app_id} {}: the files match the signed index; nothing to repair", rec.manifest.app.version);
+        clear_damaged(&appdir);
         return Ok(());
     }
     if complete {
@@ -631,7 +633,18 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
     }
     let _ = fs::remove_dir_all(store.join("staging").join(app_id));
     println!("repaired {app_id} {}", rec.manifest.app.version);
+    clear_damaged(&appdir);
     Ok(())
+}
+
+/// The background job noted damaged files: they are right now (or were never wrong), so the note goes.
+fn clear_damaged(appdir: &Path) {
+    let mut st = panpak_core::bgstate::read(appdir);
+    if st.damaged != 0 {
+        st.damaged = 0;
+        st.damaged_first.clear();
+        let _ = panpak_core::bgstate::write(appdir, &st);
+    }
 }
 
 /// The chunks of a tree that is not marked complete (a tree that was never finished is not in the store under its name, so this is only for
@@ -2957,6 +2970,21 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                     }
                     Err(e) => line(false, &format!("unresolved libraries: {}", panpak_core::err_text(&e))),
                 }
+                // What the background job found in the installed files of this app (6.7), when this is its installed version.
+                if let Ok(store) = store_dir() {
+                    let appdir = store.join("apps").join(&man.app.id);
+                    let installed = fs::read_link(appdir.join("current")).ok().and_then(|r| fs::canonicalize(r).ok()) == fs::canonicalize(pkg).ok();
+                    if installed {
+                        let bg = panpak_core::bgstate::read(&appdir);
+                        if bg.damaged > 0 {
+                            line(false, &format!("background verification: {} file(s) do not match the signed index, for example {}; run `panpak repair {}`", bg.damaged, bg.damaged_first, man.app.id));
+                        } else if bg.last_round > 0 {
+                            println!("OK   background verification: a whole round of the installed files matched the signed index (round ended {} days ago)", bgstate_age_days(bg.last_round));
+                        } else {
+                            println!("NOTE background verification: no whole round done yet ({} bytes read today)", bg.verified_bytes);
+                        }
+                    }
+                }
                 if let Some(o) = man.origin.as_ref() {
                     line(true, &format!("provenance: converted from {} v{} (NOT verified by the author)", o.converted_from, o.version));
                     line(true, &format!("original sha256: {}", o.sha256));
@@ -2969,6 +2997,10 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         }
     }
     Ok(ok)
+}
+
+fn bgstate_age_days(t: u64) -> u64 {
+    panpak_core::bgstate::now().saturating_sub(t) / panpak_core::bgstate::DAY
 }
 
 fn abi_features(abi: landlock::ABI) -> &'static str {
@@ -3511,6 +3543,41 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             }
             cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, yes, accept_new, allow, insecure, timeout, stage)?;
             Ok(())
+        }
+        Some("background") => {
+            let (mut force, mut after_start, mut insecure, mut repair, mut id) = (false, false, false, false, None);
+            for a in &args[2..] {
+                match a.as_str() {
+                    "--force" => force = true,
+                    "--after-start" => after_start = true,
+                    "--allow-insecure-http" => insecure = true,
+                    "--repair" => repair = true,
+                    x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    x => id = Some(x),
+                }
+            }
+            let id = id.ok_or_else(|| coded(ErrorCode::E5002, "background <app-id>"))?;
+            if repair {
+                background::cmd_repair_if_damaged(id)
+            } else {
+                background::cmd_background(id, force, after_start, insecure)
+            }
+        }
+        Some("config") => {
+            let file = panpak_core::config::path().context("no config folder (set XDG_CONFIG_HOME or HOME)")?;
+            match (args.get(2).map(|s| s.as_str()), args.get(3), args.get(4), args.len()) {
+                (None, _, _, 2) | (Some("show"), _, _, 3) => {
+                    let c = panpak_core::config::load();
+                    println!("{}\n(file: {}{})", panpak_core::config::render(&c).trim_end(), file.display(), if file.exists() { "" } else { ", not written yet: these are the defaults" });
+                    Ok(())
+                }
+                (Some("set"), Some(k), Some(v), 5) => {
+                    let c = panpak_core::config::set(&file, k, v)?;
+                    println!("{}", panpak_core::config::render(&c).trim_end());
+                    Ok(())
+                }
+                _ => bail_code!(ErrorCode::E5001, "config [show] | config set <background.updates|background.verify_mb> <value>"),
+            }
         }
         Some("apply") => {
             let (mut yes, mut accept_new, mut at_start, mut id) = (false, false, false, None);

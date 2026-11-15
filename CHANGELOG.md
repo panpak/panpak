@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Step 8d: a daily background job.** The stub starts `panpak background <app id>` (detached, nice 19, idle I/O, 20 s after the start) when `apps/<id>/update-state` says it is due: it stages a new
+  version when the update URL has one (the version is applied at a start with no copy running, as in 8c) with a backoff from an hour to a day after a failure, and it reads part of the installed files against
+  the signed index by a budget of megabytes a day (a rotating cursor), notes damage, repairs it when no copy runs (or at the next start with none) and shows it in `panpak list` and `panpak doctor`.
+  `panpak config` shows and sets `background.updates` (on) and `background.verify_mb` (64; 0 is off) in `~/.config/panpak/config.toml`. The mechanism for a security update is in place without a format: the
+  staging asks `record::security_mark` (always no for now) and the job shows one notice through the notification portal. `PANPAK_NO_BACKGROUND` keeps the stub from starting the job.
+  `tests/background.py`; PANPAK-FORMAT.md 6.7; THREAT-MODEL.md. Also prepared, not run: `tests/power_loss_dmlog.py` (writes recorded by `dm-log-writes` in a VM and the disk rebuilt at every flush and at random points).
 - **Step 8c: an update can be staged and is applied at the next start.** `panpak update --stage <app id>` downloads the missing chunks, writes the record and makes the tree and the resolution, and names the record
   with `apps/<id>/pending`; `current` does not move. `panpak apply <app id>` (and the update that `panpak update` makes when the user is there) moves `current` after checking again the signature, the pin
   (a key succession is written as two lines in `pinned-key` for the time of the switch) and the tree, only when no copy of the app runs, and only when the version asks for no new permission that the user has not

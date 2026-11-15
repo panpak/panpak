@@ -48,6 +48,8 @@ def _inside(path, root):
 
 
 def require_isolated_home(home, work):
+    # A test that does not exercise the daily background job keeps the stub from starting it (the job would outlive the test folder).
+    os.environ.setdefault('PANPAK_NO_BACKGROUND', '1')
     if os.environ.get(OVERRIDE) == '1':
         print(f'warning: {OVERRIDE}=1: HOME isolation check skipped for {home}', file=sys.stderr)
         return

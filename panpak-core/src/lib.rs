@@ -12,6 +12,8 @@ pub mod docshare;
 pub mod filechooser;
 pub mod i18n;
 pub mod applock;
+pub mod bgstate;
+pub mod config;
 pub mod durable;
 pub mod failpoint;
 pub mod libpath;

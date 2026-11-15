@@ -56,6 +56,13 @@ pub fn open_verified(path: &Path) -> Result<Opened> {
     Ok(Opened { file, footer, is_record, manifest, raw_index })
 }
 
+/// Does this version carry the mark of a security update? The mark belongs to the signed index (step 9 of the plan) and its format is not fixed yet, so
+/// nothing is a mark today and the answer is always no. The callers (the staging, the notice of the background job) already ask, so that fixing the
+/// format is a change here and nowhere else.
+pub fn security_mark(_version: &Opened) -> bool {
+    false
+}
+
 /// Is the footer in `b` (the last 80 bytes of a file) that of a record?
 pub fn is_record_footer(b: &[u8]) -> bool {
     b.len() == FOOTER_LEN as usize && &b[0..8] == RECORD_MAGIC

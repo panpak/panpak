@@ -1665,6 +1665,38 @@ fn apply_staged_update(pkg: &Path) {
     }
 }
 
+/// The background work of an installed app, decided by one small file (`apps/<id>/update-state`, PANPAK-FORMAT.md 6.7). Files that the job found damaged are
+/// made right before the app starts (`panpak background --repair`: it does nothing when a copy runs or there is no way to fetch them); when the daily job is
+/// due it is started detached, at the lowest priority, and the start goes on without waiting for it. Nothing here can fail a start.
+fn background_work(pkg: &Path) {
+    let Some((id, apps)) = installed_app_id(pkg) else { return };
+    let appdir = apps.join(&id);
+    let state = panpak_core::bgstate::read(&appdir);
+    let Some(store) = apps.parent() else { return };
+    let panpak = store.join("bin/panpak");
+    if !panpak.exists() {
+        return;
+    }
+    if state.damaged > 0 {
+        let _ = Command::new(&panpak).args(["background", "--repair", &id]).stdin(std::process::Stdio::null()).status();
+    }
+    // `PANPAK_NO_BACKGROUND` (set by the tests, and by whoever packages panpak for a machine without a network) keeps the daily job from starting.
+    if state.next_check > panpak_core::bgstate::now() || std::env::var_os("PANPAK_NO_BACKGROUND").is_some() {
+        return;
+    }
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new(&panpak);
+    cmd.args(["background", "--after-start", &id]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    // SAFETY: setsid is async-signal-safe; the job leaves the process group of the app and survives the exec of the app.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let _ = cmd.spawn();
+}
+
 /// Take the shared lock of the copies of an installed app, then check that the app is still installed.
 /// `None` when the path is not that of an installed app or there is no runtime folder.
 fn start_lock(pkg: &Path) -> Result<Option<File>> {
@@ -1790,6 +1822,9 @@ fn real_main() -> Result<()> {
     // exclusive one while it takes the app away, so a start in that moment waits and then finds the app gone.
     if installed_mode {
         apply_staged_update(&pkg);
+    }
+    if installed_mode {
+        background_work(&pkg);
     }
     let early = if installed_mode { start_lock(&pkg)? } else { None };
     // `--panpak-licenses` (a stub flag, like --panpak-open): print the

@@ -163,6 +163,8 @@ jobs:
         run: python3 tests/pkgenv.py
       - name: One copy in the store (install, record, repair, update, rollback, remove)
         run: python3 tests/store_flow.py
+      - name: The background job (check, backoff, rotating verification, settings)
+        run: python3 tests/background.py
       - name: Install and update stopped by a kill at many moments
         run: python3 tests/interrupt_8a.py
       - name: Test points (every command stopped at every named point; a release has none)

@@ -620,6 +620,7 @@ Reference-implementation layout (paths under
   apps/<id>/current -> ../../packages/<record>
   apps/<id>/previous -> ...   # a record again, for rollback
   apps/<id>/pending -> ...    # a staged update (§6.6), with apps/<id>/pending-state
+  apps/<id>/update-state      # the background job's schedule and findings (§6.7)
   apps/<id>/pinned-key      # TOFU pin of the update key
   apps/<id>/update.url      # update URL (if declared)
   apps/<id>/xdg-dirs        # user folders fixed at install (§3.1.4)
@@ -741,6 +742,27 @@ not changed, so a running copy and a start see the installed version until the s
 At the start of an installed app the stub looks for `apps/<id>/pending` (one `lstat`) and, when it is there and does not wait for the user, runs `panpak apply --at-start <id>`: it takes the locks without
 waiting, applies and says so on standard error, or leaves the update for later (a copy runs, another command is working on the app, new permissions) and the start goes on with the installed version.
 `panpak list` shows a staged update: `update <v> is ready: applied at the next start`, or `update <v> waits for you: ...`.
+
+### 6.7 The background job and its state [NORMATIVE for what it must not do; the rest is INFORMATIVE]
+
+`panpak background [--force] <app id>` is the job of one app. The stub starts it at the start of an installed app when `apps/<id>/update-state` says it is due (`next_check` is in the past, or there is no
+file; one small read), detached (its own session), 20 s after the start, at the lowest CPU priority (nice 19) and I/O class (idle). It does nothing when another job of the app holds
+`locks/<id>.bg`, or when it is not due. The environment variable `PANPAK_NO_BACKGROUND` keeps the stub from starting it. A job MUST NOT change what the app runs: it stages (6.6) and it repairs (below), it does not apply.
+
+1. **The check**, when `background.updates` is on and the app has an update URL: `panpak update --stage` (6.6), so with the same checks of the signature and the pin, and nothing is asked. Success: `failures=0`, next check in 24 h.
+   A failure counts in `failures` and the next try is in `3600 * 2^(failures-1)` seconds, at most 24 h.
+2. **The notice of a security update.** A staged version that carries the mark of a security update (`record::security_mark`; the mark belongs to the signed index and its format is not fixed
+   yet, so nothing is a mark today) and that is not applied because a copy of the app runs is shown once to the user by the notification portal (`org.freedesktop.portal.Notification`, through `gdbus`
+   when it exists and a session bus does): it says that a restart applies it. `notified` keeps the root of the version already announced.
+3. **The verification**, when `background.verify_mb` is not 0: the files of the installed version are read in the order of the signed index from `cursor`, until the megabytes of the day (`verify_day`,
+   `verified_bytes`) or 20 s are used, always at least one file; the end of the list is a round (`last_round`, cursor back to 0). A file that is missing or does not match is counted in `damaged`
+   (with the first path in `damaged_first`) and the job repairs it as `panpak repair` does when no copy runs. Otherwise `panpak background --repair <id>`, run by the stub at a start before the app, does it
+   when none runs; a failure never fails a start. `panpak repair` clears the note.
+
+`update-state` is a text file of `key=value` lines (`last_check`, `next_check`, `failures`, `cursor`, `verify_day`, `verified_bytes`, `last_round`, `damaged`, `damaged_first`, `notified`); a reader treats an
+unknown line as absent and a bad number as 0, and nothing in it is trusted for anything but the schedule of the job and what to tell the user.
+
+The settings are `~/.config/panpak/config.toml` (`panpak config`, `panpak config set <key> <value>`): `[background] updates = true`, `verify_mb = 64`. A file that is not valid TOML means the defaults.
 
 ## 7. ABI resolution (`[abi]`) [NORMATIVE]
 
