@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """A second proof for the end of step 8, with the writes themselves: `dm-log-writes` inside a VM records every write that install, update and apply make to a
 test disk, in order, with the flush and FUA marks; then the disk is rebuilt at every flush point and at random points between two flushes (what a loss of
-power at that instant would have left), and the store on each rebuilt disk is checked. A MANUAL test, written to be run in a VM after step 8e, as root.
-Not run yet (it needs root, a kernel with dm-log-writes and `replay-log` from xfstests; none of that is on the machine where it was written).
+power at that instant would have left), and the store on each rebuilt disk is checked. A MANUAL test, to be run in a VM, as root. Results: docs/POWER-LOSS.md.
 
 Needs in the guest: root; `dmsetup`, `losetup`, `mkfs.ext4`, `mount`; the kernel target `log-writes` (`modprobe dm-log-writes`); `replay-log` of xfstests
-(`git clone https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git && make -C xfstests-dev/src/log-writes`; pass it with --replay-log); the release binaries of panpak.
+(`git clone https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git`, then in `src/log-writes`: `gcc -O2 -D_GNU_SOURCE -o replay-log replay-log.c log-writes.c`, which needs no configure; pass it with --replay-log);
+the release binaries of panpak and `range_server.py`; `<work>/packages/v1.panpak` and `v2.panpak` made by `tests/power_loss_packs.py` (signed for --port).
 
 Two phases, one command each:
 
@@ -32,7 +32,6 @@ from pathlib import Path
 import random
 import re
 import shutil
-import struct
 import subprocess
 import sys
 import time
@@ -93,6 +92,16 @@ def record(a):
         for v in ('v1.panpak', 'v2.panpak'):
             if not (packages / v).exists():
                 sys.exit(f'missing {packages / v}: build them as tests/power_loss_vm.py does and copy them there')
+        # The server of the update (its port is the one that the packages were signed for); it lives on the disk of the guest, not on the test disk.
+        serve = work / 'serve'
+        serve.mkdir(exist_ok=True)
+        shutil.copy(packages / 'v2.panpak', serve / 'remote.panpak')
+        shutil.chown(serve, a.user)
+        for q in serve.iterdir():
+            shutil.chown(q, a.user)
+        server = subprocess.Popen(['runuser', '-u', a.user, '--', sys.executable, str(a.range_server), str(serve), str(a.port), 'normal'],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(1.0)
         steps = []
         for r in range(a.rounds):
             steps += [('install', f'{a.bin}/panpak install --yes --runtime {a.bin}/panpak-stub {packages}/v1.panpak'),
@@ -107,6 +116,9 @@ def record(a):
         sh(['dmsetup', 'message', 'logw', '0', 'mark', 'end'])
         sh('sync')
     finally:
+        if 'server' in locals():
+            server.terminate()
+            server.wait(timeout=10)
         sh(['umount', str(mnt)], check=False)
         sh(['dmsetup', 'remove', 'logw'], check=False)
         sh(['losetup', '-d', ld], check=False)
@@ -126,13 +138,6 @@ echo OK
 '''
 
 
-def entries_of(log):
-    with open(log, 'rb') as f:
-        head = f.read(32)
-    magic, version, n, sector = struct.unpack('<QQQI', head[:28])
-    return n
-
-
 def check_point(a, work, label):
     """Mount a snapshot of the rebuilt disk, check, and throw the snapshot away. Returns (verdict, detail)."""
     replay_dev = work / 'replay.img'
@@ -142,7 +147,7 @@ def check_point(a, work, label):
         fh.truncate(1 << 30)
     lr, lc = losetup(replay_dev), losetup(cow)
     sectors = SIZE // 512
-    mnt = work / 'chk'
+    mnt = work / 'mnt'   # the same path as at the recording: the links of the store are absolute
     mnt.mkdir(exist_ok=True)
     try:
         sh(['dmsetup', 'create', 'snap', '--table', f'0 {sectors} snapshot {lr} {lc} N 8'])
@@ -150,6 +155,8 @@ def check_point(a, work, label):
         if r.returncode:
             return 'FAIL', f'{label}: the file system does not mount: {r.stderr.strip()}'
         home = mnt / 'h'
+        if not home.exists():
+            return 'OK', f'{label}: the file system is there, the home is not yet (before the first step)'
         script = work / 'check.sh'
         script.write_text(CHECK.replace('@BIN@', a.bin).replace('@ID@', ID))
         script.chmod(0o755)
@@ -194,15 +201,22 @@ def flush_points(a, work):
     finally:
         sh(['losetup', '-d', ll], check=False)
         sh(['losetup', '-d', lr], check=False)
-    return sorted({int(m.group(1)) for m in re.finditer(r'entry\s+(\d+)[^\n]*\bflush\b', p.stdout + p.stderr, re.I)})
+    # Lines look like `replaying 681@136755: sector 0, size 0, flags 0x8(MARK)`: the entry number, then the flag names.
+    found = [(int(m.group(1)), m.group(2)) for m in re.finditer(r'replaying (\d+)@\d+:[^\n]*flags 0x[0-9a-f]+\(([^)]*)\)', p.stdout + p.stderr)]
+    total = max((n for n, _ in found), default=-1) + 1
+    first_mark = min((n for n, fl in found if 'MARK' in fl.split('|')), default=0)   # the mark `mkfs`: before it there is no file system to check
+    # A point is a number of entries to replay: after the flush at entry n, n + 1 entries are on the disk.
+    return sorted({n + 1 for n, fl in found if n > first_mark and ('FLUSH' in fl.split('|') or 'FUA' in fl.split('|'))}), total
 
 
 def replay(a):
     work = Path(a.work)
     if not (work / 'log.img').exists():
         sys.exit('no log: run `record` first')
-    total = entries_of(work / 'log.img')
-    flushes = flush_points(a, work)
+    flushes, total = flush_points(a, work)
+    if a.max_flush and len(flushes) > a.max_flush:
+        step = len(flushes) / a.max_flush
+        flushes = [flushes[int(i * step)] for i in range(a.max_flush)]
     if not flushes:
         sys.exit('no flush point found in the output of replay-log --verbose: check its version and its output format, then adapt flush_points()')
     rnd = random.Random(a.seed)
@@ -231,8 +245,11 @@ def main():
     ap.add_argument('--bin', required=True)
     ap.add_argument('--work', required=True)
     ap.add_argument('--rounds', type=int, default=3)
+    ap.add_argument('--port', type=int, default=18765, help='the port that the packages were signed for (the server of the update)')
+    ap.add_argument('--range-server', dest='range_server', default='range_server.py')
     ap.add_argument('--replay-log', default='replay-log')
     ap.add_argument('--random', type=int, default=100)
+    ap.add_argument('--max-flush', type=int, default=0, help='check this many flush points, evenly spaced (0: all of them)')
     ap.add_argument('--seed', type=int, default=int(time.time()))
     a = ap.parse_args()
     if os.geteuid() != 0:
