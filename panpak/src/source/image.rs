@@ -403,6 +403,8 @@ pub fn patched_debs(cache: &Path, lock: &Lock, k: &Known) -> Result<PathBuf> {
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&work);
     let _ = std::fs::remove_dir_all(&scratch);
+    // `out` holds the same files as `debs`: it would double the size of what is kept (and of the CI cache).
+    let _ = std::fs::remove_dir_all(&out);
     std::fs::write(dir.join(".complete"), format!("{}\n", lock.image.patches.join("\n")))?;
     Ok(debs)
 }
