@@ -136,9 +136,13 @@ Three fixed paths in the per-user store, written by `install-runtime`:
   to copy, so it installs the stub only and `<store>/bin/panpak` stays as it was. `install` and `update` then
   copy the running `panpak` into `<store>/bin/panpak` when that file is missing, and replace it when it says
   an older version than the running one (`--version`; one rename, under a lock of the folder, so that two
-  installs at once cannot end with the older one). It is never replaced by an older or the same version (a dev
-  build of the same version, run from a test folder, must not overwrite the installed CLI), and never when it is
-  a link or does not say its version: the user is told. `install-runtime` replaces it too, from a release.
+  installs at once cannot end with the older one). At the same version the date of the build decides: `panpak --build-epoch`
+  prints it (`SOURCE_DATE_EPOCH` when it is set at build time, else the date of the last commit that touched the code, so a commit
+  of documents or of the reference hashes does not change the binary; nothing when the build knew neither). Only a strictly newer
+  (version, date) replaces; a stored build that has no date counts as date 0; a running build with no date never replaces one of
+  the same version. It is never replaced by an older version or by an older or the same build (a dev build run from a test folder
+  must not overwrite a newer installed CLI), and never when it is a link or does not say its version: the user is told. A build from a
+  tree with uncommitted changes has the date of the last commit, so it is not told apart from the committed one. `install-runtime` replaces it too, from a release.
 - The launcher and the entry use only these paths: `Exec=... <store>/bin/panpak-stub run <store>/apps/<id>/current`
   in the launcher and `<store>/bin/panpak remove --ask <id>` in the action. Nothing refers to the folder
   where the user happened to run `panpak`.

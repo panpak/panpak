@@ -20,7 +20,14 @@ if [ "${1:-}" = "--no-remap" ]; then REMAP=0; fi
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
-export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1700000000}"
+# The date of the build (`panpak --build-epoch`) is SOURCE_DATE_EPOCH: when it is not set, the date of the last commit that touched the code, as
+# panpak/build.rs would take it (the same list of paths; the copies built below have no .git), else a fixed date.
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+  SOURCE_DATE_EPOCH="$(git -C "$SRC" log -1 --format=%ct -- panpak panpak-core panpak-stub Cargo.toml Cargo.lock rust-toolchain.toml .cargo scripts/zig-cc 2>/dev/null || true)"
+  case "$SOURCE_DATE_EPOCH" in ''|*[!0-9]*) SOURCE_DATE_EPOCH=1700000000 ;; esac
+fi
+export SOURCE_DATE_EPOCH
+echo "build date (SOURCE_DATE_EPOCH): $SOURCE_DATE_EPOCH"
 export CARGO_INCREMENTAL=0
 # No --offline: --locked pins versions (Cargo.lock), the network is only needed
 # at the first fetch and does not change the result.

@@ -157,10 +157,18 @@ fn an_older_stable_panpak_is_updated_and_a_newer_or_other_one_is_never_replaced(
     fs::create_dir_all(e.store().join("bin")).unwrap();
     let mine = e.store().join("bin/panpak");
     let running = fs::read(env!("CARGO_BIN_EXE_panpak")).unwrap();
-    let say = |v: &str| {
+    // The stored one says its version and, when `date` is given, the date of its build (`--build-epoch`; an older build does not know the option).
+    let say_at = |v: &str, date: Option<u64>| {
         let _ = fs::remove_file(&mine);
-        fs::write(&mine, format!("#!/bin/sh\n[ \"$1\" = --version ] && echo 'panpak {v}'\n")).unwrap();
+        let epoch = date.map(|d| format!("[ \"$1\" = --build-epoch ] && echo {d}\n")).unwrap_or_default();
+        fs::write(&mine, format!("#!/bin/sh\n[ \"$1\" = --version ] && echo 'panpak {v}'\n{epoch}exit 0\n")).unwrap();
         fs::set_permissions(&mine, fs::Permissions::from_mode(0o755)).unwrap();
+    };
+    let say = |v: &str| say_at(v, None);
+    // The date of the running panpak (none when this build did not know it: then a build is never told apart from another of the same version).
+    let mine_date: Option<u64> = {
+        let o = std::process::Command::new(env!("CARGO_BIN_EXE_panpak")).arg("--build-epoch").output().unwrap();
+        String::from_utf8(o.stdout).unwrap().trim().parse().ok()
     };
     let leftovers = || {
         let mut v: Vec<String> = fs::read_dir(e.store().join("bin")).unwrap().flatten().map(|x| x.file_name().to_string_lossy().into_owned()).filter(|n| n.contains("tmp")).collect();
@@ -178,14 +186,33 @@ fn an_older_stable_panpak_is_updated_and_a_newer_or_other_one_is_never_replaced(
         assert_eq!(fs::metadata(&mine).unwrap().permissions().mode() & 0o777, 0o755);
         assert!(leftovers().is_empty(), "{:?}", leftovers());
     }
-    // The same version, and a newer one: never replaced, never by an older one, and no warning.
-    for v in [env!("CARGO_PKG_VERSION"), "99.0.0", "0.1.1"] {
-        say(v);
+    // The same version, and a newer one: never replaced, never by an older one, and no warning. A stored one of the same version with the same
+    // date or a later one is not replaced; a higher version is not whatever its date is.
+    let same = env!("CARGO_PKG_VERSION");
+    let mut keep: Vec<(&str, Option<u64>)> = vec![("99.0.0", None), ("99.0.0", Some(0)), ("0.1.1", None)];
+    if let Some(d) = mine_date {
+        keep.extend([(same, Some(d)), (same, Some(d + 1)), ("0.1.1", Some(0))]);
+    } else {
+        keep.push((same, None));
+    }
+    for (v, d) in keep {
+        say_at(v, d);
         let before = fs::read(&mine).unwrap();
         let o = e.install("2", "", &[]);
         assert!(o.status.success(), "{v}: {}", text(&o));
-        assert_eq!(fs::read(&mine).unwrap(), before, "{v}: the stable panpak was replaced");
-        assert!(!text(&o).contains("updated panpak") && !text(&o).contains("older than this one"), "{v}: {}", text(&o));
+        assert_eq!(fs::read(&mine).unwrap(), before, "{v} {d:?}: the stable panpak was replaced");
+        assert!(!text(&o).contains("updated panpak") && !text(&o).contains("older than this one"), "{v} {d:?}: {}", text(&o));
+    }
+    // The same version, built earlier (or one that has no date at all): replaced by a build with a later date, and by it only.
+    if let Some(d) = mine_date {
+        for stored in [None, Some(0), Some(d.saturating_sub(1))].into_iter().filter(|s| s.is_none_or(|x| x < d)) {
+            say_at(same, stored);
+            let o = e.install("2b", "", &[]);
+            assert!(o.status.success(), "{stored:?}: {}", text(&o));
+            assert!(text(&o).contains("updated panpak in"), "{stored:?}: {}", text(&o));
+            assert_eq!(fs::read(&mine).unwrap(), running, "{stored:?}: the stable panpak was not replaced");
+            assert!(leftovers().is_empty(), "{:?}", leftovers());
+        }
     }
     // One that does not say its version is not replaced, and the user is told.
     fs::write(&mine, "#!/bin/sh\nexit 0\n").unwrap();

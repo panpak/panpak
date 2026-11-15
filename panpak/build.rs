@@ -2,9 +2,37 @@
 // Builds assets/nochown.c into a small shared library that `panpak build` puts in its build sandbox. The C compiler is the one the
 // build already uses (Zig in the musl release builds: CC_<target>, as `.cargo/config.toml` sets it; `cc` otherwise). The library has no
 // dependency on a C library, so the same file works for any target.
-use std::{env, path::PathBuf, process::Command};
+//
+// It also sets `PANPAK_BUILD_EPOCH`, the date of this build's code (`panpak --build-epoch`), so that `install` can tell a newer build of the same version
+// from an older one: `SOURCE_DATE_EPOCH` when it is set, else the date of the last commit that touched the code (not the docs, not the reference hashes,
+// so a commit that changes no code does not change the binary), else nothing.
+use std::{env, path::{Path, PathBuf}, process::Command};
+
+/// The paths whose commits count as "code". Keep in step with scripts/repro-build.sh.
+const CODE: &[&str] = &["panpak", "panpak-core", "panpak-stub", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo", "scripts/zig-cc"];
+
+fn build_epoch(root: &Path) -> String {
+    if let Some(v) = env::var("SOURCE_DATE_EPOCH").ok().filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit())) {
+        return v;
+    }
+    let out = Command::new("git").current_dir(root).args(["log", "-1", "--format=%ct", "--"]).args(CODE).output();
+    match out {
+        Ok(o) if o.status.success() => {
+            let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()) { t } else { String::new() }
+        }
+        _ => String::new(),
+    }
+}
 
 fn main() {
+    let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("..");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    // Every commit appends a line here; without it a change in panpak-core alone would not run this script again.
+    if root.join(".git/logs/HEAD").exists() {
+        println!("cargo:rerun-if-changed=../.git/logs/HEAD");
+    }
+    println!("cargo:rustc-env=PANPAK_BUILD_EPOCH={}", build_epoch(&root));
     println!("cargo:rerun-if-changed=assets/nochown.c");
     println!("cargo:rerun-if-changed=build.rs");
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("nochown.so");

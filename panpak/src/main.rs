@@ -1762,6 +1762,28 @@ fn stable_stub_link(store: &Path) -> Result<PathBuf> {
     Ok(link)
 }
 
+/// The date of the code of this build (see `panpak/build.rs`), if the build knew it.
+fn build_epoch() -> Option<u64> {
+    env!("PANPAK_BUILD_EPOCH").parse().ok()
+}
+
+/// The date a `panpak` binary reports with `--build-epoch`: `None` for one that does not know the option (an older build) or prints nothing.
+fn reported_build_epoch(bin: &Path) -> Option<u64> {
+    let out = std::process::Command::new(bin).arg("--build-epoch").stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    out.status.success().then(|| String::from_utf8(out.stdout).ok()).flatten()?.trim().parse().ok()
+}
+
+/// Whether a build of version `mine` and date `mine_date` replaces one of version `have` and date `have_date`: only when it is strictly newer. A higher
+/// version wins whatever the dates are. The same version needs a later date; a stored build without a date counts as date 0, and one without a date of
+/// its own never replaces anything of the same version.
+fn replaces(mine: &str, mine_date: Option<u64>, have: &str, have_date: Option<u64>) -> bool {
+    match cmp_versions(have, mine) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => mine_date.is_some_and(|m| m > have_date.unwrap_or(0)),
+    }
+}
+
 /// The version a `panpak` binary reports with `--version`.
 fn reported_version(bin: &Path) -> Option<String> {
     let out = std::process::Command::new(bin).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
@@ -1795,7 +1817,7 @@ fn ensure_stable_panpak(store: &Path) -> Result<()> {
         }
         Ok(_) if fs::canonicalize(&me).ok() == fs::canonicalize(&dest).ok() => {}
         Ok(_) => match reported_version(&dest) {
-            Some(have) if cmp_versions(&have, mine) == std::cmp::Ordering::Less => {
+            Some(have) if replaces(mine, build_epoch(), &have, reported_build_epoch(&dest)) => {
                 install_file_atomically(&me, &dest, 0o755)?;
                 println!("note: updated panpak in {} from version {have} to {mine} (the menu action \"Uninstall\" runs it)", dest.display());
             }
@@ -2737,6 +2759,13 @@ fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().colle
             println!("panpak {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
+        Some("--build-epoch") if args.len() == 2 => {
+            // Seconds since 1970 of this build's code, or nothing when the build did not know it.
+            if let Some(e) = build_epoch() {
+                println!("{e}");
+            }
+            Ok(())
+        }
         Some("keygen") => match (args.get(2).map(|s| s.as_str()), args.get(3), args.len()) {
             (Some("-o"), Some(f), 4) => cmd_keygen(Path::new(f)),
             _ => bail_code!(ErrorCode::E5002, "keygen -o <secret-file> (the secret is never printed)\n{usage}", usage = usage()),
@@ -3461,6 +3490,24 @@ mod tests {
         assert_eq!(cmp_versions("1.0", "1.0.1"), Less);
         assert_eq!(cmp_versions("1.0-rc1", "1.0"), Less);
         assert_eq!(cmp_versions("0.1.0", "0.1.0"), Equal);
+    }
+
+    #[test]
+    fn a_build_replaces_another_only_when_it_is_strictly_newer() {
+        // A higher version wins whatever the dates are; a lower one never replaces.
+        assert!(replaces("0.2.0", None, "0.1.0", Some(9)));
+        assert!(!replaces("0.1.0", Some(9), "0.2.0", None));
+        // The same version: the later date wins; the same date, or an earlier one, does not.
+        assert!(replaces("0.1.0", Some(10), "0.1.0", Some(9)));
+        assert!(!replaces("0.1.0", Some(9), "0.1.0", Some(9)));
+        assert!(!replaces("0.1.0", Some(8), "0.1.0", Some(9)));
+        // A stored build without a date counts as 0; a running one without a date never replaces.
+        assert!(replaces("0.1.0", Some(1), "0.1.0", None));
+        assert!(!replaces("0.1.0", None, "0.1.0", None));
+        assert!(!replaces("0.1.0", None, "0.1.0", Some(5)));
+        // A prerelease is older than its release, whatever the dates.
+        assert!(replaces("0.1.0", Some(1), "0.1.0-rc1", Some(99)));
+        assert!(!replaces("0.1.0-rc1", Some(99), "0.1.0", Some(1)));
     }
 
     #[test]
