@@ -173,7 +173,7 @@ fn verify_step(app_id: &str, store: &Path, appdir: &Path, config: &panpak_core::
     }
     // The app lock keeps a removal or an update from moving the files while they are read.
     let Ok(_app) = panpak_core::applock::lock_for(store, app_id, std::time::Duration::from_secs(2)) else { return };
-    let Ok(rec_path) = fs::read_link(appdir.join("current")) else { return };
+    let Ok(rec_path) = panpak_core::durable::resolve_link(&appdir.join("current")) else { return };
     let Ok(rec) = panpak_core::record::open_verified(&rec_path) else { return };
     let tree = store.join("trees").join(panpak_core::hex(&rec.footer.root));
     let Ok((chunks, entries)) = panpak_core::parse_index(&rec.raw_index) else { return };

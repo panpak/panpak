@@ -429,7 +429,8 @@ mod tests {
         let entries = || fs::read_dir(store.join("abi-cache")).map(|r| r.count()).unwrap_or(0);
         // First: the system libglib lacks g_new, so no copy fixes it: the included libglib stays.
         go();
-        assert_eq!(fs::read_link(&glib_link).unwrap(), tree.join("lib/libfoo.so.1"));
+        assert_eq!(fs::read_link(&glib_link).unwrap(), Path::new("../../../tree/lib/libfoo.so.1"), "a bundled library is named relative to the farm");
+        assert_eq!(fs::canonicalize(&glib_link).unwrap(), fs::canonicalize(tree.join("lib/libfoo.so.1")).unwrap());
         assert_eq!(entries(), 1);
         // Again: answered from the cache, nothing new is written.
         go();

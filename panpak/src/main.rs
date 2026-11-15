@@ -204,7 +204,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     // The first line (a second one only exists for a moment while a key is being replaced).
     let pin = pin.lines().next().unwrap_or_default().trim().to_string();
     let current_link = appdir.join("current");
-    let current_pkg = fs::read_link(&current_link).context("missing current: reinstall")?;
+    let current_pkg = panpak_core::durable::resolve_link(&current_link).context("missing current: reinstall")?;
     // The installed version is its record (the signed index and manifest) and its tree.
     let old = panpak_core::record::open_verified(&current_pkg).context("unreadable record of the installed version")?;
     let (old_ft, old_man, old_raw) = (old.footer, old.manifest, old.raw_index);
@@ -298,7 +298,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
         panpak_core::failpoint!("update.chunks_fetched");
         let _app_lock = panpak_core::applock::lock(&store, app_id)?;
         ensure!(
-            fs::read_link(&current_link).ok().as_deref() == Some(current_pkg.as_path()),
+            panpak_core::durable::resolve_link(&current_link).ok().as_deref() == Some(current_pkg.as_path()),
             "the app changed while the update was downloaded (another panpak command ran): run `panpak update {app_id}` again; what was downloaded is kept"
         );
         // The record of the new version, then the tree and the resolution, then the link that stages it.
@@ -395,7 +395,7 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool) -> Resul
     let Some(staged) = panpak_core::pending::staged_record(&appdir) else { return skip("no update is staged") };
     let state = panpak_core::pending::read_state(&appdir);
     let current_link = appdir.join("current");
-    let current_rec = fs::read_link(&current_link).context("missing current: reinstall")?;
+    let current_rec = panpak_core::durable::resolve_link(&current_link).context("missing current: reinstall")?;
     let old = panpak_core::record::open_verified(&current_rec).context("unreadable record of the installed version")?;
     let new = match panpak_core::record::open_verified(&staged) {
         Ok(n) if n.is_record => n,
@@ -583,7 +583,7 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
     let _store_lock = panpak_core::applock::store_shared(&store, panpak_core::applock::WAIT)?;
     let _app_lock = panpak_core::applock::lock(&store, app_id)?;
     let appdir = store.join("apps").join(app_id);
-    let rec_path = fs::read_link(appdir.join("current")).with_context(|| format!("{app_id} is not installed (see `panpak list`)"))?;
+    let rec_path = panpak_core::durable::resolve_link(&appdir.join("current")).with_context(|| format!("{app_id} is not installed (see `panpak list`)"))?;
     let rec = panpak_core::record::open_verified(&rec_path).context("unreadable record of the installed version")?;
     ensure!(rec.is_record, "the installed version is not kept as a record: reinstall the app");
     let (chunks, entries) = panpak_core::parse_index(&rec.raw_index)?;
@@ -684,8 +684,8 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     let appdir = store_dir()?.join("apps").join(app_id);
     let current = appdir.join("current");
     let previous = appdir.join("previous");
-    let cur_t = fs::read_link(&current).context("missing current")?;
-    let prev_t = fs::read_link(&previous).context("missing previous: no update to roll back")?;
+    let cur_t = panpak_core::durable::resolve_link(&current).context("missing current")?;
+    let prev_t = panpak_core::durable::resolve_link(&previous).context("missing previous: no update to roll back")?;
     // The files of the version that comes back must still be there.
     let store = store_dir()?;
     let (pft, _) = {
@@ -713,7 +713,7 @@ fn cmd_open(app_id: &str, file: Option<&str>, write: bool, rename: bool) -> Resu
     panpak_core::validate_app_id(app_id)?;
     let store = store_dir()?;
     let current = store.join("apps").join(app_id).join("current");
-    let pkg = fs::read_link(&current).with_context(|| format!("{app_id} not installed: run `panpak install` first"))?;
+    let pkg = panpak_core::durable::resolve_link(&current).with_context(|| format!("{app_id} not installed: run `panpak install` first"))?;
     let target: PathBuf = match file {
         Some(f) => std::fs::canonicalize(f).context("check the path").with_context(|| format!("unopenable file: {f}"))?,
         None => pick_host_file().context("no file chosen (or no picker available: install zenity or kdialog)")?,
@@ -2567,7 +2567,7 @@ fn accept_new_permissions(added: &[panpak_core::permissions::Item], yes: bool, a
 
 /// The manifest of the version installed now, if there is one.
 fn installed_manifest(appdir: &Path) -> Option<panpak_core::Manifest> {
-    let rec = fs::read_link(appdir.join("current")).ok()?;
+    let rec = panpak_core::durable::resolve_link(&appdir.join("current")).ok()?;
     panpak_core::record::open_verified(&rec).ok().map(|o| o.manifest)
 }
 
@@ -2999,7 +2999,7 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                 // What the background job found in the installed files of this app (6.7), when this is its installed version.
                 if let Ok(store) = store_dir() {
                     let appdir = store.join("apps").join(&man.app.id);
-                    let installed = fs::read_link(appdir.join("current")).ok().and_then(|r| fs::canonicalize(r).ok()) == fs::canonicalize(pkg).ok();
+                    let installed = panpak_core::durable::resolve_link(&appdir.join("current")).ok().and_then(|r| fs::canonicalize(r).ok()) == fs::canonicalize(pkg).ok();
                     if installed {
                         let bg = panpak_core::bgstate::read(&appdir);
                         if bg.damaged > 0 {

@@ -33,7 +33,7 @@ pub fn state_path(appdir: &Path) -> PathBuf {
 
 /// The record that is staged, if any.
 pub fn staged_record(appdir: &Path) -> Option<PathBuf> {
-    std::fs::read_link(link_path(appdir)).ok()
+    crate::durable::resolve_link(&link_path(appdir)).ok()
 }
 
 pub fn read_state(appdir: &Path) -> Option<State> {
@@ -72,7 +72,7 @@ mod tests {
         write_state(&d, State { needs_accept: false, security: true }).unwrap();
         assert_eq!(read_state(&d), Some(State { needs_accept: false, security: true }));
         std::os::unix::fs::symlink("../packages/x.rec", link_path(&d)).unwrap();
-        assert_eq!(staged_record(&d).unwrap().to_str(), Some("../packages/x.rec"));
+        assert_eq!(staged_record(&d).unwrap(), d.parent().unwrap().join("packages/x.rec"), "a relative link is read as the path it names");
         clear(&d).unwrap();
         clear(&d).unwrap();
         assert!(staged_record(&d).is_none() && read_state(&d).is_none());

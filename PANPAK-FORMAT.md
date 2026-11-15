@@ -627,6 +627,8 @@ Reference-implementation layout (paths under
   removing/<id>.<n>/        # a removal in progress or interrupted (§9.6)
 ```
 
+Every link that the store writes is relative to its own folder: `current`, `previous` and `pending` (`../../packages/<record>`), `trees/<root>/.farm`, `bin/panpak-stub`, and the links of a farm to a library of the bundle (`../../trees/<root>/<path>`). The one exception is a link of a farm to a library of the system, which is the absolute path of that library. A store therefore works after it is copied or moved to another path (`tests/store_move.py`). A reader accepts an absolute link too, as an older store has; the next command that moves the link writes it relative. What the store does not keep relative, because it must be absolute where it is used, lies outside it: the launcher in `~/.local/bin`, the menu entry, and the cache of the resolution, which is checked against the files and made again when they are not where it says.
+
 Several starts can overlap on a store that does not have the tree yet. The runtime therefore takes an
 exclusive `flock` on `trees/<root_hash>.lock` before it builds the tree, checks again whether the tree is
 complete once it has the lock (a start that waited then just uses it), builds in `trees/<root_hash>.partial`

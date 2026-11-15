@@ -161,7 +161,7 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
     let mut keep = vec![false; recs.len()];
     for id in &ids {
         for link in ["current", "previous", panpak_core::pending::LINK] {
-            let Ok(t) = fs::read_link(apps_dir.join(id).join(link)) else { continue };
+            let Ok(t) = panpak_core::durable::resolve_link(&apps_dir.join(id).join(link)) else { continue };
             let Some(name) = t.file_name() else { continue };
             if let Some(&i) = by_path.get(&packages.join(name)) {
                 keep[i] = true;

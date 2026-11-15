@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **The links of the store are relative.** `current`, `previous`, `pending` and the links of a farm to a library of the bundle name their target relative to their own folder (`../../packages/<record>`, `../../trees/<root>/...`), like `.farm` and `bin/panpak-stub` already did, so a store that is copied to another path (another home) works there. Readers take an absolute link (an older store) as before. `panpak_core::durable::{relative_to, resolve_link}`; `tests/store_move.py` (install, update, a staged update, the home copied: list, doctor, start, rollback in the copy, the original untouched; an absolute `current` still starts). Not changed: the launcher in `~/.local/bin` and the menu entry keep the absolute path of the store (they cannot be relative), so after a move they name the old place until the app is installed again.
 - **Step 8e: garbage collection by reachability from the records.** `panpak gc [--dry-run]` keeps the records that `current`, `previous` and `pending` name, the trees and farms of their roots (a farm lives while any
   record with its root lives) and the blobs that a kept tree links, and takes out the rest: records, trees, farms, blobs, work folders of dead processes, `*.panpak` of the old layout, ABI cache entries of a gone farm or older than
   30 days, download folders idle for 7 days, runtimes that nothing names. **No clock decides about work in progress**: `locks/.store` is a two-mode lock; install, update, stage, apply, repair, rollback, remove and the making of a

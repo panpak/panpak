@@ -92,17 +92,59 @@ pub fn write_file(path: &Path, data: &[u8], mode: u32) -> Result<()> {
 
 /// Point the link `link` at `target`, replacing what is there in one rename, and make the change durable. The link is never
 /// missing and never partial.
+///
+/// A link of the store is written relative to its own folder when `target` is an absolute path (`../../packages/x.rec`), so that the store works
+/// after it is copied or moved to another path. Read such a link with `resolve_link`.
 pub fn replace_symlink(target: &Path, link: &Path) -> Result<()> {
     let dir = link.parent().context("link without a folder")?;
     let tmp = tmp_name(link);
     let _ = fs::remove_file(&tmp);
-    std::os::unix::fs::symlink(target, &tmp).with_context(|| format!("make the link {}", tmp.display()))?;
+    let text = if target.is_absolute() && dir.is_absolute() { relative_to(target, dir) } else { target.to_path_buf() };
+    std::os::unix::fs::symlink(&text, &tmp).with_context(|| format!("make the link {}", tmp.display()))?;
     crate::failpoint!("durable.link_made");
     if let Err(e) = fs::rename(&tmp, link) {
         let _ = fs::remove_file(&tmp);
         return Err(e).with_context(|| format!("rename to {}", link.display()));
     }
     fsync_dir(dir)
+}
+
+/// `target` as a path relative to the folder `dir` (both absolute and without `..`; the common prefix is dropped, then one `..` for each name left in `dir`).
+pub fn relative_to(target: &Path, dir: &Path) -> PathBuf {
+    let t: Vec<_> = target.components().collect();
+    let d: Vec<_> = dir.components().collect();
+    let common = t.iter().zip(&d).take_while(|(a, b)| a == b).count();
+    let mut out = PathBuf::new();
+    for _ in common..d.len() {
+        out.push("..");
+    }
+    for c in &t[common..] {
+        out.push(c);
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
+}
+
+/// Where a link of the store points, as an absolute path: a relative text is taken from the folder of the link, and `..` and `.` are folded
+/// lexically (the folders of the store are real folders). An absolute text, as older stores have, is returned as it is.
+pub fn resolve_link(link: &Path) -> std::io::Result<PathBuf> {
+    let text = fs::read_link(link)?;
+    if text.is_absolute() {
+        return Ok(text);
+    }
+    let mut out = link.parent().map(Path::to_path_buf).unwrap_or_default();
+    for c in text.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            c => out.push(c),
+        }
+    }
+    Ok(out)
 }
 
 fn tmp_name(path: &Path) -> PathBuf {
@@ -120,6 +162,33 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn links_of_the_store_are_relative_and_read_back_whole() {
+        assert_eq!(relative_to(Path::new("/s/packages/x.rec"), Path::new("/s/apps/a.b")), Path::new("../../packages/x.rec"));
+        assert_eq!(relative_to(Path::new("/s/trees/r/lib/l.so"), Path::new("/s/farms/r")), Path::new("../../trees/r/lib/l.so"));
+        assert_eq!(relative_to(Path::new("/s/a"), Path::new("/s")), Path::new("a"));
+        assert_eq!(relative_to(Path::new("/s"), Path::new("/s")), Path::new("."));
+        let d = dir("rel");
+        fs::create_dir_all(d.join("apps/a.b")).unwrap();
+        fs::create_dir_all(d.join("packages")).unwrap();
+        fs::write(d.join("packages/x.rec"), b"r").unwrap();
+        let l = d.join("apps/a.b/current");
+        replace_symlink(&d.join("packages/x.rec"), &l).unwrap();
+        assert_eq!(fs::read_link(&l).unwrap(), Path::new("../../packages/x.rec"));
+        assert_eq!(resolve_link(&l).unwrap(), d.join("packages/x.rec"));
+        assert_eq!(fs::read(&l).unwrap(), b"r");
+        // The store moved: the same link, now in another place, is still right.
+        let moved = std::env::temp_dir().join(format!("panpak-durable-rel-moved-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&moved);
+        fs::rename(&d, &moved).unwrap();
+        assert_eq!(resolve_link(&moved.join("apps/a.b/current")).unwrap(), moved.join("packages/x.rec"));
+        assert_eq!(fs::read(moved.join("apps/a.b/current")).unwrap(), b"r");
+        // An absolute link (an older store) is returned as it is.
+        std::os::unix::fs::symlink("/some/where", moved.join("abs")).unwrap();
+        assert_eq!(resolve_link(&moved.join("abs")).unwrap(), Path::new("/some/where"));
+        let _ = fs::remove_dir_all(&moved);
     }
 
     #[test]

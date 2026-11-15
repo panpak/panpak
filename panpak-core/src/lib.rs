@@ -2820,6 +2820,12 @@ pub mod abi {
                 Source::Bundled(rel) => tree.join(rel),
             };
             let link = farm.join(soname);
+            // A library of the bundle is named relative to the farm (`../../trees/<root>/...`), so that the store works after it is moved; a library of
+            // the system keeps its absolute path.
+            let target = match src {
+                Source::Bundled(_) if farm.is_absolute() && target.is_absolute() => crate::durable::relative_to(&target, &farm),
+                _ => target,
+            };
             if fs::read_link(&link).ok().as_ref() != Some(&target) {
                 // Host/bundle decisions can change after host updates;
                 // a stale farm must not keep obsolete links.
