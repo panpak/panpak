@@ -98,13 +98,33 @@ Without `sha256` the run still works and says that the download was not checked.
 
 ## In CI
 
-`.github/workflows/apps-harness.yml` runs weekly (and by hand, and on a pull
-request of this repository that changes the harness): it builds Text Editor from
-source with `panpak build` and measures it in a headless Sway. The time of the
-job is in the summary of the run. It is not part of the `gate` check.
+`.github/workflows/apps-harness.yml` runs weekly (and by hand, on a push to main and on a pull request of this repository that changes the harness, the workflow
+or what the cache below depends on): it builds Text Editor from source with `panpak build` and measures it in a headless Sway. The time of the job is in the summary
+of the run. It is not part of the `gate` check.
+
+### The cache of the patched packages
+
+The first CI numbers (Text Editor, cold runner): image 66 s, **patch 841 s**, source 0.5 s, compile 12 s, collect 0.6 s, pack 0.9 s, 930 s in all. The patch phase is the
+rebuild of the Debian GTK 4 with the dmabuf patch (`patched/<id>/` of the build cache); it depends on nothing but the base image, the snapshot and the patch. That folder is
+what the CI keeps (`debs/`, `SHA256SUMS`, `.complete`; 123 MB: `out/`, a second copy of the same files, is no longer left behind).
+
+- **The key** is made from the content of the files that define those packages: `panpak/src/source/image.rs` (the base image by digest, the snapshot, the build steps),
+  `panpak/src/source/sandbox.rs` and `panpak/data/patches/*`, with a `v1` to bump by hand. Not a date, not a run number.
+- **What comes back is not trusted.** `tests/apps/patched_cache.py verify` checks every folder against its `SHA256SUMS` (the list of files, their hashes, no link, `.complete`);
+  a folder that does not match is removed with a warning, and `panpak build` makes it again.
+- **Who writes.** Only a push to main, a manual run on main and the weekly run, and only when there is no entry for the key (a key is never rewritten). A pull request
+  only reads (a pull request's own cache is out of reach of main).
+- **The weekly run is always cold.** It puts the restored copy aside, builds the packages from nothing and compares the *root hash* (the hash of the `<id> <hash of its
+  SHA256SUMS>` lines) of the new packages with the one of the cache. A difference fails the run, says so, and leaves the cache as it was: either the build is not
+  reproducible, or something that matters is not in the key. Restoring the entry each week also keeps it from being evicted (GitHub drops a cache that was not used for 7 days).
+- **Limits.** A bad entry that has the right key is never replaced (keys are immutable): bump the `v1` of the key to start again. The first run after a change of the key is cold and, on
+  main, writes the new entry. A pull request that changes the key runs cold, as it should.
+
+Measured on a machine (the same recipe, the cache restored from the folder of an earlier build, nothing else cached): image 76.0 s, **patch 2.4 s (kept)**, source 1.1 s, compile 6.3 s,
+collect 0.7 s, pack 0.7 s; the package in 87 s and the whole run in 96 s, against 930 s cold. The CI numbers of the first warm run are in the step summary of that run.
 
 ## Tests of the harness itself
 
 `python3 -m unittest discover -s tests/apps -p 'test_*.py'` (no network, no
 display): the list of apps, the cache key, the signing (RFC 8032 vectors) and
-the readers of window lists.
+the readers of window lists, and the checks of the cache of the patched packages (`test_patched_cache.py`).

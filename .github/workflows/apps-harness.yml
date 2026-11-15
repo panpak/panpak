@@ -9,9 +9,18 @@
 # looked at, but it does not block a pull request. It runs
 #   - every week (Monday 04:11 UTC);
 #   - by hand (workflow_dispatch);
-#   - on a pull request of this repository that changes the harness or this file
+#   - on a push to main that changes what it depends on;
+#   - on a pull request of this repository that changes the harness, this file or
+#     what the cache of the patched packages depends on
 #     (never on a pull request from a fork: it builds and starts programs).
 # The time of the job is in the summary of the run.
+#
+# The cache of the patched Debian packages (the rebuilt GTK: about 840 s of the 930 s of a cold run, docs/APP-HARNESS.md):
+#   - the key is made from the files that define those packages, not from a date or a run;
+#   - what comes back is checked against its SHA256SUMS, and a folder that does not match is removed (the build makes it again);
+#   - it is written only by a push to main, by a manual run on main and by the weekly run; a pull request only reads it;
+#   - the weekly run never builds with it: it puts the restored copy aside, builds cold, and compares the root hash of the new packages
+#     with the one of the cache. A difference fails the run and leaves the cache as it was.
 
 name: apps-harness
 
@@ -19,10 +28,21 @@ on:
   schedule:
     - cron: "11 4 * * 1"
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/apps-harness.yml"
+      - "tests/apps/**"
+      - "panpak/src/source/image.rs"
+      - "panpak/src/source/sandbox.rs"
+      - "panpak/data/patches/**"
   pull_request:
     paths:
       - ".github/workflows/apps-harness.yml"
       - "tests/apps/**"
+      - "panpak/src/source/image.rs"
+      - "panpak/src/source/sandbox.rs"
+      - "panpak/data/patches/**"
 
 concurrency:
   group: apps-harness-${{ github.ref }}
@@ -33,6 +53,8 @@ permissions:
 
 env:
   RUST_TOOLCHAIN: "1.99.1"
+  # Where `panpak build` keeps the patched packages in this job (XDG_CACHE_HOME of the harness is its work folder + /xdg-cache).
+  PATCHED: target/apps-harness/xdg-cache/panpak/build/patched
 
 defaults:
   run:
@@ -64,6 +86,28 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq bubblewrap sway
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Restore the cache of the patched packages
+        id: restore
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.PATCHED }}
+          # The files that define the patched packages: the base image and the snapshot (image.rs), the sandbox of the build, the patches.
+          key: patched-debs-v1-${{ runner.os }}-${{ hashFiles('panpak/src/source/image.rs', 'panpak/src/source/sandbox.rs', 'panpak/data/patches/*') }}
+      - name: Check what was restored, or put it aside for the cold weekly run
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = schedule ]; then
+            # The weekly run builds cold. The restored copy is kept only to compare with.
+            if [ -d "$PATCHED" ]; then
+              # An entry that does not match its SHA256SUMS fails the run: nobody should have been able to write one.
+              python3 tests/apps/patched_cache.py verify --strict "$PATCHED"
+              mv "$PATCHED" target/apps-harness/prev-patched
+            fi
+          else
+            python3 tests/apps/patched_cache.py verify "$PATCHED"
+          fi
+          echo "cache-hit: ${{ steps.restore.outputs.cache-hit || 'false' }}"
       - name: Build Text Editor and measure it
         # --memory-cap none: the runner has no user systemd. The numbers are in the log and in the summary.
         run: |
@@ -77,3 +121,28 @@ jobs:
             echo '```'
             echo "Time of this step: $(( $(date +%s) - started )) s"
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Check the patched packages that were built, and compare the cold build with the cache
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          python3 tests/apps/patched_cache.py verify --strict "$PATCHED"
+          root=$(python3 tests/apps/patched_cache.py root "$PATCHED")
+          {
+            echo '### The patched packages'
+            echo "cache hit: ${{ steps.restore.outputs.cache-hit || 'false' }}, event: $EVENT"
+            echo "root hash: \`$root\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$EVENT" = schedule ] && [ -d target/apps-harness/prev-patched ]; then
+            if python3 tests/apps/patched_cache.py compare "$PATCHED" target/apps-harness/prev-patched | tee -a "$GITHUB_STEP_SUMMARY"; then
+              echo "The cold build gave the same packages as the cache." | tee -a "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::The cold build of the patched packages is not the one in the cache (the build is not reproducible, or the content of the key is not all that matters). The cache is left as it was."
+              exit 1
+            fi
+          fi
+      - name: Write the cache (main and the weekly run only, and only when there was none)
+        if: ${{ success() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && steps.restore.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.PATCHED }}
+          key: patched-debs-v1-${{ runner.os }}-${{ hashFiles('panpak/src/source/image.rs', 'panpak/src/source/sandbox.rs', 'panpak/data/patches/*') }}
