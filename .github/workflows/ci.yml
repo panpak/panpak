@@ -351,6 +351,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The whole history, and the branch itself rather than the merge commit of a pull request: the build date is the date of the last commit
+          # that touched the code (scripts/code-epoch.sh), the rule that panpak/build.rs uses.
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Pinned Rust toolchain
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
@@ -363,15 +368,16 @@ jobs:
           # Only the directory with the zig binary goes on PATH: the venv's python3
           # would hide the system Python that the conformance scripts need.
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
-      - name: Double-build and compare
+      - name: Double-build, compare, and regenerate the reference
         run: |
-          ./scripts/repro-build.sh | tee /tmp/repro.log
+          ./scripts/repro-build.sh --update | tee /tmp/repro.log
           grep -q IDENTICAL /tmp/repro.log
-      - name: Compare with tracked reference hashes
+      - name: The tracked reference is what the script makes
         run: |
-          grep -E '^[0-9a-f]{64}  ' /tmp/repro.log | awk '{print $1}' | sort -u > /tmp/actual.txt
-          grep -E '^[0-9a-f]{64}  ' REPRODUCIBLE-HASHES.md | awk '{print $1}' | sort -u > /tmp/expected.txt
-          diff /tmp/expected.txt /tmp/actual.txt
+          if ! git diff --exit-code -- REPRODUCIBLE-HASHES.md; then
+            echo "::error::REPRODUCIBLE-HASHES.md is not what scripts/repro-build.sh --update makes (the date, the sizes or the hashes). Run it and commit the file, in the commit that follows the code."
+            exit 1
+          fi
 
   licenses:
     # SPDX headers on every source file; dependency licenses, bans and sources.
