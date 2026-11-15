@@ -631,5 +631,29 @@ once, in one rename, like the lazy update of section 3. The other app can be ins
 **Cost of the check at the start** (`cargo test --release -p panpak-core twin_check_cost -- --ignored --nocapture`, 8 folders, 16 `stat` calls, no other app): the first call
 in a fresh process 27 to 60 microseconds (three runs), then about 23 microseconds. The start of an app costs about 25 ms before this (section 8.3), so the check is about 0.2 %.
 
-**Not solved here.** The window of the app still carries the class of the app; whether the desktop attaches it to its own entry or to the other one is measured on a
-real desktop (with and without dash-to-dock) before anything more is decided.
+### 9.1 Measured on a real desktop (panpak-vm, Fedora 44, GNOME Shell 50.6, Wayland)
+
+The native Text Editor of the VM is a system Flatpak with the same id. Our Text Editor was started from the shell with a file `NOSTRO.txt` (so its window is ours for sure) and
+the Flatpak started next to it. Each line is what was seen by eye; the entry and the processes were read by SSH.
+
+| Case | Result |
+|---|---|
+| Install with the Flatpak present | `NOTE: ... is another app with the same id ... "Text Editor (Panpak)"`; the entry has `X-Panpak-Twin=1` and `Name=Text Editor (Panpak)` (read from the file) |
+| Activities, "Text Editor" | two entries: the native one (in the language of the VM) and "Text Editor (Panpak)"; "Uninstall" is on ours |
+| Dock with dash-to-dock, our window alone | one icon, named "Text Editor (Panpak)", with "Uninstall" in its menu |
+| Dock with dash-to-dock, both windows | two separate icons with the two names; `NOSTRO.txt` is under ours; a click on ours brings our window to the front, no third window; with the Flatpak closed ours stays |
+| Plain GNOME dash (extension off), both windows | two separate icons, one window under each; a click goes to the right window; with the Flatpak closed ours stays |
+| Flatpak removed (it first stayed: a first removal had not happened), our app started | the entry is rewritten by the start (`X-Panpak-Twin` gone, `Name=Text Editor`); after a login the menu says "Text Editor" |
+| Flatpak installed again, our app started | rewritten again (`X-Panpak-Twin=1`, `Name=Text Editor (Panpak)`) |
+
+So with our own window started from the shell, the desktop did **not** put it under the icon of the other app, with or without dash-to-dock: the window class is the same, but both
+entries are known by the Shell and the window of each is matched to the right one. The earlier worry (a window of ours under the native icon, and a click that starts the native app)
+did not show up. What was not tried: a click on the *native* icon while only our window is open (the Shell may start the native app, as it would for any app).
+
+**Decision.** The change to the name is enough. A mark on the icon (written and taken out, see above) and a change of the window class (the idea of the `app_id` of
+`wp_security_context_v1`, which would need no proxy but depends on each compositor) are not needed; that study is closed. The check at the start of the app was seen to rewrite the
+entry in both directions.
+
+**Not done here: the translated name.** The native entry shows the name in the language of the VM (Italian there), ours shows "Text Editor (Panpak)" in English. The decision is to read `Name`,
+`GenericName`, `Comment` and `Keywords` with their translations from the original `.desktop` file when the package is made (`collect` and `convert`), put them in the signed manifest with the
+same validation as `Name`, and let the entry (still a closed template) take them from the manifest only. " (Panpak)" is not translated. This goes in step 10 (AppStream metadata).
