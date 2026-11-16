@@ -92,11 +92,48 @@ pub fn read_any_footer(f: &mut File) -> Result<(Footer, bool)> {
     }
 }
 
-/// The name of the record of `app_id` at `version` in `<store>/packages/`: the characters of the version that are not safe in a
-/// file name become `_`, and the start of the root hash keeps two builds of one version apart.
+/// The name of the record of `app_id` at `version` in `<store>/packages/`: `<id>@<version>@<root>.rec`, with the whole root (64 hex characters).
+/// `@` is in neither an app id nor an escaped version, so the three parts can be told apart and two (id, version, root) never give one name; the
+/// version keeps `A-Z a-z 0-9 . - _` and every other byte becomes `%XX`. A version so odd that the name would not fit in a file name is replaced by
+/// the hash of the version. The root is not truncated: with 48 bits of it a package could be made to take another record's name.
 pub fn record_name(app_id: &str, version: &str, root_hex: &str) -> String {
-    let safe: String = version.chars().map(|c| if c.is_ascii_alphanumeric() || ".-_".contains(c) { c } else { '_' }).collect();
-    format!("{app_id}-{safe}-{}.rec", &root_hex[..root_hex.len().min(12)])
+    let mut safe = String::new();
+    for b in version.bytes() {
+        if b.is_ascii_alphanumeric() || b".-_".contains(&b) {
+            safe.push(b as char);
+        } else {
+            safe.push_str(&format!("%{b:02X}"));
+        }
+    }
+    if app_id.len() + safe.len() + root_hex.len() + 6 > 250 {
+        safe = format!("h{}", &blake3::hash(version.as_bytes()).to_hex()[..32]);
+    }
+    format!("{app_id}@{safe}@{root_hex}.rec")
+}
+
+/// A record is what its name says: the file name is the one `record_name` gives for the id, the version and the root of the record itself, and, when the
+/// record is reached through `<store>/apps/<id>/<link>`, the id of that folder is the id of the manifest. A record that was put under another name, or
+/// that another app's link names, is refused (PP-01): the pin and the permissions are those of the app that was started.
+pub fn check_identity(given: &Path, man_id: &str, man_version: &str, root_hex: &str) -> Result<()> {
+    let real = std::fs::canonicalize(given)?;
+    let name = real.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if name != record_name(man_id, man_version, root_hex) {
+        return Err(coded(
+            ErrorCode::E0010,
+            format!("{}: the name of the record does not match what it holds (app {man_id}, version {man_version}): it was not written by `panpak install`; reinstall the app", real.display()),
+        ));
+    }
+    let app_dir = given.parent();
+    let in_apps = app_dir.and_then(|d| d.parent()).and_then(|a| a.file_name()).is_some_and(|n| n == "apps");
+    if let (true, Some(id)) = (in_apps, app_dir.and_then(|d| d.file_name())) {
+        if id != std::ffi::OsStr::new(man_id) {
+            return Err(coded(
+                ErrorCode::E1004,
+                format!("{}: the link of {} names the record of another app ({man_id}); reinstall the app", given.display(), id.to_string_lossy()),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// A record runs only from the store: `path` must resolve to a file directly inside `<store>/packages/`.
@@ -199,7 +236,24 @@ mod tests {
         assert_eq!(crate::code_of(&e, ErrorCode::E0000), ErrorCode::E0010);
         std::os::unix::fs::symlink(d.join("elsewhere/a.b-1.rec"), store.join("apps/a.b/out")).unwrap();
         assert!(ensure_in_store(&store.join("apps/a.b/out"), &store).is_err());
-        assert_eq!(record_name("a.b", "1.2+x y", "0123456789abcdef"), "a.b-1.2_x_y-0123456789ab.rec");
+        assert_eq!(record_name("a.b", "1.2+x y", "0123456789abcdef"), "a.b@1.2%2Bx%20y@0123456789abcdef.rec");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn no_two_records_get_the_same_name() {
+        let root = "ab".repeat(32);
+        // The id and the version may both hold `-`: these two used to be the same file name, so one install replaced the record of the other app.
+        assert_ne!(record_name("org.a-1", "2", &root), record_name("org.a", "1-2", &root));
+        // Versions that differ only in a character that is not safe in a file name.
+        assert_ne!(record_name("org.a", "1+x", &root), record_name("org.a", "1~x", &root));
+        // Two roots never share a name: the whole root is in it, not its first 12 characters.
+        assert_ne!(record_name("org.a", "1", &root), record_name("org.a", "1", &format!("{}{}", &root[..12], "cd".repeat(26))));
+        assert!(record_name("org.a", "1", &root).contains(&root));
+        // The longest id and a version of unsafe characters still make a name that a file system takes.
+        let id = format!("org.{}", "a".repeat(120));
+        let long = record_name(&id, &"+".repeat(64), &root);
+        assert!(long.len() <= 255, "{}", long.len());
+        assert_ne!(long, record_name(&id, &"~".repeat(64), &root));
     }
 }

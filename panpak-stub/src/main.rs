@@ -1914,6 +1914,7 @@ fn real_main() -> Result<()> {
     let store = dirs::data_dir().context("no data dir")?.join("panpak");
     if is_record {
         panpak_core::record::ensure_in_store(&pkg, &store)?;
+        panpak_core::record::check_identity(&pkg, &man.app.id, &man.app.version, &hex(&ft.root))?;
     }
     // TOFU (spec §3.2): if the app is installed (pinned key), the signature
     // must match the pin; on direct run show the fingerprint.
