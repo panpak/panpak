@@ -1656,6 +1656,7 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     let mut tw = treewriter::TreeWriter::new(&tree)?;
     let mut desktop: Option<PathBuf> = None;
     let mut dropped_links: Vec<(PathBuf, String)> = Vec::new();
+    let mut made_links: Vec<PathBuf> = Vec::new();
     for node in fs.files() {
         let rel = node.fullpath.strip_prefix("/").unwrap_or(&node.fullpath);
         if rel.as_os_str().is_empty() {
@@ -1674,7 +1675,8 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
                 if panpak_core::link_escapes(rel, &s.link.to_string_lossy()) {
                     dropped_links.push((rel.to_path_buf(), s.link.to_string_lossy().into_owned()));
                 } else {
-                    tw.symlink(rel, &s.link)?
+                    tw.symlink(rel, &s.link)?;
+                    made_links.push(rel.to_path_buf());
                 }
             }
             _other => eprintln!("convert: skipping special node {}", node.fullpath.display()),
@@ -1686,6 +1688,9 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
             desktop = Some(dst);
         }
     }
+    // `link_escapes` looks at one link by itself. Two links that are each inside can lead out together (`d/e/l -> ..` and `x -> d/e/l/../../secret`), and what
+    // is read from the tree by path below (the desktop file, the icons, the entry) would follow them. Every link is checked again as the file system follows it.
+    dropped_links.extend(tw.drop_escaping_links(&made_links)?);
     // Parse .desktop: Name, Exec, Version.
     let mut dname: Option<String> = None;
     let mut dexec: Option<String> = None;

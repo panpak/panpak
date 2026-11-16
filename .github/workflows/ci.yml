@@ -139,7 +139,7 @@ jobs:
           # would hide the system Python that the conformance scripts need.
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Test dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd python3 python3-cryptography
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd python3 python3-cryptography squashfs-tools
       - name: Test (musl)
         run: cargo test --locked --target x86_64-unknown-linux-musl
       - name: Release build (conformance and artifacts)
@@ -179,6 +179,8 @@ jobs:
         run: python3 tests/open_rename.py
       - name: The collection keeps what it cannot read the links of (P2-04)
         run: python3 tests/gc_unreadable.py
+      - name: convert cannot be led out of its tree by two links (P2-03)
+        run: python3 tests/convert_links.py
       - name: Install and update stopped by a kill at many moments
         run: python3 tests/interrupt_8a.py
       - name: Test points (every command stopped at every named point; a release has none)

@@ -43,10 +43,69 @@ impl Drop for TempTree {
     }
 }
 
+/// What an AppImage may unpack to. The AppImage is untrusted input and its files are compressed: a few kilobytes can stand for terabytes.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    /// One file.
+    pub file_bytes: u64,
+    /// All the files together: what `pack` takes (8 GiB), so a larger tree would be unpacked only to be refused.
+    pub tree_bytes: u64,
+    /// Folders, files and links together.
+    pub entries: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Limits {
+        Limits { file_bytes: 1 << 33, tree_bytes: 1 << 33, entries: 1_000_000 }
+    }
+}
+
 /// The tree being filled.
 pub struct TreeWriter {
     root: Dir,
+    root_path: PathBuf,
     dirs: HashMap<PathBuf, Dir>,
+    limits: Limits,
+    bytes: u64,
+    entries: u64,
+}
+
+/// Does the path `rel` of the tree `root` lead to a place inside the tree when the links on the way are followed, one after the other, as the file system does?
+/// `link_escapes` looks at one link by itself and counts a `..` after a link as a step back of the link's own folder; the file system steps back from where the link
+/// leads, so two links that are each inside can leave together. A link that is not there, or a name that does not exist, is not a way out. Absolute targets, and
+/// a chain of more than 40 links (a loop), are.
+pub fn resolves_inside(root: &Path, rel: &Path) -> bool {
+    use std::collections::VecDeque;
+    let mut todo: VecDeque<std::ffi::OsString> = rel.components().map(|c| c.as_os_str().to_os_string()).collect();
+    let mut at: Vec<std::ffi::OsString> = Vec::new();
+    let mut hops = 0;
+    while let Some(n) = todo.pop_front() {
+        if n == ".." {
+            if at.pop().is_none() {
+                return false;
+            }
+            continue;
+        }
+        if n == "." || n.is_empty() {
+            continue;
+        }
+        at.push(n);
+        let here = at.iter().fold(root.to_path_buf(), |p, c| p.join(c));
+        if let Ok(m) = std::fs::symlink_metadata(&here) {
+            if m.file_type().is_symlink() {
+                hops += 1;
+                let Ok(target) = std::fs::read_link(&here) else { return false };
+                if hops > 40 || target.is_absolute() {
+                    return false;
+                }
+                at.pop();
+                for c in target.components().rev() {
+                    todo.push_front(c.as_os_str().to_os_string());
+                }
+            }
+        }
+    }
+    true
 }
 
 /// The components of a relative path of the AppImage, refusing everything but plain names.
@@ -63,7 +122,33 @@ fn plain(rel: &Path) -> Result<Vec<&OsStr>> {
 
 impl TreeWriter {
     pub fn new(root: &Path) -> Result<TreeWriter> {
-        Ok(TreeWriter { root: Dir::open_path(root).with_context(|| format!("open {}", root.display()))?, dirs: HashMap::new() })
+        Self::with_limits(root, Limits::default())
+    }
+
+    pub fn with_limits(root: &Path, limits: Limits) -> Result<TreeWriter> {
+        Ok(TreeWriter { root: Dir::open_path(root).with_context(|| format!("open {}", root.display()))?, root_path: root.to_path_buf(), dirs: HashMap::new(), limits, bytes: 0, entries: 0 })
+    }
+
+    fn count_entry(&mut self, rel: &Path) -> Result<()> {
+        self.entries += 1;
+        ensure!(self.entries <= self.limits.entries, "the AppImage has more than {} entries (at {}): refused", self.limits.entries, rel.display());
+        Ok(())
+    }
+
+    /// Take out of the tree the links of `links` (paths of the tree, made by `symlink`) that lead out of it once the links on the way are followed
+    /// (`resolves_inside`). Returns them with their targets. What reads the tree by path afterwards cannot be led out by them.
+    pub fn drop_escaping_links(&mut self, links: &[PathBuf]) -> Result<Vec<(PathBuf, String)>> {
+        let mut dropped = Vec::new();
+        for rel in links {
+            if resolves_inside(&self.root_path, rel) {
+                continue;
+            }
+            let target = std::fs::read_link(self.root_path.join(rel)).map(|t| t.to_string_lossy().into_owned()).unwrap_or_default();
+            let (parent, name) = Self::split(rel)?;
+            self.dir(&parent)?.unlink(name).with_context(|| format!("take out the link {}", rel.display()))?;
+            dropped.push((rel.clone(), target));
+        }
+        Ok(dropped)
     }
 
     /// The folder `rel` below the root, made one name at a time (mode 0755) if it is not there. A link, a file or
@@ -76,6 +161,7 @@ impl TreeWriter {
             let names = plain(rel)?;
             let (last, above) = names.split_last().context("empty path")?;
             let parent = above.iter().fold(PathBuf::new(), |p, n| p.join(n));
+            self.count_entry(rel)?;
             let made = {
                 let p = self.dir(&parent)?;
                 let made = p.create_dir(last).with_context(|| format!("make the folder {} (a link or a file may be in the way)", rel.display()))?;
@@ -101,8 +187,18 @@ impl TreeWriter {
     /// Make the file `rel` with the bytes of `from` and the permission bits `mode`. Anything already there is an error.
     pub fn write_from(&mut self, rel: &Path, from: &mut dyn Read, mode: u32) -> Result<()> {
         let (parent, name) = Self::split(rel)?;
+        self.count_entry(rel)?;
+        let room = self.limits.file_bytes.min(self.limits.tree_bytes.saturating_sub(self.bytes));
         let mut f = self.dir(&parent)?.create_new_file(name, 0o600).with_context(|| format!("make the file {}", rel.display()))?;
-        std::io::copy(from, &mut f)?;
+        // One byte more than there is room for: if it is read, the file is too large.
+        let n = std::io::copy(&mut from.take(room + 1), &mut f)?;
+        if n > room {
+            if room == self.limits.file_bytes {
+                bail!("{} is larger than {} bytes: refused", rel.display(), self.limits.file_bytes);
+            }
+            bail!("the AppImage unpacks to more than {} bytes (at {}): refused", self.limits.tree_bytes, rel.display());
+        }
+        self.bytes += n;
         f.set_permissions(std::fs::Permissions::from_mode(mode & 0o7777))?;
         Ok(())
     }
@@ -121,6 +217,7 @@ impl TreeWriter {
     /// Make the link `rel` with the text `target`. Anything already there is an error.
     pub fn symlink(&mut self, rel: &Path, target: &Path) -> Result<()> {
         let (parent, name) = Self::split(rel)?;
+        self.count_entry(rel)?;
         self.dir(&parent)?.symlink(name, target.as_os_str()).with_context(|| format!("make the link {}", rel.display()))
     }
 }
@@ -190,5 +287,76 @@ mod tests {
         assert!(w.replace_file(Path::new("d"), b"x", 0o644).is_ok());
         w.make_dir(Path::new("dir")).unwrap();
         assert!(w.replace_file(Path::new("dir"), b"x", 0o644).is_err(), "a folder is not replaced by a file");
+    }
+
+    #[test]
+    fn a_chain_of_links_is_followed_the_way_the_file_system_does() {
+        let t = TempTree::new("panpak-treewriter").unwrap();
+        let mut w = TreeWriter::new(t.path()).unwrap();
+        w.make_dir(Path::new("d/e")).unwrap();
+        w.symlink(Path::new("d/e/l"), Path::new("..")).unwrap();
+        w.write_from(Path::new("d/real"), &mut &b"x"[..], 0o644).unwrap();
+        // Each is inside when read one link at a time; the first two leave the tree together.
+        w.symlink(Path::new("out"), Path::new("d/e/l/../../secret")).unwrap();
+        w.symlink(Path::new("out2"), Path::new("d/e/l/../../../x")).unwrap();
+        w.symlink(Path::new("in"), Path::new("d/e/l/real")).unwrap();
+        w.symlink(Path::new("in2"), Path::new("in")).unwrap();
+        w.symlink(Path::new("abs"), Path::new("/etc/passwd")).unwrap();
+        w.symlink(Path::new("loop1"), Path::new("loop2")).unwrap();
+        w.symlink(Path::new("loop2"), Path::new("loop1")).unwrap();
+        w.symlink(Path::new("dangling"), Path::new("not/there")).unwrap();
+        let inside = |r: &str| resolves_inside(t.path(), Path::new(r));
+        assert!(!inside("out") && !inside("out2") && !inside("abs") && !inside("loop1"));
+        assert!(inside("in") && inside("in2") && inside("dangling") && inside("d/e/l") && inside("d/real"));
+    }
+
+    #[test]
+    fn links_that_leave_the_tree_are_taken_out_and_the_others_stay() {
+        let t = TempTree::new("panpak-treewriter").unwrap();
+        let mut w = TreeWriter::new(t.path()).unwrap();
+        w.make_dir(Path::new("d/e")).unwrap();
+        w.symlink(Path::new("d/e/l"), Path::new("..")).unwrap();
+        w.symlink(Path::new("app.desktop"), Path::new("d/e/l/../../secret")).unwrap();
+        w.symlink(Path::new("fine"), Path::new("d")).unwrap();
+        let links: Vec<PathBuf> = ["d/e/l", "app.desktop", "fine"].iter().map(PathBuf::from).collect();
+        let dropped = w.drop_escaping_links(&links).unwrap();
+        assert_eq!(dropped, [(PathBuf::from("app.desktop"), "d/e/l/../../secret".to_string())]);
+        assert!(fs::symlink_metadata(t.path().join("app.desktop")).is_err(), "the link is gone");
+        assert!(fs::symlink_metadata(t.path().join("fine")).is_ok() && fs::symlink_metadata(t.path().join("d/e/l")).is_ok());
+    }
+
+    #[test]
+    fn a_file_larger_than_the_limit_stops_the_unpacking() {
+        let t = TempTree::new("panpak-treewriter").unwrap();
+        let mut w = TreeWriter::with_limits(t.path(), Limits { file_bytes: 100, tree_bytes: 150, entries: 1000 }).unwrap();
+        // An endless reader: the limit is what stops it, not the end of the data.
+        let e = w.write_from(Path::new("big"), &mut std::io::repeat(7), 0o644).unwrap_err().to_string();
+        assert!(e.contains("big") && e.contains("100"), "{e}");
+        assert!(fs::metadata(t.path().join("big")).unwrap().len() <= 101, "no more than the limit and a byte was written");
+    }
+
+    #[test]
+    fn the_whole_tree_and_the_number_of_entries_have_limits() {
+        let t = TempTree::new("panpak-treewriter").unwrap();
+        let mut w = TreeWriter::with_limits(t.path(), Limits { file_bytes: 100, tree_bytes: 150, entries: 1000 }).unwrap();
+        w.write_from(Path::new("a"), &mut &[1u8; 100][..], 0o644).unwrap();
+        assert!(w.write_from(Path::new("b"), &mut &[1u8; 100][..], 0o644).unwrap_err().to_string().contains("150"), "the second file passes the total");
+        let t2 = TempTree::new("panpak-treewriter").unwrap();
+        let mut w = TreeWriter::with_limits(t2.path(), Limits { file_bytes: 100, tree_bytes: 1 << 20, entries: 5 }).unwrap();
+        let mut err = None;
+        for i in 0..10 {
+            if let Err(e) = w.symlink(Path::new(&format!("l{i}")), Path::new("x")) {
+                err = Some(e.to_string());
+                break;
+            }
+        }
+        assert!(err.is_some_and(|e| e.contains('5')), "the sixth entry is refused");
+    }
+
+    #[test]
+    fn the_limits_of_a_normal_unpacking_are_those_of_pack() {
+        let l = Limits::default();
+        assert_eq!(l.tree_bytes, 1 << 33, "`pack` refuses a tree of more than 8 GiB");
+        assert!(l.file_bytes <= l.tree_bytes && l.entries >= 100_000);
     }
 }

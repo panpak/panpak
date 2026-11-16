@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **`panpak convert`: P2-03 and P2-08 (second security pass).** Each has a test that failed before the fix.
+  P2-03: two links that are each inside the tree and leave it together (`d/e/l -> ..`, `app.desktop -> d/e/l/../../secret`) made `convert` read a file of the host as the desktop file; its lines (`Name`, `Exec`, `Version`, ...) went into the manifest of the package. After the unpacking every link is followed again as the file system does (`treewriter::resolves_inside`) and one that leaves the tree is taken out and listed with the others that point outside. `tests/convert_links.py` runs the real `convert` on such an AppImage.
+  P2-08: the unpacking had no limit. Now at most 8 GiB for the tree (what `pack` takes), 8 GiB for a file and 1,000,000 entries; a file is read only up to what is left, so an endless one stops at once.
 - **`panpak build`: P2-01, P2-02, P2-05, P2-06, P2-07 (second security pass).** Each has a test that failed before the fix.
   P2-01: a source tarball with a link and then a file under it (`src/link -> /some/folder`, `src/link/x`) wrote outside the source folder; the folders above an entry are made one at a time and a link or a file on the way stops the unpacking.
   P2-02: `collect` copied into the output tree through links that the build had left in it (`usr/share/glib-2.0 -> <folder of the user>`), so files of the image landed in that folder; the copies of the toolkit, the libraries, the licenses, the loader cache and the manifest now go through `ensure_dirs`, `copy_file` and `write_file`, which make folders one at a time, refuse a link as a folder and replace a link where a file goes (never writing through it).
