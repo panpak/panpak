@@ -192,7 +192,7 @@ impl Ctx {
         v
     }
 
-    fn facts(&self, id: &str, all_ids: &[String]) -> Facts {
+    fn facts(&self, id: &str) -> Facts {
         let mut f = Facts {
             id: id.to_string(),
             in_apps: false,
@@ -254,13 +254,11 @@ impl Ctx {
         }
         // Packages of the app: by file name, then by what their manifest says.
         if let Some(p) = &self.packages {
-            let prefix = format!("{id}-");
+            // `<id>@<version>@<root>.rec`: `@` is in no app id, so the name says whose the record is (an id that is the start of another one takes nothing of it).
+            let prefix = format!("{id}@");
             for n in package_names(&self.packages).into_iter().filter(|n| n.starts_with(&prefix)) {
                 let info = read_pkg(p, OsStr::new(&n));
-                let ours = match &info {
-                    Some(i) => i.id == id,
-                    None => !all_ids.iter().any(|o| o.len() > id.len() && n.starts_with(&format!("{o}-"))),
-                };
+                let ours = info.as_ref().is_none_or(|i| i.id == id);
                 if !ours {
                     continue;
                 }
@@ -323,7 +321,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
     let ctx = Ctx::open()?;
     recover_removals(&ctx);
     let ids = ctx.app_ids();
-    let facts: Vec<Facts> = ids.iter().map(|id| ctx.facts(id, &ids)).collect();
+    let facts: Vec<Facts> = ids.iter().map(|id| ctx.facts(id)).collect();
     if json {
         let mut out = String::from("[");
         for (i, f) in facts.iter().enumerate() {
@@ -638,7 +636,7 @@ fn test_pause() {}
 
 /// The name of the app for a person, or its id.
 fn app_name(ctx: &Ctx, id: &str) -> String {
-    ctx.facts(id, &ctx.app_ids()).name.unwrap_or_else(|| id.to_string())
+    ctx.facts(id).name.unwrap_or_else(|| id.to_string())
 }
 
 /// Whether this process must move into a scope of its own before it removes anything. It must unless it already is in one of ours (`panpak-remove-...`, which this
@@ -727,8 +725,7 @@ fn cmd_remove_inner(id: &str, purge: bool, yes: bool) -> Result<()> {
         None => None,
     };
     test_pause();
-    let ids = ctx.app_ids();
-    let facts = ctx.facts(id, &ids);
+    let facts = ctx.facts(id);
     ensure_code!(
         facts.found_anything(),
         ErrorCode::E2004,
@@ -987,8 +984,7 @@ pub fn cmd_remove_ask(id: &str) -> Result<()> {
     leave_app_scope(id);
     let exe = std::env::current_exe().ok().map(|p| p.display().to_string()).unwrap_or_else(|| "panpak".into());
     let ctx = Ctx::open()?;
-    let ids = ctx.app_ids();
-    let facts = ctx.facts(id, &ids);
+    let facts = ctx.facts(id);
     let name = facts.name.clone().unwrap_or_else(|| id.to_string());
     // What stays: the settings and data, and the cache; a person is told the size, the places are in the output of `panpak remove`.
     let kept_bytes = facts.data_bytes.unwrap_or(0) + facts.cache_bytes.unwrap_or(0);

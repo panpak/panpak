@@ -171,6 +171,12 @@ jobs:
         run: python3 tests/gc.py
       - name: A store copied to another path (relative links)
         run: python3 tests/store_move.py
+      - name: A package cannot take the record of another app (PP-01)
+        run: python3 tests/record_names.py
+      - name: An update against a footer that lies (PP-03)
+        run: python3 tests/update_footer.py
+      - name: The folder that --write-rename opens (PP-07)
+        run: python3 tests/open_rename.py
       - name: Install and update stopped by a kill at many moments
         run: python3 tests/interrupt_8a.py
       - name: Test points (every command stopped at every named point; a release has none)

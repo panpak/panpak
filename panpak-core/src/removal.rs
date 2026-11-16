@@ -30,12 +30,12 @@ pub fn is_record_tmp(n: &str) -> bool {
     n.rsplit_once(".rec.tmp").is_some_and(|(_, d)| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// A record file name as the store writes it: `<id>-<version>-<root start>.rec`, plain characters only.
+/// A record file name as the store writes it: `<id>@<version>@<root>.rec`, plain characters only (`%` is the escape of a version).
 pub fn valid_package_name(n: &str) -> bool {
     n.len() <= 255
         && (n.ends_with(".rec") || is_record_tmp(n))
         && !n.starts_with('.')
-        && n.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'))
+        && n.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+' | b'@' | b'%'))
         && !n.contains("..")
 }
 
@@ -114,7 +114,7 @@ mod tests {
     use super::*;
 
     fn sample() -> Journal {
-        Journal { app_id: "org.example.app".into(), packages: vec!["org.example.app-1.0-0123456789ab.rec".into()], roots: vec!["a".repeat(64)] }
+        Journal { app_id: "org.example.app".into(), packages: vec!["org.example.app@1.0@0123456789ab.rec".into()], roots: vec!["a".repeat(64)] }
     }
 
     #[test]

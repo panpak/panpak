@@ -614,7 +614,7 @@ Reference-implementation layout (paths under
   runtimes/<abi>/panpak-stub  # installed runtimes (`panpak install-runtime`)
   bin/panpak-stub -> ../runtimes/<abi>/panpak-stub  # the best installed ABI; launchers use this path
   bin/panpak              # the CLI, for the menu action "Uninstall"; written by `install-runtime`
-  packages/<id>-<ver>-<root start>.rec  # the record of an installed version (§6.3); the store keeps no copy of the package
+  packages/<id>@<ver>@<root>.rec  # the record of an installed version (§6.3); `@` is in no app id, the version is escaped (`%XX`), the whole root is in the name; the store keeps no copy of the package
   abi-cache/             # the cached resolutions (§7)
   staging/<id>/<root>/   # the chunks of an update that is being downloaded, one file per chunk
   apps/<id>/current -> ../../packages/<record>

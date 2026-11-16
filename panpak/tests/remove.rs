@@ -159,9 +159,9 @@ fn root_of(pkg: &Path) -> String {
     b[b.len() - 32..].iter().map(|x| format!("{x:02x}")).collect()
 }
 
-/// The file name of the record that `install` made for `id` at `version` (`<id>-<version>-<start of the root>.rec`).
+/// The file name of the record that `install` made for `id` at `version` (`<id>@<version>@<root>.rec`).
 fn rec_of(e: &Env, id: &str, version: &str) -> String {
-    let prefix = format!("{id}-{version}-");
+    let prefix = format!("{id}@{version}@");
     names(&e.store().join("packages")).into_iter().find(|n| n.starts_with(&prefix) && n.ends_with(".rec")).unwrap_or_else(|| panic!("no record for {id} {version}: {:?}", names(&e.store().join("packages"))))
 }
 
