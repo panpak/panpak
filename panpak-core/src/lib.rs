@@ -970,6 +970,8 @@ pub fn check_layout(size: u64, ft: &Footer) -> Result<()> {
         ErrorCode::E0003,
         "incoherent layout: manifest+signature not adjacent to the footer (corrupt or tampered file: redownload it from a trusted source)"
     );
+    // A manifest or an index of length 0 is not one: it would also make an empty range (`off + len - 1`) when the file is read by ranges.
+    crate::ensure_code!(ft.man_len > 0 && ft.index_len > 0, ErrorCode::E0003, "incoherent layout: empty manifest or index (corrupt or tampered file: redownload it from a trusted source)");
     crate::ensure_code!(ft.man_len <= MAX_MANIFEST_TOML, ErrorCode::E0003, "manifest too large");
     crate::ensure_code!(ft.index_len <= MAX_INDEX_COMP, ErrorCode::E0003, "compressed index too large");
     Ok(())
@@ -1717,6 +1719,16 @@ mod tests {
         let err = check_layout(size, &ft).unwrap_err();
         assert!(format!("{err:#}").contains("compressed index too large"), "{err:#}");
         assert_eq!(code_of(&err, ErrorCode::E0000), ErrorCode::E0003);
+    }
+
+    #[test]
+    fn a_footer_with_an_empty_manifest_or_index_is_refused() {
+        for (index_len, man_len) in [(0u64, 40u64), (100, 0), (0, 0)] {
+            let size = index_len + man_len + SIG_LEN + FOOTER_LEN;
+            let ft = Footer { index_off: 0, index_len, man_off: index_len, man_len, root: [0; 32] };
+            let err = check_layout(size, &ft).unwrap_err();
+            assert_eq!(code_of(&err, ErrorCode::E0000), ErrorCode::E0003, "{index_len} {man_len}: {err:#}");
+        }
     }
 
     #[test]

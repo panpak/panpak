@@ -94,6 +94,7 @@ fn net_err(op: &str, url: &str, e: ureq::Error) -> anyhow::Error {
 }
 
 fn http_range(agent: &ureq::Agent, url: &str, start: u64, end: u64) -> Result<(Vec<u8>, u64)> {
+    ensure!(end >= start, "empty or reversed range {start}-{end} (the remote file describes itself wrongly)");
     let resp = agent.get(url).header("Range", &format!("bytes={start}-{end}")).call().map_err(|e| net_err(&format!("GET Range {start}-{end}"), url, e))?;
     let (body, total) = check_range(resp, start, end, url)?;
     Ok((body, total))
@@ -118,7 +119,8 @@ fn http_suffix(agent: &ureq::Agent, url: &str, n: u64) -> Result<(Vec<u8>, u64)>
 fn check_range(resp: http::Response<ureq::Body>, start: u64, end: u64, url: &str) -> Result<(Vec<u8>, u64)> {
     ensure!(resp.status() == 206, "server without Range support (status {}): the update URL must point to a Range-served file", resp.status());
     let cr = resp.headers().get("content-range").context("missing Content-Range")?.to_str().context("Content-Range")?.to_string();
-    let want = end.checked_sub(start).and_then(|n| n.checked_add(1)).unwrap_or(u64::MAX);
+    // An empty or reversed range is an error, never "no limit".
+    let want = end.checked_sub(start).and_then(|n| n.checked_add(1)).context("empty range")?;
     let body = read_body(resp.into_body(), want)?;
     let total = panpak_core::check_range_parts(start, end, &cr, body.len()).with_context(|| format!("for {url}"))?;
     Ok((body, total))
@@ -216,6 +218,8 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     // BEFORE allocating (the footer declares untrusted lengths).
     let (foot, total) = http_suffix(&agent, &url, panpak_core::FOOTER_LEN)?;
     let ft = panpak_core::parse_footer(total, &foot)?;
+    // The same layout rules as for a file on disk, before any range is asked for: nothing the footer says is used until it closes.
+    panpak_core::check_layout(total, &ft)?;
     ensure!(ft.man_len <= panpak_core::MAX_MANIFEST_TOML, "remote manifest too large");
     ensure!(ft.index_len <= panpak_core::MAX_INDEX_COMP, "remote index too large");
     let (man_b, total2) = http_range(&agent, &url, ft.man_off, ft.man_off + ft.man_len - 1)?;
@@ -621,6 +625,7 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
             let agent = agent_for(&url, allow_insecure, timeout_secs)?;
             let (foot, total) = http_suffix(&agent, &url, panpak_core::FOOTER_LEN)?;
             let rft = panpak_core::parse_footer(total, &foot)?;
+            panpak_core::check_layout(total, &rft)?;
             ensure!(rft.root == rec.footer.root, "the update URL serves another version now (another root hash): run `panpak update {app_id}` instead, or give the package of the installed version with --from <package>");
             fetch_chunks(&staging, &needed, rft.index_off, &mut |start, end| {
                 let (b, t) = http_range(&agent, &url, start, end - 1)?;
