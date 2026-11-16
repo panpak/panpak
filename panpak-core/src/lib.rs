@@ -1403,6 +1403,24 @@ mod tests {
     }
 
     #[test]
+    fn every_library_that_nothing_provides_is_named_at_once() {
+        let host: std::collections::HashMap<String, std::path::PathBuf> = [("libok.so.1".to_string(), std::path::PathBuf::from("/usr/lib/libok.so.1"))].into();
+        let bundled = std::collections::HashMap::new();
+        let needs: Vec<String> = ["libaa.so.1", "libok.so.1", "Bb.so", "libcc.so.3"].iter().map(|s| s.to_string()).collect();
+        let e = crate::abi::decide(&needs, &[], &[], &host, &bundled).unwrap_err().to_string();
+        assert!(e.contains("libaa.so.1") && e.contains("Bb.so") && e.contains("libcc.so.3"), "all three are named: {e}");
+        assert!(!e.contains("libok.so.1"), "{e}");
+        assert!(e.contains("missing on the host and not included in the tree"), "{e}");
+        // One library: the message that it always had.
+        let one: Vec<String> = vec!["libaa.so.1".into()];
+        let e = crate::abi::decide(&one, &[], &[], &host, &bundled).unwrap_err().to_string();
+        assert!(e.starts_with("libaa.so.1 missing on the host and not included in the tree"), "{e}");
+        // `allow_missing` still takes some of them out of the list.
+        let e = crate::abi::decide(&needs, &[], &["libaa.so.1".to_string()], &host, &bundled).unwrap_err().to_string();
+        assert!(!e.contains("libaa.so.1") && e.contains("Bb.so") && e.contains("libcc.so.3"), "{e}");
+    }
+
+    #[test]
     fn the_inventory_finds_a_module_whose_name_has_no_lib_prefix() {
         // FreeCAD: `usr/lib/Mesh.so`, asked for as `Mesh.so` by ten modules.
         let d = inventory_dir("noprefix");
@@ -2446,6 +2464,7 @@ pub mod abi {
         prefs: &HashMap<String, bool>,
     ) -> Result<Vec<(String, Source)>> {
         let mut out = Vec::new();
+        let mut unresolved: Vec<&str> = Vec::new();
         let bundle_libc = bundled.contains_key("libc.so.6")
             && needs.iter().any(|n| GLIBC_FAMILY.iter().any(|g| g == n));
         // Atomic families (like glibc): the libraries of a family are built against each other, and
@@ -2544,10 +2563,12 @@ pub mod abi {
                 (_, Some(bp)) => out.push((n.clone(), Source::Bundled(bp.clone()))),
                 // Not included: the system copy.
                 (Some(hp), None) => out.push((n.clone(), Source::Host(hp.clone()))),
-                (None, None) => {
-                        bail!("{n} missing on the host and not included in the tree: the app cannot start here (try another distro or report it to the package author)");
-                }
+                // Nothing provides it: kept, and said with every other one at the end (a packager used to find them one run at a time).
+                (None, None) => unresolved.push(n.as_str()),
             }
+        }
+        if !unresolved.is_empty() {
+            bail!("{} missing on the host and not included in the tree: the app cannot start here (try another distro or report it to the package author)", unresolved.join(", "));
         }
         Ok(out)
     }

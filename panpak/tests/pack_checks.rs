@@ -281,6 +281,17 @@ fn doctor_finds_a_module_that_has_no_lib_prefix() {
     assert!(t.contains("unresolved libraries: Mesh.so missing on the host and not included in the tree"), "{t}");
 }
 
+#[test]
+fn doctor_names_every_unresolved_library_in_one_line() {
+    // Two files of the package ask for a library each, and nothing provides either: one run says both (a packager used to need one run for each).
+    let l = lab("doctorall");
+    let (o, pkg) = l.pack("two", &[("bin/app", elf_needing("libfirst.so.1")), ("lib/plugin.so", elf_needing("Second.so"))], "");
+    assert!(o.status.success(), "{}", text(&o));
+    let t = text(&cli(&l.home, &["doctor", pkg.to_str().unwrap()]));
+    let line = t.lines().find(|ln| ln.contains("unresolved libraries")).unwrap_or_else(|| panic!("{t}"));
+    assert!(line.contains("libfirst.so.1") && line.contains("Second.so") && line.contains("missing on the host and not included in the tree"), "{line}");
+}
+
 /// A minimal little-endian ELF64 shared object whose only dynamic entry is DT_NEEDED `name` (enough for the DT_NEEDED reader).
 fn elf_needing(name: &str) -> Vec<u8> {
     let mut strtab = vec![0u8];
