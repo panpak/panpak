@@ -3247,6 +3247,12 @@ fn main() {
 
 fn real_main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    // Help does nothing else: before anything is read from or written to the store, the configuration or the home (`convert --help` used to make the personal key).
+    let is_help = |a: Option<&String>| matches!(a.map(String::as_str), Some("--help" | "-h"));
+    if (args.len() == 2 && (is_help(args.get(1)) || args[1] == "help")) || (args.len() >= 3 && !args[1].starts_with('-') && is_help(args.get(2))) {
+        println!("{}", usage());
+        return Ok(());
+    }
     // The commands that open the store bring the launchers and entries of a copied store to it. Not the end-of-run jobs, nor the start-time apply.
     let opens_store = matches!(
         args.get(1).map(String::as_str),
@@ -3430,6 +3436,8 @@ fn real_main() -> Result<()> {
                 }
             }
             let dir = dir.unwrap_or_else(|| PathBuf::from("."));
+            // The arguments are checked before the personal key is made: a key is made when a package is about to be signed.
+            ensure_code!(dir.is_dir(), ErrorCode::E5002, "build: {} is not a folder", dir.display());
             let secret = load_or_make_secret(secret_file.as_deref())?;
             // The stub to embed: the one given, or the runtime of the store (the one that comes with this program, installed if it is missing).
             let stub = match stub {
@@ -3470,11 +3478,17 @@ fn real_main() -> Result<()> {
                     x => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
                 }
             }
+            // The arguments are checked before the personal key is made: a key is made when a package is about to be signed.
+            let id = id.ok_or_else(|| coded(ErrorCode::E5002, "missing --id"))?;
+            let stub = stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?;
+            panpak_core::validate_app_id(id)?;
+            ensure_code!(Path::new(src).is_file(), ErrorCode::E5002, "convert: {src} is not a file");
+            ensure_code!(Path::new(stub).is_file(), ErrorCode::E5002, "convert: the stub {stub} is not a file");
             let secret = load_or_make_secret(secret_file.as_deref())?;
             cmd_convert(ConvertArgs {
                 src: Path::new(src),
-                id: id.ok_or_else(|| coded(ErrorCode::E5002, "missing --id"))?,
-                stub: Path::new(stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?),
+                id,
+                stub: Path::new(stub),
                 secret: &secret,
                 name_ov: name,
                 version_ov: version,
