@@ -374,6 +374,13 @@ fn read_limited(f: &mut fs::File, max: usize) -> Option<Vec<u8>> {
 /// the launcher to work, otherwise nothing is touched.
 #[allow(clippy::too_many_arguments)] // every field of the entry
 pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &str, name: &str, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, twin: bool) -> Result<Refresh> {
+    refresh_entry_with(store, entry_dir, launcher, app_id, name, schemes, mime_types, wm_class, twin, false)
+}
+
+/// The same, and with `force` the entry is rewritten even when its version is current (a store that was copied to another path: the entry and the launcher
+/// name the old one). Only an entry that panpak wrote is touched.
+#[allow(clippy::too_many_arguments)] // every field of the entry
+pub fn refresh_entry_with(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &str, name: &str, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, twin: bool, force: bool) -> Result<Refresh> {
     let path = entry_dir.join(format!("panpak.{app_id}.desktop"));
     let mut f = match fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
         Ok(f) => f,
@@ -384,7 +391,7 @@ pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &s
     let mut head = [0u8; VERSION_WINDOW];
     let n = f.read_at(&mut head, 0)?;
     // Current: the version is the one of this template, and the entry says the same about another app with the same id as the disk does now.
-    if entry_version(&head[..n]).is_some_and(|v| v >= DESKTOP_VERSION) && entry_twin(&head[..n]) == twin {
+    if !force && entry_version(&head[..n]).is_some_and(|v| v >= DESKTOP_VERSION) && entry_twin(&head[..n]) == twin {
         return Ok(Refresh::Current);
     }
     // Older, or the version is not where it should be: read it all and see whether panpak wrote it.

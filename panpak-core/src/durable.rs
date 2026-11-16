@@ -127,12 +127,16 @@ pub fn relative_to(target: &Path, dir: &Path) -> PathBuf {
     out
 }
 
-/// Where a link of the store points, as an absolute path: a relative text is taken from the folder of the link, and `..` and `.` are folded
-/// lexically (the folders of the store are real folders). An absolute text, as older stores have, is returned as it is.
+/// Where a link of the store points, as an absolute path: the relative text is taken from the folder of the link, and `..` and `.` are folded
+/// lexically (the folders of the store are real folders). An absolute link is an error: the store writes none, and one is a store of an earlier version,
+/// which is not read (reinstall the app).
 pub fn resolve_link(link: &Path) -> std::io::Result<PathBuf> {
     let text = fs::read_link(link)?;
     if text.is_absolute() {
-        return Ok(text);
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("the link {} is absolute: this store was made by an earlier version of panpak; reinstall the app", link.display()),
+        ));
     }
     let mut out = link.parent().map(Path::to_path_buf).unwrap_or_default();
     for c in text.components() {
@@ -185,9 +189,10 @@ mod tests {
         fs::rename(&d, &moved).unwrap();
         assert_eq!(resolve_link(&moved.join("apps/a.b/current")).unwrap(), moved.join("packages/x.rec"));
         assert_eq!(fs::read(moved.join("apps/a.b/current")).unwrap(), b"r");
-        // An absolute link (an older store) is returned as it is.
+        // An absolute link (a store of an earlier version) is refused, with a message that says what to do.
         std::os::unix::fs::symlink("/some/where", moved.join("abs")).unwrap();
-        assert_eq!(resolve_link(&moved.join("abs")).unwrap(), Path::new("/some/where"));
+        let err = resolve_link(&moved.join("abs")).unwrap_err();
+        assert!(err.to_string().contains("is absolute") && err.to_string().contains("reinstall"), "{err}");
         let _ = fs::remove_dir_all(&moved);
     }
 

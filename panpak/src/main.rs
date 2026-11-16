@@ -2102,6 +2102,54 @@ fn split_num(s: &str) -> (u64, &str) {
 
 
 
+/// A store that was copied or moved to another path (another home): the launcher in `~/.local/bin` and the menu entry name the old path of the store, because
+/// they cannot be relative. Every command that opens the store reads the launcher of each installed app (one small file) and, when it names another place,
+/// writes the launcher and the entry again. Only files that panpak wrote are touched; a failure is told and never stops the command.
+fn reconcile_integration() {
+    let Ok(store) = dsk::store_dir() else { return };
+    let Ok(rd) = fs::read_dir(store.join("apps")) else { return };
+    let stub = dsk::stable_stub(&store);
+    for e in rd.flatten() {
+        let Some(id) = e.file_name().to_str().map(str::to_owned) else { continue };
+        if panpak_core::validate_app_id(&id).is_err() {
+            continue;
+        }
+        if let Err(err) = reconcile_app(&store, &stub, &id) {
+            eprintln!("panpak: {id}: the launcher and the menu entry could not be brought to this store: {}", panpak_core::err_text(&err));
+        }
+    }
+}
+
+fn reconcile_app(store: &Path, stub: &Path, id: &str) -> Result<()> {
+    let current_link = store.join("apps").join(id).join("current");
+    let Ok(rec_path) = panpak_core::durable::resolve_link(&current_link) else { return Ok(()) };
+    let launcher = dsk::launcher_path(id)?;
+    let want = dsk::launcher_sh(id, stub, &current_link)?;
+    // A launcher that is not a small regular file is not ours to read.
+    let Ok(meta) = fs::symlink_metadata(&launcher) else { return Ok(()) };
+    if !meta.file_type().is_file() || meta.len() > 64 * 1024 {
+        return Ok(());
+    }
+    let Ok(have) = fs::read_to_string(&launcher) else { return Ok(()) };
+    if have == want || !launcher_is_ours(&have, id) {
+        return Ok(());
+    }
+    write_replacing(&launcher, &want, 0o755, "launcher", &|s| launcher_is_ours(s, id))?;
+    let rec = panpak_core::record::open_verified(&rec_path).context("unreadable record of the installed version")?;
+    let man = &rec.manifest;
+    let (schemes, mimes) = (manifest_schemes(man), manifest_mime_types(man));
+    let class = manifest_wm_class(man);
+    let twin = dsk::twin_of(id, class).is_some();
+    let Some(dir) = dirs::data_dir().map(|d| d.join("applications")) else { return Ok(()) };
+    ensure_stable_panpak(store)?;
+    let done = dsk::refresh_entry_with(store, &dir, &launcher, id, &man.app.name, &schemes, &mimes, class, twin, true)?;
+    if matches!(done, dsk::Refresh::Rewritten) && (!schemes.is_empty() || !mimes.is_empty()) {
+        refresh_desktop_database(&dir);
+    }
+    eprintln!("panpak: {id}: the launcher and the menu entry named another place for the store; they are written again for {}", store.display());
+    Ok(())
+}
+
 /// The text of the entry of an app: the stable `panpak` of the store gives the menu action, when it is there.
 #[allow(clippy::too_many_arguments)] // every field of the entry
 fn entry_text(store: &Path, app_id: &str, name: &str, launcher: &Path, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, icon: bool, twin: bool) -> Result<String> {
@@ -3187,7 +3235,16 @@ fn main() {
     }
 }
 
-fn real_main() -> Result<()> {    let args: Vec<String> = std::env::args().collect();
+fn real_main() -> Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    // The commands that open the store bring the launchers and entries of a copied store to it. Not the end-of-run jobs, nor the start-time apply.
+    let opens_store = matches!(
+        args.get(1).map(String::as_str),
+        Some("list" | "doctor" | "update" | "rollback" | "repair" | "remove" | "open" | "permissions" | "data" | "gc" | "config" | "install" | "inspect")
+    ) || (args.get(1).map(String::as_str) == Some("apply") && !args.iter().any(|a| a == "--at-start"));
+    if opens_store {
+        reconcile_integration();
+    }
     match args.get(1).map(|s| s.as_str()) {
         Some("--version") if args.len() == 2 => {
             println!("panpak {}", env!("CARGO_PKG_VERSION"));

@@ -5,7 +5,8 @@
 The links that the store writes (`apps/<id>/current`, `previous`, `pending`, the links of a farm, `trees/<root>/.farm`, `bin/panpak-stub`) are relative to
 their own folder. Checked: after an install, an update (a `previous`) and a staged update (a `pending`) no link of the store names the path it was made in; the
 whole home is copied to another path; there, `panpak list`, `panpak doctor` and a start work and read only the copy (the original is not touched);
-`apply` and `rollback` work in the copy; an older store with an absolute `current` still starts.
+`rollback` works in the copy; the launcher and the menu entry of the copy name the old path until one panpak command writes them again, then they
+name the copy and the launcher starts the app; an absolute `current` (a store of an earlier version) is refused with a message.
 """
 import os
 from pathlib import Path
@@ -126,7 +127,11 @@ def main():
             env_b = env_for(home_b)
             store_b = home_b / 'data/panpak'
             before = listing(store_a)
-            assert str(home_a) not in run([panpak, 'list'], env_b).stdout
+            launcher = home_b / '.local/bin' / ID
+            entry = home_b / 'data/applications' / f'panpak.{ID}.desktop'
+            assert entry.exists() and str(home_a) in launcher.read_text() and str(home_a) in entry.read_text(), 'the copy still names the old place'
+            listed = run([panpak, 'list'], env_b)
+            assert str(home_a) not in listed.stdout and 'named another place' in listed.stderr, listed.stdout + listed.stderr
             out = run([panpak, 'doctor', ID], env_b).stdout
             assert 'OK   verified package' in out and str(home_a) not in out, out
             p = run([store_b / 'bin/panpak-stub', 'run', store_b / 'apps' / ID / 'current'], env_b)
@@ -143,17 +148,26 @@ def main():
             assert run([store_a / 'bin/panpak-stub', 'run', store_a / 'apps' / ID / 'current'], env_a).stdout.strip().endswith('version 3'), 'the original still starts, from its own place'
             print('rollback in the copy works and writes relative links; the original still starts PASS')
 
-            # 4. an older store, with an absolute current, still starts and is read
+            # 4. the first command of the copy (`list`, above) wrote the launcher and the entry again: they name the copy, and they work
+            assert str(home_a) not in launcher.read_text() and str(home_b) in launcher.read_text(), launcher.read_text()
+            assert str(home_a) not in entry.read_text() and str(home_b) in entry.read_text(), entry.read_text()
+            assert launcher.stat().st_mode & 0o111, 'the launcher is executable'
+            out = run([launcher], env_b).stdout.strip()
+            assert out.endswith('version 2'), out
+            exec_line = next(l for l in entry.read_text().splitlines() if l.startswith('Exec='))
+            assert exec_line.split('=', 1)[1].split()[0].strip('"') == str(launcher), exec_line
+            assert 'named another place' not in run([panpak, 'list'], env_b).stderr, 'the second command finds nothing to write'
+            assert str(home_a) in (home_a / '.local/bin' / ID).read_text(), 'the original launcher was not touched'
+            print('the first command of the copy wrote the launcher and the menu entry for the copy; the launcher starts the app; the original is untouched PASS')
+
+            # 5. a store of an earlier version (an absolute current) is refused with a message that says what to do
             cur = store_b / 'apps' / ID / 'current'
             target = (cur.parent / os.readlink(cur)).resolve()
             cur.unlink()
             cur.symlink_to(target)
-            assert os.readlink(cur).startswith('/')
-            assert run([store_b / 'bin/panpak-stub', 'run', cur], env_b).stdout.strip() == 'version 2'
-            run([panpak, 'doctor', ID], env_b)
-            run([panpak, 'rollback', ID], env_b)
-            assert not os.readlink(cur).startswith('/'), 'the first command that moves current writes it relative'
-            print('a store with an absolute current (older) starts, is read, and is made relative by the next rollback PASS')
+            p = run([panpak, 'rollback', ID], env_b, ok=False)
+            assert p.returncode != 0 and 'is absolute' in p.stderr + p.stdout and 'reinstall' in p.stderr + p.stdout, p.stdout + p.stderr
+            print('an absolute current (a store of an earlier version) is refused: reinstall PASS')
         finally:
             srv.terminate()
             srv.wait()

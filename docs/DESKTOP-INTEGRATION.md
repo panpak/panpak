@@ -261,6 +261,15 @@ microseconds. Measure: a stage `desktop check` in `PANPAK_DEBUG`, and a new colu
 fails above 0.3 ms. The rewrite (rare, once per version bump) costs the fsync, a few ms, and is shown in the
 same stage.
 
+### A store that was copied to another path
+
+The launcher (a shell script) and the entry hold the absolute path of the store, so a home that is copied or moved still names the old place. The
+CLI repairs this, not the stub (the old launcher is what would start the stub): every command that opens the store (`list`, `doctor`, `update`, `apply`,
+`rollback`, `repair`, `remove`, `install`, `gc`, `config`, `open`, `data`, `permissions`, `inspect`; not `background` and not `apply --at-start`) reads the
+launcher of each installed app, a small file, and compares it with the text it would write now. When they differ and panpak wrote the launcher, it writes the launcher and then the
+entry again (the entry is rewritten even when its version is current) and says so on standard error. A launcher or an entry that panpak did not write is
+not touched. `tests/store_move.py` copies a home and checks that the launcher starts the app after one command.
+
 Alternatives discarded:
 
 - Rewrite all entries at `install-runtime`: it would touch files of apps that are not being started, can
