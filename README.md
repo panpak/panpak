@@ -262,6 +262,7 @@ One machine (Ryzen 7 7735HS, Ubuntu 26.04), medians of several runs. Method, raw
 | First start after install; later start | 0.3–0.7 s; 38–81 ms | `python3 bench/public_bench.py start` |
 | Time to window, apps built from source | Text Editor 0.37 s, qBittorrent 0.16 s, Ghostty 0.27 s | `python3 tests/apps/run.py --apps tests/apps/apps.example.toml --full --group source` |
 | Start of a command-line program (later) | Neovim `--version`: 32 ms | [how](docs/BENCHMARKS.md#start-of-a-command-line-program) |
+| Memory of two versions of an app running at once (QOwnNotes) | 90.8 MiB, against 118.8 for two unpacked copies and 148.5 for two AppImages (PSS) | `python3 bench/shared_memory.py --apps qownnotes` ([how](docs/BENCHMARKS.md#memory-of-two-apps-that-run-at-the-same-time)) |
 | Chunks shared by two GTK 4 apps | 67% and 61% of the stored bytes; 32% less to store | `python3 bench/shared_chunks.py <text-editor.panpak> <ghostty.panpak>` |
 | Same recipe, same package | identical bytes in two builds | `panpak build . -o a.panpak && panpak build . -o b.panpak && cmp a.panpak b.panpak` |
 

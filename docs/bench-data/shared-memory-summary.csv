@@ -1,0 +1,18 @@
+# date_utc: 2026-11-16T10:07:18Z
+# cpu: AMD Ryzen 7 7735HS with Radeon Graphics
+# threads: 16
+# ram_mib: 14652
+# kernel: 7.0.0-43-generic
+# os: Ubuntu 26.04.1 LTS
+# filesystem_of_work_dir: ext4
+# landlock: OK   kernel 7.0.0-43-generic, Landlock V8 (fs + network + ioctl + signal/abstract-socket scope (+Unix paths if V9 supported))
+# bubblewrap: bubblewrap 0.11.1
+# python: 3.14.4
+# rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
+# panpak_commit: 3038cdc
+# panpak_sha256: 6f192a64beb1fda3
+# stub_sha256: fdb252e78f1db302
+app,arm,new_alone_mib,old_alone_mib,both_mib,saved_mib,saved_percent,both_cgroup_mib
+qownnotes,panpak,67.6562,67.5957,90.8262,44.4258,32.8467,211.2344
+qownnotes,extracted,64.6299,62.9316,118.7676,8.7939,6.8939,263.1523
+qownnotes,appimage,79.9121,77.2881,148.4688,8.7314,5.5543,295.0391

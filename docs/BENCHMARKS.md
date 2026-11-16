@@ -1,6 +1,6 @@
 # Benchmarks
 
-Measurements of update size, start time, the cost of the isolated view and library resolution,
+Measurements of update size, start time, memory of apps that run together, the cost of the isolated view and library resolution,
 made with the scripts in `bench/`. Every number on this page is in a CSV file in
 [`bench-data/`](bench-data/), with the machine, the system, the versions and the date at the top of
 the file. The charts are drawn from those files. Nothing here is estimated.
@@ -244,6 +244,43 @@ python3 tests/apps/run.py --apps tests/apps/apps.example.toml --group source   #
 python3 bench/shared_chunks.py target/apps-harness/pkg/text-editor-*.panpak target/apps-harness/pkg/ghostty-*.panpak
 ```
 
+## Memory of two apps that run at the same time
+
+Question: when two versions of an app are installed and both run, how much memory do they take, with the files of the store shared, with two unpacked copies, and with two AppImages?
+
+Method (`bench/shared_memory.py`, data in [`bench-data/shared-memory.csv`](bench-data/shared-memory.csv) and
+[`shared-memory-summary.csv`](bench-data/shared-memory-summary.csv)): QOwnNotes 26.10.8 and 26.10.9 (consecutive releases, official AppImages), on a headless Sway, in an
+isolated HOME. Each app runs in its own cgroup scope (`systemd-run --user --scope`), so its processes are exactly the members of the scope. Three arms with the same
+flags: **panpak** (both versions installed under two app ids in one store, the isolated view on: files that are the same in the two versions are one inode, a hard link of one blob),
+**extracted** (each AppImage unpacked in its own folder: two copies of every file) and **appimage** (the AppImage mounted by userspace FUSE, as in the start benchmarks).
+Three cases per arm: new version alone, old version alone, both. After the first window and 10 s of settling, the **PSS** of every process of the scopes is summed
+(`smaps_rollup`: each page divided by the number of processes that map it, so a page that two apps share counts once and two private copies count twice). The cgroup counters
+(`memory.current`) are in the CSV as a second view. Before each run the files of the arm are dropped from the page cache. Five repetitions; medians below, minimum and maximum are in the CSV.
+
+| Arm | New alone (MiB PSS) | Old alone | Both | Both minus the two alone | Both, cgroup `memory.current` |
+|---|---|---|---|---|---|
+| panpak (shared files) | 67.7 | 67.6 | 90.8 | -44.4 MiB (-32.8%) | 211.2 MiB |
+| extracted (two copies) | 64.6 | 62.9 | 118.8 | -8.8 MiB (-6.9%) | 263.2 MiB |
+| AppImage (FUSE) | 79.9 | 77.3 | 148.5 | -8.7 MiB (-5.6%) | 295.0 MiB |
+
+Reading: starting the second version when the new one already runs adds 23.2 MiB with panpak, 54.1 MiB with two unpacked copies and 68.6 MiB with two AppImages (both minus the new alone). With both running, panpak uses 27.9 MiB (24%) less than
+two unpacked copies and 57.6 MiB (39%) less than two AppImages; by the cgroup counters, 52 and 84 MiB less. The saving is in file pages only (file PSS of both: 58.2 MiB for panpak, 87.7 for
+two copies); private memory of the apps (14.8 MiB of anonymous memory each) is not shared. For one app alone the isolated view costs 3.1 MiB over the unpacked copy (the stub, the
+bubblewrap process and the proxy: 4 processes against 1), and the AppImage costs 14 to 15 MiB more than the unpacked copy (the FUSE process).
+
+Limits specific to this measurement:
+- One app, two consecutive releases: the best case for sharing (most files are the same). Two different apps share only what they have in common (libraries built from the same source, the runtime
+  itself); nothing was measured for that here. The test with two apps that share bundled Qt or GTK libraries is open.
+- One process per app in the isolated view cannot be read through `smaps_rollup` (it lives in a user namespace of its own): its `VmRSS` (1.7 MiB per app, upper bound) is in the CSV as
+  `unreadable_rss_kib` and is not in the PSS sums. The panpak figures are therefore lower bounds by at most that.
+- The apps are idle after startup, headless, software rendering. A used app grows, mostly in private memory.
+- Simplenote (Electron) was meant to be a second app, but its package does not install on this machine (`libdbus-glib-1.so.2` is missing on the host), so it is not in the data.
+- PSS counts mapped pages; the cgroup counters also count page cache that the apps read but do not map, charged to the scope that touched it first.
+
+```sh
+python3 bench/shared_memory.py --apps qownnotes --reps 5   # needs sway, bubblewrap, systemd --user and the inputs of bench/inputs.py
+```
+
 ## Sources of the comparison table in the README
 
 The table compares properties, not speed. Each box rests on the official documentation (read on 2026-11-09); where a page could not be read in full or says
@@ -276,7 +313,7 @@ nothing, the box says less.
   are not used here.
 - Disk use (the package and the tree are both kept) and install time were measured in an earlier cycle,
   see [BENCHMARKS-history.md](BENCHMARKS-history.md); they are not repeated here.
-- Flatpak and Snap were not measured.
+- Memory of apps that run together: one app, two releases, idle (see its section); Flatpak and Snap were not measured.
 
 ## Run the benchmarks again
 
