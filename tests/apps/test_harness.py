@@ -125,6 +125,46 @@ class Signing(unittest.TestCase):
         self.assertEqual(out[moff2 + mlen2:moff2 + mlen2 + 64], ed25519.sign(seed, newman + root))
 
 
+FAKE_PANPAK = r"""#!/usr/bin/env python3
+import os, sys
+log = os.path.join(os.environ["HOME"], "calls.log")
+a = sys.argv[1:]
+if a[0] == "convert":
+    open(log, "a").write(" ".join(a) + "\n")
+    open(a[a.index("-o") + 1], "wb").write(open(os.path.join(os.environ["HOME"], "base-package"), "rb").read())
+elif a[0] == "doctor":
+    last = open(log).read().splitlines()[-1].split()
+    allowed = [last[i + 1] for i, w in enumerate(last) if w == "--allow-missing"]
+    miss = [n for n in ("libaa.so.1", "Bb.so", "libcc.so.3") if n not in allowed]
+    if miss:
+        print("KO   unresolved libraries: " + ", ".join(miss) + " missing on the host and not included in the tree: the app cannot start here (try another distro)")
+    else:
+        print("OK   verified package")
+"""
+
+
+class ConvertLoop(unittest.TestCase):
+    def test_every_unresolved_library_is_allowed_in_one_round(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            fake = d / "panpak"
+            fake.write_text(FAKE_PANPAK)
+            fake.chmod(0o755)
+            man = b'[app]\nid = "a.b"\n[update]\nkey = "k"\n'
+            body = b"STUB" * 8 + b"INDEX"
+            (d / "base-package").write_bytes(body + man + b"\0" * 64 + struct.pack("<8sIIQQQQ32s", b"PANPAK\0\0", 1, 0, 32, 5, len(body), len(man), bytes(32)))
+            (d / "harness.key").write_text(bytes(range(32)).hex())
+            ctx = object.__new__(pipeline.Ctx)
+            ctx.work, ctx.pkgs, ctx.panpak, ctx.stub, ctx.keyfile = d, d, fake, d / "stub", d / "harness.key"
+            apps, _ = appcfg.parse(GOOD)
+            pkg, notes = pipeline.convert(ctx, apps["one"], "k1", (d / "src.AppImage", "digest", []))
+            calls = (d / "calls.log").read_text().splitlines()
+            self.assertEqual(len(calls), 2, f"one round to find them all, one with them allowed: {calls}")
+            self.assertEqual(sorted(w for i, w in enumerate(calls[1].split()[1:]) if calls[1].split()[i] == "--allow-missing"), ["Bb.so", "libaa.so.1", "libcc.so.3"])
+            self.assertTrue(pkg.exists())
+            self.assertTrue(any("allow_missing added by the harness: libaa.so.1, Bb.so, libcc.so.3" in n for n in notes), notes)
+
+
 class Readers(unittest.TestCase):
     def test_xwininfo(self):
         out = '     0x20000a "Terminal": ("xterm" "XTerm")  800x600+10+20  +10+20\n     0x200001 (has no name): ()  10x10+-1+-1  +-1+-1\n'

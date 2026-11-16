@@ -132,8 +132,9 @@ def max_allow():
 
 
 def convert(ctx, app, key, fetched):
-    """AppImage to package: `convert`, then the permissions of the app, then `doctor`; a library that nothing provides is allowed by name and the conversion runs again
-    (up to HCAP times, 60 by default), as a packager would. `fetched` is what `fetch` returned. Returns (package path, notes)."""
+    """AppImage to package: `convert`, then `doctor`; the libraries that nothing provides (`doctor` names all of them at once) are allowed by name and the conversion
+    runs again, as a packager would: normally twice (up to HCAP times, 60 by default). The permissions of the app are added once, at the end: they do not change what
+    `doctor` finds. `fetched` is what `fetch` returned. Returns (package path, notes)."""
     src, _digest, notes = fetched
     pkg = ctx.pkgs / f"{app.name}-{key}.panpak"
     base = ctx.pkgs / f"{app.name}-{key}.base"
@@ -143,12 +144,13 @@ def convert(ctx, app, key, fetched):
         r = sh(cmd, env={**BASE_ENV, "HOME": str(ctx.work)})
         if r.returncode != 0:
             raise StepError("panpak convert failed: " + (r.stdout + r.stderr).strip()[-400:])
-        add_permissions(base, pkg, app.permissions, ctx.seed())
-        d = sh([ctx.panpak, "doctor", pkg], env={**BASE_ENV, "HOME": str(ctx.work)})
-        m = re.search(r"unresolved libraries: (\S+) missing", d.stdout + d.stderr)
-        if not m or m.group(1) in allow:
+        d = sh([ctx.panpak, "doctor", base], env={**BASE_ENV, "HOME": str(ctx.work)})
+        m = re.search(r"unresolved libraries: (.+?) missing on the host", d.stdout + d.stderr)
+        new = [n for n in (m.group(1).split(", ") if m else []) if n not in allow]
+        if not new:
             break
-        allow.append(m.group(1))
+        allow.extend(new)
+    add_permissions(base, pkg, app.permissions, ctx.seed())
     base.unlink(missing_ok=True)
     if allow:
         notes.append(f"allow_missing added by the harness: {', '.join(allow)}")
