@@ -1376,7 +1376,7 @@ The filter is a deny list: every system call passes except the ones below, which
 - `ioctl` returns `EPERM` for `TIOCSTI` and `TIOCLINUX` (input injection into a terminal); `personality` returns `EPERM`
   unless the value is 0, 8, `0x20000`, `0x20008` or `0xffffffff` (the query).
 - `socket` and `socketpair` return `EAFNOSUPPORT` unless the family (the first argument, as the kernel reads it, an int) is `AF_UNIX`, `AF_INET`, `AF_INET6` or
-  `AF_NETLINK`. The other families (vsock, alg, bluetooth, packet, key, xdp, nfc, tipc, rds, can, ...) are a large kernel surface that no app of the desktop needs, and
+  `AF_NETLINK`, and for `AF_NETLINK` the protocol (the third argument, an int) must be `NETLINK_ROUTE` (the list of interfaces and routes that `getifaddrs` reads), otherwise `EPROTONOSUPPORT`. The other families (vsock, alg, bluetooth, packet, key, xdp, nfc, tipc, rds, can, ...) are a large kernel surface that no app of the desktop needs, and
   a program that probes for one is told that it is not supported. This is the one place where the filter is a list of what passes and not of what is refused.
 - Calls that are left open on purpose: `seccomp` (Chromium and Firefox add their own filters), `landlock_*`,
   `memfd_create`, `modify_ldt` (Wine).
@@ -1424,7 +1424,7 @@ The filter is a deny list: every system call passes except the ones below, which
 | `clone3` | ENOSYS | its flags are in memory that a filter cannot read; ENOSYS makes the C library use clone, which is filtered |
 | `open_by_handle_at` | EPERM | opens a file by a handle, outside every path rule |
 | `ioctl` | EPERM for `TIOCSTI`, `TIOCLINUX` | TIOCSTI and TIOCLINUX put keystrokes into the terminal of the user |
-| `socket` | EAFNOSUPPORT unless the family is local, IPv4, IPv6 or netlink | only the families that programs use: local, IPv4, IPv6, netlink; the others are kernel surface that nothing of the desktop needs |
+| `socket` | EAFNOSUPPORT unless the family is local, IPv4, IPv6 or netlink (EPROTONOSUPPORT unless NETLINK_ROUTE) | only the families that programs use: local, IPv4, IPv6, netlink; the others are kernel surface that nothing of the desktop needs |
 | `socketpair` | EAFNOSUPPORT unless the family is local, IPv4, IPv6 or netlink | the same family list |
 | `personality` | EPERM unless the value is a plain Linux one | READ_IMPLIES_EXEC, no randomisation, page zero: they weaken the memory protections |
 | `iopl` | EPERM | direct access to the hardware ports |

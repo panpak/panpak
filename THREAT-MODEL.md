@@ -51,7 +51,7 @@ The local store (`~/.local/share/panpak`) is considered **trusted**
   even in the same folder (fork tests: sibling, symlink, hardlink,
   create denied; names with spaces and special characters ok). The
   picker, if needed, runs outside the sandbox (host portal/picker).
-- **Opt-in atomic save** (`--write-rename`, never default):
+- **Opt-in atomic save** (`--write-rename`, never default, and only used without the document portal: with it the file is a document and the portal lets the app save by replacing it):
   editors saving via temp+rename (e.g. vim with backup, gedit) fail
   with the file-only rule (fail-closed: the temp is never created).
   The opt-in adds to the parent folder ONLY execute (traversal),
@@ -635,7 +635,7 @@ Status of the project: pre-beta.
   on its SUID helper. The seccomp filter now refuses `unshare` and `clone` with `CLONE_NEWUSER` too, so no program
   in the view can make a user namespace, with or without the view (WebKitGTK's own bubblewrap, `flatpak` and
   `bwrap` run by an app fail the same way). See `docs/COMPATIBILITY.md` (Defects).
-- **KL-10 Seccomp is a deny list.** (Except `socket` and `socketpair`: only the families local, IPv4, IPv6 and netlink pass; the rest return `EAFNOSUPPORT`.) System calls that are not on the list of `PANPAK-FORMAT.md` §9.8 stay
+- **KL-10 Seccomp is a deny list.** (Except `socket` and `socketpair`: only the families local, IPv4, IPv6 and netlink pass, and of netlink only NETLINK_ROUTE; the rest return `EAFNOSUPPORT` or `EPROTONOSUPPORT`. Without the uevent socket an app does not hear of devices that come and go: a game pad plugged in while the app runs, a camera or a microphone in a call.) System calls that are not on the list of `PANPAK-FORMAT.md` §9.8 stay
   available, and a kernel bug in one of them is not stopped. In particular `memfd_create`, `seccomp` and `landlock_*`
   are open on purpose, and `modify_ldt` (Wine) on x86-64. The view hides other processes with its own PID
   namespace; without the view Yama (ptrace scope 1) and the filter (`ptrace`, `process_vm_*`, `pidfd_getfd` refused)

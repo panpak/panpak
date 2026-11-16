@@ -61,6 +61,10 @@ out['socket_alg'] = sc(41, 38, 5, 0)[1]
 out['socket_bluetooth'] = sc(41, 31, 1, 0)[1]
 out['socket_packet'] = sc(41, 17, 3, 0)[1]
 out['socket_key'] = sc(41, 15, 3, 2)[1]
+# AF_NETLINK 16 (SOCK_RAW 3): the protocol NETLINK_ROUTE 0 works, uevent 15 and generic 16 do not.
+out['netlink_uevent'] = sc(41, 16, 3, 15)[1]
+out['netlink_generic'] = sc(41, 16, 3, 16)[1]
+out['netlink_route_ok'] = sc(41, 16, 3, 0)[0] == 0
 # What must keep working.
 t = []
 th = threading.Thread(target=lambda: t.append(1)); th.start(); th.join()
@@ -98,6 +102,7 @@ WANT = {
     'userfaultfd': 'EPERM', 'perf_event_open': 'EPERM', 'keyctl': 'EPERM', 'mount': 'EPERM', 'setns': 'EPERM',
     'x32_getpid': 'EPERM',
     'socket_vsock': 'EAFNOSUPPORT', 'socket_alg': 'EAFNOSUPPORT', 'socket_bluetooth': 'EAFNOSUPPORT', 'socket_packet': 'EAFNOSUPPORT', 'socket_key': 'EAFNOSUPPORT',
+    'netlink_uevent': 'EPROTONOSUPPORT', 'netlink_generic': 'EPROTONOSUPPORT',
 }
 
 
@@ -170,7 +175,7 @@ def main():
     for k, want in WANT.items():
         got = errno.errorcode.get(res[k], res[k])
         need(got == want, f'{k}: expected {want}, got {got}')
-    for k in ('thread', 'fork_exec', 'pipe', 'memfd', 'getpid', 'ioctl_ok', 'personality_query', 'af_unix', 'af_inet'):
+    for k in ('thread', 'fork_exec', 'pipe', 'memfd', 'getpid', 'ioctl_ok', 'personality_query', 'af_unix', 'af_inet', 'netlink_route_ok'):
         need(res[k] is True, f'{k} no longer works under the filter')
     host_has_cache = Path('/var/cache/fontconfig').is_dir()
     need(res['fontcache_read'] == (True if host_has_cache else None), f'font cache: read {res["fontcache_read"]}, host has one: {host_has_cache}')
@@ -178,7 +183,7 @@ def main():
     print('system font cache:', 'readable, not writable' if host_has_cache else 'absent on this host (not checked)')
     print('seccomp in the real launcher: filter mode with no_new_privs; ENOSYS for', ', '.join(k for k, v in WANT.items() if v == 'ENOSYS'))
     print('  EPERM for', ', '.join(k for k, v in WANT.items() if v == 'EPERM'))
-    print('  EAFNOSUPPORT for', ', '.join(k for k, v in WANT.items() if v == 'EAFNOSUPPORT'), '(local and IPv4 sockets work)')
+    print('  EAFNOSUPPORT for', ', '.join(k for k, v in WANT.items() if v == 'EAFNOSUPPORT'), '(local, IPv4 and netlink-route sockets work)')
     print('  threads, fork+exec, pipes, memfd_create, ordinary ioctl and personality query keep working: ok')
     run(REL / 'panpak', 'remove', ID)  # the trees are read-only: remove takes them away properly
     isolation.remove_owned(runtime, work)

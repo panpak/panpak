@@ -630,6 +630,11 @@ def scenario_dialog(lab):
     argv = json.loads(report.read_text())['argv']
     need(len(argv) == 1 and argv[0].startswith(doc) and argv[0].endswith('/a.txt'), f'D: the argument of a start with one file: {argv}')
     need('may read' not in p.stderr and 'read access' not in p.stderr, f'D: the old rule of the host path was added and announced: {p.stderr[-300:]}')
+    # With the portal, `--write` and `--write-rename` are not used (the portal gives the file with the user's rights and lets the app save by replacing it): the stub says so, and the
+    # folder of the file is not opened (no warning of a grant on the folder).
+    p = subprocess.run([str(store / 'bin/panpak-stub'), 'run', str(store / 'apps' / app / 'current'), '--panpak-open', str(docs / 'a.txt'), '--panpak-open-rename', 'args', '-', '0', str(docs / 'a.txt')],
+                       env=lab.env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    need('--write-rename is not used' in p.stderr and 'folder is not opened' in p.stderr and 'WARNING: WRITE access' not in p.stderr, f'D: the flag of the folder with the portal: {p.stderr[-400:]}')
     # Removing the app takes the grants back and leaves the user's files alone.
     listing = lambda: lab.sess.call('org.freedesktop.portal.Documents', '/org/freedesktop/portal/documents', 'org.freedesktop.portal.Documents.List', f'panpak.{app}')[1]
     need(not listing().endswith('{},)'), f'D: the portal holds nothing for the app before the removal: {listing()}')

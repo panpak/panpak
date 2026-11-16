@@ -58,7 +58,8 @@ const TIOCLINUX: u32 = 0x541C;
 /// value changes how the kernel lays out memory (no randomisation, executable stack by default, page zero).
 const PERSONALITY_OK: &[u32] = &[0x0, 0x8, 0x0002_0000, 0x0002_0008, 0xffff_ffff];
 
-/// The socket families that programs use: local sockets, IPv4, IPv6, and netlink (the list of interfaces and routes that `getifaddrs` and the resolver read).
+/// The socket families that programs use: local sockets, IPv4, IPv6, and netlink, and of netlink only the protocol NETLINK_ROUTE (the list of interfaces and
+/// routes that `getifaddrs` reads).
 /// Every other family (vsock, alg, bluetooth, packet, key, xdp, nfc, tipc, rds, can ...) is a large kernel surface that no app of the desktop needs.
 const SOCKET_FAMILIES_OK: &[u32] = &[libc::AF_UNIX as u32, libc::AF_INET as u32, libc::AF_INET6 as u32, libc::AF_NETLINK as u32];
 
@@ -76,7 +77,8 @@ enum Check {
     Personality,
     /// `clone` and `unshare`: refused when the flags ask for a new namespace (`time` too for `unshare`).
     Namespaces { time: bool },
-    /// `socket` and `socketpair`: refused with `EAFNOSUPPORT` unless the family (the first argument) is in `SOCKET_FAMILIES_OK`.
+    /// `socket` and `socketpair`: refused with `EAFNOSUPPORT` unless the family (the first argument) is in `SOCKET_FAMILIES_OK`, and for netlink with
+    /// `EPROTONOSUPPORT` unless the protocol (the third argument) is `NETLINK_ROUTE`.
     SocketFamily,
 }
 
@@ -96,6 +98,7 @@ macro_rules! rule {
 const DENY: Check = Check::Deny(EPERM);
 const NOSYS: Check = Check::Deny(ENOSYS);
 const EAFNOSUPPORT: u32 = libc::EAFNOSUPPORT as u32;
+const EPROTONOSUPPORT: u32 = libc::EPROTONOSUPPORT as u32;
 
 /// The deny list. The reason of each entry is part of the data so that a reader
 /// can say why a call is on it.
@@ -253,13 +256,20 @@ fn block_of(c: Check) -> Vec<Insn> {
             v
         }
         Check::SocketFamily => {
-            // One compare per allowed family: equal -> allow; at the end, refuse with "family not supported".
+            // Layout: load the family; one compare for each allowed family (equal -> allow; AF_NETLINK -> look at the protocol); refuse with "family not supported";
+            // load the protocol (the third argument); NETLINK_ROUTE -> allow; refuse with "protocol not supported"; allow.
             let n = SOCKET_FAMILIES_OK.len();
+            let allow_at = n + 5; // index of the final `ret allow` in the block
             let mut v = vec![stmt(BPF_LD_W_ABS, off_arg(0))];
             for (i, k) in SOCKET_FAMILIES_OK.iter().enumerate() {
-                v.push(jump(BPF_JEQ_K, *k, (n - i) as u8, 0));
+                let at = 1 + i;
+                let to = if *k == libc::AF_NETLINK as u32 { n + 2 } else { allow_at };
+                v.push(jump(BPF_JEQ_K, *k, (to - at - 1) as u8, 0));
             }
             v.push(ret_errno(EAFNOSUPPORT));
+            v.push(stmt(BPF_LD_W_ABS, off_arg(2)));
+            v.push(jump(BPF_JEQ_K, libc::NETLINK_ROUTE as u32, 1, 0));
+            v.push(ret_errno(EPROTONOSUPPORT));
             v.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
             v
         }
@@ -285,7 +295,7 @@ pub fn describe() -> Vec<String> {
                 Check::Ioctl => "EPERM for TIOCSTI, TIOCLINUX",
                 Check::Personality => "EPERM unless the value is a plain Linux one",
                 Check::Namespaces { .. } => "EPERM when a new namespace is asked",
-                Check::SocketFamily => "EAFNOSUPPORT unless the family is local, IPv4, IPv6 or netlink",
+                Check::SocketFamily => "EAFNOSUPPORT unless the family is local, IPv4, IPv6 or netlink (EPROTONOSUPPORT unless NETLINK_ROUTE)",
             };
             format!("{:<22} {:<10} {}", r.name.trim_start_matches("SYS_"), how, r.why)
         })
@@ -571,5 +581,31 @@ mod tests {
         assert_eq!(judge(libc::SYS_socket, [libc::AF_UNIX as u64, (libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC) as u64, 0, 0, 0, 0]), SECCOMP_RET_ALLOW);
         // The kernel takes the family as an int: the high half of the register cannot make a refused family look like an allowed one.
         assert_eq!(judge(libc::SYS_socket, fam((1u64 << 32) | libc::AF_VSOCK as u64)), errno(libc::EAFNOSUPPORT as u32));
+    }
+
+    /// AF_NETLINK is open for the protocol NETLINK_ROUTE only (the list of interfaces and routes that `getifaddrs` reads). The others (uevent, generic, audit, netfilter,
+    /// sock_diag, xfrm, crypto ...) are kernel surface that a program of the desktop does not need; a program that asks is told that the protocol is not supported.
+    #[test]
+    fn netlink_is_open_for_the_route_protocol_only() {
+        let netlink = |proto: i32| [libc::AF_NETLINK as u64, (libc::SOCK_RAW | libc::SOCK_CLOEXEC) as u64, proto as u64, 0, 0, 0];
+        assert_eq!(judge(libc::SYS_socket, netlink(libc::NETLINK_ROUTE)), SECCOMP_RET_ALLOW);
+        for (name, proto) in [
+            ("KOBJECT_UEVENT", libc::NETLINK_KOBJECT_UEVENT),
+            ("GENERIC", libc::NETLINK_GENERIC),
+            ("AUDIT", libc::NETLINK_AUDIT),
+            ("NETFILTER", libc::NETLINK_NETFILTER),
+            ("SOCK_DIAG", libc::NETLINK_SOCK_DIAG),
+            ("XFRM", libc::NETLINK_XFRM),
+            ("CRYPTO", libc::NETLINK_CRYPTO),
+            ("SCSITRANSPORT", libc::NETLINK_SCSITRANSPORT),
+            ("(31, unassigned)", 31),
+        ] {
+            assert_eq!(judge(libc::SYS_socket, netlink(proto)), errno(libc::EPROTONOSUPPORT as u32), "NETLINK_{name}");
+        }
+        // The protocol is an int: the high half of the register cannot make another protocol look like route.
+        assert_eq!(judge(libc::SYS_socket, [libc::AF_NETLINK as u64, 3, (1u64 << 32) | libc::NETLINK_KOBJECT_UEVENT as u64, 0, 0, 0]), errno(libc::EPROTONOSUPPORT as u32));
+        // The other families do not depend on the protocol.
+        assert_eq!(judge(libc::SYS_socket, [libc::AF_INET as u64, 1, 6, 0, 0, 0]), SECCOMP_RET_ALLOW);
+        assert_eq!(judge(libc::SYS_socket, [libc::AF_UNIX as u64, 1, 0, 0, 0, 0]), SECCOMP_RET_ALLOW);
     }
 }

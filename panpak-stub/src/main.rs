@@ -1497,6 +1497,20 @@ fn rename_scope_refusal(file: &Path, home: Option<&Path>) -> Option<String> {
     None
 }
 
+/// What to say when `--panpak-open-write` or `--panpak-open-rename` was given and the document portal serves the file instead: the flags are for a start without the
+/// portal (the file is then a host path and Landlock opens that one path, and with `--panpak-open-rename` its folder). With the portal the app gets the file as a document, and
+/// the portal lets it save by replacing the file (a temporary file and a rename in the document folder), so the folder of the file is never opened.
+fn open_flags_note(open: Option<&(PathBuf, OpenGrant)>) -> Option<String> {
+    let (path, grant) = open?;
+    if grant.rename {
+        Some(format!("--write-rename is not used: the document portal gives {} to the app and lets it save by replacing the file; the folder is not opened", path.display()))
+    } else if grant.write {
+        Some(format!("--write is not used: the document portal gives {} to the app with the rights that you have on it", path.display()))
+    } else {
+        None
+    }
+}
+
 /// Split the stub-consumed flags from the app arguments.
 /// `--network-unfiltered`, `--panpak-open <path>`, `--panpak-open-write` and
 /// `--panpak-open-rename` never reach the application. The path is
@@ -2071,7 +2085,11 @@ fn real_main() -> Result<()> {
     let app_args = if layer_ok && installed_mode { share_start_files(app_args, &man.app.id, runtime_dir.as_deref(), access.rw.as_slice()) } else { app_args };
     // With the document portal served, the file the launcher names with `--panpak-open` is shared as a document with the other arguments (just above), so the older rule
     // of Landlock on the path of the host is not added: it would be a second, read-only grant to the same file, and a line on standard error that says so.
-    let open_file = if layer_ok && installed_mode && documents_served(runtime_dir.as_deref()) { None } else { open_file };
+    let served = layer_ok && installed_mode && documents_served(runtime_dir.as_deref());
+    if let Some(note) = served.then(|| open_flags_note(open_file.as_ref())).flatten() {
+        eprintln!("panpak: {note}");
+    }
+    let open_file = if served { None } else { open_file };
     cmd.args(&launch_args)
         .args(&app_args)
         .env("PANPAK_APP_ID", &man.app.id)
@@ -4281,5 +4299,15 @@ mod tests {
         assert!(!refused("/mnt/data/note.txt"), "outside the home");
         let why = rename_scope_refusal(Path::new("/home/u/doc.txt"), Some(home)).unwrap();
         assert!(why.contains("--write") && why.contains("folder of its own"), "{why}");
+    }
+
+    #[test]
+    fn the_open_flags_say_that_the_portal_made_them_unnecessary() {
+        let p = PathBuf::from("/home/u/doc.txt");
+        let rename = open_flags_note(Some(&(p.clone(), OpenGrant { write: true, rename: true }))).unwrap();
+        assert!(rename.contains("--write-rename is not used") && rename.contains("/home/u/doc.txt") && rename.contains("folder is not opened"), "{rename}");
+        assert!(open_flags_note(Some(&(p.clone(), OpenGrant { write: true, rename: false }))).unwrap().contains("--write is not used"));
+        assert_eq!(open_flags_note(Some(&(p, OpenGrant { write: false, rename: false }))), None, "read only: nothing to say");
+        assert_eq!(open_flags_note(None), None);
     }
 }

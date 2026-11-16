@@ -128,16 +128,15 @@ panpak open --write org.example.hello ~/doc.txt      # write to the file
 panpak open --write-rename org.example.hello ~/doc.txt  # + atomic save
 ```
 
-The sandbox grants only that file. `--write-rename` (opt-in, with
-warning) also allows temp+rename in the folder (e.g. vim with backup,
-gedit), without reading/listing neighbors — but neighbors stay
-overwritable and deletable, and so is everything in the folders below
+With the document portal (a desktop session has one), the file is given to the app as a document, with the rights that you have on it (read, and write when you can
+write the file), and the portal lets the app save by replacing the file; `--write` and `--write-rename` are then not used, and the stub says so. Without the portal the sandbox
+grants only that file, and read-only unless `--write`. `--write-rename` (opt-in, only without the portal) also allows temp+rename in the folder (e.g. vim with backup,
+gedit), without reading/listing neighbors — but neighbors stay overwritable and deletable, and so is everything in the folders below
 it. For that reason it is refused for a folder that is your home or
 holds it, or that holds or lies in a place where a file is a way to
 run a program later (`~/.config`, `~/.local`, `~/.ssh`, the shell
 start files, `~/.config/autostart`, ...): use `--write`, or put the
-file in a folder of its own. Double click is read-only (`--write` from
-CLI only).
+file in a folder of its own.
 
 ## Desktop integration (file type)
 
