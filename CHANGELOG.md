@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Power-loss proofs (end of step 8).** `docs/POWER-LOSS.md`: 1768 points of `dm-log-writes` (every flush and FUA point of 15 steps of install, update, apply, rollback and remove, and 200 random points) and 30 `virsh destroy` cycles, all OK, with the
+  limits. `tests/power_loss_dmlog.py` is confirmed on a VM and fixed (parsing of `replay-log --verbose`, a server for `update --stage`, `--max-flush`); `tests/power_loss_packs.py` makes its packages.
 - **Step 8e: garbage collection by reachability from the records.** `panpak gc [--dry-run]` keeps the records that `current`, `previous` and `pending` name, the trees and farms of their roots (a farm lives while any
   record with its root lives) and the blobs that a kept tree links, and takes out the rest: records, trees, farms, blobs, work folders of dead processes, `*.panpak` of the old layout, ABI cache entries of a gone farm or older than
   30 days, download folders idle for 7 days, runtimes that nothing names. **No clock decides about work in progress**: `locks/.store` is a two-mode lock; install, update, stage, apply, repair, rollback, remove and the making of a
