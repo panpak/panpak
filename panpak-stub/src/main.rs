@@ -2129,14 +2129,14 @@ fn real_main() -> Result<()> {
             }
         }
     }
-    exec_filtered(&mut cmd)
+    exec_filtered(&mut cmd, &man)
 }
 
 /// The last step before the app: the seccomp filter, then the exec. Nothing may come between the two, and every
 /// path that starts an app goes through here, so the filter (and `no_new_privs`) is in place for the app and
 /// for everything it runs. Does not return on success.
-fn exec_filtered(cmd: &mut Command) -> Result<()> {
-    panpak_core::seccomp::install()?;
+fn exec_filtered(cmd: &mut Command, man: &panpak_core::Manifest) -> Result<()> {
+    panpak_core::seccomp::install_with(man.permissions.as_ref().and_then(|p| p.devices) == Some(true))?;
     stage("seccomp installed, executing the app");
     let err = cmd.exec(); // Replaces the process.
     bail!("exec failed: {err}")
@@ -2535,7 +2535,7 @@ fn run_inner(fd: i32) -> Result<()> {
     let open = job.open.as_ref().map(|o| (o.path.as_path(), OpenGrant { write: o.write, rename: o.rename }));
     sandbox(&job.tree, &job.manifest, &access, job.allow_unfiltered, open)?;
     stage("inner: Landlock applied");
-    exec_filtered(&mut job.to_command())
+    exec_filtered(&mut job.to_command(), &job.manifest)
 }
 
 #[cfg(test)]
@@ -4206,6 +4206,7 @@ mod tests {
             tray: None,
             dbus_own: None,
             mpris: None,
+            devices: None,
         });
         let access = Access { rw: vec![appdata.clone()], ..Access::default() };
         let err = build_ruleset(&tree, &access, &man, abi, true, false, None).unwrap_err();

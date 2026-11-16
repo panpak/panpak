@@ -70,6 +70,10 @@ permissions = "[permissions]\nx11 = true\n"
 
 Without `sha256` the run still works and says that the download was not checked.
 
+An app that listens for devices that come and go (Chromium and Electron apps, SDL games and emulators, video editors: libudev, `NETLINK_KOBJECT_UEVENT`) starts without
+it, with no hot-plug notices. To give it the notices put `devices = true` in its block: `permissions = "[permissions]\nx11 = true\ndevices = true\n"`. It is a permission that
+the user sees at install (level Attention) and it opens no device file.
+
 ## How to read the numbers
 
 - **window s** is the time from the moment the launcher is started to the first

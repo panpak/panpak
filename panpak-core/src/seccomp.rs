@@ -203,6 +203,11 @@ fn ret_errno(e: u32) -> Insn {
 ///    Since each block returns, no block needs to load the number again.
 /// 4. allow.
 pub fn build() -> Result<Vec<Insn>> {
+    build_with(false)
+}
+
+/// The program for an app that may open the uevent socket of netlink (`uevent`: the manifest says `devices = true`) or not.
+pub fn build_with(uevent: bool) -> Result<Vec<Insn>> {
     if NATIVE_ARCH == 0 {
         return Err(coded(ErrorCode::E3002, "the seccomp filter does not cover this architecture"));
     }
@@ -220,7 +225,7 @@ pub fn build() -> Result<Vec<Insn>> {
     }
     for r in all_rules() {
         let nr = u32::try_from(r.nr).map_err(|_| coded(ErrorCode::E3002, format!("bad system call number for {}", r.name)))?;
-        let block = block_of(r.check);
+        let block = block_of(r.check, uevent);
         let skip = u8::try_from(block.len()).map_err(|_| coded(ErrorCode::E3002, "seccomp block too long"))?;
         p.push(jump(BPF_JEQ_K, nr, 0, skip));
         p.extend(block);
@@ -233,7 +238,7 @@ pub fn build() -> Result<Vec<Insn>> {
 }
 
 /// The instructions that follow `jeq nr` for one rule. Always ends in a `ret`.
-fn block_of(c: Check) -> Vec<Insn> {
+fn block_of(c: Check, uevent: bool) -> Vec<Insn> {
     match c {
         Check::Deny(e) => vec![ret_errno(e)],
         Check::Ioctl => vec![
@@ -257,9 +262,10 @@ fn block_of(c: Check) -> Vec<Insn> {
         }
         Check::SocketFamily => {
             // Layout: load the family; one compare for each allowed family (equal -> allow; AF_NETLINK -> look at the protocol); refuse with "family not supported";
-            // load the protocol (the third argument); NETLINK_ROUTE -> allow; refuse with "protocol not supported"; allow.
+            // load the protocol (the third argument); NETLINK_ROUTE (and, with `uevent`, NETLINK_KOBJECT_UEVENT) -> allow; refuse with "protocol not supported"; allow.
             let n = SOCKET_FAMILIES_OK.len();
-            let allow_at = n + 5; // index of the final `ret allow` in the block
+            let protocols: Vec<u32> = if uevent { vec![libc::NETLINK_ROUTE as u32, libc::NETLINK_KOBJECT_UEVENT as u32] } else { vec![libc::NETLINK_ROUTE as u32] };
+            let allow_at = n + 3 + protocols.len() + 1; // index of the final `ret allow` in the block
             let mut v = vec![stmt(BPF_LD_W_ABS, off_arg(0))];
             for (i, k) in SOCKET_FAMILIES_OK.iter().enumerate() {
                 let at = 1 + i;
@@ -268,7 +274,10 @@ fn block_of(c: Check) -> Vec<Insn> {
             }
             v.push(ret_errno(EAFNOSUPPORT));
             v.push(stmt(BPF_LD_W_ABS, off_arg(2)));
-            v.push(jump(BPF_JEQ_K, libc::NETLINK_ROUTE as u32, 1, 0));
+            for (i, k) in protocols.iter().enumerate() {
+                let at = n + 3 + i;
+                v.push(jump(BPF_JEQ_K, *k, (allow_at - at - 1) as u8, 0));
+            }
             v.push(ret_errno(EPROTONOSUPPORT));
             v.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
             v
@@ -336,7 +345,12 @@ pub fn install_allowlist(allowed: &[i64]) -> Result<()> {
 /// Install the filter on this process (all its threads). `no_new_privs` is set first: it is what lets a
 /// process without privileges install a filter, and it stays for the app and every program it runs.
 pub fn install() -> Result<()> {
-    install_program(&build()?)
+    install_with(false)
+}
+
+/// The same for an app that may open the uevent socket (`devices = true`).
+pub fn install_with(uevent: bool) -> Result<()> {
+    install_program(&build_with(uevent)?)
 }
 
 fn install_program(prog: &[Insn]) -> Result<()> {
@@ -607,5 +621,21 @@ mod tests {
         // The other families do not depend on the protocol.
         assert_eq!(judge(libc::SYS_socket, [libc::AF_INET as u64, 1, 6, 0, 0, 0]), SECCOMP_RET_ALLOW);
         assert_eq!(judge(libc::SYS_socket, [libc::AF_UNIX as u64, 1, 0, 0, 0, 0]), SECCOMP_RET_ALLOW);
+    }
+
+    /// A program of an app that declared `devices` may open the uevent socket (hot-plug notices), and nothing else of netlink that it could not open before.
+    #[test]
+    fn the_uevent_socket_is_open_only_with_the_devices_permission() {
+        let netlink = |proto: i32| [libc::AF_NETLINK as u64, (libc::SOCK_RAW | libc::SOCK_CLOEXEC) as u64, proto as u64, 0, 0, 0];
+        let with = build_with(true).unwrap();
+        let judge_with = |nr: i64, args: [u64; 6]| run(&with, NATIVE_ARCH, nr as u32, args);
+        assert_eq!(judge(libc::SYS_socket, netlink(libc::NETLINK_KOBJECT_UEVENT)), errno(libc::EPROTONOSUPPORT as u32), "the default refuses it");
+        assert_eq!(judge_with(libc::SYS_socket, netlink(libc::NETLINK_KOBJECT_UEVENT)), SECCOMP_RET_ALLOW);
+        assert_eq!(judge_with(libc::SYS_socket, netlink(libc::NETLINK_ROUTE)), SECCOMP_RET_ALLOW);
+        for proto in [libc::NETLINK_GENERIC, libc::NETLINK_AUDIT, libc::NETLINK_NETFILTER, libc::NETLINK_SOCK_DIAG, libc::NETLINK_XFRM] {
+            assert_eq!(judge_with(libc::SYS_socket, netlink(proto)), errno(libc::EPROTONOSUPPORT as u32), "{proto}");
+        }
+        assert_eq!(judge_with(libc::SYS_socket, [libc::AF_VSOCK as u64, 1, 0, 0, 0, 0]), errno(libc::EAFNOSUPPORT as u32));
+        assert_eq!(judge_with(libc::SYS_ptrace, [0; 6]), errno(EPERM), "the rest of the filter is the same");
     }
 }

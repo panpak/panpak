@@ -25,6 +25,9 @@ msgstr ""
 msgid "Be controlled by the media keys"
 msgstr ""
 
+msgid "Be told when devices are plugged in or removed (game pads, USB devices, cameras, keyboards)"
+msgstr ""
+
 msgid "Cancel"
 msgstr ""
 
@@ -89,6 +92,9 @@ msgid "It cannot watch other apps or read what you type in them."
 msgstr ""
 
 msgid "It has no settings or data."
+msgstr ""
+
+msgid "It receives the notices that the system sends about devices that come and go, with their names and numbers. It does not open the devices."
 msgstr ""
 
 msgid "Normal"

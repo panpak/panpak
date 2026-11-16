@@ -148,6 +148,7 @@ notifications = false           # opt-in, §3.1.5: desktop notifications
 tray = false                   # opt-in, §3.1.5: a tray icon
 dbus_own = []                  # §3.1.5: names of the app on its private bus (no effect since step 13p; kept for old packages)
 mpris = false                  # §3.1.5: a media player: one alias org.mpris.MediaPlayer2.panpak.<id> on the host bus
+devices = false                # §3.1.5: hear of devices that come and go (game pads, USB devices, cameras, input devices): the uevent socket of netlink
 
 [[permissions.home_paths]]     # last resort, §3.1.2: a fixed path in the home folder
 path = ".config/editor"        # relative to the home, no ".."
@@ -374,6 +375,11 @@ its connection (measured with Chromium and Qt 6), which the host can read and ac
 **`permissions.mpris`** (boolean). The app is a media player: the runtime owns the one name
 `org.mpris.MediaPlayer2.panpak.<id>` (the id with each `.` and `-` written `_`) on the host bus for it, and the media keys and the shell's media
 widget reach the player through it (§9.5). The app never owns a name on the host bus.
+
+**`permissions.devices`** (boolean, default false). Lets the app open the uevent socket of netlink (`socket(AF_NETLINK, ..., NETLINK_KOBJECT_UEVENT)`), the way
+libudev, SDL and Chromium hear of a game pad, a USB device, a camera or an input device that is plugged in or removed (§9.8). Without it the call returns `EPROTONOSUPPORT`
+and the app starts all the same, without hot-plug notices. The notices carry the names and the numbers of every device of the machine that comes or goes (disks and network
+cards too), so the permission is shown at the level Attention. It does not give access to any device file: the view and Landlock stay as they are.
 
 **`permissions.dbus_own`** (list of strings, at most 8, each at most once). Before step 13p: names the app may own
 on the session bus besides its own `app.id`. Since 13p every name the app takes is on its private bus (§9.5) and none is on the host bus, so the
@@ -1376,7 +1382,7 @@ The filter is a deny list: every system call passes except the ones below, which
 - `ioctl` returns `EPERM` for `TIOCSTI` and `TIOCLINUX` (input injection into a terminal); `personality` returns `EPERM`
   unless the value is 0, 8, `0x20000`, `0x20008` or `0xffffffff` (the query).
 - `socket` and `socketpair` return `EAFNOSUPPORT` unless the family (the first argument, as the kernel reads it, an int) is `AF_UNIX`, `AF_INET`, `AF_INET6` or
-  `AF_NETLINK`, and for `AF_NETLINK` the protocol (the third argument, an int) must be `NETLINK_ROUTE` (the list of interfaces and routes that `getifaddrs` reads), otherwise `EPROTONOSUPPORT`. The other families (vsock, alg, bluetooth, packet, key, xdp, nfc, tipc, rds, can, ...) are a large kernel surface that no app of the desktop needs, and
+  `AF_NETLINK`, and for `AF_NETLINK` the protocol (the third argument, an int) must be `NETLINK_ROUTE` (the list of interfaces and routes that `getifaddrs` reads), or `NETLINK_KOBJECT_UEVENT` when the manifest says `permissions.devices = true`; otherwise `EPROTONOSUPPORT`. The other families (vsock, alg, bluetooth, packet, key, xdp, nfc, tipc, rds, can, ...) are a large kernel surface that no app of the desktop needs, and
   a program that probes for one is told that it is not supported. This is the one place where the filter is a list of what passes and not of what is refused.
 - Calls that are left open on purpose: `seccomp` (Chromium and Firefox add their own filters), `landlock_*`,
   `memfd_create`, `modify_ldt` (Wine).
@@ -1424,7 +1430,7 @@ The filter is a deny list: every system call passes except the ones below, which
 | `clone3` | ENOSYS | its flags are in memory that a filter cannot read; ENOSYS makes the C library use clone, which is filtered |
 | `open_by_handle_at` | EPERM | opens a file by a handle, outside every path rule |
 | `ioctl` | EPERM for `TIOCSTI`, `TIOCLINUX` | TIOCSTI and TIOCLINUX put keystrokes into the terminal of the user |
-| `socket` | EAFNOSUPPORT unless the family is local, IPv4, IPv6 or netlink (EPROTONOSUPPORT unless NETLINK_ROUTE) | only the families that programs use: local, IPv4, IPv6, netlink; the others are kernel surface that nothing of the desktop needs |
+| `socket` | EAFNOSUPPORT unless the family is local, IPv4, IPv6 or netlink (EPROTONOSUPPORT unless NETLINK_ROUTE, or NETLINK_KOBJECT_UEVENT with `permissions.devices`) | only the families that programs use: local, IPv4, IPv6, netlink; the others are kernel surface that nothing of the desktop needs |
 | `socketpair` | EAFNOSUPPORT unless the family is local, IPv4, IPv6 or netlink | the same family list |
 | `personality` | EPERM unless the value is a plain Linux one | READ_IMPLIES_EXEC, no randomisation, page zero: they weaken the memory protections |
 | `iopl` | EPERM | direct access to the hardware ports |

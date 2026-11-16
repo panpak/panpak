@@ -26,6 +26,9 @@ msgstr "Attenzione"
 msgid "Be controlled by the media keys"
 msgstr "Essere controllata dai tasti multimediali"
 
+msgid "Be told when devices are plugged in or removed (game pads, USB devices, cameras, keyboards)"
+msgstr "Essere avvisata quando si collegano o si scollegano dispositivi (gamepad, dispositivi USB, fotocamere, tastiere)"
+
 msgid "Cancel"
 msgstr "Annulla"
 
@@ -91,6 +94,9 @@ msgstr "Non può osservare le altre app né leggere ciò che scrivi in esse."
 
 msgid "It has no settings or data."
 msgstr "Non ha impostazioni né dati."
+
+msgid "It receives the notices that the system sends about devices that come and go, with their names and numbers. It does not open the devices."
+msgstr "Riceve gli avvisi che il sistema manda sui dispositivi che vanno e vengono, con i loro nomi e numeri. Non apre i dispositivi."
 
 msgid "Normal"
 msgstr "Normale"

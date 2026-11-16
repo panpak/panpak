@@ -635,7 +635,7 @@ Status of the project: pre-beta.
   on its SUID helper. The seccomp filter now refuses `unshare` and `clone` with `CLONE_NEWUSER` too, so no program
   in the view can make a user namespace, with or without the view (WebKitGTK's own bubblewrap, `flatpak` and
   `bwrap` run by an app fail the same way). See `docs/COMPATIBILITY.md` (Defects).
-- **KL-10 Seccomp is a deny list.** (Except `socket` and `socketpair`: only the families local, IPv4, IPv6 and netlink pass, and of netlink only NETLINK_ROUTE; the rest return `EAFNOSUPPORT` or `EPROTONOSUPPORT`. Without the uevent socket an app does not hear of devices that come and go: a game pad plugged in while the app runs, a camera or a microphone in a call.) System calls that are not on the list of `PANPAK-FORMAT.md` §9.8 stay
+- **KL-10 Seccomp is a deny list.** (Except `socket` and `socketpair`: only the families local, IPv4, IPv6 and netlink pass, and of netlink only NETLINK_ROUTE; the rest return `EAFNOSUPPORT` or `EPROTONOSUPPORT`. Without the uevent socket an app does not hear of devices that come and go (a game pad plugged in while the app runs, a camera or a microphone in a call): `permissions.devices = true` gives it that socket, and nothing else of netlink.) System calls that are not on the list of `PANPAK-FORMAT.md` §9.8 stay
   available, and a kernel bug in one of them is not stopped. In particular `memfd_create`, `seccomp` and `landlock_*`
   are open on purpose, and `modify_ldt` (Wine) on x86-64. The view hides other processes with its own PID
   namespace; without the view Yama (ptrace scope 1) and the filter (`ptrace`, `process_vm_*`, `pidfd_getfd` refused)
