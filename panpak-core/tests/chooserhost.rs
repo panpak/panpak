@@ -14,7 +14,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The labs set the address of the bus in the environment of the process: one at a time.
+static ONE_LAB: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct Lab {
+    _one: std::sync::MutexGuard<'static, ()>,
     dir: PathBuf,
     bus: Child,
     fake: Child,
@@ -38,6 +42,7 @@ fn have(cmd: &str, args: &[&str]) -> bool {
 }
 
 fn start() -> Option<Lab> {
+    let one = ONE_LAB.lock().unwrap_or_else(|e| e.into_inner());
     if !have("dbus-daemon", &["--version"]) || !have("python3", &["-c", "import gi; gi.require_version('Gio', '2.0')"]) {
         eprintln!("skipped: the lab needs dbus-daemon and python3-gi");
         return None;
@@ -65,7 +70,7 @@ fn start() -> Option<Lab> {
         assert!(t0.elapsed() < Duration::from_secs(20), "the fake portal did not start {ready:?}");
         std::thread::sleep(Duration::from_millis(50));
     }
-    Some(Lab { dir, bus, fake, log, answers })
+    Some(Lab { _one: one, dir, bus, fake, log, answers })
 }
 
 impl Lab {
@@ -148,7 +153,8 @@ fn the_dialog_shares_what_the_user_chose_and_only_that() {
     let mut keys: Vec<String> = entries.iter().filter_map(|e| if let Value::Entry(k, _) = e { if let Value::Str(s) = &**k { Some(s.clone()) } else { None } } else { None }).collect();
     keys.sort();
     assert_eq!(keys, ["choices", "current_filter", "uris"], "the answer carries the choices and the filter, and not the key the app has no business with");
-    let log = lab.take_log();
+    // The host also asks the portal which folders the app was given (`List`): the places where a link may be the app's doing.
+    let log: Vec<String> = lab.take_log().into_iter().filter(|l| !l.contains(r#""call": "List""#)).collect();
     assert!(log[0].contains(r#""call": "OpenFile""#) && log[0].contains(r#""parent": "x11:1f""#), "{log:?}");
     assert!(log[0].contains(r#""keys": ["accept_label", "handle_token", "modal"]"#), "only the known options reach the portal: {log:?}");
     assert!(log[1].contains(r#""call": "AddFull""#) && log[1].contains(r#""flags": 3"#) && log[1].contains(r#""app": "panpak.org.example.App""#), "{log:?}");
@@ -206,10 +212,15 @@ fn the_dialog_shares_what_the_user_chose_and_only_that() {
     let log = lab.take_log();
     assert!(calls(&log, "AddFull").is_empty() && calls(&log, "AddNamedFull").is_empty(), "no document for what the app can reach: {log:?}");
     // A link the user chose elsewhere (a folder the app cannot write) is followed (7b); a Save under the name of a link there is refused.
+    // The folder that the user keeps their own links in: never given to the app (`d` was, at step 4).
+    let ud = lab.dir.join("user");
+    fs::create_dir(&ud).unwrap();
+    let ulink = ud.join("notes.txt");
+    symlink(&rw, &ulink).unwrap();
     let says = format!("the file you chose is a link to {}: choose the original file", rw.display());
     // 7b. The same link in a folder the app cannot write: the user chose it, the file it points to is shared (under its own name). A save under the name
     // of a link is still refused.
-    lab.answers(&format!(r#"[{{"code":0,"uris":["{}"]}},{{"code":0,"uris":["{}"]}}]"#, uri_of(&link), uri_of(&link)));
+    lab.answers(&format!(r#"[{{"code":0,"uris":["{}"]}},{{"code":0,"uris":["{}"]}}]"#, uri_of(&ulink), uri_of(&ulink)));
     let Outcome::Done(dict) = run(&ctx(), &call("OpenFile", vec![])) else { panic!("the link was not followed") };
     let text = format!("{dict:?}");
     let own_name = rw.file_name().unwrap().to_string_lossy().replace(' ', "%20");
@@ -229,7 +240,7 @@ fn the_dialog_shares_what_the_user_chose_and_only_that() {
     // 8b. Files given at the start: shared before the app runs, and the document paths take their place. Words, options and addresses stay; a link is dropped.
     lab.take_log();
     let args: Vec<String> =
-        ["--new-window", "a b.txt", "./new2.txt", &uri_of(&ro), "word", "https://example.org/x.txt", "notes.txt"].iter().map(|s| s.to_string()).collect();
+        ["--new-window", "a b.txt", "./new2.txt", &uri_of(&ro), "word", "https://example.org/x.txt", &ulink.to_string_lossy()].iter().map(|s| s.to_string()).collect();
     let shared = panpak_core::startfiles::share(&args, &d, "panpak.org.example.App", "/run/user/1000", &[], || Connection::session(Duration::from_secs(10)));
     assert_eq!(shared.args.len(), 7, "{:?}", shared.args);
     assert_eq!((shared.args[0].as_str(), shared.args[4].as_str(), shared.args[5].as_str()), ("--new-window", "word", "https://example.org/x.txt"));
@@ -261,4 +272,39 @@ fn the_dialog_shares_what_the_user_chose_and_only_that() {
     let t0 = Instant::now();
     assert!(matches!(run(&ctx(), &call("OpenFile", vec![])), Outcome::Ended { code: 2, .. }));
     assert!(t0.elapsed() < Duration::from_secs(5));
+}
+
+/// PP-04: a folder that the app was given through the document portal (with write) is a place the app can write, so a link in it may be the app's doing and the user's
+/// choice of it is not followed, as for the folders the app can write in its own right. Before, only the roots of the sandbox counted.
+#[test]
+fn a_link_planted_in_a_folder_the_app_was_given_is_not_followed() {
+    let Some(lab) = start() else { return };
+    let d = lab.dir.join("given");
+    let other = lab.dir.join("elsewhere");
+    fs::create_dir_all(&d).unwrap();
+    fs::create_dir_all(&other).unwrap();
+    let target = other.join("private-notes.txt");
+    fs::write(&target, "x").unwrap();
+    // 1. The user gives the folder (read and write): a document of the portal for the app.
+    lab.answers(&format!(r#"[{{"code":0,"uris":["{}"]}}]"#, uri_of(&d)));
+    let out = run(&ctx(), &call("OpenFile", vec![entry("directory", Value::Bool(true))]));
+    assert!(uris(&out)[0].ends_with("/given"));
+    let adds = calls(&lab.take_log(), "AddFull");
+    assert!(adds[0].contains(r#""perms": ["read", "write"]"#) && adds[0].contains(r#""flags": 11"#), "{adds:?}");
+    // 2. The app, which can write in that folder through the document, makes a link there that points at a file the user never gave it. The user picks the link in a dialog.
+    let link = d.join("report.txt");
+    symlink(&target, &link).unwrap();
+    lab.answers(&format!(r#"[{{"code":0,"uris":["{}"]}}]"#, uri_of(&link)));
+    let out = run(&ctx(), &call("OpenFile", vec![]));
+    let log = lab.take_log();
+    assert!(matches!(out, Outcome::Ended { .. }), "the link in a folder the app was given was followed: {out:?}");
+    assert!(calls(&log, "AddFull").is_empty(), "nothing is shared for it: {log:?}");
+    // 3. The same link in a folder that was never given is the user's own, and is followed (as before).
+    let mine = lab.dir.join("mine");
+    fs::create_dir_all(&mine).unwrap();
+    let own = mine.join("alias.txt");
+    symlink(&target, &own).unwrap();
+    lab.answers(&format!(r#"[{{"code":0,"uris":["{}"]}}]"#, uri_of(&own)));
+    assert!(matches!(run(&ctx(), &call("OpenFile", vec![])), Outcome::Done(_)));
+    assert_eq!(calls(&lab.take_log(), "AddFull").len(), 1);
 }

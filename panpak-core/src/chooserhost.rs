@@ -156,10 +156,13 @@ fn run_inner(ctx: &HostCtx, call: &Call) -> Result<Outcome> {
     if !to_share.is_empty() {
         let mut docs_conn = conn;
         let dv = docshare::documents_version(&mut docs_conn).context("the document portal is not running")?;
+        // The places where a link may be the app's doing: its own folders, and the folders the user gave it through the portal with write.
+        let mut link_roots = ctx.roots().to_vec();
+        link_roots.extend(docshare::granted_dirs(&mut docs_conn, &ctx.app_id).context("cannot read the folders given to the app")?);
         let mut docs = Docs { conn: &mut docs_conn, version: dv, app_id: &ctx.app_id };
         match call.method {
             Method::OpenFile => {
-                let items: Vec<docshare::Opened> = to_share.iter().map(|&i| docshare::open_existing(&paths[i], ctx.roots())).collect::<Result<_>>()?;
+                let items: Vec<docshare::Opened> = to_share.iter().map(|&i| docshare::open_existing(&paths[i], &link_roots)).collect::<Result<_>>()?;
                 let ids = docs.share_existing(&items, call.writable)?;
                 for ((&i, it), id) in to_share.iter().zip(&items).zip(&ids) {
                     out_uris[i] = filechooser::document_uri(&ctx.runtime_dir, id, &it.name);
@@ -168,7 +171,7 @@ fn run_inner(ctx: &HostCtx, call: &Call) -> Result<Outcome> {
             Method::SaveFile | Method::SaveFiles => {
                 for &i in &to_share {
                     let p = &paths[i];
-                    let (parent, name) = docshare::open_parent(p, ctx.roots())?;
+                    let (parent, name) = docshare::open_parent(p, &link_roots)?;
                     // An existing link under the chosen name is how an app would redirect a save: refused, as for an open.
                     if std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_symlink()) {
                         return Err(Refused(docshare::link_message(p)).into());

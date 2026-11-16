@@ -87,6 +87,12 @@ pub fn share(
     let mut items: Vec<Item> = Vec::new();
     let mut opened: Vec<Opened> = Vec::new();
     let mut files = 0usize;
+    // The portal is asked when the first file has to be opened, not before: the folders that the user gave the app with write are places where a link may be
+    // the app's doing, and the opening of a path needs to know them. Without a portal nothing can be shared: the files are dropped.
+    let mut connect = Some(connect);
+    let mut conn: Option<Connection> = None;
+    let mut link_roots: Option<Vec<PathBuf>> = None;
+    let mut portal_error: Option<String> = None;
     for a in args {
         let kind = classify(a, cwd);
         if kind == Arg::Other {
@@ -105,33 +111,50 @@ pub fn share(
                 continue;
             }
         }
+        if link_roots.is_none() && portal_error.is_none() {
+            let mut c = match (connect.take().expect("connect is called once"))() {
+                Ok(c) => c,
+                Err(e) => {
+                    // No bus, no portal: the files cannot be given. They are dropped, not passed as host paths the view does not show.
+                    portal_error = Some(format!("files were not shared: {}", crate::err_text(&e)));
+                    continue;
+                }
+            };
+            let mut roots = writable_roots.to_vec();
+            match docshare::granted_dirs(&mut c, app_id) {
+                Ok(g) => roots.extend(g),
+                Err(e) => {
+                    portal_error = Some(format!("files were not shared: the document portal is not available ({})", crate::err_text(&e)));
+                    continue;
+                }
+            }
+            link_roots = Some(roots);
+            conn = Some(c);
+        }
+        let Some(roots) = link_roots.as_deref() else { continue };
         match kind {
-            Arg::Existing { path, as_uri } => match docshare::open_existing(&path, writable_roots) {
+            Arg::Existing { path, as_uri } => match docshare::open_existing(&path, roots) {
                 Ok(o) => {
                     opened.push(o);
                     items.push(Item::Existing { idx: opened.len() - 1, as_uri });
                 }
                 Err(e) => dropped.push(format!("{a}: {}", reason(&e))),
             },
-            Arg::New { path, as_uri } => match docshare::open_parent(&path, writable_roots) {
+            Arg::New { path, as_uri } => match docshare::open_parent(&path, roots) {
                 Ok((parent, name)) => items.push(Item::New { parent, name, as_uri }),
                 Err(e) => dropped.push(format!("{a}: {}", reason(&e))),
             },
             Arg::Other => unreachable!(),
         }
     }
+    if let Some(why) = portal_error {
+        dropped.push(why);
+        return Shared { args: kept(items), dropped };
+    }
+    let Some(mut conn) = conn else { return Shared { args: kept(items), dropped } };
     if opened.is_empty() && !items.iter().any(|i| matches!(i, Item::New { .. })) {
         return Shared { args: kept(items), dropped };
     }
-    let mut conn = match connect() {
-        Ok(c) => c,
-        Err(e) => {
-            // No bus, no portal: the files cannot be given. They are dropped, not passed as host paths the view does not show.
-            let why = crate::err_text(&e);
-            dropped.push(format!("files were not shared: {why}"));
-            return Shared { args: kept(items), dropped };
-        }
-    };
     let version = match docshare::documents_version(&mut conn) {
         Ok(v) => v,
         Err(e) => {

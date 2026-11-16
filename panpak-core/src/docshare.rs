@@ -50,7 +50,8 @@ fn target_problem(real: &Path, home: Option<&Path>) -> Option<&'static str> {
 /// ordinary place. Anything else is refused with the place the link points to.
 fn open_link_target(link: &Path, writable_roots: &[PathBuf]) -> Result<Opened> {
     let refuse = |why: &str| Refused(format!("{} ({why})", link_message(link)));
-    if link.parent().is_some_and(|p| writable_roots.iter().any(|r| p.starts_with(r))) {
+    let holder = link.parent().and_then(|p| std::fs::canonicalize(p).ok());
+    if holder.is_some_and(|p| writable_roots.iter().any(|r| p.starts_with(std::fs::canonicalize(r).unwrap_or_else(|_| r.clone())))) {
         return Err(refuse("this app can write in that folder").into());
     }
     let real = std::fs::canonicalize(link).map_err(|_| refuse("it points to nothing"))?;
@@ -113,24 +114,6 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-/// A link in a folder the app can write is how the app could make the user's choice point at another file. Walk the folder part of the path: a link
-/// is accepted only when the folder that holds it is not under a place the app can write (`writable_roots`).
-fn check_parent_links(parent: &Path, writable_roots: &[PathBuf]) -> Result<()> {
-    let mut cur = PathBuf::new();
-    for c in parent.components() {
-        let holder = cur.clone();
-        cur.push(c);
-        if matches!(c, Component::RootDir | Component::Prefix(_)) {
-            continue;
-        }
-        let is_link = std::fs::symlink_metadata(&cur).map(|m| m.file_type().is_symlink()).unwrap_or(false);
-        if is_link && writable_roots.iter().any(|r| holder.starts_with(r)) {
-            return Err(Refused(LINK_MESSAGE.into()).into());
-        }
-    }
-    Ok(())
-}
-
 /// The real path of something the user chose, when the app can already reach it: the folder part of `path` made canonical (so `/home` and `/var/home` are the same on both
 /// sides) plus the name, if that is under a folder the app can write. Then nothing is shared: the app gets the path as it is, as Flatpak's portal does for what an app can see
 /// (the flag `as-needed-by-app`), and the kernel (Landlock) judges every open, links included. `None` when the path is elsewhere (a document is made), has no name or no folder.
@@ -147,20 +130,90 @@ pub fn real_uri(path: &Path) -> String {
     format!("file://{}", crate::filechooser::percent_encode(path.as_os_str().as_bytes()))
 }
 
-/// Open the parent folder of `path` (`O_PATH | O_DIRECTORY`) and return it with the final name.
+// A seam for the tests: what a program that writes in the folder does between the look at the path and the open.
+#[cfg(test)]
+thread_local! {
+    static HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn hook() {
+    HOOK.with(|h| {
+        if let Some(f) = h.borrow_mut().as_mut() {
+            f();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn hook() {}
+
+/// Open the folder `parent` (`O_PATH`), walking it one name at a time with `O_NOFOLLOW` from `/`, and decide about every link on the way in the same step that
+/// opens it: a link that lies in a folder the app can write (`writable_roots`) may be the app's doing and is refused; any other link (a setup of the user or of the
+/// system, `/home -> /var/home`) is followed. The link is read from the descriptor that was opened, and the folder that holds it is the descriptor it was found in, so
+/// swapping a folder for a link between a look and an open changes nothing: there is no second look (PP-05).
+fn walk_folder(parent: &Path, writable_roots: &[PathBuf]) -> Result<OwnedFd> {
+    let roots: Vec<PathBuf> = writable_roots.iter().map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| r.clone())).collect();
+    let open_root = || -> Result<OwnedFd> {
+        let fd = open_path_at(libc::AT_FDCWD, b"/", libc::O_DIRECTORY).context("cannot open /")?;
+        Ok(fd)
+    };
+    let mut cur = open_root()?;
+    let mut cur_path = PathBuf::from("/");
+    let mut pending: std::collections::VecDeque<Vec<u8>> = std::collections::VecDeque::new();
+    let push_components = |pending: &mut std::collections::VecDeque<Vec<u8>>, p: &Path| -> Result<()> {
+        let mut front = Vec::new();
+        for c in p.components() {
+            match c {
+                Component::Normal(n) => front.push(n.as_bytes().to_vec()),
+                Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+                Component::ParentDir => bail!("the path has a `..`"),
+            }
+        }
+        for n in front.into_iter().rev() {
+            pending.push_front(n);
+        }
+        Ok(())
+    };
+    push_components(&mut pending, parent)?;
+    let mut links = 0;
+    while let Some(name) = pending.pop_front() {
+        hook();
+        let fd = open_path_at(cur.as_raw_fd(), &name, libc::O_NOFOLLOW).with_context(|| format!("cannot open the folder {}", parent.display()))?;
+        let kind = fstat(fd.as_raw_fd())?.st_mode & libc::S_IFMT;
+        if kind == libc::S_IFDIR {
+            cur_path.push(std::ffi::OsStr::from_bytes(&name));
+            cur = fd;
+        } else if kind == libc::S_IFLNK {
+            if roots.iter().any(|r| cur_path.starts_with(r)) {
+                return Err(Refused(LINK_MESSAGE.into()).into());
+            }
+            links += 1;
+            ensure!(links <= 40, "too many links in the path");
+            let mut buf = vec![0u8; 4097];
+            // SAFETY: readlinkat(2) on an O_PATH descriptor of a link with an empty path; the buffer is valid for its length.
+            let n = unsafe { libc::readlinkat(fd.as_raw_fd(), c"".as_ptr(), buf.as_mut_ptr().cast(), buf.len()) };
+            ensure!(n > 0 && (n as usize) < buf.len(), "cannot read a link of the path");
+            buf.truncate(n as usize);
+            let target = PathBuf::from(std::ffi::OsString::from(std::ffi::OsStr::from_bytes(&buf)));
+            if target.is_absolute() {
+                cur = open_root()?;
+                cur_path = PathBuf::from("/");
+            }
+            push_components(&mut pending, &target)?;
+        } else {
+            bail!("{} is not a folder", cur_path.join(std::ffi::OsStr::from_bytes(&name)).display());
+        }
+    }
+    Ok(cur)
+}
+
+/// Open the parent folder of `path` and return it with the final name.
 pub fn open_parent(path: &Path, writable_roots: &[PathBuf]) -> Result<(OwnedFd, Vec<u8>)> {
     ensure!(path.is_absolute(), "the path is not absolute");
     let name = path.file_name().context("the path has no file name")?.as_bytes().to_vec();
     let parent = path.parent().context("the path has no folder")?;
-    check_parent_links(parent, writable_roots)?;
-    let p = cstr(parent.as_os_str().as_bytes())?;
-    // SAFETY: a valid C string.
-    let fd = unsafe { libc::open(p.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| format!("cannot open the folder {}", parent.display()));
-    }
-    // SAFETY: fd is a fresh descriptor.
-    Ok((unsafe { OwnedFd::from_raw_fd(fd) }, name))
+    Ok((walk_folder(parent, writable_roots)?, name))
 }
 
 /// Open an existing file or folder the way section 4 of the design says: the final component is not followed. A regular file or a folder only.
@@ -292,6 +345,41 @@ pub fn list_documents(conn: &mut Connection, app_id: &str) -> Result<Vec<String>
         }
     }
     Ok(ids)
+}
+
+/// The folders that the user gave `app_id` through the portal with write permission: the app writes in them (through the document), so a link found in one of
+/// them may be its doing, as in the folders of its own sandbox. Read from the portal each time (`List` for the paths, the permission store for the rights), because
+/// a grant outlives the session and a new one can come at any time. An error is an error: with no answer, the caller must not follow links.
+pub fn granted_dirs(conn: &mut Connection, app_id: &str) -> Result<Vec<PathBuf>> {
+    let r = conn.call(DOCUMENTS, DOCS_PATH, DOCUMENTS, "List", vec![Value::str(app_id)], vec![])?;
+    let Some(Value::Array(_, entries)) = r.body.first() else { bail!("List: unexpected reply") };
+    let mut out = Vec::new();
+    for e in entries {
+        let Value::Entry(k, v) = e else { continue };
+        let (Value::Str(id), Value::Array(_, bytes)) = (&**k, &**v) else { continue };
+        let raw: Vec<u8> = bytes.iter().filter_map(|b| if let Value::Byte(b) = b { Some(*b) } else { None }).take_while(|b| *b != 0).collect();
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(&raw));
+        if !path.is_absolute() || !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let perms = conn.call(
+            "org.freedesktop.impl.portal.PermissionStore",
+            "/org/freedesktop/impl/portal/PermissionStore",
+            "org.freedesktop.impl.portal.PermissionStore",
+            "Lookup",
+            vec![Value::str("documents"), Value::str(id)],
+            vec![],
+        )?;
+        let Some(Value::Array(_, apps)) = perms.body.first() else { bail!("Lookup: unexpected reply") };
+        let writes = apps.iter().any(|a| {
+            matches!(a, Value::Entry(k, v) if matches!(&**k, Value::Str(x) if x == app_id)
+                && matches!(&**v, Value::Array(_, p) if p.iter().any(|x| matches!(x, Value::Str(s) if s == "write"))))
+        });
+        if writes {
+            out.push(std::fs::canonicalize(&path).unwrap_or(path));
+        }
+    }
+    Ok(out)
 }
 
 /// Take every permission of `app_id` away from a document.
@@ -466,5 +554,35 @@ mod tests {
         assert!(e.to_string().contains("not a file or a folder"), "{e}");
         assert!(open_existing(Path::new("relative"), &[]).is_err());
         assert!(open_existing(Path::new("/"), &[]).is_err());
+    }
+
+    /// PP-05: the check for links and the open were two looks at one name. A folder swapped for a link in between was followed.
+    #[test]
+    fn a_folder_swapped_for_a_link_between_the_check_and_the_open_is_not_followed() {
+        let d = scratch("race");
+        let (w, secret) = (d.join("w"), d.join("secret"));
+        std::fs::create_dir_all(w.join("sub")).unwrap();
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(w.join("sub/f.txt"), "mine").unwrap();
+        std::fs::write(secret.join("f.txt"), "stolen").unwrap();
+        let swap = {
+            let (w, secret) = (w.clone(), secret.clone());
+            let mut done = false;
+            move || {
+                if !done {
+                    done = true;
+                    std::fs::rename(w.join("sub"), w.join("sub.orig")).unwrap();
+                    symlink(&secret, w.join("sub")).unwrap();
+                }
+            }
+        };
+        HOOK.with(|h| *h.borrow_mut() = Some(Box::new(swap)));
+        let r = open_existing(&w.join("sub/f.txt"), std::slice::from_ref(&w));
+        HOOK.with(|h| *h.borrow_mut() = None);
+        if let Ok(o) = r {
+            let real = std::fs::read_link(format!("/proc/self/fd/{}", o.fd.as_raw_fd())).unwrap();
+            assert!(!real.starts_with(&secret), "the file of the other folder was opened: {}", real.display());
+        }
+        std::fs::remove_dir_all(&d).unwrap();
     }
 }
