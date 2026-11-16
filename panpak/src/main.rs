@@ -1651,7 +1651,20 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
 
     // The tree is a private folder (mkdtemp, 0700) that goes away with `tmp`, on every way out. Everything written below it goes
     // through folder descriptors that never follow a link (treewriter.rs): the AppImage is untrusted input.
-    let tmp = treewriter::TempTree::new("panpak-convert")?;
+    // The index says how many entries there are and how large the files are: it is checked before a folder is made. Then the work folder is on disk (the cache of the
+    // user), never the temporary folder, which is often in memory.
+    let (mut n_entries, mut n_bytes, mut n_largest) = (0u64, 0u64, 0u64);
+    for node in fs.files() {
+        n_entries += 1;
+        if let backhand::InnerNode::File(h) = &node.inner {
+            let n = h.file_len() as u64;
+            n_bytes = n_bytes.saturating_add(n);
+            n_largest = n_largest.max(n);
+        }
+    }
+    treewriter::Limits::default().check_index(n_entries, n_bytes, n_largest)?;
+    let work = treewriter::work_dir(dirs::cache_dir().as_deref())?;
+    let tmp = treewriter::TempTree::new_in(&work, "unpack")?;
     let tree = tmp.path().to_path_buf();
     let mut tw = treewriter::TreeWriter::new(&tree)?;
     let mut desktop: Option<PathBuf> = None;

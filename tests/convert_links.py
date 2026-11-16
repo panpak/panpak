@@ -8,7 +8,7 @@ link at a time. Here two links are each inside the tree, and together they leave
     d/e/l       -> ..                     (lexically `d`, really `d/e/..`, which is `d`)
     app.desktop -> d/e/l/../../secret     (lexically `d/secret`, really the `secret` next to the tree)
 
-The temporary folder is made in a TMPDIR that this test owns, with a file `secret` next to it (a desktop file with a name that must never reach a package). Before the
+The tree is unpacked in `$XDG_CACHE_HOME/panpak/convert/`, which this test owns, with a file `secret` next to it (a desktop file with a name that must never reach a package). Before the
 fix the name of that file went into the manifest. Now the link is not taken, and the note says so.
 
 Checked: the output names nothing of the secret, the manifest of the package neither, and the note lists `app.desktop` among the links that were not taken. A link that stays
@@ -25,6 +25,13 @@ import isolation
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
 from incremental import BIN  # noqa: E402
+
+def disk_dir():
+    """A folder on disk for the work of the test: `convert` refuses a cache folder that is in memory, and /tmp is in memory on many machines."""
+    d = ROOT / 'target' / 'test-work'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
 
 ID = 'org.example.leak'
 SECRET = '[Desktop Entry]\nName=LEAKED-FROM-A-HOST-FILE\nExec=app\nVersion=9.9\n'
@@ -49,14 +56,15 @@ def squash(src, out):
 
 
 def main():
-    with tempfile.TemporaryDirectory(prefix='panpak-convert-links-') as tmp:
+    with tempfile.TemporaryDirectory(prefix='panpak-convert-links-', dir=disk_dir()) as tmp:
         tmp = Path(tmp)
         isolation.require_isolated_home(tmp, tmp)
-        scratch = tmp / 'tmp'
-        scratch.mkdir(mode=0o700)
+        # The tree is unpacked in a folder of this work folder, and `secret` is in the folder that holds it.
+        scratch = tmp / 'cache' / 'panpak' / 'convert'
+        scratch.mkdir(parents=True, mode=0o700)
         (scratch / 'secret').write_text(SECRET)
         env = dict(os.environ, HOME=str(tmp), XDG_DATA_HOME=str(tmp / 'data'), XDG_CACHE_HOME=str(tmp / 'cache'), XDG_CONFIG_HOME=str(tmp / 'config'),
-                   TMPDIR=str(scratch), LC_ALL='C')
+                   LC_ALL='C')
         (tmp / 'secret.key').write_text((bytes([43]) * 32).hex() + '\n')
         (tmp / 'secret.key').chmod(0o600)
 

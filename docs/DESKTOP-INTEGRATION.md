@@ -557,7 +557,7 @@ The first run of the harness with the desktop binaries showed two defects of the
 
 | Write | Before | After |
 |---|---|---|
-| The folder of the tree | `temp_dir()/panpak-convert-<pid>`: a predictable name in the shared `/tmp`, removed and made again (a race), left behind when an error came before the end | `mkdtemp` (0700), removed by a guard on every way out |
+| The folder of the tree | `temp_dir()/panpak-convert-<pid>`: a predictable name in the shared `/tmp`, removed and made again (a race), left behind when an error came before the end | `mkdtemp` (0700) in `panpak/convert/` of the cache folder (on disk, not `/tmp`), removed by a guard on every way out |
 | Folders of the AppImage | `create_dir_all(path)`: follows links | `TreeWriter::make_dir`: `mkdirat`/`openat` with `O_NOFOLLOW`, name by name, mode 0755 |
 | Files of the AppImage | `create_dir_all(parent)`, `File::create(path)` (follows a link, truncates), `set_permissions(path)` | `create_new_file` (`O_EXCL \| O_NOFOLLOW`), mode set on the open file |
 | Links of the AppImage | `create_dir_all(parent)`, `symlink(path)` | `symlinkat` on the folder descriptor |

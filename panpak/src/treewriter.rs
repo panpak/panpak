@@ -21,9 +21,43 @@ pub struct TempTree {
     path: PathBuf,
 }
 
+/// The folder where `convert` unpacks: `panpak/convert` in the cache folder of the user (`$XDG_CACHE_HOME`, or `~/.cache`), made private (0700). Never the temporary
+/// folder, which is often in memory, and a cache folder that is in memory (tmpfs, ramfs) is refused: an AppImage that is large, or made to be, would fill the memory of the machine.
+pub fn work_dir(cache: Option<&Path>) -> Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = cache.context("no cache folder (set XDG_CACHE_HOME or HOME): `convert` does not unpack in the temporary folder, which may be in memory")?.join("panpak").join("convert");
+    // Nothing is made in memory: the file system is looked at on the nearest folder that exists.
+    let existing = dir.ancestors().find(|a| a.is_dir()).context("no folder of the cache path exists")?;
+    ensure!(!in_memory(existing)?, "{} is in memory (tmpfs): `convert` unpacks on disk, and a large AppImage would fill the memory; set XDG_CACHE_HOME to a folder on disk", existing.display());
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).with_context(|| format!("make the work folder {}", dir.display()))?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    Ok(dir)
+}
+
+/// Is the folder on a file system that lives in memory?
+fn in_memory(dir: &Path) -> Result<bool> {
+    use std::os::unix::ffi::OsStrExt;
+    const TMPFS_MAGIC: u64 = 0x0102_1994;
+    const RAMFS_MAGIC: u64 = 0x8584_58f6;
+    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).context("path")?;
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: statfs(2) with a NUL-terminated path and a buffer that this function owns.
+    let r = unsafe { libc::statfs(c.as_ptr(), &mut st) };
+    ensure!(r == 0, "cannot look at {}: {}", dir.display(), std::io::Error::last_os_error());
+    let t = st.f_type as u64 & 0xffff_ffff;
+    Ok(t == TMPFS_MAGIC || t == RAMFS_MAGIC)
+}
+
 impl TempTree {
+    /// In the temporary folder: for the tests of this module only.
+    #[cfg(test)]
     pub fn new(prefix: &str) -> Result<TempTree> {
-        let mut template = std::env::temp_dir().join(format!("{prefix}-XXXXXX")).into_os_string().into_vec();
+        Self::new_in(&std::env::temp_dir(), prefix)
+    }
+
+    /// A new folder `<prefix>-XXXXXX` in `base`.
+    pub fn new_in(base: &Path, prefix: &str) -> Result<TempTree> {
+        let mut template = base.join(format!("{prefix}-XXXXXX")).into_os_string().into_vec();
         template.push(0);
         // SAFETY: mkdtemp(3) rewrites the XXXXXX of a NUL-terminated buffer that this function owns.
         let r = unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) };
@@ -52,6 +86,16 @@ pub struct Limits {
     pub tree_bytes: u64,
     /// Folders, files and links together.
     pub entries: u64,
+}
+
+impl Limits {
+    /// What the index of the squashfs says, checked before a single file is made: the number of entries, the largest file, all the files together.
+    pub fn check_index(&self, entries: u64, total_bytes: u64, largest_file: u64) -> Result<()> {
+        ensure!(entries <= self.entries, "the AppImage has {entries} entries, more than the {} that `convert` takes: nothing was unpacked", self.entries);
+        ensure!(largest_file <= self.file_bytes, "a file of the AppImage is {largest_file} bytes, more than the {} that `convert` takes: nothing was unpacked", self.file_bytes);
+        ensure!(total_bytes <= self.tree_bytes, "the AppImage unpacks to {total_bytes} bytes, more than the {} that `convert` takes: nothing was unpacked", self.tree_bytes);
+        Ok(())
+    }
 }
 
 impl Default for Limits {
@@ -358,5 +402,36 @@ mod tests {
         let l = Limits::default();
         assert_eq!(l.tree_bytes, 1 << 33, "`pack` refuses a tree of more than 8 GiB");
         assert!(l.file_bytes <= l.tree_bytes && l.entries >= 100_000);
+    }
+
+    #[test]
+    fn the_index_is_checked_before_anything_is_written() {
+        let l = Limits { file_bytes: 100, tree_bytes: 250, entries: 10 };
+        l.check_index(10, 250, 100).unwrap();
+        let e = |entries, total, largest| l.check_index(entries, total, largest).unwrap_err().to_string();
+        assert!(e(11, 0, 0).contains("11 entries") && e(11, 0, 0).contains("10"), "{}", e(11, 0, 0));
+        assert!(e(1, 101, 101).contains("101") && e(1, 101, 101).contains("100"), "{}", e(1, 101, 101));
+        assert!(e(1, 251, 100).contains("251") && e(1, 251, 100).contains("250"), "{}", e(1, 251, 100));
+        // Sums that would wrap are refused too.
+        assert!(l.check_index(1, u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn the_work_folder_is_a_private_folder_of_the_cache_on_disk() {
+        // On disk (the build folder), not in the temporary folder, which is in memory on many machines. Made once for each test run and left: it is small.
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/treewriter-work").join(std::process::id().to_string());
+        let cache = base.join("cache");
+        let w = work_dir(Some(&cache)).unwrap();
+        assert_eq!(w, cache.join("panpak/convert"));
+        assert_eq!(fs::metadata(&w).unwrap().permissions().mode() & 0o777, 0o700);
+        // A cache in memory is refused before anything is made there.
+        let shm = Path::new("/dev/shm");
+        if shm.is_dir() && in_memory(shm).unwrap_or(false) {
+            let mem = shm.join(format!("panpak-treewriter-{}", std::process::id()));
+            let e = work_dir(Some(&mem)).unwrap_err().to_string();
+            assert!(e.contains("memory"), "{e}");
+            assert!(!mem.exists(), "nothing was made in memory");
+        }
+        assert!(work_dir(None).is_err(), "no cache folder: no work folder, never the temporary folder");
     }
 }
