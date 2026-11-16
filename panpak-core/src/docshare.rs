@@ -213,7 +213,17 @@ pub fn open_parent(path: &Path, writable_roots: &[PathBuf]) -> Result<(OwnedFd, 
     ensure!(path.is_absolute(), "the path is not absolute");
     let name = path.file_name().context("the path has no file name")?.as_bytes().to_vec();
     let parent = path.parent().context("the path has no folder")?;
-    Ok((walk_folder(parent, writable_roots)?, name))
+    let walked = walk_folder(parent, writable_roots)?;
+    // The document portal refuses a descriptor that was opened with `O_NOFOLLOW` ("Invalid fd passed", found with the real portal): the one that is given to it is a
+    // second descriptor of the same folder, made from the first (no name is looked up again, so there is no race).
+    let proc_path = cstr(format!("/proc/self/fd/{}", walked.as_raw_fd()).as_bytes())?;
+    // SAFETY: a valid C string; the descriptor is taken over below.
+    let again = unsafe { libc::open(proc_path.as_ptr(), libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) };
+    if again < 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| format!("cannot reopen the folder {}", parent.display()));
+    }
+    // SAFETY: again is a fresh descriptor.
+    Ok((unsafe { OwnedFd::from_raw_fd(again) }, name))
 }
 
 /// Open an existing file or folder the way section 4 of the design says: the final component is not followed. A regular file or a folder only.

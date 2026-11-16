@@ -584,7 +584,7 @@ def scenario_dialog(lab):
     answer.write_text(uri(docs / 'new.txt') + '\n')
     r = lab.run(app, 'dialog', 'SaveFile', 0, 'h:' + str(docs / 'new.txt'), 'saved by the app\n')
     print('D   atomic save probe (rename in the document folder):', r.get('rename_error'), '| io:', r.get('io_error'))
-    need(r.get('wrote') and (docs / 'new.txt').exists() and (docs / 'new.txt').read_text() == 'saved by the app\n', f'D: the save: {r}, host file: {(docs / "new.txt").exists()}')
+    need(r.get('wrote') and (docs / 'new.txt').exists() and (docs / 'new.txt').read_text() == 'saved by the app\n', f'D: the save: {r}, host file: {(docs / "new.txt").exists()}; the runtime said: {lab.last_out[-600:]}')
     # A link chosen in the dialog, in a folder the app cannot write, to an ordinary file: the user chose it, the app gets the file it points to, under its own name.
     (docs / 'ln.txt').symlink_to(docs / 'a.txt')
     answer.write_text(uri(docs / 'ln.txt') + '\n')
