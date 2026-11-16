@@ -58,7 +58,11 @@ The local store (`~/.local/share/panpak`) is considered **trusted**
   create, rename and remove: NO read and NO listing (neighbors
   unreadable and unlistable, tested). Documented cost: neighbors stay
   overwritable and deletable (writing the temp requires WriteFile on
-  the folder, which also covers them; deletion requires RemoveFile).
+  the folder, which also covers them; deletion requires RemoveFile). A Landlock rule on a
+  folder covers everything below it, so the grant reaches the subfolders too: it is refused for
+  the home, for a folder that holds it, and for a folder that holds or lies in a place that starts
+  programs later (`~/.config/autostart`, `~/.local/bin`, `~/.ssh`, the shell start files; the
+  list is `STARTUP_PLACES` in the stub).
   Warning printed at every use. The "whole folder RW" alternative is
   NOT offered.
 - **Temporary files**: the stub points `$TMPDIR` and `$SQLITE_TMPDIR` at the

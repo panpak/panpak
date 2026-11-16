@@ -1246,7 +1246,7 @@ fn build_ruleset(
             .with_context(|| format!("open: cannot open file: {}", path.display()))?;
         let access = if grant.write || grant.rename {
             if grant.rename {
-                eprintln!("panpak: WARNING: WRITE access to {} + create/rename/remove in directory {} (neighbors cannot be read or listed, but can be overwritten/deleted)", path.display(), path.parent().map(|p| p.display().to_string()).unwrap_or_default());
+                eprintln!("panpak: WARNING: WRITE access to {} + write, create, rename and remove anywhere below {} (neighbors cannot be read or listed, but can be overwritten/deleted)", path.display(), path.parent().map(|p| p.display().to_string()).unwrap_or_default());
             } else {
                 eprintln!("panpak: WRITE access to {}", path.display());
             }
@@ -1470,6 +1470,33 @@ fn is_elf(path: &Path) -> Result<bool> {
     Ok(n == 4 && magic == *b"\x7fELF")
 }
 
+/// Places in the home where a file that is written, created or replaced runs a program later (a shell starts, a session logs in, a command is found on the
+/// path) or opens a way in. A folder that holds one of them, or lies inside one, does not get the grant of `--write-rename`: a Landlock rule on a folder covers
+/// everything below it.
+const STARTUP_PLACES: &[&str] = &[
+    ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".xprofile", ".xinitrc", ".xsession", ".pam_environment",
+    ".config/autostart", ".config/systemd", ".config/environment.d", ".config/fish", ".config/plasma-workspace", ".config/shell", ".config/nushell", ".config/xdg-desktop-portal",
+    ".local/bin", ".local/share/applications", ".local/share/systemd", ".ssh", ".gnupg", ".config/git", ".gitconfig",
+];
+
+/// Why the folder of `file` cannot be opened for writing, if it cannot: it is the home or a folder that holds the home, it holds one of `STARTUP_PLACES`,
+/// or it lies inside one. `home` is the canonical home folder.
+fn rename_scope_refusal(file: &Path, home: Option<&Path>) -> Option<String> {
+    let parent = file.parent()?;
+    let hint = "use --write (the file only), or put the file in a folder of its own";
+    let home = home?;
+    if home.starts_with(parent) {
+        return Some(format!("--write-rename would let the app create and replace files anywhere below {}, which holds your home folder; {hint}", parent.display()));
+    }
+    for place in STARTUP_PLACES {
+        let path = home.join(place);
+        if path.starts_with(parent) || parent.starts_with(&path) {
+            return Some(format!("--write-rename would let the app create and replace files anywhere below {}, which holds or lies in ~/{place} (a program started from there runs later, outside the sandbox); {hint}", parent.display()));
+        }
+    }
+    None
+}
+
 /// Split the stub-consumed flags from the app arguments.
 /// `--network-unfiltered`, `--panpak-open <path>`, `--panpak-open-write` and
 /// `--panpak-open-rename` never reach the application. The path is
@@ -1498,6 +1525,12 @@ fn split_stub_flags(args: Vec<String>) -> Result<StubFlags> {
     let open_file = match open_path {
         Some(p) => {
             let abs = std::fs::canonicalize(&p).context("check the path").with_context(|| format!("open: cannot open file: {p}"))?;
+            if open_rename {
+                let home = dirs::home_dir().and_then(|h| std::fs::canonicalize(h).ok());
+                if let Some(why) = rename_scope_refusal(&abs, home.as_deref()) {
+                    bail_code!(ErrorCode::E5001, "refused: {why}");
+                }
+            }
             Some((abs, OpenGrant { write: open_write || open_rename, rename: open_rename }))
         }
         None => None,
@@ -4229,5 +4262,24 @@ mod tests {
         write_user_dirs(&d2, &[]).unwrap();
         assert_eq!(fs::read_to_string(d2.config.join("user-dirs.dirs")).unwrap(), "mine\n");
         let _ = fs::remove_dir_all(&t2);
+    }
+
+    #[test]
+    fn the_folder_of_write_rename_is_not_the_home_nor_a_place_that_starts_programs() {
+        let home = Path::new("/home/u");
+        let refused = |f: &str| rename_scope_refusal(Path::new(f), Some(home)).is_some();
+        assert!(refused("/home/u/doc.txt"), "the home itself");
+        assert!(refused("/home/doc.txt"), "a folder that holds the home");
+        assert!(refused("/doc.txt"));
+        assert!(refused("/home/u/.config/app.conf"), "holds .config/autostart");
+        assert!(refused("/home/u/.local/x"), "holds .local/bin");
+        assert!(refused("/home/u/.ssh/config"), "inside .ssh");
+        assert!(refused("/home/u/.config/autostart/a.desktop"), "inside autostart");
+        assert!(!refused("/home/u/Documents/note.txt"));
+        assert!(!refused("/home/u/projects/x/y/z.txt"));
+        assert!(!refused("/home/u/.config/myapp/x.conf"), "a folder of its own below .config");
+        assert!(!refused("/mnt/data/note.txt"), "outside the home");
+        let why = rename_scope_refusal(Path::new("/home/u/doc.txt"), Some(home)).unwrap();
+        assert!(why.contains("--write") && why.contains("folder of its own"), "{why}");
     }
 }

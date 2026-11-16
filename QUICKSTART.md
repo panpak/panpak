@@ -131,7 +131,12 @@ panpak open --write-rename org.example.hello ~/doc.txt  # + atomic save
 The sandbox grants only that file. `--write-rename` (opt-in, with
 warning) also allows temp+rename in the folder (e.g. vim with backup,
 gedit), without reading/listing neighbors — but neighbors stay
-overwritable and deletable. Double click is read-only (`--write` from
+overwritable and deletable, and so is everything in the folders below
+it. For that reason it is refused for a folder that is your home or
+holds it, or that holds or lies in a place where a file is a way to
+run a program later (`~/.config`, `~/.local`, `~/.ssh`, the shell
+start files, `~/.config/autostart`, ...): use `--write`, or put the
+file in a folder of its own. Double click is read-only (`--write` from
 CLI only).
 
 ## Desktop integration (file type)

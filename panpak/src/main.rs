@@ -732,7 +732,7 @@ fn cmd_open(app_id: &str, file: Option<&str>, write: bool, rename: bool) -> Resu
         cmd.arg("--panpak-open-write");
     }
     if rename {
-        eprintln!("panpak: WARNING: --write-rename grants create/rename/remove in folder {} (neighbors are not readable nor listable, but are overwritable/deletable)", target.parent().map(|p| p.display().to_string()).unwrap_or_default());
+        eprintln!("panpak: WARNING: --write-rename grants write, create, rename and remove anywhere below {} (the folder and every folder in it; neighbors cannot be read or listed, but can be overwritten and deleted)", target.parent().map(|p| p.display().to_string()).unwrap_or_default());
         cmd.arg("--panpak-open-rename");
     }
     cmd.arg(&target);
