@@ -2,7 +2,7 @@
 //! Running a command in a build image (a Debian root file system in a folder) as root of a user namespace of bubblewrap. One user id only:
 //! the id of the user maps to 0 inside. `chown` to another id would fail, so a preload library (assets/nochown.c) makes it succeed,
 //! which is enough for `apt` and `dpkg`. Nothing here needs root, a setuid helper or a container engine.
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -105,10 +105,19 @@ impl Run {
 
     fn prepare(&self) -> Result<()> {
         if self.net {
-            // The resolver of the host (a stub on 127.0.0.53 on most systems: the network is shared, so it works).
-            let _ = std::fs::remove_file(self.root.join("etc/resolv.conf"));
+            // The resolver of the host (a stub on 127.0.0.53 on most systems: the network is shared, so it works). The image is a folder of files that it brings itself:
+            // the file is made through folder descriptors, so a link of the image (`etc -> /some/folder`) can neither take the removal nor the write out of it.
             if let Ok(t) = std::fs::read(Path::new("/etc/resolv.conf")) {
-                std::fs::write(self.root.join("etc/resolv.conf"), t).context("write resolv.conf in the image")?;
+                use std::ffi::OsStr;
+                let root = panpak_core::safefs::Dir::open_path(&self.root).context("open the image")?;
+                let etc = root.open_dir(OsStr::new("etc")).context("etc of the image is not a folder (or is a link): refused")?;
+                let name = OsStr::new("resolv.conf");
+                if let Some(st) = etc.lstat(name)? {
+                    ensure!(st.kind != panpak_core::safefs::Kind::Dir, "etc/resolv.conf of the image is a folder");
+                    etc.unlink(name)?;
+                }
+                use std::io::Write;
+                etc.create_new_file(name, 0o644).context("write resolv.conf in the image")?.write_all(&t).context("write resolv.conf in the image")?;
             }
         }
         Ok(())
@@ -166,6 +175,44 @@ mod tests {
         let (clear, first_set) = (at("--clearenv"), at("--setenv"));
         assert!(clear.is_some() && clear < first_set, "--clearenv must come before the first --setenv: {a:?}");
         assert!(a.contains(&"--new-session".to_string()), "a command of the recipe must not reach the terminal of the user: {a:?}");
+    }
+
+    /// A new, empty folder on disk for one test (never removed: it is small, and nothing here deletes).
+    fn fresh(n: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/sandbox-tests").join(format!("{n}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    #[test]
+    fn resolv_conf_is_put_in_the_image_and_a_link_of_the_image_cannot_take_it_elsewhere() {
+        // A plain image: a link at etc/resolv.conf (Debian-like systems have one) is replaced by a file with the text of the host.
+        let (root, shim) = (fresh("img"), fresh("shim").join("nochown.so"));
+        std::fs::create_dir_all(root.join("etc")).unwrap();
+        std::os::unix::fs::symlink("../run/resolv", root.join("etc/resolv.conf")).unwrap();
+        let mut r = Run::new(&root, &shim, &["/usr/bin/true"]);
+        r.net = true;
+        r.prepare().unwrap();
+        assert!(std::fs::symlink_metadata(root.join("etc/resolv.conf")).unwrap().file_type().is_file());
+        // An image whose `etc` is a link to a folder of the host: the file there is not removed and not written.
+        let (root2, victim) = (fresh("img2"), fresh("victim"));
+        std::fs::write(victim.join("resolv.conf"), "keep").unwrap();
+        std::os::unix::fs::symlink(&victim, root2.join("etc")).unwrap();
+        let mut r2 = Run::new(&root2, &shim, &["/usr/bin/true"]);
+        r2.net = true;
+        assert!(r2.prepare().is_err(), "a link in the way of the file is an error");
+        assert_eq!(std::fs::read_to_string(victim.join("resolv.conf")).unwrap(), "keep", "a file of the host was removed or written through the link of the image");
+        // The same for a link at `etc/resolv.conf` that goes out through a folder that is a link.
+        let (root3, victim3) = (fresh("img3"), fresh("victim3"));
+        std::fs::write(victim3.join("target"), "keep").unwrap();
+        std::fs::create_dir_all(root3.join("etc")).unwrap();
+        std::os::unix::fs::symlink(victim3.join("target"), root3.join("etc/resolv.conf")).unwrap();
+        let mut r3 = Run::new(&root3, &shim, &["/usr/bin/true"]);
+        r3.net = true;
+        r3.prepare().unwrap();
+        assert_eq!(std::fs::read_to_string(victim3.join("target")).unwrap(), "keep", "the link was written through");
     }
 
     #[test]
