@@ -24,6 +24,8 @@ pub struct Report {
     pub bytes: u64,
     /// A command was working on the store: nothing was done.
     pub deferred: bool,
+    /// What was kept whole because its links could not be read: (what, why). An app or "every record".
+    pub kept_whole: Vec<(String, String)>,
 }
 
 impl Report {
@@ -106,6 +108,11 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
     let ids: Vec<String> = fs::read_dir(&apps_dir)
         .map(|rd| rd.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| panpak_core::validate_app_id(n).is_ok()).collect())
         .unwrap_or_default();
+    // A folder of `apps/` that is not the folder of an app (its name is not an app id) holds links that nobody reads: the records it names cannot be told from the
+    // ones nothing names, so every record is kept.
+    let strange: Vec<String> = fs::read_dir(&apps_dir)
+        .map(|rd| rd.flatten().filter_map(|e| e.file_name().into_string().ok().or_else(|| Some("(a name that is not text)".into()))).filter(|n| panpak_core::validate_app_id(n).is_err()).collect())
+        .unwrap_or_default();
     // The locks: each app, so that its links are read as one. An app that cannot be locked, or has a copy running, is kept whole.
     let mut locks = Vec::new();
     let mut busy: HashSet<String> = HashSet::new();
@@ -161,7 +168,25 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
     let mut keep = vec![false; recs.len()];
     for id in &ids {
         for link in ["current", "previous", panpak_core::pending::LINK] {
-            let Ok(t) = panpak_core::durable::resolve_link(&apps_dir.join(id).join(link)) else { continue };
+            let path = apps_dir.join(id).join(link);
+            // No such link is no link; one that is there and cannot be read (an absolute link of an earlier store, a file in its place, a read error) is not "no link":
+            // what it might name is kept, with the rest of the app.
+            let t = match fs::symlink_metadata(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    busy.insert(id.clone());
+                    rep.kept_whole.push((id.clone(), format!("{link}: {e}")));
+                    continue;
+                }
+                Ok(_) => match panpak_core::durable::resolve_link(&path) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        busy.insert(id.clone());
+                        rep.kept_whole.push((id.clone(), format!("{link}: {e}")));
+                        continue;
+                    }
+                },
+            };
             let Some(name) = t.file_name() else { continue };
             if let Some(&i) = by_path.get(&packages.join(name)) {
                 keep[i] = true;
@@ -172,6 +197,10 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
         if busy.contains(&r.id) {
             keep[i] = true;
         }
+    }
+    if !strange.is_empty() {
+        keep.iter_mut().for_each(|k| *k = true);
+        rep.kept_whole.push(("every record".into(), format!("apps/{} is not the folder of an app", strange[0])));
     }
     let roots: HashSet<String> = recs.iter().zip(&keep).filter(|(_, k)| **k).map(|(r, _)| r.root.clone()).collect();
 
@@ -408,6 +437,9 @@ fn print_report(rep: &Report, dry_run: bool) {
         println!("another panpak command is working on the store (install, update, repair or remove): the collection was left for the next time");
         return;
     }
+    for (what, why) in &rep.kept_whole {
+        println!("kept whole: {what}: a link cannot be read ({why})");
+    }
     if rep.items.is_empty() {
         println!("nothing to collect");
         return;
@@ -429,7 +461,11 @@ fn print_report(rep: &Report, dry_run: bool) {
 pub fn after(store: &Path, held: &[&str]) {
     match run(store, &Options { dry_run: false }, held) {
         Ok(rep) if rep.deferred => eprintln!("panpak: the collection of the store was left for the next time: another command is working on it"),
-        Ok(_) => {}
+        Ok(rep) => {
+            for (what, why) in &rep.kept_whole {
+                eprintln!("panpak: the collection kept {what} whole: a link cannot be read ({why})");
+            }
+        }
         Err(e) => eprintln!("panpak: the collection of the store did not run: {}", panpak_core::err_text(&e)),
     }
 }
