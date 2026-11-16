@@ -188,7 +188,7 @@ impl Recipe {
         }
         ensure!(b.network.as_deref().is_none_or(|n| n == "none" || n == "fetch"), "build.network must be none or fetch");
         for p in &b.packages {
-            ensure!(!p.is_empty() && p.bytes().all(|c| c.is_ascii_alphanumeric() || b"+-.:".contains(&c)), "build.packages: {p:?} is not a package name");
+            ensure!(p.bytes().next().is_some_and(|c| c.is_ascii_alphanumeric()) && p.bytes().all(|c| c.is_ascii_alphanumeric() || b"+-.:".contains(&c)), "build.packages: {p:?} is not a package name");
         }
         if let Some(m) = &b.memory {
             super::memory::parse_size(m).context("build.memory")?;
@@ -297,6 +297,12 @@ why = "the system copy"
             let e = Recipe::parse(&with(from, to)).unwrap_err().to_string();
             assert!(e.contains(want), "{to}: {e}");
         }
+        // A package name is not an option of `apt-get`.
+        for bad in ["--allow-unauthenticated", "-oAPT::Get::AllowUnauthenticated=true", "+x", ".x", ":x"] {
+            let e = Recipe::parse(&with("packages = [\"meson\", \"libgtk-4-dev\"]", &format!("packages = [\"meson\", \"libgtk-4-dev\", {bad:?}]"))).unwrap_err().to_string();
+            assert!(e.contains("is not a package name"), "{bad}: {e}");
+        }
+        Recipe::parse(&with("packages = [\"meson\", \"libgtk-4-dev\"]", "packages = [\"meson\", \"libgtk-4-dev\", \"g++-12\", \"libc6:amd64\", \"7zip\"]")).unwrap();
         // [env] goes through the same check as in a manifest.
         let e = Recipe::parse(&format!("{GOOD}\n[env]\nLD_PRELOAD = \"${{PANPAK_ROOT}}/x\"\n")).unwrap_err().to_string();
         assert!(e.contains("env.LD_PRELOAD"), "{e}");

@@ -182,7 +182,7 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
         image_deps: (!deps.is_empty()).then_some(deps),
     };
     let toml_text = manifest_toml(&r, &col, &pubkey, &prov)?;
-    std::fs::write(tree.join("panpak.toml"), toml_text)?;
+    collect::write_file(&tree, &tree.join("panpak.toml"), toml_text.as_bytes())?;
     let outp = match a.out {
         Some(p) => p.to_path_buf(),
         None => a.dir.join(format!("{}.panpak", r.app.id)),

@@ -99,10 +99,104 @@ fn unpack_tarball(file: &Path, dir: &Path) -> Result<u64> {
         }
         ensure!(!path.is_absolute() && !rel.components().any(|c| matches!(c, std::path::Component::ParentDir)), "an entry of the tarball leaves its folder: {}", path.display());
         let dest = dir.join(&rel);
+        // The folders above the entry are made one at a time and none may be a link: a link that an earlier entry made would take this one out of `dir`.
         if let Some(p) = dest.parent() {
-            std::fs::create_dir_all(p)?;
+            super::collect::ensure_dirs(dir, p).with_context(|| format!("unpack {}", rel.display()))?;
         }
         e.unpack(&dest).with_context(|| format!("unpack {}", rel.display()))?;
     }
     Ok(newest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A new, empty folder for one test (never removed: it is small, and nothing here deletes).
+    fn fresh(n: &str) -> PathBuf {
+        static N: AtomicU32 = AtomicU32::new(0);
+        let p = std::env::temp_dir().join(format!("panpak-fetch-{n}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    enum E<'a> {
+        Dir(&'a str),
+        File(&'a str, &'a [u8]),
+        Link(&'a str, &'a str),
+    }
+
+    /// A `.tar.gz` made of these entries, as written to a file.
+    fn tarball(at: &Path, entries: &[E]) {
+        let mut b = tar::Builder::new(flate2::write::GzEncoder::new(std::fs::File::create(at).unwrap(), flate2::Compression::fast()));
+        for e in entries {
+            let mut h = tar::Header::new_gnu();
+            h.set_mtime(1_000);
+            match e {
+                E::Dir(p) => {
+                    h.set_entry_type(tar::EntryType::Directory);
+                    h.set_mode(0o755);
+                    h.set_size(0);
+                    b.append_data(&mut h, p, &[][..]).unwrap();
+                }
+                E::File(p, d) => {
+                    h.set_entry_type(tar::EntryType::Regular);
+                    h.set_mode(0o644);
+                    h.set_size(d.len() as u64);
+                    b.append_data(&mut h, p, *d).unwrap();
+                }
+                E::Link(p, t) => {
+                    h.set_entry_type(tar::EntryType::Symlink);
+                    h.set_mode(0o777);
+                    h.set_size(0);
+                    b.append_link(&mut h, p, t).unwrap();
+                }
+            }
+        }
+        b.into_inner().unwrap().finish().unwrap();
+    }
+
+    #[test]
+    fn a_tarball_unpacks_files_folders_and_links_inside_its_folder() {
+        let (w, dest) = (fresh("ok"), fresh("ok-dest"));
+        let f = w.join("a.tar.gz");
+        tarball(&f, &[E::Dir("top/"), E::Dir("top/src/"), E::File("top/src/a.c", b"int a;"), E::Link("top/src/b.c", "a.c"), E::File("top/deep/er/c.txt", b"c")]);
+        assert_eq!(unpack_tarball(&f, &dest).unwrap(), 1_000);
+        assert_eq!(std::fs::read(dest.join("src/a.c")).unwrap(), b"int a;");
+        assert_eq!(std::fs::read_link(dest.join("src/b.c")).unwrap(), Path::new("a.c"));
+        assert_eq!(std::fs::read(dest.join("deep/er/c.txt")).unwrap(), b"c");
+    }
+
+    #[test]
+    fn a_file_under_a_link_that_an_earlier_entry_made_is_not_written_through_it() {
+        // P2-02-style escape of the source tarball: `src/link -> <folder outside>`, then `src/link/planted.txt`.
+        let (w, dest, victim) = (fresh("l1"), fresh("l1-dest"), fresh("l1-victim"));
+        let f = w.join("evil.tar.gz");
+        tarball(&f, &[E::Link("top/src/link", victim.to_str().unwrap()), E::File("top/src/link/planted.txt", b"x")]);
+        assert!(unpack_tarball(&f, &dest).is_err(), "the unpacking must stop");
+        assert!(!victim.join("planted.txt").exists(), "a file was written outside the destination");
+    }
+
+    #[test]
+    fn a_relative_link_that_climbs_out_is_no_way_out_either() {
+        let (w, dest) = (fresh("l2"), fresh("l2-dest"));
+        let outside = dest.parent().unwrap().join(format!("{}-outside", dest.file_name().unwrap().to_string_lossy()));
+        std::fs::create_dir_all(&outside).unwrap();
+        let f = w.join("evil.tar.gz");
+        tarball(&f, &[E::Link("top/l", &format!("../{}", outside.file_name().unwrap().to_string_lossy())), E::File("top/l/planted.txt", b"x")]);
+        assert!(unpack_tarball(&f, &dest).is_err());
+        assert!(!outside.join("planted.txt").exists());
+    }
+
+    #[test]
+    fn a_file_over_a_link_of_an_earlier_entry_does_not_write_through_it() {
+        let (w, dest, victim) = (fresh("l3"), fresh("l3-dest"), fresh("l3-victim"));
+        let target = victim.join("target.txt");
+        std::fs::write(&target, b"original").unwrap();
+        let f = w.join("evil.tar.gz");
+        tarball(&f, &[E::Link("top/file", target.to_str().unwrap()), E::File("top/file", b"overwritten")]);
+        let _ = unpack_tarball(&f, &dest);
+        assert_eq!(std::fs::read(&target).unwrap(), b"original", "a file outside the destination was written");
+    }
 }

@@ -59,6 +59,10 @@ impl Run {
         let mut a: Vec<OsString> = Vec::new();
         let mut push = |s: &str| a.push(OsString::from(s));
         push("--die-with-parent");
+        // Nothing of the environment of the user reaches the commands of the recipe (tokens, agent sockets, keys): only the variables set below.
+        push("--clearenv");
+        // Its own session: no way to push keystrokes into the terminal of the user (TIOCSTI).
+        push("--new-session");
         push("--bind");
         a.push(self.root.clone().into());
         a.push("/".into());
@@ -152,6 +156,16 @@ mod tests {
         let mut r = r;
         r.net = true;
         assert!(!r.args().iter().any(|s| s == "--unshare-net"));
+    }
+
+    #[test]
+    fn the_build_gets_no_environment_of_the_user_and_its_own_session() {
+        let r = Run::new(Path::new("/img"), Path::new("/c/nochown.so"), &["/usr/bin/true"]).env("A", "b");
+        let a: Vec<String> = r.args().iter().map(|s| s.to_string_lossy().into_owned()).collect();
+        let at = |w: &str| a.iter().position(|x| x == w);
+        let (clear, first_set) = (at("--clearenv"), at("--setenv"));
+        assert!(clear.is_some() && clear < first_set, "--clearenv must come before the first --setenv: {a:?}");
+        assert!(a.contains(&"--new-session".to_string()), "a command of the recipe must not reach the terminal of the user: {a:?}");
     }
 
     #[test]
