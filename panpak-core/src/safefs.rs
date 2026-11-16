@@ -288,6 +288,13 @@ impl Dir {
         }
     }
 
+    /// Move `name` to `new_name` in `other`, replacing what is there (a rename: the target is replaced itself, a link included, never followed).
+    pub fn rename_over(&self, name: &OsStr, other: &Dir, new_name: &OsStr) -> io::Result<()> {
+        let (a, b) = (cname(name)?, cname(new_name)?);
+        // SAFETY: renameat(2) between descriptors this code owns.
+        cvt(unsafe { libc::renameat(self.fd.as_raw_fd(), a.as_ptr(), other.fd.as_raw_fd(), b.as_ptr()) }).map(|_| ())
+    }
+
     /// The target of the link `name`, as written (never followed).
     pub fn read_link(&self, name: &OsStr) -> io::Result<OsString> {
         let c = cname(name)?;
@@ -458,6 +465,51 @@ impl Dir {
             }
         }
     }
+}
+
+/// Write a file that the program generates below `base`, in a folder that the app can write too (PP-02): `rel` is the path below `base` (folders, then the name).
+/// Every step goes through a descriptor with `O_NOFOLLOW`: a folder of the path that is a link is an error, a link at the name is not touched (it is not
+/// ours), the temporary file is new (`O_EXCL`, a random name: a planted link is never opened) and is renamed over the file. A file that exists and does not
+/// hold `marker` is the user's and stays. Returns whether the file was written. `base` itself is opened without following a link in its last component.
+pub fn write_generated(base: &Path, rel: &[&str], marker: &str, want: &str, mode: u32) -> io::Result<bool> {
+    use std::io::{Read, Write};
+    let (name, folders) = rel.split_last().ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let mut dir = Dir::open_path(base)?;
+    for f in folders {
+        dir = dir.create_dir(OsStr::new(f))?;
+    }
+    let name = OsStr::new(name);
+    match dir.open_file(name) {
+        Ok(mut f) => {
+            let mut cur = String::new();
+            Read::take(&mut f, 1 << 20).read_to_string(&mut cur).ok();
+            if !cur.contains(marker) || cur == want {
+                return Ok(false);
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        // A link, a folder or anything that is not a regular file is not ours.
+        Err(_) => return Ok(false),
+    }
+    let mut tmp = None;
+    for attempt in 0..16u32 {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+        let t = format!(".{}.panpak-{}-{nanos:x}-{attempt}", name.to_string_lossy(), std::process::id());
+        match dir.create_new_file(OsStr::new(&t), mode) {
+            Ok(f) => {
+                tmp = Some((t, f));
+                break;
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    let (t, mut f) = tmp.ok_or_else(|| io::Error::from(io::ErrorKind::AlreadyExists))?;
+    let r = f.write_all(want.as_bytes()).and_then(|_| dir.rename_over(OsStr::new(&t), &dir, name));
+    if r.is_err() {
+        let _ = dir.unlink(OsStr::new(&t));
+    }
+    r.map(|_| true)
 }
 
 #[cfg(test)]

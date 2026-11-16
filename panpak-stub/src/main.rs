@@ -1003,21 +1003,8 @@ fn xdg_grants(man: &panpak_core::Manifest, store: &Path, installed_mode: bool, a
 /// every other one at `$HOME/`. A file without the marker is the user's and stays.
 fn write_user_dirs(dirs: &panpak_core::AppDirs, granted: &[(String, String)]) -> Result<()> {
     let want = panpak_core::generated_user_dirs(granted)?;
-    let path = dirs.config.join("user-dirs.dirs");
-    match fs::symlink_metadata(&path) {
-        Ok(m) if m.is_file() => {
-            let cur = fs::read_to_string(&path).unwrap_or_default();
-            if !cur.contains(panpak_core::USER_DIRS_MARKER) || cur == want {
-                return Ok(());
-            }
-        }
-        Ok(_) => return Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("check {}", path.display())),
-    }
-    let tmp = dirs.config.join(format!(".user-dirs.dirs.{}", std::process::id()));
-    fs::write(&tmp, want)?;
-    fs::rename(&tmp, &path)?;
+    panpak_core::safefs::write_generated(&dirs.config, &["user-dirs.dirs"], panpak_core::USER_DIRS_MARKER, &want, 0o644)
+        .with_context(|| format!("write {}", dirs.config.join("user-dirs.dirs").display()))?;
     Ok(())
 }
 
@@ -1027,24 +1014,13 @@ fn write_fonts_conf(dirs: &panpak_core::AppDirs) -> Result<()> {
     let (Some(config), Some(data), Some(home)) = (dirs::config_dir(), dirs::data_dir(), dirs::home_dir()) else {
         return Ok(());
     };
-    let want = panpak_core::fonts_conf(&config, &data, &home);
-    let folder = dirs.config.join("fontconfig");
-    let path = folder.join("fonts.conf");
-    match fs::symlink_metadata(&path) {
-        Ok(m) if m.is_file() => {
-            let cur = fs::read_to_string(&path).unwrap_or_default();
-            if !cur.contains(panpak_core::FONTS_CONF_MARKER) || cur == want {
-                return Ok(());
-            }
-        }
-        Ok(_) => return Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e).with_context(|| format!("check {}", path.display())),
-    }
-    fs::create_dir_all(&folder)?;
-    let tmp = folder.join(format!(".fonts.conf.{}", std::process::id()));
-    fs::write(&tmp, want)?;
-    fs::rename(&tmp, &path)?;
+    write_fonts_conf_with(dirs, &config, &data, &home)
+}
+
+fn write_fonts_conf_with(dirs: &panpak_core::AppDirs, config: &Path, data: &Path, home: &Path) -> Result<()> {
+    let want = panpak_core::fonts_conf(config, data, home);
+    panpak_core::safefs::write_generated(&dirs.config, &["fontconfig", "fonts.conf"], panpak_core::FONTS_CONF_MARKER, &want, 0o644)
+        .with_context(|| format!("write {}", dirs.config.join("fontconfig/fonts.conf").display()))?;
     Ok(())
 }
 
@@ -1968,12 +1944,16 @@ fn real_main() -> Result<()> {
     // Private folders (0700), created before the sandbox closes the rest of the disk.
     let app_dirs = panpak_core::app_dirs(&man.app.id)?;
     app_dirs.create()?;
-    write_fonts_conf(&app_dirs)?;
+    if let Err(e) = write_fonts_conf(&app_dirs) {
+        eprintln!("panpak: the fonts.conf of the app was not written: {}", panpak_core::err_text(&e));
+    }
     let mut access = access_for(&man, &app_dirs)?;
     let granted = xdg_grants(&man, &store, installed_mode, &mut access)?;
     let _ = writable_roots.set(access.rw.clone());
     if !granted.is_empty() || man.permissions.as_ref().and_then(|p| p.xdg_dirs.as_ref()).is_some_and(|d| !d.is_empty()) {
-        write_user_dirs(&app_dirs, &granted)?;
+        if let Err(e) = write_user_dirs(&app_dirs, &granted) {
+            eprintln!("panpak: the user-dirs.dirs of the app was not written: {}", panpak_core::err_text(&e));
+        }
     }
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute());
     access.sockets = panpak_core::implied_sockets(
@@ -2469,29 +2449,23 @@ const OPENER_MARKER: &str = "X-Panpak-Generated";
 /// GTK, `gio open`) run the opener of the view for web and mail addresses instead of a browser of the
 /// system. A file without the marker is left alone.
 fn write_opener_config(app_id: &str, exec: &str) -> Result<()> {
-    let dirs = panpak_core::app_dirs(app_id)?;
+    write_opener_config_in(&panpak_core::app_dirs(app_id)?, exec)
+}
+
+fn write_opener_config_in(dirs: &panpak_core::AppDirs, exec: &str) -> Result<()> {
     let ids = ["x-scheme-handler/http", "x-scheme-handler/https", "x-scheme-handler/mailto", "text/html"];
     let mime: String = ids.iter().map(|m| format!("{m};")).collect();
     let list: String = ids.iter().map(|m| format!("{m}=panpak-opener.desktop\n")).collect();
-    let files = [
-        (dirs.config.join("mimeapps.list"), format!("# {OPENER_MARKER}: written at every start.\n[Default Applications]\n{list}")),
+    let files: [(&Path, &[&str], String); 2] = [
+        (&dirs.config, &["mimeapps.list"], format!("# {OPENER_MARKER}: written at every start.\n[Default Applications]\n{list}")),
         (
-            dirs.data.join("applications").join("panpak-opener.desktop"),
+            &dirs.data,
+            &["applications", "panpak-opener.desktop"],
             format!("# {OPENER_MARKER}\n[Desktop Entry]\nType=Application\nName=Link opener\nExec={exec} %u\nMimeType={mime}\nNoDisplay=true\nTerminal=false\n"),
         ),
     ];
-    for (path, want) in files {
-        match fs::read_to_string(&path) {
-            // Already as wanted, or the user's own file: leave it.
-            Ok(cur) if cur == want || !cur.contains(OPENER_MARKER) => continue,
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
-        }
-        fs::create_dir_all(path.parent().unwrap())?;
-        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-        fs::write(&tmp, want)?;
-        fs::rename(&tmp, &path)?;
+    for (base, rel, want) in files {
+        panpak_core::safefs::write_generated(base, rel, OPENER_MARKER, &want, 0o644).with_context(|| format!("write {}", base.join(rel.join("/")).display()))?;
     }
     Ok(())
 }
@@ -4186,5 +4160,74 @@ mod tests {
         let err = build_ruleset(&tree, &access, &man, abi, true, false, None).unwrap_err();
         assert!(format!("{err:?}").contains("V9"), "missing V9 guard: {err:?}");
         let _ = (_dir, panpak, tree, appdata);
+    }
+
+    /// Folders for the generated files, as in a store, and a folder outside them that a hostile app would like to write in.
+    fn generated_lab(tag: &str) -> (PathBuf, panpak_core::AppDirs, PathBuf) {
+        let t = std::env::temp_dir().join(format!("panpak-gen-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let root = t.join("root");
+        let d = panpak_core::AppDirs { root: root.clone(), config: root.join("config"), data: root.join("data"), state: root.join("state"), tmp: root.join("tmp"), cache: root.join("cache") };
+        for p in [&d.config, &d.data, &d.state, &d.tmp, &d.cache] {
+            fs::create_dir_all(p).unwrap();
+        }
+        let outside = t.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        (t, d, outside)
+    }
+
+    fn call_fonts(d: &panpak_core::AppDirs) -> Result<()> {
+        write_fonts_conf_with(d, Path::new("/home/u/.config"), Path::new("/home/u/.local/share"), Path::new("/home/u"))
+    }
+
+    /// PP-02: the files that the outer stub writes in the folders of the app, which the app can write too, never go through a link that the app planted.
+    #[test]
+    fn generated_files_are_not_made_through_a_folder_that_is_a_link() {
+        use std::os::unix::fs::symlink;
+        // A folder that is a link: the file would be made in the folder it points to.
+        let (t, d, outside) = generated_lab("dir");
+        symlink(&outside, d.config.join("fontconfig")).unwrap();
+        let _ = call_fonts(&d);
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0, "fonts.conf was written through a link to a folder");
+        symlink(&outside, d.data.join("applications")).unwrap();
+        let _ = write_opener_config_in(&d, "/x/xdg-open");
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0, "the opener entry was written through a link to a folder");
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn generated_files_do_not_overwrite_what_a_planted_link_names_in_the_place_of_the_temporary_file() {
+        use std::os::unix::fs::symlink;
+        let pid = std::process::id();
+        // A link where the temporary file will be made: the file it points to would be overwritten.
+        let (t, d, outside) = generated_lab("tmp");
+        let victim = outside.join("victim");
+        fs::write(&victim, "keep").unwrap();
+        fs::create_dir_all(d.config.join("fontconfig")).unwrap();
+        symlink(&victim, d.config.join("fontconfig").join(format!(".fonts.conf.{pid}"))).unwrap();
+        symlink(&victim, d.config.join(format!(".user-dirs.dirs.{pid}"))).unwrap();
+        fs::create_dir_all(d.data.join("applications")).unwrap();
+        symlink(&victim, d.config.join(format!("mimeapps.tmp{pid}"))).unwrap();
+        symlink(&victim, d.data.join("applications").join(format!("panpak-opener.tmp{pid}"))).unwrap();
+        let _ = call_fonts(&d);
+        let _ = write_user_dirs(&d, &[]);
+        let _ = write_opener_config_in(&d, "/x/xdg-open");
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep", "a file that a link in the folder of the app names was overwritten");
+        let _ = fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn generated_files_are_written_and_a_file_of_the_user_stays() {
+        let (t2, d2, _) = generated_lab("ok");
+        call_fonts(&d2).unwrap();
+        write_user_dirs(&d2, &[]).unwrap();
+        write_opener_config_in(&d2, "/x/xdg-open").unwrap();
+        assert!(d2.config.join("fontconfig/fonts.conf").is_file() && d2.config.join("user-dirs.dirs").is_file() && d2.config.join("mimeapps.list").is_file());
+        assert!(d2.data.join("applications/panpak-opener.desktop").is_file());
+        // A file of the user's (no marker) stays.
+        fs::write(d2.config.join("user-dirs.dirs"), "mine\n").unwrap();
+        write_user_dirs(&d2, &[]).unwrap();
+        assert_eq!(fs::read_to_string(d2.config.join("user-dirs.dirs")).unwrap(), "mine\n");
+        let _ = fs::remove_dir_all(&t2);
     }
 }
