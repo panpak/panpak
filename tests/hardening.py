@@ -28,7 +28,7 @@ import isolation  # noqa: E402
 
 ID = 'org.example.hardening'
 APP = r'''#!/usr/bin/python3
-import ctypes, errno, json, os, subprocess, threading
+import ctypes, errno, json, os, socket, subprocess, threading
 libc = ctypes.CDLL(None, use_errno=True)
 out = {}
 def sc(nr, *args):
@@ -55,6 +55,12 @@ out['keyctl'] = sc(N['keyctl'], 0, 0)[1]
 out['mount'] = sc(N['mount'], 0, 0, 0, 0, 0)[1]
 out['setns'] = sc(N['setns'], -1, 0)[1]
 out['x32_getpid'] = sc(0x40000000 | N['getpid'])[1]
+# Socket families that no app needs (PP-06): AF_VSOCK 40, AF_ALG 38, AF_BLUETOOTH 31, AF_PACKET 17, AF_KEY 15.
+out['socket_vsock'] = sc(41, 40, 1, 0)[1]
+out['socket_alg'] = sc(41, 38, 5, 0)[1]
+out['socket_bluetooth'] = sc(41, 31, 1, 0)[1]
+out['socket_packet'] = sc(41, 17, 3, 0)[1]
+out['socket_key'] = sc(41, 15, 3, 2)[1]
 # What must keep working.
 t = []
 th = threading.Thread(target=lambda: t.append(1)); th.start(); th.join()
@@ -63,6 +69,14 @@ out['fork_exec'] = subprocess.run(['/bin/true']).returncode == 0
 r, w = os.pipe(); os.write(w, b'x'); out['pipe'] = os.read(r, 1) == b'x'
 out['memfd'] = libc.syscall(319, b'a', 0) >= 0
 out['getpid'] = sc(N['getpid'])[0] == 0
+try:
+    a, b = socket.socketpair(); a.send(b'x'); out['af_unix'] = b.recv(1) == b'x'
+except OSError:
+    out['af_unix'] = False
+try:
+    socket.socket(socket.AF_INET, socket.SOCK_DGRAM).close(); out['af_inet'] = True
+except OSError:
+    out['af_inet'] = False
 out['ioctl_ok'] = sc(N['ioctl'], 0, 0x5401, 0)[1] != errno.EPERM  # TCGETS: ENOTTY or 0, never EPERM from the filter
 out['personality_query'] = sc(N['personality'], 0xffffffff)[0] == 0
 # The system font cache: readable, not writable.
@@ -83,6 +97,7 @@ WANT = {
     'bpf': 'EPERM', 'unshare_newuser': 'EPERM', 'ptrace': 'EPERM', 'tiocsti': 'EPERM', 'personality_rix': 'EPERM',
     'userfaultfd': 'EPERM', 'perf_event_open': 'EPERM', 'keyctl': 'EPERM', 'mount': 'EPERM', 'setns': 'EPERM',
     'x32_getpid': 'EPERM',
+    'socket_vsock': 'EAFNOSUPPORT', 'socket_alg': 'EAFNOSUPPORT', 'socket_bluetooth': 'EAFNOSUPPORT', 'socket_packet': 'EAFNOSUPPORT', 'socket_key': 'EAFNOSUPPORT',
 }
 
 
@@ -155,7 +170,7 @@ def main():
     for k, want in WANT.items():
         got = errno.errorcode.get(res[k], res[k])
         need(got == want, f'{k}: expected {want}, got {got}')
-    for k in ('thread', 'fork_exec', 'pipe', 'memfd', 'getpid', 'ioctl_ok', 'personality_query'):
+    for k in ('thread', 'fork_exec', 'pipe', 'memfd', 'getpid', 'ioctl_ok', 'personality_query', 'af_unix', 'af_inet'):
         need(res[k] is True, f'{k} no longer works under the filter')
     host_has_cache = Path('/var/cache/fontconfig').is_dir()
     need(res['fontcache_read'] == (True if host_has_cache else None), f'font cache: read {res["fontcache_read"]}, host has one: {host_has_cache}')
@@ -163,6 +178,7 @@ def main():
     print('system font cache:', 'readable, not writable' if host_has_cache else 'absent on this host (not checked)')
     print('seccomp in the real launcher: filter mode with no_new_privs; ENOSYS for', ', '.join(k for k, v in WANT.items() if v == 'ENOSYS'))
     print('  EPERM for', ', '.join(k for k, v in WANT.items() if v == 'EPERM'))
+    print('  EAFNOSUPPORT for', ', '.join(k for k, v in WANT.items() if v == 'EAFNOSUPPORT'), '(local and IPv4 sockets work)')
     print('  threads, fork+exec, pipes, memfd_create, ordinary ioctl and personality query keep working: ok')
     run(REL / 'panpak', 'remove', ID)  # the trees are read-only: remove takes them away properly
     isolation.remove_owned(runtime, work)

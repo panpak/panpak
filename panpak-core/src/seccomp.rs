@@ -58,6 +58,10 @@ const TIOCLINUX: u32 = 0x541C;
 /// value changes how the kernel lays out memory (no randomisation, executable stack by default, page zero).
 const PERSONALITY_OK: &[u32] = &[0x0, 0x8, 0x0002_0000, 0x0002_0008, 0xffff_ffff];
 
+/// The socket families that programs use: local sockets, IPv4, IPv6, and netlink (the list of interfaces and routes that `getifaddrs` and the resolver read).
+/// Every other family (vsock, alg, bluetooth, packet, key, xdp, nfc, tipc, rds, can ...) is a large kernel surface that no app of the desktop needs.
+const SOCKET_FAMILIES_OK: &[u32] = &[libc::AF_UNIX as u32, libc::AF_INET as u32, libc::AF_INET6 as u32, libc::AF_NETLINK as u32];
+
 const EPERM: u32 = libc::EPERM as u32;
 const ENOSYS: u32 = libc::ENOSYS as u32;
 
@@ -72,6 +76,8 @@ enum Check {
     Personality,
     /// `clone` and `unshare`: refused when the flags ask for a new namespace (`time` too for `unshare`).
     Namespaces { time: bool },
+    /// `socket` and `socketpair`: refused with `EAFNOSUPPORT` unless the family (the first argument) is in `SOCKET_FAMILIES_OK`.
+    SocketFamily,
 }
 
 struct Rule {
@@ -89,6 +95,7 @@ macro_rules! rule {
 
 const DENY: Check = Check::Deny(EPERM);
 const NOSYS: Check = Check::Deny(ENOSYS);
+const EAFNOSUPPORT: u32 = libc::EAFNOSUPPORT as u32;
 
 /// The deny list. The reason of each entry is part of the data so that a reader
 /// can say why a call is on it.
@@ -140,6 +147,8 @@ const RULES: &[Rule] = &[
     rule!(SYS_open_by_handle_at, DENY, "opens a file by a handle, outside every path rule"),
     // Terminal injection and dangerous process personality.
     rule!(SYS_ioctl, Check::Ioctl, "TIOCSTI and TIOCLINUX put keystrokes into the terminal of the user"),
+    rule!(SYS_socket, Check::SocketFamily, "only the families that programs use: local, IPv4, IPv6, netlink; the others are kernel surface that nothing of the desktop needs"),
+    rule!(SYS_socketpair, Check::SocketFamily, "the same family list"),
     rule!(SYS_personality, Check::Personality, "READ_IMPLIES_EXEC, no randomisation, page zero: they weaken the memory protections"),
 ];
 
@@ -243,6 +252,17 @@ fn block_of(c: Check) -> Vec<Insn> {
             v.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
             v
         }
+        Check::SocketFamily => {
+            // One compare per allowed family: equal -> allow; at the end, refuse with "family not supported".
+            let n = SOCKET_FAMILIES_OK.len();
+            let mut v = vec![stmt(BPF_LD_W_ABS, off_arg(0))];
+            for (i, k) in SOCKET_FAMILIES_OK.iter().enumerate() {
+                v.push(jump(BPF_JEQ_K, *k, (n - i) as u8, 0));
+            }
+            v.push(ret_errno(EAFNOSUPPORT));
+            v.push(stmt(BPF_RET_K, SECCOMP_RET_ALLOW));
+            v
+        }
         Check::Namespaces { time } => {
             let mask = NEW_NAMESPACES | if time { CLONE_NEWTIME } else { 0 };
             vec![
@@ -265,6 +285,7 @@ pub fn describe() -> Vec<String> {
                 Check::Ioctl => "EPERM for TIOCSTI, TIOCLINUX",
                 Check::Personality => "EPERM unless the value is a plain Linux one",
                 Check::Namespaces { .. } => "EPERM when a new namespace is asked",
+                Check::SocketFamily => "EAFNOSUPPORT unless the family is local, IPv4, IPv6 or netlink",
             };
             format!("{:<22} {:<10} {}", r.name.trim_start_matches("SYS_"), how, r.why)
         })
@@ -446,7 +467,7 @@ mod tests {
     fn ordinary_calls_pass() {
         for nr in [libc::SYS_read, libc::SYS_write, libc::SYS_openat, libc::SYS_mmap, libc::SYS_futex, libc::SYS_execve,
                    libc::SYS_memfd_create, libc::SYS_seccomp, libc::SYS_landlock_create_ruleset, libc::SYS_prctl,
-                   libc::SYS_socket, libc::SYS_sendmsg, libc::SYS_epoll_wait, libc::SYS_getrandom, libc::SYS_prlimit64] {
+                   libc::SYS_sendmsg, libc::SYS_epoll_wait, libc::SYS_getrandom, libc::SYS_prlimit64] {
             assert_eq!(judge(nr, [0; 6]), SECCOMP_RET_ALLOW, "{nr}");
         }
         #[cfg(target_arch = "x86_64")]
@@ -531,5 +552,24 @@ mod tests {
         // The x32 bit also hides a call of the list from the plain compares: the bit test comes first.
         assert_eq!(run(&p, NATIVE_ARCH, libc::SYS_ptrace as u32 | X32_BIT, [0; 6]), errno(EPERM));
         assert_eq!(run(&p, NATIVE_ARCH, libc::SYS_getpid as u32, [0; 6]), SECCOMP_RET_ALLOW);
+    }
+
+    /// PP-06: `socket` and `socketpair` take only the families that programs use. The others (AF_VSOCK, AF_ALG, AF_BLUETOOTH, AF_PACKET, AF_KEY, AF_XDP ...) are large
+    /// kernel surfaces that no ordinary app needs, and a program that probes for one is told that the family is not supported.
+    #[test]
+    fn socket_takes_only_the_families_that_programs_use() {
+        let fam = |f: u64| [f, 1, 0, 0, 0, 0];
+        for ok in [libc::AF_UNIX, libc::AF_INET, libc::AF_INET6, libc::AF_NETLINK] {
+            assert_eq!(judge(libc::SYS_socket, fam(ok as u64)), SECCOMP_RET_ALLOW, "family {ok}");
+            assert_eq!(judge(libc::SYS_socketpair, fam(ok as u64)), SECCOMP_RET_ALLOW, "socketpair family {ok}");
+        }
+        for bad in [libc::AF_VSOCK, libc::AF_ALG, libc::AF_BLUETOOTH, libc::AF_PACKET, libc::AF_KEY, libc::AF_XDP, libc::AF_NFC, libc::AF_TIPC, libc::AF_RDS, libc::AF_CAN, libc::AF_IUCV, libc::AF_UNSPEC, 0x7f] {
+            assert_eq!(judge(libc::SYS_socket, fam(bad as u64)), errno(libc::EAFNOSUPPORT as u32), "family {bad}");
+            assert_eq!(judge(libc::SYS_socketpair, fam(bad as u64)), errno(libc::EAFNOSUPPORT as u32), "socketpair family {bad}");
+        }
+        // The type argument (SOCK_NONBLOCK, SOCK_CLOEXEC) is not the family: only the first argument counts.
+        assert_eq!(judge(libc::SYS_socket, [libc::AF_UNIX as u64, (libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC) as u64, 0, 0, 0, 0]), SECCOMP_RET_ALLOW);
+        // The kernel takes the family as an int: the high half of the register cannot make a refused family look like an allowed one.
+        assert_eq!(judge(libc::SYS_socket, fam((1u64 << 32) | libc::AF_VSOCK as u64)), errno(libc::EAFNOSUPPORT as u32));
     }
 }
