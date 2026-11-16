@@ -693,9 +693,15 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     let prev_t = panpak_core::durable::resolve_link(&previous).context("missing previous: no update to roll back")?;
     // The files of the version that comes back must still be there.
     let store = store_dir()?;
-    let (pft, _) = {
+    let pft = {
         let mut pf = File::open(&prev_t).with_context(|| format!("open {}", prev_t.display()))?;
-        panpak_core::record::read_any_footer(&mut pf)?
+        let (pft, is_record) = panpak_core::record::read_any_footer(&mut pf)?;
+        // `previous` must be a record of this app, as the start asks of `current` (PP-01): otherwise the swap would leave the app with a record that it cannot start.
+        if is_record {
+            let (pman, _) = panpak_core::verify(&mut pf, &pft)?;
+            panpak_core::record::check_identity(&previous, &pman.app.id, &pman.app.version, &panpak_core::hex(&pft.root))?;
+        }
+        pft
     };
     ensure_code!(
         store.join("trees").join(panpak_core::hex(&pft.root)).join(".complete").exists(),
