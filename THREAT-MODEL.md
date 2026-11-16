@@ -261,7 +261,10 @@ then call `PermissionStore.DeletePermission` for the app and revoke its document
   (PANPAK-FORMAT.md §3.1.6). The list leaves out everything that changes how code is loaded from outside the tree (`LD_*`) or that the runtime protects; `pack`, `install` and the runtime check
   each value, and `pack` refuses a path that is not in the tree. What a package can load is therefore what its signed files contain. It replaces the shell script that a source build used to need as its entry.
 - **Builds from source (`panpak build`).** The build runs in a user namespace of bubblewrap with one user id, no network (except the first run of a recipe that says `network = "fetch"`), the source
-  read-only, and a memory cap. It is a build sandbox, not a security boundary against a malicious build script: a recipe is code, and the commit or hash it pins is what the author vouches for.
+  read-only, and a memory cap. The commands of the recipe get an empty environment (only the variables the build sets; none of the user's) and their own terminal session (`--clearenv`, `--new-session`).
+  The steps that fetch (`apt-get`, and the first Zig build with `network = "fetch"`) run with the network of the host, so a recipe must be trusted for those steps; a package name that starts with `-` is refused.
+  What the build leaves in its output and what a source tarball unpacks is never followed: a link that would take a write out of the tree or of the source folder stops the build.
+  It is a build sandbox, not a security boundary against a malicious build script: a recipe is code, and the commit or hash it pins is what the author vouches for.
   The package records where the source and the image came from (`[provenance]`), and the libraries taken from the image instead of the pinned source are declared one by one.
 - **Pseudo-terminals.** Every app may open a pty (terminals, IDEs and editors with a terminal need one), so it is not a permission. What makes it safe is
   that the view has a devpts of its own: a pty of the app is not a terminal of the user, and the app cannot read the keys the user types in another terminal

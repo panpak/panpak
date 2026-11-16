@@ -120,20 +120,71 @@ pub fn glob(pat: &str, name: &str) -> bool {
     true
 }
 
-/// Copy a folder: files with their mode, links as links.
+/// Make the folders of `d`, which is below `base` (that exists), one at a time, and refuse a link or a file on the way. Everything that `collect`
+/// writes goes into a tree that the build has already put its own files in (links among them), and `create_dir_all`, `fs::copy` and `fs::write` follow links.
+pub fn ensure_dirs(base: &Path, d: &Path) -> Result<()> {
+    let rel = d.strip_prefix(base).with_context(|| format!("{} is not below {}", d.display(), base.display()))?;
+    let mut cur = base.to_path_buf();
+    for c in rel.components() {
+        let std::path::Component::Normal(n) = c else { bail!("{} is not a plain path below {}", d.display(), base.display()) };
+        cur.push(n);
+        ensure_dir(&cur)?;
+    }
+    Ok(())
+}
+
+/// One folder: made if it is not there, and it must be a folder, not a link to one.
+fn ensure_dir(d: &Path) -> Result<()> {
+    match d.symlink_metadata() {
+        Ok(m) if m.is_dir() => Ok(()),
+        Ok(_) => bail!("{} is a link or a file where a folder goes (the build left it in the installed files): refused", d.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => std::fs::create_dir(d).with_context(|| format!("create {}", d.display())),
+        Err(e) => Err(e).with_context(|| format!("look at {}", d.display())),
+    }
+}
+
+/// Where a file is going to be written: a link that is there is taken away (the link itself, never what it points to).
+fn clear_link(to: &Path) -> Result<()> {
+    if to.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+        std::fs::remove_file(to).with_context(|| format!("replace the link {}", to.display()))?;
+    }
+    Ok(())
+}
+
+/// `fs::copy` that does not write through a link at the destination.
+pub fn copy_file(from: &Path, to: &Path) -> Result<()> {
+    clear_link(to)?;
+    std::fs::copy(from, to).with_context(|| format!("copy {}", from.display()))?;
+    Ok(())
+}
+
+/// `fs::write` into the tree `base`, through no link.
+pub fn write_file(base: &Path, f: &Path, data: &[u8]) -> Result<()> {
+    if let Some(p) = f.parent() {
+        ensure_dirs(base, p)?;
+    }
+    clear_link(f)?;
+    std::fs::write(f, data).with_context(|| format!("write {}", f.display()))
+}
+
+/// Copy a folder: files with their mode, links as links. Nothing is written through a link that is already in `dst` (its parent must exist).
 pub fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
+    ensure_dir(dst)?;
     for e in std::fs::read_dir(src).with_context(|| format!("read {}", src.display()))? {
         let e = e?;
         let (from, to) = (e.path(), dst.join(e.file_name()));
         let m = from.symlink_metadata()?;
         if m.file_type().is_symlink() {
+            clear_link(&to)?;
+            if to.symlink_metadata().is_ok_and(|m| m.is_dir()) {
+                bail!("{} is a folder where a link of the source goes", to.display());
+            }
             let _ = std::fs::remove_file(&to);
             std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
         } else if m.is_dir() {
             copy_tree(&from, &to)?;
         } else if m.is_file() {
-            std::fs::copy(&from, &to).with_context(|| format!("copy {}", from.display()))?;
+            copy_file(&from, &to)?;
             std::fs::set_permissions(&to, std::fs::Permissions::from_mode(m.permissions().mode() & 0o755 | 0o600))?;
         }
     }
@@ -242,9 +293,9 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
         files.sort();
         let dst = i.tree.join(to);
         for f in files {
-            std::fs::create_dir_all(&dst)?;
+            ensure_dirs(i.tree, &dst)?;
             let d = dst.join(f.file_name().unwrap());
-            std::fs::copy(&f, &d)?;
+            copy_file(&f, &d)?;
             std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755))?;
             seeds_extra.push(d);
         }
@@ -253,7 +304,9 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
     for (from, to) in tk.data.iter().map(|(a, b)| (a.to_string(), b.to_string())).chain(collect_data.iter().map(|d| (d.trim_start_matches("share/").to_string(), d.clone()))) {
         let src = i.root.join("usr/share").join(&from);
         if src.is_dir() {
-            copy_tree(&src, &i.tree.join(&to))?;
+            let dst = i.tree.join(&to);
+            ensure_dirs(i.tree, dst.parent().unwrap_or(i.tree))?;
+            copy_tree(&src, &dst)?;
         } else if collect_data.contains(&to) {
             bail!("collect.data {to}: /usr/share/{from} is not in the build image (add its package to build.packages)");
         }
@@ -263,7 +316,7 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
     let (prefer, allow) = r.collect.as_ref().map(|c| (c.prefer_host.clone(), c.allow_missing.clone())).unwrap_or_default();
     let host_wins = |n: &str| panpak_core::abi::SYSTEM_WINS.iter().any(|g| panpak_core::abi::glob_match(g, n)) || prefer.iter().any(|g| panpak_core::abi::glob_match(g, n)) || allow.iter().any(|g| panpak_core::abi::glob_match(g, n));
     let libdir = i.tree.join("lib");
-    std::fs::create_dir_all(&libdir)?;
+    ensure_dirs(i.tree, &libdir)?;
     let mut have: BTreeSet<String> = panpak_core::abi::bundled_libs(i.tree).keys().cloned().collect();
     let mut origin: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut files = Vec::new();
@@ -295,7 +348,7 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
                 bail!("{} needs {n}, which is not in the build image: add the package that has it to build.packages, or list it in collect.prefer_host or collect.allow_missing", f.strip_prefix(i.tree).unwrap_or(&f).display());
             };
             let dst = libdir.join(&n);
-            std::fs::copy(&real, &dst).with_context(|| format!("copy {}", real.display()))?;
+            copy_file(&real, &dst)?;
             std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755))?;
             bytes += dst.metadata().map(|m| m.len()).unwrap_or(0);
             libs += 1;
@@ -325,7 +378,7 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
             ensure!(o.status.success(), "gdk-pixbuf-query-loaders failed: {}", String::from_utf8_lossy(&o.stderr));
             // The modules are named by file name only: the loader finds them through the library path of the runtime (they are in `abi.needs`).
             let text = String::from_utf8_lossy(&o.stdout).replace("/tree/lib/gdk-pixbuf/loaders/", "");
-            std::fs::write(i.tree.join("lib/gdk-pixbuf/loaders.cache"), text)?;
+            write_file(i.tree, &i.tree.join("lib/gdk-pixbuf/loaders.cache"), text.as_bytes())?;
             needs.extend(mods);
         }
         if i.tree.join("share/glib-2.0/schemas").is_dir() {
@@ -350,7 +403,7 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
             ensure!(i.tree.join(svg).is_file(), "desktop.icon_svg {svg} is not in the installed files");
             for s in r.sizes() {
                 let dir = format!("share/icons/hicolor/{s}x{s}/apps");
-                std::fs::create_dir_all(i.tree.join(&dir))?;
+                ensure_dirs(i.tree, &i.tree.join(&dir))?;
                 let out = format!("/tree/{dir}/{}.png", r.app.id);
                 sandbox_run(i, &["rsvg-convert", "-w", &s.to_string(), "-h", &s.to_string(), "-o", &out, &format!("/tree/{svg}")], "rsvg-convert")?;
                 icons.push(format!("{dir}/{}.png", r.app.id));
@@ -379,14 +432,13 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
     let lic_dir = i.tree.join("share/licenses").join(&r.app.id);
     if let Some(l) = &r.license {
         if let Some(spdx) = &l.spdx {
-            std::fs::create_dir_all(&lic_dir)?;
-            std::fs::write(lic_dir.join("SPDX"), format!("SPDX-License-Identifier: {spdx}\n"))?;
+            write_file(i.tree, &lic_dir.join("SPDX"), format!("SPDX-License-Identifier: {spdx}\n").as_bytes())?;
         }
         for f in &l.files {
             let from = i.source.join(f);
             ensure!(from.is_file(), "license.files: {f} is not in the source");
-            std::fs::create_dir_all(&lic_dir)?;
-            std::fs::copy(&from, lic_dir.join(Path::new(f).file_name().unwrap()))?;
+            ensure_dirs(i.tree, &lic_dir)?;
+            copy_file(&from, &lic_dir.join(Path::new(f).file_name().unwrap()))?;
         }
         if l.bundled.as_deref() == Some("auto") && !origin.is_empty() {
             let paths: Vec<String> = origin.values().filter_map(|p| p.strip_prefix(i.root).ok()).map(|p| format!("/{}", p.display())).collect();
@@ -403,8 +455,8 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
                 let c = i.root.join("usr/share/doc").join(&p).join("copyright");
                 if c.is_file() {
                     let d = lic_dir.join("bundled");
-                    std::fs::create_dir_all(&d)?;
-                    std::fs::copy(&c, d.join(format!("{p}.copyright")))?;
+                    ensure_dirs(i.tree, &d)?;
+                    copy_file(&c, &d.join(format!("{p}.copyright")))?;
                 }
             }
         }
@@ -522,5 +574,64 @@ mod tests {
         assert_eq!(std::fs::metadata(b.join("t/bin/app")).unwrap().permissions().mode() & 0o777, 0o755);
         assert_eq!(std::fs::read_link(b.join("t/bin/alias")).unwrap(), Path::new("app"));
         let _ = (std::fs::remove_dir_all(&a), std::fs::remove_dir_all(&b));
+    }
+
+    /// A new, empty folder for one test (never removed: it is small, and nothing here deletes).
+    fn fresh(n: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let p = std::env::temp_dir().join(format!("panpak-collect-{n}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    /// The order of `collect`: what the build installed is copied into the tree, then the data of the toolkit, from the image, goes in.
+    #[test]
+    fn a_link_that_the_build_left_in_the_tree_does_not_take_the_copies_of_collect_out() {
+        let (destdir, tree, image, victim) = (fresh("p2-usr"), fresh("p2-tree"), fresh("p2-img"), fresh("p2-victim"));
+        std::fs::create_dir_all(destdir.join("usr/share")).unwrap();
+        std::fs::create_dir_all(destdir.join("usr/bin")).unwrap();
+        std::os::unix::fs::symlink(&victim, destdir.join("usr/share/glib-2.0")).unwrap();
+        std::fs::create_dir_all(image.join("usr/share/glib-2.0/schemas")).unwrap();
+        std::fs::write(image.join("usr/share/glib-2.0/schemas/org.example.gschema.xml"), b"<schemalist/>").unwrap();
+        copy_tree(&destdir.join("usr"), &tree).unwrap();
+        let r = copy_tree(&image.join("usr/share/glib-2.0"), &tree.join("share/glib-2.0"));
+        assert!(r.is_err(), "the copy went through a link of the tree");
+        assert!(std::fs::read_dir(&victim).unwrap().next().is_none(), "files were written outside the tree");
+    }
+
+    #[test]
+    fn a_folder_that_is_a_link_in_the_destination_is_not_followed_below_the_first_level_either() {
+        let (src, tree, victim) = (fresh("p2b-src"), fresh("p2b-tree"), fresh("p2b-victim"));
+        std::fs::create_dir_all(src.join("d/sub")).unwrap();
+        std::fs::write(src.join("d/sub/f"), b"x").unwrap();
+        std::fs::create_dir_all(tree.join("d")).unwrap();
+        std::os::unix::fs::symlink(&victim, tree.join("d/sub")).unwrap();
+        assert!(copy_tree(&src, &tree).is_err());
+        assert!(std::fs::read_dir(&victim).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn a_file_that_is_a_link_in_the_destination_is_replaced_not_written_through() {
+        let (src, tree, victim) = (fresh("p2c-src"), fresh("p2c-tree"), fresh("p2c-victim"));
+        std::fs::write(src.join("f"), b"new").unwrap();
+        std::fs::write(victim.join("target"), b"original").unwrap();
+        std::os::unix::fs::symlink(victim.join("target"), tree.join("f")).unwrap();
+        copy_tree(&src, &tree).unwrap();
+        assert_eq!(std::fs::read(victim.join("target")).unwrap(), b"original");
+        assert_eq!(std::fs::read(tree.join("f")).unwrap(), b"new");
+    }
+
+    #[test]
+    fn the_helpers_that_collect_uses_refuse_a_link_on_the_way() {
+        let (tree, victim) = (fresh("p2d-tree"), fresh("p2d-victim"));
+        std::fs::create_dir_all(tree.join("share")).unwrap();
+        std::os::unix::fs::symlink(&victim, tree.join("share/licenses")).unwrap();
+        assert!(ensure_dirs(&tree, &tree.join("share/licenses/org.example.app")).is_err());
+        assert!(write_file(&tree, &tree.join("share/licenses/SPDX"), b"x").is_err());
+        assert!(std::fs::read_dir(&victim).unwrap().next().is_none());
+        ensure_dirs(&tree, &tree.join("share/new/deeper")).unwrap();
+        write_file(&tree, &tree.join("share/new/deeper/f"), b"y").unwrap();
+        assert_eq!(std::fs::read(tree.join("share/new/deeper/f")).unwrap(), b"y");
     }
 }
