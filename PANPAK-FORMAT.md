@@ -810,7 +810,11 @@ A tree that carries its own glibc (world B) gets none from the files. The value 
 `install` and `update` MUST refuse a package whose `glibc_min` is higher than the glibc of the system (`PANPAK-E2005`), with both
 versions in the message, before anything is written; a system whose glibc cannot be read (musl, no `ldd`) is not refused by this check.
 The stub resolves at SONAME granularity (names, not symbol versions
-yet) with two worlds:
+yet). **What the bundle carries** is the inventory of its tree: the names that a `DT_NEEDED` can ask for, in this order of precedence: (1) files and
+links named `lib*.so*`, and the loader; (2) any other regular ELF file, by its file name (FreeCAD calls its modules `Mesh.so`, `Part.so`), and a link with
+`.so` in its name that leads to a file of the tree; (3) the `DT_SONAME` of every ELF file when it differs from the file name. A later kind never replaces an earlier one, and
+among files of one kind the path in alphabetical order wins. A reader that has only the index of the package (`panpak doctor` before the first start) knows names
+only: it takes `lib*.so*`, the loader and any file with `.so` in its name. The resolution has two worlds:
 
 - **world H** (no glibc in the bundle): a library that is in the bundle
   comes from the bundle, and one that is not comes from the host

@@ -265,6 +265,22 @@ fn doctor_on_a_package_counts_the_libraries_it_carries_before_the_first_start() 
     assert!(t.contains("unresolved libraries: libcarried.so.1 missing on the host and not included in the tree"), "{t}");
 }
 
+#[test]
+fn doctor_finds_a_module_that_has_no_lib_prefix() {
+    // FreeCAD: `usr/lib/Mesh.so` is asked for as `Mesh.so`; the inventory used to take only `lib*.so*`.
+    let l = lab("doctormodule");
+    let app = ("bin/app", elf_needing("Mesh.so"));
+    let (o, pkg) = l.pack("withmodule", &[app.clone(), ("usr/lib/Mesh.so", b"\x7fELF-not-read".to_vec())], "");
+    assert!(o.status.success(), "{}", text(&o));
+    let t = text(&cli(&l.home, &["doctor", pkg.to_str().unwrap()]));
+    assert!(t.contains("verified package") && !t.contains("unresolved libraries"), "{t}");
+    // The module is nowhere: said, with its name.
+    let (o, pkg) = l.pack("withoutmodule", &[app], "");
+    assert!(o.status.success(), "{}", text(&o));
+    let t = text(&cli(&l.home, &["doctor", pkg.to_str().unwrap()]));
+    assert!(t.contains("unresolved libraries: Mesh.so missing on the host and not included in the tree"), "{t}");
+}
+
 /// A minimal little-endian ELF64 shared object whose only dynamic entry is DT_NEEDED `name` (enough for the DT_NEEDED reader).
 fn elf_needing(name: &str) -> Vec<u8> {
     let mut strtab = vec![0u8];

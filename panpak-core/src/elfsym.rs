@@ -362,6 +362,28 @@ pub fn read_elf_info(path: &Path) -> Result<ElfInfo> {
     Ok(ElfInfo { needs: needs_of(&src, &secs), runpath: runpath_of(&src, &secs), syms: syms_of(&src, &secs)? })
 }
 
+/// Is this file a little-endian ELF64 shared object or program, and what is its `DT_SONAME`? `None`: not such a file (or unreadable). `Some(None)`: an ELF file with no
+/// SONAME, or one whose section headers are gone (stripped by `sstrip`): it is a library by its name only. Reads the first bytes, the section headers, the dynamic section
+/// and its string table, never the whole file.
+pub fn elf_soname(path: &Path) -> Option<Option<String>> {
+    let src = FileSource::open(path).ok()?;
+    if !is_elf64(&src) {
+        return None;
+    }
+    let Ok(secs) = sections(&src) else { return Some(None) };
+    let Some(dynamic) = secs.iter().find(|s| s.kind == SHT_DYNAMIC) else { return Some(None) };
+    let (Some(entries), Some(strs)) = (body(&src, dynamic), secs.get(dynamic.link).and_then(|t| body(&src, t))) else { return Some(None) };
+    for e in entries.as_chunks::<16>().0.iter().take(4096) {
+        let (Some(tag), Some(val)) = (u64_at(e, 0), u64_at(e, 8)) else { break };
+        match tag {
+            0 => break,
+            14 => return Some(usize::try_from(val).ok().and_then(|o| cstr(&strs, o))),
+            _ => {}
+        }
+    }
+    Some(None)
+}
+
 /// The libraries of glibc, whose version names (`GLIBC_2.39`) the host must provide.
 const GLIBC_FILES: &[&str] = &[
     "libc.so.6", "libm.so.6", "libpthread.so.0", "libdl.so.2", "librt.so.1", "libresolv.so.2", "libutil.so.1", "libanl.so.1",
@@ -472,11 +494,11 @@ mod tests {
 }
 
 #[cfg(test)]
-mod glibc_tests {
+pub(crate) mod glibc_tests {
     use super::*;
 
     /// A minimal ELF64 with section headers: a null section, `.dynamic` (linked to `.dynstr`) and `.dynstr`.
-    fn elf_with_dynamic(entries: &[(u64, u64)], strtab: &[u8]) -> Vec<u8> {
+    pub(crate) fn elf_with_dynamic(entries: &[(u64, u64)], strtab: &[u8]) -> Vec<u8> {
         let dynamic: Vec<u8> = entries.iter().chain(&[(0u64, 0u64)]).flat_map(|(t, v)| t.to_le_bytes().into_iter().chain(v.to_le_bytes())).collect();
         let mut f = vec![0u8; 64];
         f[..4].copy_from_slice(b"\x7fELF");

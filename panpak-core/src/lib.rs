@@ -1385,6 +1385,126 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A folder for one test (never removed: it is small).
+    fn inventory_dir(n: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let d = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/inventory-tests").join(format!("{n}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A shared object with this SONAME (a dynamic section with DT_SONAME only), as the files of a bundle are.
+    fn elf_named(soname: &str) -> Vec<u8> {
+        let mut strtab = vec![0u8];
+        strtab.extend_from_slice(soname.as_bytes());
+        strtab.push(0);
+        crate::elfsym::glibc_tests::elf_with_dynamic(&[(14, 1)], &strtab)
+    }
+
+    #[test]
+    fn the_inventory_finds_a_module_whose_name_has_no_lib_prefix() {
+        // FreeCAD: `usr/lib/Mesh.so`, asked for as `Mesh.so` by ten modules.
+        let d = inventory_dir("noprefix");
+        std::fs::create_dir_all(d.join("usr/lib")).unwrap();
+        std::fs::write(d.join("usr/lib/Mesh.so"), elf_named("Mesh.so")).unwrap();
+        std::fs::write(d.join("usr/lib/_PartDesign.so"), elf_named("_PartDesign.so")).unwrap();
+        // Not an ELF file: a data file with a name like a module is not a library.
+        std::fs::write(d.join("usr/lib/notes.so.txt"), b"text").unwrap();
+        let m = crate::abi::bundled_libs(&d);
+        assert_eq!(m.get("Mesh.so"), Some(&std::path::PathBuf::from("usr/lib/Mesh.so")));
+        assert_eq!(m.get("_PartDesign.so"), Some(&std::path::PathBuf::from("usr/lib/_PartDesign.so")));
+        assert!(!m.contains_key("notes.so.txt"));
+    }
+
+    #[test]
+    fn the_inventory_finds_any_elf_file_by_its_name_and_by_its_soname() {
+        let d = inventory_dir("soname");
+        std::fs::create_dir_all(d.join("lib")).unwrap();
+        std::fs::create_dir_all(d.join("plugins")).unwrap();
+        // The file is named with its full version and there is no link: the program asks for the SONAME.
+        std::fs::write(d.join("lib/libfoo.so.1.2.3"), elf_named("libfoo.so.1")).unwrap();
+        // A module with a name that has neither `lib` nor `.so`.
+        std::fs::write(d.join("plugins/mymodule.node"), elf_named("mymodule.node")).unwrap();
+        // A file that is not ELF is not registered under the name of another library.
+        std::fs::write(d.join("lib/readme"), b"libbar.so.2").unwrap();
+        let m = crate::abi::bundled_libs(&d);
+        assert_eq!(m.get("libfoo.so.1"), Some(&std::path::PathBuf::from("lib/libfoo.so.1.2.3")), "by SONAME");
+        assert_eq!(m.get("libfoo.so.1.2.3"), Some(&std::path::PathBuf::from("lib/libfoo.so.1.2.3")), "by name");
+        assert_eq!(m.get("mymodule.node"), Some(&std::path::PathBuf::from("plugins/mymodule.node")));
+        assert!(!m.contains_key("libbar.so.2") && !m.contains_key("readme"));
+    }
+
+    #[test]
+    fn what_the_old_rule_found_is_not_changed_by_the_new_one() {
+        let d = inventory_dir("precedence");
+        std::fs::create_dir_all(d.join("a")).unwrap();
+        std::fs::create_dir_all(d.join("b")).unwrap();
+        // `a/libx.so.1` is found by name under the old rule; `b/other.so` claims the same SONAME: the name wins.
+        std::fs::write(d.join("a/libx.so.1"), elf_named("libx.so.1")).unwrap();
+        std::fs::write(d.join("b/other.so"), elf_named("libx.so.1")).unwrap();
+        // A lib-named file that is not ELF is registered as before.
+        std::fs::write(d.join("a/libtext.so.9"), b"not elf").unwrap();
+        let m = crate::abi::bundled_libs(&d);
+        assert_eq!(m.get("libx.so.1"), Some(&std::path::PathBuf::from("a/libx.so.1")));
+        assert_eq!(m.get("other.so"), Some(&std::path::PathBuf::from("b/other.so")));
+        assert_eq!(m.get("libtext.so.9"), Some(&std::path::PathBuf::from("a/libtext.so.9")));
+    }
+
+    #[test]
+    fn a_link_to_a_module_is_registered_under_its_own_name() {
+        let d = inventory_dir("modlink");
+        std::fs::create_dir_all(d.join("usr/lib")).unwrap();
+        std::fs::write(d.join("usr/lib/Part.so.1"), elf_named("Part.so")).unwrap();
+        std::os::unix::fs::symlink("Part.so.1", d.join("usr/lib/Part.so")).unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", d.join("usr/lib/Evil.so")).unwrap();
+        let m = crate::abi::bundled_libs(&d);
+        assert_eq!(m.get("Part.so"), Some(&std::path::PathBuf::from("usr/lib/Part.so.1")));
+        assert!(!m.contains_key("Evil.so"), "a link that leaves the tree is not registered");
+    }
+
+    #[test]
+    fn the_inventory_from_the_index_takes_files_with_so_in_the_name() {
+        use crate::{Entry, Kind};
+        let e = |p: &str, kind| Entry { path: std::path::PathBuf::from(p), mode: 0o755, kind };
+        let entries = vec![
+            e("usr/lib/Mesh.so", Kind::File { chunks: vec![] }),
+            e("usr/lib/libfoo.so.1", Kind::File { chunks: vec![] }),
+            e("usr/share/data.txt", Kind::File { chunks: vec![] }),
+        ];
+        let m = crate::abi::bundled_libs_from_entries(&entries);
+        assert_eq!(m.get("Mesh.so"), Some(&std::path::PathBuf::from("usr/lib/Mesh.so")));
+        assert!(m.contains_key("libfoo.so.1") && !m.contains_key("data.txt"));
+    }
+
+    /// A measurement, not a check: `PANPAK_BIG_TREE=<folder> cargo test --release -p panpak-core inventory_time -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn inventory_time_on_a_big_tree() {
+        let Some(tree) = std::env::var_os("PANPAK_BIG_TREE").map(std::path::PathBuf::from) else { return };
+        let walk = || {
+            let t = std::time::Instant::now();
+            let (mut files, mut stack) = (0usize, vec![tree.clone()]);
+            while let Some(d) = stack.pop() {
+                for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                    match e.file_type() {
+                        Ok(k) if k.is_dir() => stack.push(e.path()),
+                        Ok(_) => files += 1,
+                        Err(_) => {}
+                    }
+                }
+            }
+            (files, t.elapsed())
+        };
+        let (files, w) = walk();
+        let t = std::time::Instant::now();
+        let m = crate::abi::bundled_libs(&tree);
+        eprintln!("walk of {files} entries: {w:?}; bundled_libs: {:?}, {} names", t.elapsed(), m.len());
+        let t = std::time::Instant::now();
+        let m2 = crate::abi::bundled_libs(&tree);
+        eprintln!("second time: {:?}, {} names", t.elapsed(), m2.len());
+    }
+
     #[test]
     fn panpak_toml_strict() {
         let ok = "[app]\nid = \"a.b\"\nname = \"N\"\nversion = \"1\"\nentry = \"x\"\n[update]\nkey = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\n";
@@ -2034,12 +2154,22 @@ pub mod abi {
         }
     }
 
-    /// Inventory of libs included in the tree: SONAME -> relative path.
-    /// Includes lib*.so* symlinks resolved to their target (SONAMEs are
-    /// almost always symlinks to lib*.so.X.Y): without this, versioned files
-    /// never match DT_NEEDED (found with QOwnNotes/Qt6).
+    /// Inventory of the libraries and modules included in the tree: the name that a `DT_NEEDED` can ask for -> relative path.
+    ///
+    /// Three kinds of names, in this order of precedence (a later kind never replaces an earlier one):
+    /// 1. files and links named `lib*.so*`, and the loader (the rule that this inventory always had): the link name, pointing at the real target
+    ///    (SONAMEs are almost always links to `lib*.so.X.Y`: without this, versioned files never match DT_NEEDED, found with QOwnNotes/Qt6);
+    /// 2. any other file that is an ELF file, by its file name (`Mesh.so`, `_PartDesign.so`, `mymodule.node`: FreeCAD names its modules without `lib`),
+    ///    and links with `.so` in the name that lead to a file of the tree;
+    /// 3. the `DT_SONAME` of every ELF file, when it differs from the file name (a file `libfoo.so.1.2.3` with no link `libfoo.so.1`).
+    ///
+    /// Kinds 2 and 3 are chosen by the path in alphabetical order, so the result does not depend on the order of the folder. A file is read (the first
+    /// bytes, the dynamic section) only when it is a regular file of 64 bytes or more.
     pub fn bundled_libs(tree: &Path) -> HashMap<String, PathBuf> {
         let mut map = HashMap::new();
+        // Kinds 2 and 3: collected, then added in path order.
+        let mut elfs: Vec<(PathBuf, Option<String>)> = Vec::new();
+        let mut other_links: Vec<(String, PathBuf)> = Vec::new();
         let mut stack = vec![tree.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let Ok(rd) = fs::read_dir(&dir) else { continue };
@@ -2054,12 +2184,16 @@ pub mod abi {
                     let name = e.file_name().to_string_lossy().into_owned();
                     let is_lib = name.starts_with("lib") && name.contains(".so");
                     let is_loader = name.starts_with("ld-linux") || name == "ld.so";
-                    if is_lib || is_loader {
+                    if is_lib || is_loader || name.contains(".so") {
                         if let Ok(tgt) = fs::read_link(&p) {
                             let abs = if tgt.is_absolute() { tgt } else { p.parent().unwrap_or(tree).join(tgt) };
                             if let Ok(rel) = abs.strip_prefix(tree) {
                                 if tree.join(rel).exists() {
-                                    map.entry(name).or_insert_with(|| rel.to_path_buf());
+                                    if is_lib || is_loader {
+                                        map.entry(name).or_insert_with(|| rel.to_path_buf());
+                                    } else {
+                                        other_links.push((name, rel.to_path_buf()));
+                                    }
                                 }
                             }
                         }
@@ -2080,10 +2214,31 @@ pub mod abi {
                 // the farm (decide() skips it): it is the plan's `loader`.
                 let is_lib = name.starts_with("lib") && name.contains(".so");
                 let is_loader = name.starts_with("ld-linux") || name == "ld.so";
+                let rel = p.strip_prefix(tree).unwrap().to_path_buf();
                 if is_lib || is_loader {
-                    map.entry(name)
-                        .or_insert_with(|| p.strip_prefix(tree).unwrap().to_path_buf());
+                    map.entry(name.clone()).or_insert_with(|| rel.clone());
                 }
+                // Any regular file may be a module or a library under another name: ELF files are found by what they say they are.
+                if m.is_file() && m.len() >= 64 {
+                    if let Some(soname) = crate::elfsym::elf_soname(&p) {
+                        elfs.push((rel, soname));
+                    }
+                }
+            }
+        }
+        elfs.sort();
+        for (rel, _) in &elfs {
+            if let Some(name) = rel.file_name().and_then(|n| n.to_str()) {
+                map.entry(name.to_string()).or_insert_with(|| rel.clone());
+            }
+        }
+        other_links.sort();
+        for (name, rel) in other_links {
+            map.entry(name).or_insert(rel);
+        }
+        for (rel, soname) in &elfs {
+            if let Some(so) = soname {
+                map.entry(so.clone()).or_insert_with(|| rel.clone());
             }
         }
         map
@@ -2094,7 +2249,8 @@ pub mod abi {
     pub fn bundled_libs_from_entries(entries: &[crate::Entry]) -> HashMap<String, PathBuf> {
         use crate::Kind;
         let by_path: HashMap<&Path, &Kind> = entries.iter().map(|e| (e.path.as_path(), &e.kind)).collect();
-        let wanted = |name: &str| (name.starts_with("lib") && name.contains(".so")) || name.starts_with("ld-linux") || name == "ld.so";
+        // From the index only the names are known (not the content, so not the SONAME): `lib*.so*`, the loader, and any file with `.so` in its name (FreeCAD's `Mesh.so`).
+        let wanted = |name: &str| name.contains(".so") || name.starts_with("ld-linux") || name == "ld.so";
         // Where a path ends up, following links inside the tree (a few steps).
         let resolve = |start: &Path| -> Option<PathBuf> {
             let mut cur = start.to_path_buf();
