@@ -27,7 +27,7 @@ The tests and the distributions behind these statements are in [COMPATIBILITY.md
   `install` and `update` refuse a package that needs a newer glibc than the system has, with both versions. An AppImage converted
   with `panpak convert` needs what the AppImage was built against (Cura needs 2.38 in the compatibility tests). Hosts with another libc
   (Alpine) run only packages that carry glibc and its loader, or static programs.
-- **bubblewrap** (`/usr/bin/bwrap`, optional) with unprivileged user namespaces. It provides the isolated view. Without it the app runs with
+- **bubblewrap** (`/usr/bin/bwrap`, optional) with unprivileged user namespaces. It provides the isolated view, and any version will do: the view uses only options that bubblewrap 0.8 (Debian 12) already has, so Ubuntu 24.04 (0.9) and Debian 13 and Fedora (0.11) work the same; no overlay is used. Without it the app runs with
   Landlock alone: below Landlock 9 it can reach the session bus and the agents through their sockets, it sees the real `/proc`, `/sys`, `/run` and
   `/tmp`, it has no process and IPC namespaces of its own, links it opens go to the system `xdg-open` from inside the sandbox, and an app with no
   network permission can still send UDP. On Ubuntu 24.04 and later an AppArmor profile for `bwrap` is needed (the distribution ships one).

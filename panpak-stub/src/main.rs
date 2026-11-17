@@ -884,7 +884,7 @@ struct Access {
     /// Path sockets every app may reach without listing them (Wayland, journal, resolver, audio with
     /// `audio = true`), only the ones that exist. Landlock V9 gets a `ResolveUnix` rule for each.
     sockets: Vec<PathBuf>,
-    /// The environment of the user that the view shows as overlays at the real paths (see `panpak_core::EnvLayers`). Only
+    /// The environment of the user that the view shows, read-only, at the real paths (see `panpak_core::EnvLayers`). Only
     /// with the private home of the view; elsewhere the same files are in `ro`.
     env: panpak_core::EnvLayers,
     /// The sandbox runs inside the isolated view, which hides the sockets the manifest does not list.
@@ -923,7 +923,7 @@ fn view_home() -> Option<PathBuf> {
 /// Resolve what the sandbox opens: the app roots, the readable user settings and the
 /// `home_paths` of the manifest. An `rw` home path is created if missing and must be a
 /// folder. Runs before Landlock is applied. `layered`: the view gives the app a private home with the environment of
-/// the user as overlays, so that environment is not a read rule.
+/// the user as read-only mounts, so that environment is not a read rule.
 fn access_for(man: &panpak_core::Manifest, dirs: &panpak_core::AppDirs, layered: bool) -> Result<Access> {
     let mut access = Access::default();
     access.rw.extend(dirs.roots().iter().map(|p| p.to_path_buf()));
@@ -2457,14 +2457,12 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     }
 }
 
-/// The mounts of the layers of the user's environment in the view. The folder of the user is the lower layer and is
-/// found by its real path (a link in the way is resolved); the place in the view is the path the user knows. Single
+/// The mounts of the layers of the user's environment in the view. The folder of the user is found by its real path (a link in the way is resolved); the place in the view is the path the user knows. Single
 /// files are read-only mounts, and the files that are private to the user are empty in the view.
 fn layers_of(env: &panpak_core::EnvLayers) -> view::Layers {
     let canon = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     view::Layers {
-        overlay: panpak_core::overlay_supported(),
-        overlays: env.overlays.iter().map(|p| view::Mount::ro(canon(p), p.clone())).collect(),
+        dirs: env.dirs.iter().map(|p| view::Mount::ro(canon(p), p.clone())).collect(),
         files: env.files.iter().map(|p| view::Mount::ro(canon(p), p.clone())).collect(),
         hidden: env.hidden.clone(),
     }
