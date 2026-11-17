@@ -1062,20 +1062,22 @@ is no migration from the folders of the earlier layout (`config`, `data`, `state
 are not read.
 
 *The environment of the user.* The app sees the same fonts, themes, icons, cursors and toolkit settings as every other
-program, at the real paths, inside its home. In the view each of these folders is mounted whole as an overlay: the
-folder of the user is the lower layer, and writes go to a layer that lives only in memory (`bwrap --tmp-overlay`) and is
-gone when the last process of the view ends. The app can change its own copy (a GTK settings dialog), the folder of the
-user never changes, and a change the user makes meanwhile (another theme) shows in a running app. For the entries that
-exist:
+program, at the real paths, inside its home. Each of these folders is mounted **read-only**, as it is (a bind mount of the
+user's folder, `--ro-bind`), with any bubblewrap: nothing is copied and nothing depends on a version of bubblewrap or of the
+kernel. A change the user makes meanwhile (another theme, a new font) shows in a running app; the app cannot change these
+files (a write fails with "read-only file system"). For the entries that exist:
 
-- `~/.config`: `fontconfig`, `gtk-3.0`, `gtk-4.0`, `qt5ct`, `qt6ct` (overlays); `kdeglobals` and `Trolltech.conf` (files, read-only);
-- `~/.local/share`: `fonts`, `themes`, `mime`, and each theme folder of `icons` except `hicolor` (overlays);
-- `~`: `.fonts`, and each theme folder of `.icons` except `hicolor` (overlays).
+- `~/.config`: `fontconfig`, `gtk-3.0`, `gtk-4.0`, `qt5ct`, `qt6ct` (folders); `kdeglobals` and `Trolltech.conf` (files);
+- `~/.local/share`: `fonts`, `themes`, `mime`, and each theme folder of `icons` except `hicolor` (folders);
+- `~`: `.fonts`, and each theme folder of `.icons` except `hicolor` (folders).
 
-In the overlays, `gtk-3.0/bookmarks`, `gtk-3.0/servers` and `gtk-4.0/bookmarks` are empty files (they list what the user has
+A mounted folder shows what is in it now, files that are added or replaced included. A mounted *file* is the file that was there when
+the app started: a program that replaces it by a rename (KDE writes `kdeglobals` that way) is not seen until the next start.
+
+In those folders, `gtk-3.0/bookmarks`, `gtk-3.0/servers` and `gtk-4.0/bookmarks` are empty files (they list what the user has
 been doing), and the user's `hicolor` icon theme (`~/.local/share/icons/hicolor`, `~/.icons/hicolor`) is not in the view, which is why the icon folders are mounted theme by theme. It is the folder where `install` puts the menu icons of the apps (§3.1.3), which the app has no use for, and it has no
 `icon-theme.cache`, so Qt looks up each icon name file by file in every size folder: 40,247 failed `access()` calls and
-about 100 ms more before the window of QOwnNotes appeared; mounting the whole `icons` folder with an empty `hicolor` was measured too and cost 170 ms. The list of recent files is the app's own, in its private
+about 100 ms more before the window of QOwnNotes appeared; mounting the whole `icons` folder with an empty `hicolor` was measured too and cost 170 ms (the user's `hicolor` cannot be hidden inside a folder that is mounted whole). The list of recent files is the app's own, in its private
 home; the file dialog of the portal shows the real one. The user's `mimeapps.list` and `user-dirs.dirs` are not mounted:
 the runtime writes the ones of the app (the opener, the granted folders) into the private config folder.
 
@@ -1112,8 +1114,7 @@ ssh-agent, audio servers) with independent layers, and uses every layer the mach
    folder of the host can hold a socket that a Landlock below V9 does not stop the app from using. A path
    that the runtime must give to the app (a granted folder, an opened file) is mounted at its own place wherever it is. `/dev` is a new
    minimal one (the nodes of §9, a devpts of its own, and the GPU folder `dri` of the host); a new `/proc`; a new tmpfs for `/run`; `/tmp` and `/dev/shm` as in §9.4, or a new tmpfs for `/tmp` when the runtime folder is not usable; the private home of the app (§9.1) mounted at `$HOME` (writable),
-   with the cache of the app as `~/.cache`, the `home_paths` as declared, the environment of the user listed in §9.1 as overlays
-   with an upper layer in memory, the Xauthority file with `x11 = true`, a file opened with
+   with the cache of the app as `~/.cache`, the `home_paths` as declared, the environment of the user listed in §9.1 (read-only), the Xauthority file with `x11 = true`, a file opened with
    `panpak open` as granted, and from the store the tree, the library folder `farms/<root>`, the loader and
    the stub (read-only); a new tmpfs for `$XDG_RUNTIME_DIR`
    with only the sockets of the policy below; the folder in `/run` that holds the target of `/etc/resolv.conf` read-only (name resolution);

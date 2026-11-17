@@ -267,14 +267,20 @@ impl Drop for Glib {
 const NEW_GLIB: &str = "int g_old(void) { return 1; }\nint g_new(void) { return 2; }\n";
 const OLD_GLIB: &str = "int g_old(void) { return 1; }\n";
 
+/// A test that cannot run here says why; in the CI (`PANPAK_CI=1`) it fails with the reason instead (a skip there is a test that passes without having run).
+fn skip(reason: &str) {
+    assert!(std::env::var_os("PANPAK_CI").is_none_or(|v| v != "1"), "cannot run here and PANPAK_CI=1 forbids a skip: {reason}");
+    eprintln!("skipped: {reason}");
+}
+
 #[test]
 fn a_system_library_that_needs_newer_symbols_moves_the_included_one_to_the_system() {
     let Some(g) = Glib::new("fix", OLD_GLIB, NEW_GLIB, "") else {
-        eprintln!("skipped: Zig cannot be run (set PANPAK_ZIG)");
+        skip("Zig cannot be run (set PANPAK_ZIG)");
         return;
     };
     if !Path::new("/lib/x86_64-linux-gnu/libc.so.6").exists() || !Path::new("/lib64/ld-linux-x86-64.so.2").exists() {
-        eprintln!("skipped: no glibc at the usual place");
+        skip("no glibc at the usual place");
         return;
     }
     // The rules alone take the included libglib; libgobject, which nothing in `needs` names, is the system's.

@@ -476,7 +476,7 @@ def main():
                     home_xauthority='absent', store_packages='absent', store_blobs='absent', store_apps='absent',
                     store_abi_cache='absent', store_userdata_org_other_app='absent', store_trees='present',
                     store_farms='present', store_runtime='present', read_gtk='ok', read_font='ok', read_icon='ok', read_hicolor='err2',
-                    read_mimeapps='ok', read_notes='err2', read_docs_ro='err2', write_gtk='ok', write_stray='ok',
+                    read_mimeapps='ok', read_notes='err2', read_docs_ro='err2', write_gtk='err30', write_stray='ok',
                     sock_bus='absent', sock_systemd_private='absent', sock_gpg_agent='absent', sock_gpg_agent_ssh='absent',
                     sock_ssh_agent='absent', sock_system_bus_fake='absent', sock_system_bus='absent',
                     sock_pipewire='absent', sock_pulse='absent', sock_wayland='ok', sock_journal='ok', sock_journal_devlog='ok', sock_journal_sendto='ok',

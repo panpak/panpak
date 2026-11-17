@@ -598,6 +598,7 @@ fn fake_tools(home: &Path, tools: &[(&str, i32)]) -> PathBuf {
 macro_rules! only_with_fake_tools {
     () => {
         if !cfg!(debug_assertions) {
+            assert!(std::env::var_os("PANPAK_CI").is_none_or(|v| v != "1"), "PANPAK_CI=1 forbids a skip: run these tests without --release");
             eprintln!("skipped: this build of panpak does not read PANPAK_TEST_TOOLS_DIR (run the tests without --release)");
             return;
         }

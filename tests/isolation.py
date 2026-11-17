@@ -30,6 +30,24 @@ import tempfile
 import time
 from pathlib import Path
 
+CI_VAR = 'PANPAK_CI'
+
+
+def in_ci():
+    """True in the CI (the workflow sets PANPAK_CI=1): a test must not skip there."""
+    return os.environ.get(CI_VAR) == '1'
+
+
+def skip(reason):
+    """A test that cannot run here says why and ends with success. In the CI (PANPAK_CI=1) it fails with the reason instead: a skip there is
+    a test that passes without having run."""
+    if in_ci():
+        print(f'FAIL: cannot run here and {CI_VAR}=1 forbids a skip: {reason}')
+        sys.exit(1)
+    print(f'SKIP: {reason}')
+    sys.exit(0)
+
+
 OVERRIDE = 'PANPAK_ALLOW_REAL_HOME'
 OWNED_MARK = '.panpak-test-owned'
 

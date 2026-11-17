@@ -2908,7 +2908,7 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
     match &view {
         panpak_core::ViewStatus::Usable => {
             let v = panpak_core::bwrap_version().unwrap_or_else(|| "version unknown".to_string());
-            println!("OK   isolated view: {v} at {} works (private /tmp and /run, only allowed sockets)", panpak_core::BWRAP);
+            println!("OK   isolated view: {v} at {} works (private /tmp and /run, only allowed sockets; the app has its own home, with your fonts, themes and settings in it, read-only)", panpak_core::BWRAP);
         }
         panpak_core::ViewStatus::Unusable(why) => {
             println!("NOTE isolated view: not available, {}", why.reason());

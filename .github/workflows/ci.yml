@@ -61,6 +61,9 @@ env:
   RUST_TOOLCHAIN: "1.99.1"
   # Nightly used only by the fuzz-smoke job (libfuzzer needs -Z flags).
   FUZZ_NIGHTLY: "nightly-2026-10-20"
+  # A test that cannot run here (no bubblewrap, no Zig, a kernel too old, no sway) fails with the reason instead of skipping: a skip is a test
+  # that passes without having run. The shared skip functions of the tests read it (tests/isolation.py `skip`, panpak-stub/src/testutil.rs `skip`).
+  PANPAK_CI: "1"
 
 jobs:
   monday:
@@ -147,21 +150,31 @@ jobs:
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Test dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd python3 python3-cryptography squashfs-tools
+      - name: Bubblewrap and user namespaces (for the isolated view)
+        # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
+        # tests after it run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
+        run: |
+          sudo apt-get install -y -qq bubblewrap xvfb python3-gi gir1.2-gtk-3.0
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
+          bwrap --version
       - name: Test (musl)
-        run: cargo test --locked --target x86_64-unknown-linux-musl
+        # --no-fail-fast: one failing test does not hide the others (the first run with PANPAK_CI=1 shows every test that used to skip).
+        env:
+          PANPAK_SKIP_LOG: /tmp/panpak-known-skips.txt
+        run: cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl
+      - name: The tests that cannot run on this runner (named, never silent)
+        run: |
+          {
+            echo "### Known skips (the runner's kernel is older than the test needs)"
+            sort -u /tmp/panpak-known-skips.txt 2>/dev/null || echo "(none)"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Release build (conformance and artifacts)
         run: cargo build --locked --release --target x86_64-unknown-linux-musl
       - name: Format conformance (independent verifier)
         run: |
           python3 conformance/gen.py
           python3 conformance/run.py --rust
-      - name: Bubblewrap and user namespaces (for the isolated view)
-        # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
-        # tests below run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
-        run: |
-          sudo apt-get install -y -qq bubblewrap xvfb
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
       - name: Hardening (seccomp filter and system font cache, through the real launcher)
         run: python3 tests/hardening.py
       - name: The socket probe (a measurement mode that must stay off unless asked for)
@@ -175,6 +188,8 @@ jobs:
           python3 tests/remove_race.py
       - name: A real X11 client under Landlock (a dedicated Xvfb)
         run: python3 tests/x11.py
+      - name: A change of the user's theme or settings reaches a running app (GTK 3 on a dedicated Xvfb; Qt settings folders)
+        run: python3 tests/env_live.py
       - name: The unit tests of the app harness
         run: python3 -m unittest discover -s tests/apps -p 'test_*.py'
       - name: The isolated view, end to end (full level only, 2.5 minutes)

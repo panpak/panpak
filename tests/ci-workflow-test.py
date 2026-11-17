@@ -94,7 +94,8 @@ else:
         print('ok   every workflow is valid YAML')
 # Every test of the repository runs in at least one level of the CI, or is listed in tests/ci-coverage.txt with its kind and its reason.
 root = path.parent.parent.parent
-workflows = ''.join(wf.read_text() for wf in sorted(path.parent.glob('*.yml')))
+# Comments do not count: a file named in a comment is not run.
+workflows = '\n'.join(l for wf in sorted(path.parent.glob('*.yml')) for l in wf.read_text().splitlines() if not l.lstrip().startswith('#'))
 listed = {}
 for line in (root / 'tests/ci-coverage.txt').read_text().splitlines():
     if line.strip() and not line.startswith('#'):

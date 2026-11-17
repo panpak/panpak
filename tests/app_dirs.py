@@ -203,8 +203,8 @@ def main():
     # The app lives in a private home at the path of the real one: it writes there (also files it makes up), the
     # environment of the user is there at the real paths, a write to it is the app's own copy and is gone at the end.
     expect(rep, write_config='ok', write_data='ok', rename_across_dirs='ok', link_tree_file='deny', move_tree_file='deny', link_system_file='deny', write_state='ok', write_cache='ok', write_tmpdir='ok',
-           write_home_config='ok', write_home_file='ok', read_gtk='ok', write_gtk='ok', read_gtk_after_write='ok', read_gtk_bookmarks='deny', read_gh='deny',
-           list_config='ok', read_icons='ok', write_icons='ok', read_hicolor='deny', read_icons_dir='ok', read_old_appdata='deny',
+           write_home_config='ok', write_home_file='ok', read_gtk='ok', write_gtk='deny', read_gtk_after_write='deny', read_gtk_bookmarks='deny', read_gh='deny',
+           list_config='ok', read_icons='ok', write_icons='deny', read_hicolor='deny', read_icons_dir='ok', read_old_appdata='deny',
            read_other_userdata='deny', read_notes='deny', write_notes='deny', read_docs='deny', write_docs='deny',
            write_tmp='ok', args='one two', fonts_found='1')
     cfg, dat, st = userdata / '.config', userdata / '.local/share', userdata / '.local/state'

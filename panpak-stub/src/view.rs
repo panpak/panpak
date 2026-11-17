@@ -295,16 +295,15 @@ pub struct PrivateHome {
     pub cache: PathBuf,
 }
 
-/// The environment of the user (fonts, themes, icons, GTK and Qt settings) shown at the real paths inside the private home.
+/// The environment of the user (fonts, themes, icons, GTK and Qt settings) shown, read-only, at the real paths inside the private home.
 /// See `panpak_core::EnvLayers` for what is in it and why.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Layers {
-    /// Folders mounted as overlays: `src` is the folder of the user (the lower layer), `dest` the place in the view. The
-    /// upper layer is a tmpfs that only the view knows: writes are lost when the last process of the view ends.
-    pub overlays: Vec<Mount>,
-    /// Single files of the user, mounted read-only (an overlay needs a folder).
+    /// Folders of the user, mounted read-only at the same place: `src` is the folder, `dest` the place in the view.
+    pub dirs: Vec<Mount>,
+    /// Single files of the user, mounted read-only.
     pub files: Vec<Mount>,
-    /// Files inside an overlay that are shown as empty files.
+    /// Files inside those folders that are shown as empty files.
     pub hidden: Vec<PathBuf>,
 }
 
@@ -400,12 +399,12 @@ fn view_args(plan: &ViewPlan) -> Vec<OsString> {
     // /tmp and /run so that a home below them is not hidden again.
     match (&plan.home, &plan.private_home) {
         // The home is the private folder of the app, the cache is `~/.cache`, and the environment of the user comes in as
-        // overlays. Every mount below creates its mount point in the private folder (an empty folder or file).
+        // read-only mounts. Every mount below creates its mount point in the private folder (an empty folder or file).
         (Some(h), Some(p)) => {
             a.extend([os("--bind"), p.data.as_os_str().into(), h.as_os_str().into()]);
             a.extend([os("--bind"), p.cache.as_os_str().into(), h.join(".cache").into_os_string()]);
-            for m in &plan.layers.overlays {
-                a.extend([os("--overlay-src"), m.src.as_os_str().into(), os("--tmp-overlay"), m.dest.as_os_str().into()]);
+            for m in &plan.layers.dirs {
+                a.extend([os("--ro-bind"), m.src.as_os_str().into(), m.dest.as_os_str().into()]);
             }
             for f in &plan.layers.files {
                 a.extend([os("--ro-bind"), f.src.as_os_str().into(), f.dest.as_os_str().into()]);
@@ -521,7 +520,7 @@ mod tests {
             home: Some("/home/u".into()),
             private_home: Some(PrivateHome { data: "/home/u/.local/share/panpak/userdata/org.example.app".into(), cache: "/home/u/.cache/panpak/org.example.app".into() }),
             layers: Layers {
-                overlays: vec![Mount::ro("/home/u/.config/gtk-3.0".into(), "/home/u/.config/gtk-3.0".into()), Mount::ro("/home/u/.local/share/icons/Adwaita".into(), "/home/u/.local/share/icons/Adwaita".into())],
+                dirs: vec![Mount::ro("/home/u/.config/gtk-3.0".into(), "/home/u/.config/gtk-3.0".into()), Mount::ro("/home/u/.local/share/icons/Adwaita".into(), "/home/u/.local/share/icons/Adwaita".into())],
                 files: vec![Mount::ro("/home/u/.config/kdeglobals".into(), "/home/u/.config/kdeglobals".into())],
                 hidden: vec!["/home/u/.config/gtk-3.0/bookmarks".into()],
             },
@@ -574,15 +573,15 @@ mod tests {
         assert!(pos(&a, &["--tmpfs", "/home/u"]).is_none() && pos(&a, &["--remount-ro", "/home/u"]).is_none());
         let cache = pos(&a, &["--bind", "/home/u/.cache/panpak/org.example.app", "/home/u/.cache"]).unwrap();
         assert!(home < cache);
-        // The environment of the user: an overlay with a memory-only upper layer for each folder, then the private
-        // files hidden, all inside the private home.
-        let gtk = pos(&a, &["--overlay-src", "/home/u/.config/gtk-3.0", "--tmp-overlay", "/home/u/.config/gtk-3.0"]).unwrap();
-        let icons = pos(&a, &["--overlay-src", "/home/u/.local/share/icons/Adwaita", "--tmp-overlay", "/home/u/.local/share/icons/Adwaita"]).unwrap();
+        // The environment of the user: each folder read-only at its own path, then the private files hidden, all inside the
+        // private home, with whatever bubblewrap there is (no overlay option is ever used).
+        let gtk = pos(&a, &["--ro-bind", "/home/u/.config/gtk-3.0", "/home/u/.config/gtk-3.0"]).unwrap();
+        let icons = pos(&a, &["--ro-bind", "/home/u/.local/share/icons/Adwaita", "/home/u/.local/share/icons/Adwaita"]).unwrap();
         assert!(cache < gtk && gtk < icons);
         let hidden = pos(&a, &["--ro-bind", "/dev/null", "/home/u/.config/gtk-3.0/bookmarks"]).unwrap();
         assert!(gtk < hidden);
         assert!(pos(&a, &["--ro-bind", "/home/u/.config/kdeglobals", "/home/u/.config/kdeglobals"]).unwrap() > cache);
-        assert!(!a.iter().any(|s| s == "--overlay"), "the upper layer is never a folder of the host");
+        assert!(!a.iter().any(|s| s.contains("overlay")), "no overlay option reaches a bubblewrap that does not know it");
         // The tree comes back read-only and a granted folder writable, both after the private home.
         let tree = pos(&a, &["--ro-bind", "/home/u/.local/share/panpak/trees/abc", "/home/u/.local/share/panpak/trees/abc"]).unwrap();
         let docs = pos(&a, &["--bind", "/home/u/Documents", "/home/u/Documents"]).unwrap();
@@ -590,6 +589,11 @@ mod tests {
         assert_eq!(&a[a.len() - 4..], ["--", "/home/u/.local/share/panpak/runtimes/1/panpak-stub", "--panpak-inner", "7"]);
         // Nothing of the session is in the plan.
         assert!(!a.iter().any(|s| s.ends_with("/bus") || s.contains("gnupg") || s.contains("systemd/private") || s.contains("pulse") || s.contains("pipewire")));
+    }
+
+    /// Whether the tests that run a real view can run (no bubblewrap, no user namespaces or no python3: they are skipped, and fail in the CI).
+    fn view_usable_or_skip() -> bool {
+        panpak_core::view_status().usable() && Path::new("/usr/bin/python3").exists() || crate::testutil::skip("bubblewrap or python3 is not usable here")
     }
 
     /// A fake host root with the folders of a typical system, a Silverblue-like `/home` link and
@@ -665,8 +669,7 @@ mod tests {
     /// sockets in the places of real services (LXD, a daemon in /opt, a service in /srv, Nix).
     #[test]
     fn no_socket_of_the_host_is_reachable_in_the_view() {
-        if !panpak_core::view_status().usable() || !Path::new("/usr/bin/python3").exists() {
-            eprintln!("skipped: bubblewrap or python3 is not usable here");
+        if !view_usable_or_skip() {
             return;
         }
         let host = fake_host("scan");
@@ -712,11 +715,11 @@ mod tests {
     }
 
     /// The layered home in a real view: the app writes in its home and its cache; the environment of the user is there at the
-    /// real paths, a write to it stays in the view, the private files are empty, and nothing reaches the host's folders.
+    /// real paths, read-only, a change the user makes while the app runs is seen at once, the private files are empty, and
+    /// nothing reaches the folders of the host.
     #[test]
     fn the_layered_home_in_a_real_view() {
-        if !panpak_core::view_status().usable() || !Path::new("/usr/bin/python3").exists() {
-            eprintln!("skipped: bubblewrap or python3 is not usable here");
+        if !view_usable_or_skip() {
             return;
         }
         let base = std::env::temp_dir().join(format!("panpak-layered-{}", std::process::id()));
@@ -727,6 +730,7 @@ mod tests {
         }
         std::fs::write(env.join("gtk-3.0/settings.ini"), "[Settings]\n").unwrap();
         std::fs::write(env.join("gtk-3.0/bookmarks"), "file:///private\n").unwrap();
+        std::fs::write(env.join("kdeglobals"), "old\n").unwrap();
         std::fs::write(env.join("icons/hicolor/menu"), "menu").unwrap();
         std::fs::write(env.join("icons/Adwaita/theme"), "adwaita").unwrap();
         let mut p = plan();
@@ -738,32 +742,57 @@ mod tests {
         p.home = Some("/home/lh".into());
         p.private_home = Some(PrivateHome { data: data.clone(), cache: cache.clone() });
         p.layers = Layers {
-            overlays: vec![Mount::ro(env.join("gtk-3.0"), "/home/lh/.config/gtk-3.0".into()), Mount::ro(env.join("icons/Adwaita"), "/home/lh/.local/share/icons/Adwaita".into())],
-            files: vec![],
+            dirs: vec![Mount::ro(env.join("gtk-3.0"), "/home/lh/.config/gtk-3.0".into()), Mount::ro(env.join("icons/Adwaita"), "/home/lh/.local/share/icons/Adwaita".into())],
+            files: vec![Mount::ro(env.join("kdeglobals"), "/home/lh/.config/kdeglobals".into())],
             hidden: vec!["/home/lh/.config/gtk-3.0/bookmarks".into()],
         };
+        // The last check waits for the user to change a theme setting on the host: the running app must see it.
         let script = "set -e\n\
             cd /home/lh\n\
             echo conf > .config/app.conf; echo c > .cache/c; mkdir newdir; echo n > newdir/f\n\
             test \"$(cat .config/gtk-3.0/settings.ini)\" = '[Settings]'\n\
-            echo 'gtk-theme-name=X' >> .config/gtk-3.0/settings.ini; echo new > .config/gtk-3.0/extra.ini\n\
+            if ( echo x >> .config/gtk-3.0/settings.ini ) 2>/dev/null; then exit 3; fi\n\
+            if ( echo x > .config/gtk-3.0/extra.ini ) 2>/dev/null; then exit 3; fi\n\
             test ! -s .config/gtk-3.0/bookmarks\n\
             test \"$(cat .local/share/icons/Adwaita/theme)\" = adwaita\n\
             test ! -e .local/share/icons/hicolor\n\
             test \"$(ls .local/share/icons)\" = Adwaita\n\
-            echo done\n";
-        let out = Command::new(panpak_core::BWRAP).args(view_args(&p)).args(["--", "/usr/bin/sh", "-c", script]).output().unwrap();
-        assert!(out.status.success(), "{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            echo ready\n\
+            for i in $(seq 100); do if grep -q 'gtk-theme-name=Dark' .config/gtk-3.0/settings.ini && test -f .config/gtk-3.0/new.ini; then test \"$(cat .config/kdeglobals)\" = old; echo seen; exit 0; fi; sleep 0.1; done\n\
+            exit 4\n";
+        let mut child = Command::new(panpak_core::BWRAP)
+            .args(view_args(&p))
+            .args(["--", "/usr/bin/sh", "-c", script])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // Wait for "ready", then change the theme on the host: edit the file, and make a new one (an editor that replaces a file).
+        let mut out = child.stdout.take().unwrap();
+        let mut seen = String::new();
+        let mut buf = [0u8; 64];
+        while !seen.contains("ready") {
+            let n = std::io::Read::read(&mut out, &mut buf).unwrap();
+            assert!(n > 0, "the app ended before it was ready: {seen}");
+            seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+        }
+        std::fs::write(env.join("gtk-3.0/settings.ini.new"), "[Settings]\ngtk-theme-name=Dark\n").unwrap();
+        std::fs::rename(env.join("gtk-3.0/settings.ini.new"), env.join("gtk-3.0/settings.ini")).unwrap();
+        std::fs::write(env.join("gtk-3.0/new.ini"), "x").unwrap();
+        // A single file that is replaced by a rename stays the old one in the view (the documented limit): the check is in the script.
+        std::fs::write(env.join("kdeglobals.new"), "new\n").unwrap();
+        std::fs::rename(env.join("kdeglobals.new"), env.join("kdeglobals")).unwrap();
+        let status = child.wait().unwrap();
+        let mut err = String::new();
+        std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err).unwrap();
+        assert!(status.success(), "{seen}\n{err}");
         // The app's own files are in the private folders of the host.
         assert_eq!(std::fs::read_to_string(data.join(".config/app.conf")).unwrap(), "conf\n");
         assert_eq!(std::fs::read_to_string(data.join("newdir/f")).unwrap(), "n\n");
         assert_eq!(std::fs::read_to_string(cache.join("c")).unwrap(), "c\n");
-        // The folders of the user are as they were: the writes went to the upper layer, which is gone.
-        assert_eq!(std::fs::read_to_string(env.join("gtk-3.0/settings.ini")).unwrap(), "[Settings]\n");
-        assert!(!env.join("gtk-3.0/extra.ini").exists());
+        // The folders of the user are as the user left them, and nothing of them was copied into the private home.
         assert_eq!(std::fs::read_to_string(env.join("gtk-3.0/bookmarks")).unwrap(), "file:///private\n");
         assert_eq!(std::fs::read_to_string(env.join("icons/hicolor/menu")).unwrap(), "menu");
-        // What the mounts left in the private folder: empty mount points, no copy of the user's files.
         assert!(std::fs::read_dir(data.join(".config/gtk-3.0")).unwrap().next().is_none());
         assert!(!data.join(".config/gtk-3.0/settings.ini").exists());
         let _ = std::fs::remove_dir_all(&base);

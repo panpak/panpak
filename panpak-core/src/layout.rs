@@ -204,23 +204,24 @@ pub fn readonly_user_paths_in(config: Option<&Path>, data: Option<&Path>, home: 
 /// What the isolated view shows of the user's own environment (fonts, themes, icons, cursors, GTK, Qt and KDE settings)
 /// at the real paths, inside the private home.
 ///
-/// Every folder is mounted whole as an overlay: the user's folder is the lower layer, writes go to a memory-only upper
-/// layer that is gone when the app ends, and a change the user makes meanwhile (another theme) is seen by the running
-/// app. Only entries that exist.
+/// Every folder is mounted read-only, as it is (a bind mount of the user's folder): the app sees the same files as every other
+/// program and a change the user makes meanwhile (another theme) is seen by the running app, and the app cannot change them.
+/// Only entries that exist.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EnvLayers {
-    /// Folders mounted as overlays.
-    pub overlays: Vec<PathBuf>,
-    /// Single files, mounted read-only (an overlay needs a folder).
+    /// Folders mounted read-only.
+    pub dirs: Vec<PathBuf>,
+    /// Single files, mounted read-only. A file is the inode that is there when the app starts: a program that replaces it by a rename
+    /// is not seen until the next start (`kdeglobals` is written that way by KDE).
     pub files: Vec<PathBuf>,
-    /// Files inside an overlay that are private to the user and are replaced by an empty file.
+    /// Files inside those folders that are private to the user and are replaced by an empty file.
     pub hidden: Vec<PathBuf>,
 }
 
 impl EnvLayers {
     /// Number of mounts the layers cost.
     pub fn mounts(&self) -> usize {
-        self.overlays.len() + self.files.len() + self.hidden.len()
+        self.dirs.len() + self.files.len() + self.hidden.len()
     }
 }
 
@@ -230,7 +231,7 @@ impl EnvLayers {
 /// - `gtk-3.0`, `gtk-4.0`: GTK settings (`settings.ini`, `gtk.css`) and, in `gtk-3.0`, the bookmarks, which are hidden;
 /// - `qt5ct`, `qt6ct`, `Trolltech.conf`, `kdeglobals`: Qt and KDE settings (style, fonts, colours);
 /// - `.local/share/themes`: GTK themes of the user; each theme folder of `.local/share/icons` and `.icons` except `hicolor`
-///   (one overlay each, not the whole folder: see `HIDDEN_ICON_THEME`; measured, a `hicolor` that is there, even empty, costs
+///   (one mount each, not the whole folder: see `HIDDEN_ICON_THEME`; measured, a `hicolor` that is there, even empty, costs
 ///   QOwnNotes 50 to 170 ms);
 /// - `.local/share/mime`: the types of the user, for names and icons of files.
 pub fn env_layers_in(config: Option<&Path>, data: Option<&Path>, home: Option<&Path>) -> EnvLayers {
@@ -241,22 +242,22 @@ pub fn env_layers_in(config: Option<&Path>, data: Option<&Path>, home: Option<&P
     const PRIVATE: &[&str] = &["gtk-3.0/bookmarks", "gtk-3.0/servers", "gtk-4.0/bookmarks"];
     let mut out = EnvLayers::default();
     if let Some(c) = config {
-        out.overlays.extend(CONFIG_DIRS.iter().map(|n| c.join(n)));
+        out.dirs.extend(CONFIG_DIRS.iter().map(|n| c.join(n)));
         out.files.extend(CONFIG_FILES.iter().map(|n| c.join(n)));
         out.hidden.extend(PRIVATE.iter().map(|n| c.join(n)));
     }
     if let Some(d) = data {
-        out.overlays.extend(DATA_DIRS.iter().map(|n| d.join(n)));
-        out.overlays.extend(icon_themes(&d.join("icons")));
+        out.dirs.extend(DATA_DIRS.iter().map(|n| d.join(n)));
+        out.dirs.extend(icon_themes(&d.join("icons")));
     }
     if let Some(h) = home {
-        out.overlays.push(h.join(".fonts"));
-        out.overlays.extend(icon_themes(&h.join(".icons")));
+        out.dirs.push(h.join(".fonts"));
+        out.dirs.extend(icon_themes(&h.join(".icons")));
     }
-    out.overlays.retain(|p| p.is_dir());
+    out.dirs.retain(|p| p.is_dir());
     out.files.retain(|p| p.is_file());
-    let overlays = out.overlays.clone();
-    out.hidden.retain(|p| p.is_file() && overlays.iter().any(|o| p.starts_with(o)));
+    let dirs = out.dirs.clone();
+    out.hidden.retain(|p| p.is_file() && dirs.iter().any(|o| p.starts_with(o)));
     out
 }
 
@@ -606,9 +607,9 @@ mod tests {
             fs::create_dir_all(data.join(d)).unwrap();
         }
         fs::create_dir_all(home.join(".icons/hicolor")).unwrap();
-        assert!(!env_layers_in(Some(&cfg), Some(&data), Some(&home)).overlays.iter().any(|p| p.ends_with("hicolor")), "hicolor is never mounted");
+        assert!(!env_layers_in(Some(&cfg), Some(&data), Some(&home)).dirs.iter().any(|p| p.ends_with("hicolor")), "hicolor is never mounted");
         let l = env_layers_in(Some(&cfg), Some(&data), Some(&home));
-        assert_eq!(l.overlays, [cfg.join("fontconfig"), cfg.join("gtk-3.0"), cfg.join("qt5ct"), data.join("fonts"), data.join("themes"), data.join("icons/Adwaita")]);
+        assert_eq!(l.dirs, [cfg.join("fontconfig"), cfg.join("gtk-3.0"), cfg.join("qt5ct"), data.join("fonts"), data.join("themes"), data.join("icons/Adwaita")]);
         assert_eq!(l.files, [cfg.join("kdeglobals")]);
         assert_eq!(l.hidden, [cfg.join("gtk-3.0/bookmarks")]);
         // About ten mounts for a full environment, not one per file or theme.

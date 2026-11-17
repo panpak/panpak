@@ -110,25 +110,23 @@ the real home and the cache as `~/.cache`; `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `
 the folders there, and these are the only writable places besides `/tmp` and the `rw` home paths of the manifest. Without
 the view `HOME` is the private home. The old `~/.local/share/<id>` is not touched and not writable. What the app
 writes in its home is its own data: it cannot reach the real home, so a program it starts finds only that. The user's fonts,
-themes, icons and toolkit settings are mounted into it as overlays whose upper layer is in memory
-(§9.1): the app can change its copy and the user's folders never change. A file the app writes in its home may
+themes, icons and toolkit settings are mounted into it read-only (§9.1): the app cannot change them. A file the app writes in its home may
 be a program (a script, a binary): the view does not stop it from being run (§3, W^X is a separate decision).
 `tests/app_dirs.py` runs an app in an isolated HOME and checks that:
 
 - writes through each XDG variable and `TMPDIR` land in the right folders, and a file written anywhere in `~` lands in the private home;
 - nothing the app writes reaches the real home: `~/.config/<anything>` and `~/stray` are in the private home only;
-- `~/.config/gtk-3.0` and the theme folders of `~/.local/share/icons` can be read and written (the app's copy), and the real files are unchanged; `gtk-3.0/bookmarks` is empty and `~/.local/share/icons/hicolor` (where the menu icons go) is not in the view;
+- `~/.config/gtk-3.0` and the theme folders of `~/.local/share/icons` can be read and not written, and the real files are unchanged; `gtk-3.0/bookmarks` is empty and `~/.local/share/icons/hicolor` (where the menu icons go) is not in the view;
 - `~/.config/gh` with a fake token file cannot be read, and `~/.config` lists only what is in the private home;
 - missing optional paths do not stop the start;
 - `panpak data clear` deletes only the two roots, follows no link and refuses a
   root that is a link.
 
-The overlays are the user's folders as the lower layer; a program of the view cannot write to the lower layer, and the
-kernel does not copy a file into the private home that the app did not write (copy-up goes to the upper layer in
-memory). Two limits: the memory of the upper layer is not capped (an app that writes large files into
-its copy of a theme folder uses memory until it ends), and a file the user changes while a running app has it open
-may be seen half changed (the kernel calls this undefined for overlays, and it is the same for any program that reads
-a file that is being written).
+The user's folders are mounted as they are, read-only: there is no copy of them in the private home (the mount points are
+empty), no upper layer, and so no memory an app could fill by writing there. A file the user changes while a running app has it open
+may be seen half changed, as for any program that reads a file that is being written. The mounts show what is in the folder
+of the user at the time, so what is in them is as private as the folder: the settings of the theme can reveal which software the user
+runs and hold no secret (`gtk-3.0/bookmarks` and `servers`, which list what the user has been doing, are empty files).
 
 `permissions.home_paths` (spec §3.1.2) is the last resort for apps that insist on
 a fixed place in the home folder. The manifest validation refuses broad
