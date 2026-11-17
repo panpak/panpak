@@ -17,7 +17,15 @@ pub const RUNNER_ABI: landlock::ABI = landlock::ABI::V8;
 /// A skip that the CI cannot avoid, for a reason that is named (the runner's kernel is older than the test needs): it is reported and does
 /// not fail with `PANPAK_CI=1`.
 pub fn skip_known(reason: &str) -> bool {
+    use std::io::Write as _;
+    let name = std::thread::current().name().unwrap_or("?").to_string();
     eprintln!("known skip (the CI runner cannot run this): {reason}");
+    // The test may run in a child process whose output is not shown when it passes: the CI reads this file (`PANPAK_SKIP_LOG`).
+    if let Some(path) = std::env::var_os("PANPAK_SKIP_LOG") {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{name}: {reason}");
+        }
+    }
     false
 }
 
