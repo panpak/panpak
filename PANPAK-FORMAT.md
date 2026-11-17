@@ -1189,8 +1189,10 @@ In the isolated view, `/tmp` is a new tmpfs of each copy with a size cap (256 Mi
 gets "no space left on device" instead of taking the memory of the machine). It is not shared. What copies of one app need
 to share is in two folders, which no other app sees: `TMPDIR`, the folder `tmp` of the cache of the app
 (`$XDG_CACHE_HOME/panpak/<id>/tmp`, on disk; `~/.cache/tmp` in the view), for the large and the shared temporary files (the
-local sockets and lock files of Qt and Electron use `TMPDIR`), and `/dev/shm`, the folder `$XDG_RUNTIME_DIR/panpak/<id>/shm`,
-instead of the `/dev/shm` of the machine. Each runtime holds a shared `flock` on `panpak/<id>/lock` while it runs. A runtime
+local sockets and lock files of Qt and Electron use `TMPDIR`), and `/dev/shm`, the folder `/dev/shm/panpak-<uid>/<id>` of the system's own `/dev/shm`
+(the runtime folder if that cannot be used: it is not there, or the folder is not ours), instead of the whole `/dev/shm`. It is on the file system of the
+system's `/dev/shm`, with its size (Chromium fails with a small one, as in a container with 64 MB), and not in `$XDG_RUNTIME_DIR`, which is small and holds the sockets of the session.
+While the app runs the outer stub looks at `/tmp` every two seconds; when less than 2 percent is free it says so once, in the log and in a notification of the desktop, in plain words. Each runtime holds a shared `flock` on `panpak/<id>/lock` while it runs. A runtime
 that gets the exclusive lock (no copy is alive) first empties both folders without following links, and the last copy to end
 empties `TMPDIR` again, so a large file that an app forgot does not stay on disk. This does not make two copies see each other's System V
 IPC objects: that depends on the IPC namespace (§9.2). With `x11 = true` the namespace is shared and,

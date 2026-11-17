@@ -2346,7 +2346,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         }
     }
     // /tmp and /dev/shm are shared by the copies of this app that run together, and by no other app.
-    let shared = ctx.runtime_dir.zip(app_dirs.as_ref()).and_then(|(rt, dirs)| match sharedtmp::prepare(&rt.join("panpak").join(&ctx.man.app.id), &dirs.tmp, &panpak_core::stalelocks::in_use_marker(dirs), ctx.early_lock.as_ref().and_then(|f| f.try_clone().ok())) {
+    let shared = ctx.runtime_dir.zip(app_dirs.as_ref()).and_then(|(rt, dirs)| match sharedtmp::prepare(&rt.join("panpak").join(&ctx.man.app.id), &dirs.tmp, &sharedtmp::system_shm(&ctx.man.app.id).unwrap_or_else(|| rt.join("panpak").join(&ctx.man.app.id).join("shm")), &panpak_core::stalelocks::in_use_marker(dirs), ctx.early_lock.as_ref().and_then(|f| f.try_clone().ok())) {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!("panpak: shared /tmp off, using a private one: {}", panpak_core::err_text(&e));
@@ -2368,6 +2368,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     let plan = view::ViewPlan {
         root: view::root_layout(Path::new("/")),
         tmp_size: view::TMP_SIZE,
+        watch_tmp: Some(ctx.man.app.name.clone()),
         shared_shm: shared.as_ref().map(|s| s.shm.clone()),
         mounts,
         symlinks,

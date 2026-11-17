@@ -7,6 +7,7 @@
 use anyhow::{bail, ensure, Context, Result};
 use std::{
     ffi::OsString,
+    fs,
     io::{Read, Seek, SeekFrom, Write},
     os::unix::{ffi::OsStrExt, io::FromRawFd, process::CommandExt},
     path::{Path, PathBuf},
@@ -339,6 +340,8 @@ pub struct ViewPlan {
     /// `/tmp` is a new tmpfs of the view (never shared with another copy) with this size cap, in bytes: what an app writes there is memory.
     /// Large temporary files go to `TMPDIR`, on disk (`~/.cache/tmp`).
     pub tmp_size: u64,
+    /// The name of the app to name in the notice when its `/tmp` is full; None: nobody watches.
+    pub watch_tmp: Option<String>,
     /// A folder of the host mounted as `/dev/shm`, shared by the copies of one app. None: the host's `/dev/shm`.
     pub shared_shm: Option<PathBuf>,
     /// The manifest asks for X11: the IPC namespace stays shared (MIT-SHM).
@@ -485,6 +488,9 @@ pub fn run_bwrap<K>(plan: &ViewPlan, keep: K, ended: impl FnOnce(&K, bool)) -> R
     ensure!(args.iter().all(|a| !a.as_bytes().contains(&0)), "NUL in a bubblewrap argument");
     let mut child = Command::new(panpak_core::BWRAP).args(&args).spawn().with_context(|| format!("cannot run {}", panpak_core::BWRAP))?;
     CHILD.store(child.id() as i32, std::sync::atomic::Ordering::Relaxed);
+    if let Some(app) = &plan.watch_tmp {
+        watch_tmp(child.id() as i32, app.clone(), plan.tmp_size);
+    }
     for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGQUIT] {
         // SAFETY: the handler only calls kill.
         unsafe { libc::signal(sig, forward_signal as extern "C" fn(libc::c_int) as libc::sighandler_t) };
@@ -494,6 +500,72 @@ pub fn run_bwrap<K>(plan: &ViewPlan, keep: K, ended: impl FnOnce(&K, bool)) -> R
     ended(&keep, status.code() == Some(0) || (forwarded && status.signal().is_some()));
     drop(keep);
     std::process::exit(status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+}
+
+/// Is the file system with `blocks` blocks of which `free` are free nearly full? Under 2 percent free counts.
+pub fn tmp_is_full(blocks: u64, free: u64) -> bool {
+    blocks > 0 && free.saturating_mul(50) < blocks
+}
+
+/// What the user is told when the `/tmp` of an app is full.
+pub fn tmp_full_message(app: &str, size: u64) -> String {
+    format!("{app}: its temporary folder /tmp is full ({} MiB is the most one app may keep there). Programs that write there will fail until it is emptied; large temporary files belong in the folder $TMPDIR points to.", size / (1024 * 1024))
+}
+
+/// One process inside the view that started as `child` (bubblewrap's first child): its root is not the host's.
+fn process_in_view(child: i32) -> Option<i32> {
+    use std::os::unix::fs::MetadataExt;
+    let host = fs::metadata("/").ok()?;
+    let mut todo = vec![child];
+    while let Some(pid) = todo.pop() {
+        let Ok(root) = fs::metadata(format!("/proc/{pid}/root/")) else { continue };
+        if (root.dev(), root.ino()) != (host.dev(), host.ino()) {
+            return Some(pid);
+        }
+        if let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) {
+            for t in tasks.flatten() {
+                if let Ok(kids) = fs::read_to_string(t.path().join("children")) {
+                    todo.extend(kids.split_whitespace().filter_map(|k| k.parse::<i32>().ok()));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// While the app runs: when its `/tmp` is full, say it once, in the log and in a notification. A failed write
+/// to a full `/tmp` is otherwise only the app's own error, if it shows one.
+fn watch_tmp(child: i32, app: String, size: u64) {
+    std::thread::spawn(move || {
+        let mut told = false;
+        let mut watched = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if unsafe { libc::kill(child, 0) } != 0 {
+                return;
+            }
+            let pid = match watched {
+                Some(p) => p,
+                None => match process_in_view(child) {
+                    Some(p) => *watched.insert(p),
+                    None => continue,
+                },
+            };
+            let Ok(path) = std::ffi::CString::new(format!("/proc/{pid}/root/tmp")) else { return };
+            let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+            if unsafe { libc::statvfs(path.as_ptr(), &mut st) } != 0 {
+                watched = None;
+                continue;
+            }
+            let full = tmp_is_full(st.f_blocks as u64, st.f_bavail as u64);
+            if full && !told {
+                let msg = tmp_full_message(&app, size);
+                eprintln!("panpak: {msg}");
+                panpak_core::chooserhost::notify("Panpak", &msg);
+            }
+            told = full;
+        }
+    });
 }
 
 /// Drop duplicates, keep the order.
@@ -532,6 +604,7 @@ mod tests {
             mounts: vec![],
             symlinks: vec![],
             tmp_size: TMP_SIZE,
+            watch_tmp: None,
             shared_shm: None,
             x11_access: false,
             no_network: false,
@@ -546,6 +619,18 @@ mod tests {
 
     fn pos(a: &[String], seq: &[&str]) -> Option<usize> {
         a.windows(seq.len()).position(|w| w.iter().zip(seq).all(|(x, y)| x == y))
+    }
+
+    #[test]
+    fn a_full_tmp_is_noticed_and_said_in_plain_words() {
+        assert!(!tmp_is_full(65536, 40000), "a tmp that is far from full");
+        assert!(!tmp_is_full(65536, 2000), "3 percent free is still room");
+        assert!(tmp_is_full(65536, 1000), "under 2 percent free is full");
+        assert!(tmp_is_full(65536, 0));
+        assert!(!tmp_is_full(0, 0), "no size known: nothing to say");
+        let m = tmp_full_message("Audacity", TMP_SIZE);
+        assert!(m.contains("Audacity") && m.contains("256 MiB") && m.contains("TMPDIR"), "{m}");
+        assert!(!m.contains("ENOSPC"), "plain words: {m}");
     }
 
     #[test]

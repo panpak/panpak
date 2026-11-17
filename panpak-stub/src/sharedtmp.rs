@@ -10,7 +10,7 @@
 use anyhow::{Context, Result};
 use std::{
     fs::{self, File, OpenOptions},
-    os::unix::{fs::{DirBuilderExt, OpenOptionsExt}, io::AsRawFd},
+    os::unix::{fs::{DirBuilderExt, MetadataExt, OpenOptionsExt}, io::AsRawFd},
     path::{Path, PathBuf},
 };
 
@@ -33,6 +33,18 @@ fn flock(f: &File, op: libc::c_int) -> bool {
 
 fn private_dir(p: &Path) -> Result<()> {
     fs::DirBuilder::new().recursive(true).mode(0o700).create(p).with_context(|| format!("create {}", p.display()))
+}
+
+/// The folder of this app in the system's `/dev/shm` (`/dev/shm/panpak-<uid>/<app id>`), so that the app sees the
+/// file system of the system with its size, and not a part of the runtime folder, which is small and holds the sockets
+/// of the session. None when `/dev/shm` is not there or the folder is not ours (another user made it first).
+pub fn system_shm(app_id: &str) -> Option<PathBuf> {
+    let uid = unsafe { libc::geteuid() };
+    let top = Path::new("/dev/shm").join(format!("panpak-{uid}"));
+    let dir = top.join(app_id);
+    private_dir(&dir).ok()?;
+    let ours = |p: &Path| fs::symlink_metadata(p).map(|m| m.is_dir() && m.uid() == uid && m.mode() & 0o077 == 0).unwrap_or(false);
+    (ours(&top) && ours(&dir)).then_some(dir)
 }
 
 /// Empty a folder without following links, and make sure it exists (0700).
@@ -75,15 +87,15 @@ pub fn early_lock(runtime_dir: &Path, app_id: &str) -> Result<File> {
     }
 }
 
-/// Prepare `disk_tmp` and `<base>/shm`, take the lock and, when no other copy holds it, empty them. `early` is the
+/// Prepare `disk_tmp` and `shm`, take the lock and, when no other copy holds it, empty them. `early` is the
 /// lock from `early_lock` if there is one.
-pub fn prepare(base: &Path, disk_tmp: &Path, marker: &Path, early: Option<File>) -> Result<Shared> {
+pub fn prepare(base: &Path, disk_tmp: &Path, shm: &Path, marker: &Path, early: Option<File>) -> Result<Shared> {
     private_dir(base)?;
     let lock = match early {
         Some(f) => f,
         None => OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(base.join("lock")).context("open the lock file")?,
     };
-    let (tmp, shm) = (disk_tmp.to_path_buf(), base.join("shm"));
+    let (tmp, shm) = (disk_tmp.to_path_buf(), shm.to_path_buf());
     // Alone: the exclusive lock is ours, nobody else is in the folders, so empty them. The others
     // wait on the shared lock below until this is done.
     let alone = flock(&lock, libc::LOCK_EX | libc::LOCK_NB);
@@ -157,23 +169,23 @@ mod tests {
         fs::write(base.join("shm/old"), b"x").unwrap();
         std::os::unix::fs::symlink("/etc", disk.join("link")).unwrap();
         let mark = base.with_extension("in-use");
-        let a = prepare(&base, &disk, &mark, None).unwrap();
+        let a = prepare(&base, &disk, &base.join("shm"), &mark, None).unwrap();
         assert!(!a.stale, "no mark: the last run ended normally");
         assert!(!a.disk_tmp.join("qipc_stale").exists() && !a.disk_tmp.join("sub").exists() && !a.shm.join("old").exists());
         assert!(Path::new("/etc/passwd").exists(), "a link in the folder is removed, not followed");
         fs::write(a.disk_tmp.join("qipc_live"), b"x").unwrap();
         // A second copy (another open file description, so a real second holder) keeps the files.
-        let b = prepare(&base, &disk, &mark, None).unwrap();
+        let b = prepare(&base, &disk, &base.join("shm"), &mark, None).unwrap();
         assert!(b.disk_tmp.join("qipc_live").exists());
         assert!(!b.stale);
         assert_eq!(a.disk_tmp, b.disk_tmp);
         drop(a);
         // One copy is still alive: nothing is emptied.
-        let c = prepare(&base, &disk, &mark, None).unwrap();
+        let c = prepare(&base, &disk, &base.join("shm"), &mark, None).unwrap();
         assert!(c.disk_tmp.join("qipc_live").exists());
         drop((b, c));
         // Nobody is alive any more: the next start empties the folders.
-        let d = prepare(&base, &disk, &mark, None).unwrap();
+        let d = prepare(&base, &disk, &base.join("shm"), &mark, None).unwrap();
         assert!(!d.disk_tmp.join("qipc_live").exists());
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(fs::metadata(&d.disk_tmp).unwrap().permissions().mode() & 0o777, 0o700);
@@ -183,9 +195,9 @@ mod tests {
         // The mark: made at every start; a normal end removes it only for the last copy; a start with none alive
         // that finds it reports a stale run, and one that does not find it does not.
         let _ = fs::remove_file(&mark);
-        let x = prepare(&base, &disk, &mark, None).unwrap();
+        let x = prepare(&base, &disk, &base.join("shm"), &mark, None).unwrap();
         assert!(mark.exists() && !x.stale);
-        let y = prepare(&base, &disk, &mark, None).unwrap();
+        let y = prepare(&base, &disk, &base.join("shm"), &mark, None).unwrap();
         let locks = base.with_extension("locks");
         let _ = fs::remove_dir_all(&locks);
         fs::create_dir_all(&locks).unwrap();
@@ -204,7 +216,7 @@ mod tests {
         assert!(!lockfile.exists() && !mark.exists(), "the last copy ended normally: no lock file, no mark");
         drop((x, y));
         // An end that is not normal (the app crashed, the runtime saw no clean status) still clears the lock files, and keeps the mark.
-        let (p, q) = (prepare(&base, &disk, &mark, None).unwrap(), prepare(&base, &disk, &mark, None).unwrap());
+        let (p, q) = (prepare(&base, &disk, &base.join("shm"), &mark, None).unwrap(), prepare(&base, &disk, &base.join("shm"), &mark, None).unwrap());
         fs::write(&lockfile, b"2\nqbittorrent\nhost\n\n0123-4567\n").unwrap();
         fs::write(locks.join("notes.txt"), b"2\nmy notes\nabout locks\n").unwrap();
         drop(p);
@@ -215,13 +227,13 @@ mod tests {
         drop(q);
         let _ = fs::remove_file(&mark);
         let _ = fs::remove_dir_all(&locks);
-        let z = prepare(&base, &disk, &mark, None).unwrap();
+        let z = prepare(&base, &disk, &base.join("shm"), &mark, None).unwrap();
         assert!(!z.stale);
         drop(z); // killed: nothing removed the mark
-        let w = prepare(&base, &disk, &mark, None).unwrap();
+        let w = prepare(&base, &disk, &base.join("shm"), &mark, None).unwrap();
         assert!(w.stale, "the mark was left: the run did not end normally");
         drop(w);
-        let v = prepare(&base, &disk, &mark, None).unwrap();
+        let v = prepare(&base, &disk, &base.join("shm"), &mark, None).unwrap();
         assert!(v.stale);
         drop(v);
         let _ = fs::remove_file(&mark);

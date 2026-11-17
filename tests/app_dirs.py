@@ -59,8 +59,12 @@ try write_notes 'echo x > "$HOME/Notes/n.txt"'
 try read_docs 'cat "$HOME/Docs/ro.txt" >/dev/null'
 try write_docs 'echo x > "$HOME/Docs/new.txt"'
 try write_tmp 'echo x > /tmp/panpak-dirs-test-$$ && rm /tmp/panpak-dirs-test-$$'
-try tmp_cap 'dd if=/dev/zero of=/tmp/cap-test bs=1M count=300 2>/dev/null; rc=$?; rm -f /tmp/cap-test; [ $rc -eq 0 ]'
+try tmp_cap 'dd if=/dev/zero of=/tmp/cap-test bs=1M count=300 2>/dev/null; rc=$?; sleep 5; rm -f /tmp/cap-test; [ $rc -eq 0 ]'
 try tmpdir_big 'dd if=/dev/zero of="$TMPDIR/big" bs=1M count=300 2>/dev/null && rm -f "$TMPDIR/big"'
+echo "shm_dev=$(stat -c %d /dev/shm)"
+echo "shm_kb=$(df -Pk /dev/shm | awk 'NR==2{print $2}')"
+try read_meminfo 'grep -q MemTotal /proc/meminfo'
+try read_pressure 'test -n "$(cat /proc/pressure/memory)"'
 echo "libdbus=$(timeout 10 dbus-send --session --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames >/dev/null 2>&1 && echo found || echo none)"
 echo "gdbus=$(timeout 10 gdbus call --session --dest org.freedesktop.DBus --object-path / --method org.freedesktop.DBus.ListNames >/dev/null 2>&1 && echo found || echo none)"
 echo "sdbus=$(timeout 10 busctl --user list >/dev/null 2>&1 && echo found || echo none)"
@@ -209,6 +213,14 @@ def main():
            list_config='ok', read_icons='ok', write_icons='deny', read_hicolor='deny', read_icons_dir='ok', read_old_appdata='deny',
            read_other_userdata='deny', read_notes='deny', write_notes='deny', read_docs='deny', write_docs='deny',
            write_tmp='ok', tmp_cap='deny', tmpdir_big='ok', args='one two', fonts_found='1')
+    # A full /tmp is said in plain words, once (the app holds it full for a few seconds; the watcher looks every two).
+    assert err.count('its temporary folder /tmp is full') == 1, f'a full /tmp was not said once:\n{err}'
+    # /dev/shm is as big as the one of the system (Chromium crashes with a small one), and the memory counters that it reads to
+    # decide when to put tabs to sleep are visible.
+    host_shm_kb = os.statvfs('/dev/shm').f_blocks * os.statvfs('/dev/shm').f_frsize // 1024
+    assert int(rep['shm_dev']) == os.stat('/dev/shm').st_dev, "/dev/shm in the view is not the file system of the system's"
+    assert int(rep['shm_kb']) == host_shm_kb, f"/dev/shm in the view is {rep['shm_kb']} KiB, the system's is {host_shm_kb} KiB"
+    expect(rep, read_meminfo='ok', read_pressure='ok' if os.path.exists('/proc/pressure/memory') else 'deny')
     cfg, dat, st = userdata / '.config', userdata / '.local/share', userdata / '.local/state'
     assert (cfg / 'c.txt').exists() and (dat / 'd.txt').exists() and (st / 's.txt').exists() and (cache / 'k.txt').exists()
     assert (userdata / '.config/something/x').exists() and (userdata / 'stray.txt').exists(), 'the app has its home'
