@@ -79,6 +79,19 @@ for wf in sorted(path.parent.glob('*.yml')):
         head = body.split('\n    steps:', 1)[0]
         if 'timeout-minutes:' not in head and 'uses:' not in head.split('\n    steps:')[0]:
             bad.append(f'{wf.name}: job {name} has no timeout-minutes')
+# Every workflow is valid YAML (an invalid file makes GitHub run nothing, and the pull request shows no check at all).
+try:
+    import yaml
+except ImportError:
+    print('skip every workflow parses as YAML: PyYAML is not installed')
+else:
+    for wf in sorted(path.parent.glob('*.yml')):
+        try:
+            yaml.safe_load(wf.read_text())
+        except yaml.YAMLError as e:
+            bad.append(f'{wf.name} is not valid YAML: {e}')
+    if not any('not valid YAML' in b for b in bad):
+        print('ok   every workflow is valid YAML')
 # Every test of the repository runs in at least one level of the CI, or is listed in tests/ci-coverage.txt with its kind and its reason.
 root = path.parent.parent.parent
 workflows = ''.join(wf.read_text() for wf in sorted(path.parent.glob('*.yml')))
