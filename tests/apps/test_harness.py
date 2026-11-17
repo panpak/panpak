@@ -202,17 +202,31 @@ class LibraryPath(unittest.TestCase):
         ]
         self.assertEqual(display.library_path_offenders(rows, self.TREES), [])
 
-    def test_the_outer_processes_must_not_hold_it(self):
+    def test_the_outer_processes_must_not_hold_a_value_that_takes_effect(self):
+        farm = "/h/.local/share/panpak/farms/abcd/.farm"
         rel = "/$ORIGIN/.panpak-lib-abcd1234/.farm"
         rows = [
-            self.row(10, 1, "/h/.local/share/panpak/runtimes/1/panpak-stub", rel),
-            self.row(11, 10, "/usr/bin/bwrap", rel),
+            self.row(10, 1, "/h/.local/share/panpak/runtimes/1/panpak-stub", farm),
+            self.row(11, 10, "/usr/bin/bwrap", "/h/.local/share/panpak/farms/abcd:" + self.TREES + "/abc/lib"),
             self.row(12, 11, self.TREES + "/abc/bin/app", rel),
         ]
         bad = display.library_path_offenders(rows, self.TREES)
         self.assertEqual(len(bad), 2)
         self.assertIn("pid 10", bad[0] + bad[1])
         self.assertIn("pid 11", bad[0] + bad[1])
+        self.assertTrue(all("takes effect" in b for b in bad), bad)
+
+    def test_the_relative_value_in_a_program_of_the_host_is_inert_and_no_fault(self):
+        # A converted AppImage whose entry is a shell script: the host's `sh` or `bash` runs it under the value that the stub made, `/$ORIGIN/.panpak-lib-...`,
+        # which names a folder that does not exist at the root: nothing is loaded through it.
+        rel = "/$ORIGIN/.panpak-lib-abcd1234/.farm:/$ORIGIN/.panpak-lib-abcd1234/lib"
+        rows = [
+            self.row(10, 1, "/h/.local/share/panpak/runtimes/1/panpak-stub"),
+            self.row(11, 10, "/usr/bin/bash", rel),
+            self.row(12, 11, self.TREES + "/abc/usr/bin/app", rel),
+            self.row(13, 1, "/usr/bin/dash", "/usr/lib/x86_64-linux-gnu"),   # no path of the store: no effect either
+        ]
+        self.assertEqual(display.library_path_offenders(rows, self.TREES), [])
 
     def test_a_path_of_the_store_in_the_value_is_a_fault(self):
         rows = [self.row(12, 1, self.TREES + "/abc/bin/app", "/h/.local/share/panpak/farms/abc:" + self.TREES + "/abc/lib")]
@@ -226,6 +240,14 @@ class LibraryPath(unittest.TestCase):
         me = [r for r in rows if r["pid"] == os.getpid()]
         self.assertEqual(len(me), 1)
         self.assertTrue(me[0]["exe"].startswith("/"))
+
+
+class Windows(unittest.TestCase):
+    def test_a_window_must_be_wide_enough_and_tall_enough_unless_it_is_the_first_one_of_the_app(self):
+        self.assertTrue(display.window_counts({"w": 500, "h": 114}, (200, 120), True), "LMMS: the first window is a dialog of 500 x 114")
+        self.assertFalse(display.window_counts({"w": 500, "h": 114}, (200, 120), False), "a later window of that height is a helper")
+        self.assertFalse(display.window_counts({"w": 24, "h": 24}, (200, 120), True), "a tray icon or a helper is not narrow-tolerated")
+        self.assertTrue(display.window_counts({"w": 800, "h": 600}, (200, 120), False))
 
 
 class BuildNotes(unittest.TestCase):

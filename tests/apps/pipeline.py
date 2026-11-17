@@ -255,9 +255,14 @@ class Run:
         found = None
         mw, mh = self.app.min_window
         try:
+            first = None
             while time.monotonic() - t0 < timeout and found is None:
                 for wid, w in disp.windows().items():
-                    if wid not in base and w["w"] >= mw and w["h"] >= mh:
+                    if wid in base:
+                        continue
+                    if first is None and w["w"] >= mw:
+                        first = wid          # the first window of the app that is wide enough to be one: it may be a short dialog
+                    if display.window_counts(w, (mw, mh), wid == first):
                         found = time.monotonic() - t0
                         break
                 if found is None:

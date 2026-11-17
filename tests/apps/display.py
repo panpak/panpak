@@ -194,9 +194,12 @@ def process_rows(root_pid):
 
 def library_path_offenders(rows, tree_dir):
     """What is wrong with the library path in a run (PANPAK-FORMAT.md section 7.1). `rows` as from `process_rows`, `tree_dir` the folder with the trees of the
-    store. Only the programs of the app, and what they start, may hold the variable; the outer stub, bubblewrap and the helpers that the stub starts must not.
-    And the value an app holds must be the relative one (`/$ORIGIN/...`), never a path of the store. Returns a list of texts, empty when all is well."""
+    store (the store is the folder above it). Only values that take effect are faults: an absolute path into the store (a tree, a farm, a package) in a process that is
+    not an app program, or in any process that is not a program of the tree; the relative `/$ORIGIN/.panpak-lib-...` that the stub makes names a folder that does not exist
+    at the root, so it is inert in the `sh` or `bash` of the host that runs the script of an AppImage, and is no fault. A program of the app must hold the relative value,
+    never a path of the store. Returns a list of texts, empty when all is well."""
     tree_dir = str(tree_dir).rstrip("/") + "/"
+    store = str(Path(tree_dir.rstrip("/")).parent).rstrip("/") + "/"
     byp = {r["pid"]: r for r in rows}
     inside = set()
     for r in rows:
@@ -213,8 +216,18 @@ def library_path_offenders(rows, tree_dir):
     for r in rows:
         if r["ld"] is None:
             continue
-        if r["pid"] not in inside:
-            out.append(f"pid {r['pid']} ({r['exe']}) is outside the app and holds {LIBRARY_PATH_VAR}")
-        elif r["exe"].startswith(tree_dir) and not r["ld"].startswith("/$ORIGIN/"):
-            out.append(f"pid {r['pid']} ({r['exe']}) holds {LIBRARY_PATH_VAR} with a path that is not relative to the program: {r['ld'][:120]}")
+        effective = [e for e in r["ld"].split(":") if e.startswith(store)]
+        if r["exe"].startswith(tree_dir):
+            if not r["ld"].startswith("/$ORIGIN/"):
+                out.append(f"pid {r['pid']} ({r['exe']}) holds {LIBRARY_PATH_VAR} with a path that is not relative to the program: {r['ld'][:120]}")
+        elif effective:
+            where = "outside the app" if r["pid"] not in inside else "started by the app"
+            out.append(f"pid {r['pid']} ({r['exe']}) is {where} and holds {LIBRARY_PATH_VAR} with a path of the store that takes effect: {effective[0][:120]}")
     return out
+
+
+def window_counts(win, min_size, is_first):
+    """Does this window of the app count as its window? It must be as wide as `min_size` says, and as tall, except the first window of the app: a first dialog
+    (LMMS asks for its working directory in one of 500 x 114) is the window of the app even when it is shorter."""
+    mw, mh = min_size
+    return win["w"] >= mw and (win["h"] >= mh or is_first)

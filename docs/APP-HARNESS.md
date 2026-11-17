@@ -77,7 +77,9 @@ the user sees at install (level Attention) and it opens no device file.
 ## How to read the numbers
 
 - **window s** is the time from the moment the launcher is started to the first
-  window of at least `min_window` (200x120) that was not there before. It
+  window of at least `min_window` (200x120) that was not there before; the
+  first window of the app counts even when it is shorter than that (as wide as
+  `min_window` says: LMMS asks for its working directory in a dialog of 500x114). It
   includes the whole start: the outer stub, the check of the package, the
   sandbox, the app itself. In `--full` mode it is the median of five starts after
   a first one; the first start is left out because it unpacks the package into the
@@ -136,7 +138,8 @@ the readers of window lists, and the checks of the cache of the patched packages
 ## The library path check
 
 Every window start of a run also reads the environment of every process under the launcher (`/proc/PID/environ`, in `display.process_rows`) and checks
-(`display.library_path_offenders`) that only the programs of the app (whose executable is under the `trees` folder of the store) and what they start hold
-`LD_LIBRARY_PATH`, never the outer stub, bubblewrap or a helper, and that the value an app program holds is the relative one (`/$ORIGIN/.panpak-lib-<h>/...`,
-PANPAK-FORMAT.md section 7.1), not a path of the store. A fault ends the app's row with the pids and the executables. The unit tests of the rule are in
+(`display.library_path_offenders`) the values that take effect: an absolute path into the store (a tree, a farm, a package) in a process that is not a program of the
+app is a fault; a program of the app (whose executable is under the `trees` folder of the store) must hold the relative value (`/$ORIGIN/.panpak-lib-<h>/...`,
+PANPAK-FORMAT.md section 7.1), not a path of the store. The relative value in a program of the host (the `sh` or `bash` that runs the script of a converted AppImage) is
+inert by construction (it names a folder that does not exist at the root) and is no fault. A fault ends the app's row with the pids and the executables. The unit tests of the rule are in
 `tests/apps/test_harness.py` (`LibraryPath`).
