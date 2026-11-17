@@ -2913,6 +2913,7 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         panpak_core::ViewStatus::Unusable(why) => {
             println!("NOTE isolated view: not available, {}", why.reason());
             println!("     to get it: {}", why.remedy());
+            println!("     without it every app keeps its data in a private folder that is its home (HOME), and reads your fonts, themes and icons from their real folders; with it the app has the same home path as everybody, with your fonts, themes and icons inside it");
         }
     }
     let iso = panpak_core::socket_isolation(panpak_core::detect_abi().ok(), None, view.usable());

@@ -80,7 +80,7 @@ def main():
 def run(lab, work):
     p = lab.install('')
     assert p.returncode == 0, p.stdout + p.stderr
-    userdata = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/data'
+    userdata = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/.local/share'
     rt = lab.runtime
     # A listening socket for the app to find, and a datagram one.
     srv = socket.socket(socket.AF_UNIX)

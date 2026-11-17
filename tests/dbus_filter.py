@@ -301,7 +301,7 @@ def fast_path(lab, sess):
     word are reused: the app, the proxy and the stub are all in the desktop's scope. A service (`app-...@<n>.service`) is not
     reused, because a portal older than 1.21 may not read services: the runtime makes its own scope, as from a terminal,
     and the portal still knows `panpak.<id>`."""
-    report_file = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/data/report.txt'
+    report_file = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/.local/share/report.txt'
     launcher = [*[f'{k}={v}' for k, v in lab.env.items()], str(lab.home / '.local/bin' / app_dirs.ID)]
     n = os.getpid()
     own = re.compile(rf'app-panpak\.{re.escape(app_dirs.ID)}-[0-9a-f]{{8}}\.scope')
@@ -381,7 +381,7 @@ def run_all(lab, sess, work):
     need('org.freedesktop.Notifications' not in rep['names'], f'the notification service is visible without the permission: {rep["names"]}')
     need(rep['inhibit'].startswith('ok') and rep['own_self'].startswith('ok'), 'base rules lost')
     print('without the permissions: notification refused, base rules kept: ok')
-    data = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/data'
+    data = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/.local/share'
     # --- 3b. the tray: only the watcher; no item name is owned (the icon is registered with the unique name)
     need(lab.install('[permissions]\ntray = true\n').returncode == 0, 'install failed')
     rep = report(lab)
@@ -426,7 +426,7 @@ def run_all(lab, sess, work):
         watcher.wait(timeout=60)
     finally:
         (data / 'watching').unlink(missing_ok=True)
-    changed = (lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/data/report.txt').read_text()
+    changed = (lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/.local/share/report.txt').read_text()
     need('setting_changed=' in changed and 'none' not in changed.split('setting_changed=')[1].splitlines()[0], f'the app did not see the theme change: {changed[-300:]}')
     print('theme change: the app sees SettingChanged through the proxy: ok')
     print('all D-Bus filter tests passed')

@@ -60,7 +60,7 @@ bundled = "auto"
 [apps.qbittorrent]
 kind = ["qt", "tray"]
 # qBittorrent asks for the legal notice at the first start: it is accepted in its configuration before that start.
-seed = { "config/qBittorrent/qBittorrent.conf" = "[LegalNotice]\nAccepted=true\n" }
+seed = { ".config/qBittorrent/qBittorrent.conf" = "[LegalNotice]\nAccepted=true\n" }
 recipe = '''
 [app]
 id = "org.qbittorrent.qBittorrent"

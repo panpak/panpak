@@ -317,7 +317,7 @@ class Lab:
         return subprocess.Popen([str(self.home / '.local/bin' / app_id), *map(str, args)], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, stdin=subprocess.DEVNULL, start_new_session=True)
 
     def report_path(self, app_id, mode):
-        return self.home / f'.local/share/panpak/userdata/{app_id}/data/probe-{mode}.json'
+        return self.home / f'.local/share/panpak/userdata/{app_id}/.local/share/probe-{mode}.json'
 
     def finish(self, p, app_id, mode, timeout=60):
         try:

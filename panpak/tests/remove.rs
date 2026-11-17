@@ -140,7 +140,7 @@ impl Env {
     }
     /// User data and cache with a file each, and the mark "in use".
     fn fake_data(&self, id: &str) {
-        for d in [self.userdata(id).join("data"), self.cache(id)] {
+        for d in [self.userdata(id).join(".local/share"), self.cache(id)] {
             fs::create_dir_all(&d).unwrap();
             fs::write(d.join("file"), "user data").unwrap();
         }
@@ -207,7 +207,7 @@ fn remove_takes_the_app_away_and_keeps_the_data_and_a_reinstall_works() {
     assert!(names(&e.store().join("removing")).is_empty());
     assert!(!e.home.join("run/panpak").join(A).exists(), "the shared /tmp is gone");
     // The data stays, and the output says where and how much.
-    assert!(e.userdata(A).join("data/file").exists() && e.cache(A).join("file").exists());
+    assert!(e.userdata(A).join(".local/share/file").exists() && e.cache(A).join("file").exists());
     assert!(t.contains(e.userdata(A).to_str().unwrap()) && t.contains("--purge-data"), "{t}");
     // The runtime stays.
     assert!(e.store().join("runtimes/1/panpak-stub").exists());
@@ -215,7 +215,7 @@ fn remove_takes_the_app_away_and_keeps_the_data_and_a_reinstall_works() {
     let again = e.install(A, "1", "a");
     assert_eq!(again, root);
     assert!(e.launcher(A).exists() && e.desktop(A).exists());
-    assert!(e.userdata(A).join("data/file").exists());
+    assert!(e.userdata(A).join(".local/share/file").exists());
     assert!(text(&cli(&e.home, &["list"])).contains(A));
 }
 
@@ -235,7 +235,7 @@ fn a_running_copy_stops_the_removal_and_nothing_is_touched() {
         assert!(!o.status.success() && t.contains("PANPAK-E2002") && t.contains("is open. Close it and try again"), "{t}");
     }
     assert!(e.launcher(A).exists() && e.desktop(A).exists() && e.store().join("apps").join(A).join("current").exists());
-    assert!(e.userdata(A).join("data/file").exists());
+    assert!(e.userdata(A).join(".local/share/file").exists());
     drop(lock);
     assert!(e.remove(&[A]).status.success());
 }
@@ -249,7 +249,7 @@ fn purge_asks_and_without_an_answer_deletes_nothing() {
     let o = e.remove(&["--purge-data", A]);
     let t = text(&o);
     assert!(!o.status.success() && t.contains("PANPAK-E5004"), "{t}");
-    assert!(e.launcher(A).exists() && e.userdata(A).join("data/file").exists() && e.cache(A).join("file").exists());
+    assert!(e.launcher(A).exists() && e.userdata(A).join(".local/share/file").exists() && e.cache(A).join("file").exists());
     // With --yes the data and the cache go, and the mark.
     let o = e.remove(&["--purge-data", "--yes", A]);
     assert!(o.status.success(), "{}", text(&o));
@@ -430,9 +430,9 @@ fn links_inside_the_data_are_removed_and_not_followed() {
     fs::create_dir_all(outside.join("deep")).unwrap();
     fs::write(outside.join("precious"), "keep").unwrap();
     fs::write(outside.join("deep/precious"), "keep").unwrap();
-    symlink(&outside, e.userdata(A).join("data/home")).unwrap();
+    symlink(&outside, e.userdata(A).join(".local/share/home")).unwrap();
     symlink(outside.join("precious"), e.cache(A).join("file-link")).unwrap();
-    symlink("/etc", e.userdata(A).join("config")).unwrap();
+    symlink("/etc", e.userdata(A).join(".config")).unwrap();
     let o = e.remove(&["--purge-data", "--yes", A]);
     assert!(o.status.success(), "{}", text(&o));
     intact(&outside);
@@ -636,7 +636,7 @@ fn ask_without_a_dialog_tool_removes_nothing_and_says_the_command() {
     let o = ask(&e, &tools, A);
     let t = text(&o);
     assert!(!o.status.success() && t.contains("PANPAK-E5004") && t.contains("remove "), "{t}");
-    assert!(e.launcher(A).exists() && e.desktop(A).exists() && e.userdata(A).join("data/file").exists());
+    assert!(e.launcher(A).exists() && e.desktop(A).exists() && e.userdata(A).join(".local/share/file").exists());
     // With only a notification tool, the explanation goes there.
     let tools = fake_tools(&e.home, &[("notify-send", 0)]);
     let o = ask(&e, &tools, A);
@@ -656,7 +656,7 @@ fn ask_with_the_answer_no_removes_nothing() {
     let o = ask(&e, &tools, A);
     assert!(o.status.success(), "{}", text(&o));
     assert!(e.launcher(A).exists() && e.desktop(A).exists() && e.store().join("apps").join(A).join("current").exists());
-    assert!(e.userdata(A).join("data/file").exists());
+    assert!(e.userdata(A).join(".local/share/file").exists());
     // The dialog tells in plain words what is removed and what stays; no command, no path, and no stray "?" (a new line is a new line).
     let q = fs::read_to_string(tools.join("zenity.args")).unwrap();
     assert!(q.contains("--question") && q.contains(&format!("Remove App {A}?")), "{q}");
@@ -676,7 +676,7 @@ fn ask_with_the_answer_yes_removes_the_app_keeps_the_data_and_notifies() {
     let o = ask(&e, &tools, A);
     assert!(o.status.success(), "{}", text(&o));
     assert!(!e.launcher(A).exists() && !e.desktop(A).exists() && !e.store().join("apps").join(A).exists());
-    assert!(e.userdata(A).join("data/file").exists() && e.cache(A).join("file").exists(), "the data stays");
+    assert!(e.userdata(A).join(".local/share/file").exists() && e.cache(A).join("file").exists(), "the data stays");
     let n = fs::read_to_string(tools.join("notify-send.args")).unwrap();
     assert!(n.contains(&format!("App {A} was removed. Your settings and data are kept.")), "{n}");
     // KDE gets kdialog first.

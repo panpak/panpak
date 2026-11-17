@@ -71,7 +71,7 @@ def main():
     p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
     need(p.returncode == 0, p.stdout + p.stderr)
     launcher = home / '.local/bin' / ID
-    ran = home / f'.local/share/panpak/userdata/{ID}/data/ran'
+    ran = home / f'.local/share/panpak/userdata/{ID}/.local/share/ran'
     lockfile = runtime / 'panpak' / ID / 'lock'
 
     # --- 1. a start during a slow removal

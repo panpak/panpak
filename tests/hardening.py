@@ -140,7 +140,7 @@ def main():
     p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
     need(p.returncode == 0, p.stdout + p.stderr)
     # The first start holds the app for a few seconds, to look at the receiver of the open channel.
-    result = home / f'.local/share/panpak/userdata/{ID}/data/result.json'
+    result = home / f'.local/share/panpak/userdata/{ID}/.local/share/result.json'
     held = subprocess.Popen([str(home / '.local/bin' / ID), '--hold'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     for _ in range(200):
         if result.exists() and result.stat().st_size:
@@ -200,7 +200,7 @@ def main():
     need(p.returncode == 0, p.stdout + p.stderr)
     p = run(home / '.local/bin' / ID2)
     need(p.returncode == 0, f'the app with devices failed ({p.returncode}): {p.stdout}{p.stderr}')
-    res2 = json.loads((home / f'.local/share/panpak/userdata/{ID2}/data/result.json').read_text())
+    res2 = json.loads((home / f'.local/share/panpak/userdata/{ID2}/.local/share/result.json').read_text())
     need(res2['netlink_uevent'] == 0, f'with `devices = true` the uevent socket is refused: errno {res2["netlink_uevent"]}')
     need(errno.errorcode.get(res2['netlink_generic']) == 'EPROTONOSUPPORT', 'with `devices = true` the generic netlink socket is open')
     need(errno.errorcode.get(res2['socket_vsock']) == 'EAFNOSUPPORT' and res2['netlink_route_ok'] is True, 'with `devices = true` another family changed')

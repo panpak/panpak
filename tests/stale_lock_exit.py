@@ -86,8 +86,8 @@ def main():
         print('SKIP: no isolated view here (bubblewrap cannot run), so the runtime does not stay to see the app end')
         return
     base = home / f'.local/share/panpak/userdata/{ID}'
-    lock, lock2 = base / 'config/lockfile', base / 'config/lockfile2'
-    data = base / 'data'
+    lock, lock2 = base / '.config/lockfile', base / '.config/lockfile2'
+    data = base / '.local/share'
     launcher = str(home / '.local/bin' / ID)
     token = [0]
 

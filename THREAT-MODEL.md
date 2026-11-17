@@ -103,27 +103,32 @@ with a HOME outside their work directory and never delete outside it
 
 ### 2.2 Private folders, user settings and home paths (tested)
 
-Each app has its own folders (spec §9.1), created with mode 0700 outside the store:
-`$XDG_DATA_HOME/panpak/userdata/<id>/{config,data,state,tmp}` and
-`$XDG_CACHE_HOME/panpak/<id>`. The stub points `XDG_CONFIG_HOME`,
-`XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, `TMPDIR` and
-`SQLITE_TMPDIR` at them, and these are the only writable places besides
-`/tmp` and the `rw` home paths of the manifest. `HOME` and `XDG_RUNTIME_DIR`
-do not change. The old `~/.local/share/<id>` is not touched and not writable.
+Each app has its own home (spec §9.1), created with mode 0700 outside the store:
+`$XDG_DATA_HOME/panpak/userdata/<id>/{.config,.local/share,.local/state}` and the cache
+`$XDG_CACHE_HOME/panpak/<id>`. In the isolated view the private home is mounted at the path of
+the real home and the cache as `~/.cache`; `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` name
+the folders there, and these are the only writable places besides `/tmp` and the `rw` home paths of the manifest. Without
+the view `HOME` is the private home. The old `~/.local/share/<id>` is not touched and not writable. What the app
+writes in its home is its own data: it cannot reach the real home, so a program it starts finds only that. The user's fonts,
+themes, icons and toolkit settings are mounted into it as overlays whose upper layer is in memory
+(§9.1): the app can change its copy and the user's folders never change. A file the app writes in its home may
+be a program (a script, a binary): the view does not stop it from being run (§3, W^X is a separate decision).
 `tests/app_dirs.py` runs an app in an isolated HOME and checks that:
 
-- writes through each XDG variable and `TMPDIR` land in the right folders;
-- a write to `~/.config/<anything>` or to the home is denied;
-- `~/.config/gtk-3.0` and the theme folders of `~/.local/share/icons` can be read and not written; `~/.local/share/icons/hicolor` (where the menu icons go) is not in the view;
-- `~/.config/gh` with a fake token file cannot be read, and `~/.config` cannot
-  be listed;
+- writes through each XDG variable and `TMPDIR` land in the right folders, and a file written anywhere in `~` lands in the private home;
+- nothing the app writes reaches the real home: `~/.config/<anything>` and `~/stray` are in the private home only;
+- `~/.config/gtk-3.0` and the theme folders of `~/.local/share/icons` can be read and written (the app's copy), and the real files are unchanged; `gtk-3.0/bookmarks` is empty and `~/.local/share/icons/hicolor` (where the menu icons go) is not in the view;
+- `~/.config/gh` with a fake token file cannot be read, and `~/.config` lists only what is in the private home;
 - missing optional paths do not stop the start;
 - `panpak data clear` deletes only the two roots, follows no link and refuses a
   root that is a link.
 
-The user's settings the app may read are listed in spec §9.1. They are
-read-only and only if they exist: never the whole config or data folder.
-The theme files can reveal which software the user runs; they hold no secret.
+The overlays are the user's folders as the lower layer; a program of the view cannot write to the lower layer, and the
+kernel does not copy a file into the private home that the app did not write (copy-up goes to the upper layer in
+memory). Two limits: the memory of the upper layer is not capped (an app that writes large files into
+its copy of a theme folder uses memory until it ends), and a file the user changes while a running app has it open
+may be seen half changed (the kernel calls this undefined for overlays, and it is the same for any program that reads
+a file that is being written).
 
 `permissions.home_paths` (spec §3.1.2) is the last resort for apps that insist on
 a fixed place in the home folder. The manifest validation refuses broad

@@ -84,7 +84,7 @@ def main():
     # The user's own LD_PRELOAD in the environment is not something the table can set or the app gets from it.
     p = run(home / '.local/bin' / ID, e={**env, 'LD_PRELOAD': ''})
     need(p.returncode == 0, f'the app failed ({p.returncode}): {p.stdout}{p.stderr}')
-    res = json.loads((home / f'.local/share/panpak/userdata/{ID}/data/result.json').read_text())
+    res = json.loads((home / f'.local/share/panpak/userdata/{ID}/.local/share/result.json').read_text())
     e, root = res['env'], res['root']
     need(root.startswith(str(home)) and '/trees/' in root, f'the tree is where the store keeps it: {root}')
     need(e['GSETTINGS_SCHEMA_DIR'] == f'{root}/share/glib-2.0/schemas', f"GSETTINGS_SCHEMA_DIR: {e['GSETTINGS_SCHEMA_DIR']}")

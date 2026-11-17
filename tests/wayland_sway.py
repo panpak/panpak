@@ -130,7 +130,7 @@ def main():
         p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
         need(p.returncode == 0, p.stdout + p.stderr)
         launcher = home / '.local/bin' / ID
-        result = home / f'.local/share/panpak/userdata/{ID}/data/globals.json'
+        result = home / f'.local/share/panpak/userdata/{ID}/.local/share/globals.json'
         wenv = {'WAYLAND_DISPLAY': sock.name}
 
         held = subprocess.Popen([str(launcher), '--hold'], env={**env, **wenv}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

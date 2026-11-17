@@ -858,6 +858,13 @@ fn decide_net(has_v4: bool, wants_net: bool, allow_unfiltered: bool) -> NetDecis
     }
 }
 
+/// The view of an app that asks for no network has a network namespace of its own with only the loopback interface (see
+/// `ViewPlan::no_network`). Nothing in it reaches the host or another app, so the Landlock filter of TCP ports is not
+/// applied there: the app may use the loopback as it likes (a local server on a port it picks, as OpenShot does).
+fn loopback_only_view(in_view: bool, any_network: bool) -> bool {
+    in_view && !any_network
+}
+
 /// Grant for `panpak open`: exact file (always RW if write/rename)
 /// plus, only with rename, create/rename/remove rights in the
 /// parent folder WITHOUT reading/listing neighbors.
@@ -877,6 +884,9 @@ struct Access {
     /// Path sockets every app may reach without listing them (Wayland, journal, resolver, audio with
     /// `audio = true`), only the ones that exist. Landlock V9 gets a `ResolveUnix` rule for each.
     sockets: Vec<PathBuf>,
+    /// The environment of the user that the view shows as overlays at the real paths (see `panpak_core::EnvLayers`). Only
+    /// with the private home of the view; elsewhere the same files are in `ro`.
+    env: panpak_core::EnvLayers,
     /// The sandbox runs inside the isolated view, which hides the sockets the manifest does not list.
     in_view: bool,
     /// The home folder, listable (`ReadDir`). Only set when the isolated view is active: there the
@@ -904,13 +914,24 @@ fn reject_links(home: &Path, rel: &str) -> Result<()> {
     Ok(())
 }
 
+/// The home folder of the user as the isolated view shows it: canonical, a folder, not `/`. With it the view mounts the
+/// private home of the app there; without it the view has no home to give.
+fn view_home() -> Option<PathBuf> {
+    dirs::home_dir().and_then(|h| fs::canonicalize(h).ok()).filter(|h| h.is_dir() && h != Path::new("/"))
+}
+
 /// Resolve what the sandbox opens: the app roots, the readable user settings and the
 /// `home_paths` of the manifest. An `rw` home path is created if missing and must be a
-/// folder. Runs before Landlock is applied.
-fn access_for(man: &panpak_core::Manifest, dirs: &panpak_core::AppDirs) -> Result<Access> {
+/// folder. Runs before Landlock is applied. `layered`: the view gives the app a private home with the environment of
+/// the user as overlays, so that environment is not a read rule.
+fn access_for(man: &panpak_core::Manifest, dirs: &panpak_core::AppDirs, layered: bool) -> Result<Access> {
     let mut access = Access::default();
     access.rw.extend(dirs.roots().iter().map(|p| p.to_path_buf()));
-    access.ro.extend(panpak_core::readonly_user_paths());
+    if layered {
+        access.env = panpak_core::env_layers();
+    } else {
+        access.ro.extend(panpak_core::readonly_user_paths());
+    }
     access.ro.extend(panpak_core::system_cache_paths());
     let paths = man.permissions.as_ref().and_then(|p| p.home_paths.as_deref()).unwrap_or_default();
     if paths.is_empty() {
@@ -1101,13 +1122,18 @@ fn build_ruleset(
     let net_wanted = man.permissions.as_ref().and_then(|p| p.network).unwrap_or(false);
     let allow_tcp = man.permissions.as_ref().and_then(|p| p.network_allow_tcp.clone()).unwrap_or_default();
     let bind_tcp = man.permissions.as_ref().and_then(|p| p.network_bind_tcp.clone()).unwrap_or_default();
-    let handle_net = match decide_net(new_abi, net_wanted || !allow_tcp.is_empty() || !bind_tcp.is_empty(), allow_unfiltered) {
+    let any_net = net_wanted || !allow_tcp.is_empty() || !bind_tcp.is_empty();
+    let handle_net = if loopback_only_view(access.in_view, any_net) {
+        false
+    } else {
+        match decide_net(new_abi, any_net, allow_unfiltered) {
         NetDecision::Enforce => true,
         NetDecision::UnfilteredWarn => {
             eprintln!("WARNING panpak: network CANNOT be filtered on this kernel ({abi:?} < V4); explicit execution with --network-unfiltered");
             false
         }
         NetDecision::Refuse(msg) => bail_code!(ErrorCode::E3000, "{msg} (detected ABI: {abi:?})"),
+        }
     };
     let socks = man.permissions.as_ref().and_then(|p| p.sockets_allow.clone()).unwrap_or_default();
     if !socks.is_empty() {
@@ -1989,16 +2015,30 @@ fn real_main() -> Result<()> {
 
     stage("libraries resolved");
     // Private folders (0700), created before the sandbox closes the rest of the disk.
-    let app_dirs = panpak_core::app_dirs(&man.app.id)?;
-    app_dirs.create()?;
-    if let Err(e) = write_fonts_conf(&app_dirs) {
-        eprintln!("panpak: the fonts.conf of the app was not written: {}", panpak_core::err_text(&e));
+    let host_dirs = panpak_core::app_dirs(&man.app.id)?;
+    host_dirs.create()?;
+    // With the view the private home is mounted at the real home and the app sees its folders there; the environment of
+    // the user is mounted into it. Without the view (or without a home folder to mount at) the old rules apply: the
+    // environment is read from the real folders, found through the search paths and a generated `fonts.conf`.
+    // The socket probe (a measurement) runs the app without the view, so it gets the folders as the host has them.
+    let probing = std::env::var_os("PANPAK_SOCKET_PROBE").is_some_and(|v| !v.is_empty());
+    let view_home = if view_usable && !probing { view_home() } else { None };
+    let layered = view_home.is_some();
+    if !layered {
+        if let Err(e) = write_fonts_conf(&host_dirs) {
+            eprintln!("panpak: the fonts.conf of the app was not written: {}", panpak_core::err_text(&e));
+        }
     }
-    let mut access = access_for(&man, &app_dirs)?;
+    // The folders as the app sees them.
+    let app_dirs = match &view_home {
+        Some(h) => host_dirs.seen_at(h),
+        None => host_dirs.clone(),
+    };
+    let mut access = access_for(&man, &host_dirs, layered)?;
     let granted = xdg_grants(&man, &store, installed_mode, &mut access)?;
     let _ = writable_roots.set(access.rw.clone());
     if !granted.is_empty() || man.permissions.as_ref().and_then(|p| p.xdg_dirs.as_ref()).is_some_and(|d| !d.is_empty()) {
-        if let Err(e) = write_user_dirs(&app_dirs, &granted) {
+        if let Err(e) = write_user_dirs(&host_dirs, &granted) {
             eprintln!("panpak: the user-dirs.dirs of the app was not written: {}", panpak_core::err_text(&e));
         }
     }
@@ -2012,7 +2052,7 @@ fn real_main() -> Result<()> {
     .filter(|p| p.exists())
     .collect();
     let (config_dirs, data_dirs) =
-        panpak_core::xdg_search_dirs(std::env::var("XDG_CONFIG_DIRS").ok(), std::env::var("XDG_DATA_DIRS").ok())?;
+        panpak_core::xdg_search_dirs(std::env::var("XDG_CONFIG_DIRS").ok(), std::env::var("XDG_DATA_DIRS").ok(), !layered)?;
     // Socket probe (measurement only, off unless asked): the log is opened before Landlock closes the disk.
     let probe_log = match std::env::var_os("PANPAK_SOCKET_PROBE").filter(|v| !v.is_empty()) {
         #[cfg(target_arch = "x86_64")]
@@ -2063,7 +2103,11 @@ fn real_main() -> Result<()> {
         }
         _ => Command::new(tree.join(&man.app.entry)),
     };
-    // HOME and XDG_RUNTIME_DIR stay as they are. The app writes only to its private folders.
+    // XDG_RUNTIME_DIR stays as it is. In the view HOME is the real path and the app writes in its private home there;
+    // without the view the private home is the home of the app.
+    if !view_usable {
+        cmd.env("HOME", &host_dirs.root);
+    }
     cmd.env("XDG_CONFIG_HOME", &app_dirs.config)
         .env("XDG_DATA_HOME", &app_dirs.data)
         .env("XDG_STATE_HOME", &app_dirs.state)
@@ -2110,7 +2154,7 @@ fn real_main() -> Result<()> {
     if view_usable {
         // Only with the view: its home folder is an empty tmpfs, so listing it shows nothing else.
         // Only a convenience (the home folder shows the granted folders when listed): without it the listing is empty.
-        access.home_list = dirs::home_dir().and_then(|h| fs::canonicalize(h).ok()).filter(|h| h.is_dir() && h != Path::new("/"));
+        access.home_list = view_home.clone();
         let mut store_paths = plan.ld_path.clone();
         store_paths.extend(plan.loader.clone());
         store_paths.push(PathBuf::from(cmd.get_program()));
@@ -2229,7 +2273,17 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     // need: the tree, the library folders and the loader of the store, the stub, the private
     // folders and `rw` home paths, the settings Landlock allows to read, the files of `panpak open`
     // and, with X11, the Xauthority file. Paths outside the home folder are mounted too, unless they are in the system folders.
-    let home = dirs::home_dir().and_then(|h| fs::canonicalize(h).ok()).filter(|h| h.is_dir() && h != Path::new("/"));
+    let home = view_home();
+    // The private home of the app (its folders on the host), mounted at the real home. Without a home folder to mount
+    // at, or without folders of the app, the view is the old one.
+    let app_dirs = match panpak_core::app_dirs(&ctx.man.app.id) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            eprintln!("panpak: WARNING: app folders unavailable ({}); no shared /tmp, no stale lock search", panpak_core::err_text(&e));
+            None
+        }
+    };
+    let private = home.as_ref().zip(app_dirs.as_ref()).map(|(h, d)| (h.clone(), d.clone()));
     let in_home = |p: &Path| home.as_ref().is_some_and(|h| p.starts_with(h));
     let real = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let stub = std::env::current_exe().context("path of the stub")?;
@@ -2244,11 +2298,15 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
             .filter(|p| p.is_file());
         ro_wanted.extend(xauthority.clone());
     }
-    let mut binds: Vec<view::Bind> = ctx.access.rw.iter().map(|p| view::Bind { path: real(p), rw: true }).collect();
+    // The two roots of the app are the home and its cache in the view (`PrivateHome`), not binds at their own paths. A
+    // folder that holds the home is never mounted: it would show the real home over the private one.
+    let is_root = |p: &Path| private.as_ref().is_some_and(|(_, d)| d.roots().contains(&p));
+    let covers_home = |p: &Path| private.as_ref().is_some_and(|(h, _)| h.starts_with(p));
+    let mut binds: Vec<view::Bind> = ctx.access.rw.iter().filter(|p| !is_root(p)).map(|p| view::Bind { path: real(p), rw: true }).filter(|b| !covers_home(&b.path)).collect();
     if let Some((path, grant)) = ctx.open {
         // The file is writable in the view only if the grant lets the app write it.
         if grant.rename {
-            binds.extend(view::existing_parent(path).map(|p| view::Bind { path: real(&p), rw: true }));
+            binds.extend(view::existing_parent(path).map(|p| view::Bind { path: real(&p), rw: true }).filter(|b| !covers_home(&b.path)));
         } else if grant.write {
             binds.push(view::Bind { path: real(path), rw: true });
         } else {
@@ -2288,13 +2346,6 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         }
     }
     // /tmp and /dev/shm are shared by the copies of this app that run together, and by no other app.
-    let app_dirs = match panpak_core::app_dirs(&ctx.man.app.id) {
-        Ok(d) => Some(d),
-        Err(e) => {
-            eprintln!("panpak: WARNING: app folders unavailable ({}); no shared /tmp, no stale lock search", panpak_core::err_text(&e));
-            None
-        }
-    };
     let shared = ctx.runtime_dir.zip(app_dirs.as_ref()).and_then(|(rt, dirs)| match sharedtmp::prepare(&rt.join("panpak").join(&ctx.man.app.id), &panpak_core::stalelocks::in_use_marker(dirs), ctx.early_lock.as_ref().and_then(|f| f.try_clone().ok())) {
         Ok(s) => Some(s),
         Err(e) => {
@@ -2325,14 +2376,18 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         ro_run_dirs: view::unique(ro_run_dirs),
         x11: x11_sockets,
         home,
+        private_home: private.as_ref().map(|(_, d)| view::PrivateHome { data: d.root.clone(), cache: d.cache.clone() }),
+        layers: layers_of(&ctx.access.env),
         binds,
         x11_access: x11,
         no_network: !panpak_core::network_requested(ctx.man.permissions.as_ref()),
         stub,
         fd: -1,
     };
-    // Landlock inside the view also lets the app write in its runtime folder (a tmpfs of its own).
-    let mut job_rw = ctx.access.rw.clone();
+    // Landlock inside the view also lets the app write in its runtime folder (a tmpfs of its own). The two roots of the
+    // app are the home (with the cache in it) there.
+    let mut job_rw: Vec<PathBuf> = ctx.access.rw.iter().filter(|p| !is_root(p)).cloned().collect();
+    job_rw.extend(private.as_ref().map(|(h, _)| h.clone()));
     job_rw.extend(ctx.runtime_dir.map(Path::to_path_buf));
     // With X11 access the app reads the Xauthority file, which is put back into the view above.
     let mut job_ro = ctx.access.ro.clone();
@@ -2399,6 +2454,18 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
                 }
             }
         })? {},
+    }
+}
+
+/// The mounts of the layers of the user's environment in the view. The folder of the user is the lower layer and is
+/// found by its real path (a link in the way is resolved); the place in the view is the path the user knows. Single
+/// files are read-only mounts, and the files that are private to the user are empty in the view.
+fn layers_of(env: &panpak_core::EnvLayers) -> view::Layers {
+    let canon = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    view::Layers {
+        overlays: env.overlays.iter().map(|p| view::Mount::ro(canon(p), p.clone())).collect(),
+        files: env.files.iter().map(|p| view::Mount::ro(canon(p), p.clone())).collect(),
+        hidden: env.hidden.clone(),
     }
 }
 
@@ -2531,7 +2598,7 @@ fn run_inner(fd: i32) -> Result<()> {
         w.wait(&mut job.env_set, &mut job.env_remove);
         stage("inner: bus layer ready");
     }
-    let access = Access { rw: job.rw.clone(), ro: job.ro.clone(), sockets: job.sockets.clone(), in_view: true, home_list: job.home_list.clone() };
+    let access = Access { rw: job.rw.clone(), ro: job.ro.clone(), sockets: job.sockets.clone(), in_view: true, home_list: job.home_list.clone(), ..Access::default() };
     let open = job.open.as_ref().map(|o| (o.path.as_path(), OpenGrant { write: o.write, rename: o.rename }));
     sandbox(&job.tree, &job.manifest, &access, job.allow_unfiltered, open)?;
     stage("inner: Landlock applied");
@@ -2815,6 +2882,17 @@ mod tests {
         drop(listener2);
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn the_tcp_filter_is_left_to_the_network_namespace_of_a_view_without_network() {
+        // In the view an app that asks for no network has a network namespace with only `lo`: the filter of ports is not applied.
+        assert!(loopback_only_view(true, false));
+        // With any network asked for, the filter is the allow-list.
+        assert!(!loopback_only_view(true, true));
+        // Without the view (no bubblewrap) the filter is the only barrier: it stays.
+        assert!(!loopback_only_view(false, false));
+        assert!(!loopback_only_view(false, true));
     }
 
     #[test]

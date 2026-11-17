@@ -332,8 +332,8 @@ not created.
 (whenever the manifest has `xdg_dirs`) the file has a first line with `X-Panpak-Generated`, the granted folders at
 their real path, and every other key at `$HOME/`, which GLib, Qt and `xdg-user-dir` read as "not
 available". A file without that line is the user's and is left alone. In the isolated view
-(§9.2) the home folder can be listed (Landlock `ReadDir` on it) and holds only the granted
-folders and the parents of the private folders; without the view the listing right is never given.
+(§9.2) the home folder is the private home of the app: it holds the app's own files, the empty mount points of what is
+mounted into it, and the granted folders; without the view the listing right is never given.
 
 **`desktop.schemes`.** URL schemes the app registers. Each is 1 to 32 bytes, starts with a
 lowercase letter and has only lowercase letters, digits, `+`, `.` and `-`. These are refused:
@@ -1031,45 +1031,59 @@ or a file in its place is an error):
 
 | Folder | Path |
 |---|---|
-| persistent root | `$XDG_DATA_HOME/panpak/userdata/<id>` (default `~/.local/share/...`) |
-| config, data, state, tmp | `config`, `data`, `state`, `tmp` below the persistent root |
-| cache | `$XDG_CACHE_HOME/panpak/<id>` (default `~/.cache/...`) |
+| private home | `$XDG_DATA_HOME/panpak/userdata/<id>` (default `~/.local/share/...`): the only folder of the data of the app |
+| config, data, state | `.config`, `.local/share`, `.local/state` below the private home |
+| cache | `$XDG_CACHE_HOME/panpak/<id>` (default `~/.cache/...`); `tmp` below it is for large temporary files |
 
-They are not inside the store. The runtime sets, for the app:
+They are not inside the store. The private home is the home of the app. With the isolated view (§9.2) it is mounted at the
+path of the real home folder, so that `$HOME` is the same path as for every other program and the app writes where it
+expects to: `~/.config`, `~/.local/share`, `~/.local/state` and any other file or folder it makes in its home. The cache is
+mounted as `~/.cache`. Without the view (a system where bubblewrap cannot run) `HOME` is the private home itself, the
+cache is `$XDG_CACHE_HOME/panpak/<id>`, and the rules of the earlier format apply to the environment of the user (below,
+"Without the view"). The runtime sets, for the app:
 
 | Variable | Value |
 |---|---|
-| `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` | `config`, `data`, `state` |
-| `XDG_CACHE_HOME` | the cache folder |
-| `TMPDIR`, `SQLITE_TMPDIR` | `tmp`; `/tmp` inside the isolated view (§9.2); the placeholder `${TMPDIR}` in `[launch]` always means the `tmp` folder |
-| `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS` | the existing value, or the XDG default (`/etc/xdg`; `/usr/local/share:/usr/share`), then the user's real config or data folder |
+| `HOME` | unchanged in the view; the private home without it |
+| `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` | `~/.config`, `~/.local/share`, `~/.local/state` (the folders of the private home) |
+| `XDG_CACHE_HOME` | `~/.cache` in the view (the cache folder); the cache folder without it |
+| `TMPDIR`, `SQLITE_TMPDIR` | `/tmp` inside the view (§9.2); the folder `tmp` of the cache without it; the placeholder `${TMPDIR}` in `[launch]` means the same |
+| `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS` | the existing value, or the XDG default (`/etc/xdg`; `/usr/local/share:/usr/share`); without the view then the user's real config or data folder |
 | `GTK_THEME` | see below |
 | `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `SSH_AGENT_PID` | removed |
 | `DBUS_SESSION_BUS_ADDRESS`, `DBUS_SYSTEM_BUS_ADDRESS` | `disabled:`, an address no D-Bus library can use, unless `sockets_allow` lists that bus (a socket named `system_bus_socket` is the system bus, any other D-Bus socket the session bus); then unchanged |
 | from `[launch]` | `env` values, and `args` before the user's arguments |
 
-`HOME` and `XDG_RUNTIME_DIR` are not changed. Hiding the agent and bus variables is hygiene, not a barrier: below Landlock V9 an app can still open `$XDG_RUNTIME_DIR/bus` or an agent socket by path. Libdbus, GDBus and sd-bus do not look for the bus when the address is `disabled:` (tested with a private bus). The app can write only in the two roots,
-the `rw` home paths and `/tmp` (to be narrowed later). Landlock grants these
-read-only rights, for the entries that exist, and nothing else of the user's real
-folders:
+`XDG_RUNTIME_DIR` is not changed. Hiding the agent and bus variables is hygiene, not a barrier: below Landlock V9 an app can still open `$XDG_RUNTIME_DIR/bus` or an agent socket by path. Libdbus, GDBus and sd-bus do not look for the bus when the address is `disabled:` (tested with a private bus). The app can write only in the private home (with the cache),
+the `rw` home paths and `/tmp`. Everything the isolated view mounts into the home (a granted folder, the tree of the
+app, the environment below) needs a mount point, which `bubblewrap` makes in the private home as an empty folder or file;
+those stay when the grant ends and are not data of the app. A folder of the user that is not granted is never there. There
+is no migration from the folders of the earlier layout (`config`, `data`, `state`, `tmp` below the persistent root); they
+are not read.
 
-- in the config folder: `fontconfig`, `gtk-3.0`, `gtk-4.0`, `kdeglobals`,
-  `user-dirs.dirs`, `mimeapps.list`, `qt5ct`, `qt6ct`, `Trolltech.conf`;
-- in the data folder: `fonts`, `themes`, `mime`, and each theme folder of `icons` except `hicolor`;
-- in the home folder: `.fonts`, and each theme folder of `.icons` except `hicolor`.
+*The environment of the user.* The app sees the same fonts, themes, icons, cursors and toolkit settings as every other
+program, at the real paths, inside its home. In the view each of these folders is mounted whole as an overlay: the
+folder of the user is the lower layer, and writes go to a layer that lives only in memory (`bwrap --tmp-overlay`) and is
+gone when the last process of the view ends. The app can change its own copy (a GTK settings dialog), the folder of the
+user never changes, and a change the user makes meanwhile (another theme) shows in a running app. For the entries that
+exist:
 
-The user's `hicolor` icon theme (`~/.local/share/icons/hicolor`, `~/.icons/hicolor`) is not readable by the app. It is the folder where
-`install` puts the menu icons of the apps (§3.1.3), which the app has no use for, and it has no `icon-theme.cache`, so Qt looks up each icon
-name file by file in every size folder: 40,247 failed `access()` calls and about 100 ms more before the window of QOwnNotes appeared (470
-calls and no delay with the folder out of the view, and also with a user `hicolor` that has an `index.theme` and a cache). A user theme that is
-not in use costs nothing and stays readable, as do loose files of no theme: they are not mounted (only theme folders are).
+- `~/.config`: `fontconfig`, `gtk-3.0`, `gtk-4.0`, `qt5ct`, `qt6ct` (overlays); `kdeglobals` and `Trolltech.conf` (files, read-only);
+- `~/.local/share`: `fonts`, `themes`, `mime`, and each theme folder of `icons` except `hicolor` (overlays);
+- `~`: `.fonts`, and each theme folder of `.icons` except `hicolor` (overlays).
 
-*Fonts.* Fontconfig reads user fonts only from `$XDG_DATA_HOME/fonts` and the
-configuration in `$XDG_CONFIG_HOME/fontconfig`, which are private now. At every start the runtime
-writes `$XDG_CONFIG_HOME/fontconfig/fonts.conf` in the private folder. It includes (with
-`ignore_missing`) the user's real `fonts.conf` and `conf.d`, and adds as `<dir>` the real
-font folder and `~/.fonts`. The file carries the marker `X-Panpak-Generated`; a file
-without the marker is the user's and the runtime does not touch it.
+In the overlays, `gtk-3.0/bookmarks`, `gtk-3.0/servers` and `gtk-4.0/bookmarks` are empty files (they list what the user has
+been doing), and the user's `hicolor` icon theme (`~/.local/share/icons/hicolor`, `~/.icons/hicolor`) is not in the view, which is why the icon folders are mounted theme by theme. It is the folder where `install` puts the menu icons of the apps (§3.1.3), which the app has no use for, and it has no
+`icon-theme.cache`, so Qt looks up each icon name file by file in every size folder: 40,247 failed `access()` calls and
+about 100 ms more before the window of QOwnNotes appeared; mounting the whole `icons` folder with an empty `hicolor` was measured too and cost 170 ms. The list of recent files is the app's own, in its private
+home; the file dialog of the portal shows the real one. The user's `mimeapps.list` and `user-dirs.dirs` are not mounted:
+the runtime writes the ones of the app (the opener, the granted folders) into the private config folder.
+
+*Without the view.* `HOME` is the private home, the environment of the user is read from the real folders (Landlock
+read-only rules for the same entries, and `hicolor` is not readable), found through `XDG_CONFIG_DIRS` and `XDG_DATA_DIRS`,
+and fonts are found through a `fonts.conf` that the runtime writes at every start into
+`$XDG_CONFIG_HOME/fontconfig/fonts.conf` (it includes, with `ignore_missing`, the real `fonts.conf` and `conf.d` of the user, and adds as `<dir>` the real
+font folder and `~/.fonts`; it carries the marker `X-Panpak-Generated`, and a file without the marker is the user's). `panpak doctor` says so.
 
 *Dark theme.* GTK3 reads the dark preference from dconf, which the app cannot reach
 with a private config folder. If `GTK_THEME` is not set and `gsettings` is at `/usr/bin/gsettings` or `/bin/gsettings` (never searched in `PATH`),
@@ -1097,9 +1111,9 @@ ssh-agent, audio servers) with independent layers, and uses every layer the mach
    `/mnt`, `/media`, `/root`, `/boot`, `/snap`, nor the part of `/nix` and `/gnu` that is not the store, because a
    folder of the host can hold a socket that a Landlock below V9 does not stop the app from using. A path
    that the runtime must give to the app (a granted folder, an opened file) is mounted at its own place wherever it is. `/dev` is a new
-   minimal one (the nodes of §9, a devpts of its own, and the GPU folder `dri` of the host); a new `/proc`; a new tmpfs for `/run`; `/tmp` and `/dev/shm` as in §9.4, or a new tmpfs for `/tmp` when the runtime folder is not usable; an empty tmpfs on `$HOME` (read-only once the
-   binds are made) where only these are put back: the private folders of §9.1 and the `home_paths` as declared,
-   the read-only settings listed in §9.1 that exist, the Xauthority file with `x11 = true`, a file opened with
+   minimal one (the nodes of §9, a devpts of its own, and the GPU folder `dri` of the host); a new `/proc`; a new tmpfs for `/run`; `/tmp` and `/dev/shm` as in §9.4, or a new tmpfs for `/tmp` when the runtime folder is not usable; the private home of the app (§9.1) mounted at `$HOME` (writable),
+   with the cache of the app as `~/.cache`, the `home_paths` as declared, the environment of the user listed in §9.1 as overlays
+   with an upper layer in memory, the Xauthority file with `x11 = true`, a file opened with
    `panpak open` as granted, and from the store the tree, the library folder `farms/<root>`, the loader and
    the stub (read-only); a new tmpfs for `$XDG_RUNTIME_DIR`
    with only the sockets of the policy below; the folder in `/run` that holds the target of `/etc/resolv.conf` read-only (name resolution);
@@ -1193,8 +1207,8 @@ no lock file. The cost is paid at exit (0.4 to 3.7 ms on the 15 test apps), not 
 `SingletonLock` to `<host>-<pid>` (Chromium and Electron; the links `SingletonSocket` and `SingletonCookie`
 in the same folder go too), a link `lock` to `<ip>:+<pid>` (Firefox), and a regular file of at most 512 bytes
 whose name contains `lock` and whose lines are a process id, an application name and a host name (Qt
-`QLockFile`, for example `lockfile` or `*.lock`). Only the private folders of the app are searched (`config`,
-`data`, `state` and the cache folder), to a depth of 3 below each, without entering the usual cache folders
+`QLockFile`, for example `lockfile` or `*.lock`). Only the private folders of the app are searched (`.config`,
+`.local/share`, `.local/state` of the private home and the cache folder), to a depth of 3 below each, without entering the usual cache folders
 (`Cache`, `Code Cache`, `GPUCache`, `node_modules` and similar). Never `xdg_dirs`, `home_paths` or documents. Links are not followed: a
 link is removed itself and never its target, and every step is relative to the descriptor of the folder.
 `panpak data unlock <id>` does the same by hand and refuses while a copy is alive; `panpak doctor` points to it

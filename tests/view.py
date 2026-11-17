@@ -76,7 +76,8 @@ if fake:
     out['sock_outside_run'] = conn(fake[0])
 disp = os.environ.get('DISPLAY', '')
 out['sock_x11'] = conn('/tmp/.X11-unix/X' + disp[1:].split('.')[0]) if disp.startswith(':') else 'nodisplay'
-home = os.path.expanduser('~')
+# The real home of the user: in the view it is HOME; without the view HOME is the private home of the app.
+home = os.environ.get('PANPAK_TEST_REAL_HOME') or os.path.expanduser('~')
 out['sock_ssh_cm'] = conn(home + '/.ssh/cm-test')
 out['sock_gpg_home'] = conn(home + '/.gnupg/S.gpg-agent')
 out['home_ssh_dir'] = 'present' if os.path.exists(home + '/.ssh') else 'absent'
@@ -194,6 +195,16 @@ try:
 except OSError as e:
     out['read_secret'] = f'err{e.errno}'
 out['no_new_privs'] = [l.split()[1] for l in open('/proc/self/status') if l.startswith('NoNewPrivs')][0]
+
+# A server on the loopback that the app starts and uses itself, on a port it picks (OpenShot does this).
+try:
+    _l = socket.socket()
+    _l.bind(('127.0.0.1', 0))
+    _l.listen(1)
+    socket.create_connection(_l.getsockname(), 2).close()
+    out['tcp_self'] = 'ok'
+except OSError as e:
+    out['tcp_self'] = f'err{e.errno}'
 
 # Name resolution.
 try:
@@ -313,7 +324,7 @@ def masked(lab, *cmd):
 
 
 def run_report(lab, launcher_args, mask):
-    report = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/data/report.txt'
+    report = lab.home / f'.local/share/panpak/userdata/{app_dirs.ID}/.local/share/report.txt'
     report.unlink(missing_ok=True)
     launcher = str(lab.home / '.local/bin' / app_dirs.ID)
     if mask:
@@ -465,7 +476,7 @@ def main():
                     home_xauthority='absent', store_packages='absent', store_blobs='absent', store_apps='absent',
                     store_abi_cache='absent', store_userdata_org_other_app='absent', store_trees='present',
                     store_farms='present', store_runtime='present', read_gtk='ok', read_font='ok', read_icon='ok', read_hicolor='err2',
-                    read_mimeapps='ok', read_notes='err2', read_docs_ro='err2', write_gtk='err30', write_stray='err30',
+                    read_mimeapps='ok', read_notes='err2', read_docs_ro='err2', write_gtk='ok', write_stray='ok',
                     sock_bus='absent', sock_systemd_private='absent', sock_gpg_agent='absent', sock_gpg_agent_ssh='absent',
                     sock_ssh_agent='absent', sock_system_bus_fake='absent', sock_system_bus='absent',
                     sock_pipewire='absent', sock_pulse='absent', sock_wayland='ok', sock_journal='ok', sock_journal_devlog='ok', sock_journal_sendto='ok',
@@ -490,6 +501,8 @@ def main():
             time.sleep(0.3)
             assert net_got == [], f'an app with no network reached the host: {net_got}'
             assert rep['tcp_loopback'] != 'ok'
+            # The view has a network of its own with only `lo`, so Landlock does not filter TCP there: the app may serve itself.
+            assert rep['tcp_self'] == 'ok', rep['tcp_self']
             assert int(rep['procs']) < 12, f'the app sees {rep["procs"]} processes'
             assert rep['resolv_conf'] == 'ok'
             check(rep, read_secret='err2', no_new_privs='1')
@@ -513,6 +526,7 @@ def main():
         time.sleep(0.3)
         assert net_got == ['udp'], f'without the view: {net_got}'
         assert rep['tcp_loopback'] != 'ok'
+        assert rep['tcp_self'] != 'ok', 'without the view the TCP filter of Landlock stays on'
         print('without the view: TCP is refused and UDP gets through (known limit, THREAT-MODEL.md)')
         check(rep, tmp_marker='visible', sid=str(os.getsid(0)))
         # Control: without the view the socket in /var/tmp is reachable, except where Landlock V9 closes path sockets.
@@ -546,7 +560,7 @@ def main():
         if view_here:
             _, rep = run_report(lab, [], mask=False)
             check(rep, read_notes='ok', write_notes='ok', read_docs_ro='ok', write_docs_ro='err30', sock_ssh_cm='absent',
-                  home_ssh_dir='absent', write_stray='err30')
+                  home_ssh_dir='absent', write_stray='ok')
             assert (h / 'Notes/n.txt').read_text() == 'nx', 'the write in Notes did not reach the real folder'
             assert (h / 'Docs/ro.txt').read_text() == 'r'
             print('home paths (rw and ro) in the view: ok')
@@ -582,7 +596,7 @@ def main():
         doc = h / 'note.doc'
         doc.write_text('hello\n')
         for flag, want in (([], 'err'), (['--write'], 'ok')):
-            report = h / f'.local/share/panpak/userdata/{app_dirs.ID}/data/report.txt'
+            report = h / f'.local/share/panpak/userdata/{app_dirs.ID}/.local/share/report.txt'
             report.unlink(missing_ok=True)
             q = lab.cli('open', app_dirs.ID, str(doc), *flag, check=False)
             assert q.returncode == 0, q.stdout + q.stderr
@@ -606,8 +620,11 @@ def main():
         assert 'music=Music' in pin and 'documents=Documents' in pin, pin
         if view_here:
             _, rep = run_report(lab, [], mask=False)
-            check(rep, home_entries='.cache,.config,.local,Documents,Music', list_music='1', write_music='ok', list_docs='0', write_docs='err30',
-                  list_pics='err2', write_pics='err2')
+            check(rep, list_music='1', write_music='ok', list_docs='0', write_docs='err30', list_pics='err2', write_pics='err2')
+            # The home is the private home of the app: the granted folders are in it, the other user folders are not. Empty
+            # mount points of earlier grants stay (Notes, Docs): the app sees empty folders there, never the real ones.
+            entries = rep['home_entries'].split(',')
+            assert {'Documents', 'Music', '.config', '.local', '.cache'} <= set(entries) and not {'Pictures', 'Videos', 'Downloads', '.ssh'} & set(entries), entries
             assert 'XDG_MUSIC_DIR="$HOME/Music"|' in rep['user_dirs_file'] and 'XDG_PICTURES_DIR="$HOME/"|' in rep['user_dirs_file'], rep['user_dirs_file']
             assert (h / 'Music/w.txt').read_text() == 'x', 'the write in the music folder did not reach the real folder'
             print('xdg_dirs (rw and ro) in the view: ok')
@@ -616,7 +633,10 @@ def main():
         _, rep, err = lab.run()
         assert 'the music folder changed since install' in err, err
         if view_here:
-            check(rep, list_music='err2', write_music='err2', list_pics='err2')
+            # Not granted any more: the folder of the old grant is an empty folder of the private home (its mount point), the
+            # real one with song.txt is not there, and a write goes to the private home.
+            check(rep, list_music='0', list_pics='err2')
+            assert (h / 'Music/w.txt').read_text() == 'x' and not (h / 'Music/w2.txt').exists()
             check(rep, list_docs='0')
         # A folder that is now a link is refused too.
         (h / '.config/user-dirs.dirs').write_text('XDG_MUSIC_DIR="$HOME/Music"\nXDG_DOCUMENTS_DIR="$HOME/Documents"\n')
@@ -694,7 +714,7 @@ def main():
 
             # 6e. Stale lock files with a process id: kept while a copy is alive, removed when none is, and never
             # a link's target or anything outside the private folders.
-            cfg = h / '.local/share/panpak/userdata' / app_dirs.ID / 'config'
+            cfg = h / '.local/share/panpak/userdata' / app_dirs.ID / '.config'
             decoy = h / 'Notes/decoy.lock'
             decoy.write_text('4242\nqbittorrent\nhost\n')
             bystander = h / 'Notes/bystander.txt'
@@ -829,11 +849,15 @@ def main():
                 assert rep['dns'] == 'ok', 'name resolution fails for an app with network'
             print('network = true: same network namespace, a datagram reaches the host, names resolve')
 
-        # 6g. Several first starts at once, on a store without the tree: all of them start (defect 19).
+        # 6g. The tree is made by install (step 8a): a start without it stops with a message that names `panpak repair`; after a new
+        # install, several starts at once all work.
         lab.install('')
         trees = h / '.local/share/panpak/trees'
         subprocess.run(['chmod', '-R', 'u+w', str(trees)], check=True)
         isolation.safe_rmtree(trees, work)
+        gone = subprocess.run([str(h / '.local/bin' / app_dirs.ID)], env=lab.env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        assert gone.returncode != 0 and 'PANPAK-E2007' in gone.stderr and 'panpak repair' in gone.stderr, gone.stderr
+        lab.install('')
         launcher = str(h / '.local/bin' / app_dirs.ID)
         procs = [subprocess.Popen([launcher], env=lab.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, text=True)
                  for _ in range(6)]
@@ -841,7 +865,7 @@ def main():
         bad = [r for r in results if r[0] != 0]
         assert not bad, bad
         assert len([d for d in os.listdir(trees) if d.endswith('.partial')]) == 0
-        print('6 first starts at once on an empty store: all started')
+        print('a missing tree is repaired, then 6 starts at once: all started')
 
         # 7. doctor tells the layers, with and without bubblewrap.
         d = lab.cli('doctor', check=False).stdout

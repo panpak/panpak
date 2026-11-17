@@ -24,9 +24,11 @@ import isolation  # noqa: E402
 ID = 'org.example.dirs'
 # With a usable /usr/bin/bwrap the app runs in the isolated view (tests/view.py), where TMPDIR is /tmp.
 VIEW = subprocess.run(['/usr/bin/bwrap', '--unshare-user', '--ro-bind', '/', '/', '/usr/bin/true'], capture_output=True).returncode == 0
+# The folders of the app are the home in the view (see tests/view.py); this test checks that layout.
 PROBE = r'''#!/bin/sh
 # Reports "name=ok" or "name=deny" for each attempt, then the environment.
 R="$XDG_DATA_HOME/report.txt"
+H0="$HOME"
 try() { if ( eval "$2" ) 2>/dev/null; then echo "$1=ok"; else echo "$1=deny"; fi; }
 {
 try write_config 'echo x > "$XDG_CONFIG_HOME/c.txt"'
@@ -42,14 +44,16 @@ try write_home_config 'mkdir -p "$HOME/.config/something" && echo x > "$HOME/.co
 try write_home_file 'echo x > "$HOME/stray.txt"'
 try read_gtk 'cat "$HOME/.config/gtk-3.0/settings.ini" >/dev/null'
 try write_gtk 'echo x >> "$HOME/.config/gtk-3.0/settings.ini"'
+try read_gtk_bookmarks 'test -s "$HOME/.config/gtk-3.0/bookmarks"'
+try read_gtk_after_write 'grep -q "^x$" "$HOME/.config/gtk-3.0/settings.ini"'
 try read_gh 'cat "$HOME/.config/gh/hosts.yml" >/dev/null'
 try list_config 'ls "$HOME/.config" >/dev/null'
 try read_icons 'ls "$HOME/.local/share/icons/MyTheme" >/dev/null'
 try write_icons 'echo x > "$HOME/.local/share/icons/MyTheme/x"'
-try read_hicolor 'ls "$HOME/.local/share/icons/hicolor" >/dev/null'
+try read_hicolor 'test -n "$(ls "$HOME/.local/share/icons/hicolor")"'
 try read_icons_dir 'ls "$HOME/.local/share/icons" >/dev/null'
 try read_old_appdata 'ls "$HOME/.local/share/'"$PANPAK_APP_ID"'" >/dev/null'
-try read_other_userdata 'ls "$HOME/.local/share/panpak" >/dev/null'
+try read_other_userdata 'ls "$HOME/.local/share/panpak/userdata" >/dev/null'
 try read_notes 'ls "$HOME/Notes" >/dev/null'
 try write_notes 'echo x > "$HOME/Notes/n.txt"'
 try read_docs 'cat "$HOME/Docs/ro.txt" >/dev/null'
@@ -77,7 +81,7 @@ class Lab:
         isolation.require_isolated_home(self.home, work)
         self.home.mkdir(parents=True)
         self.runtime = isolation.owned_mkdtemp('dirs-rt-')
-        self.env = {'PATH': os.environ['PATH'], 'HOME': str(self.home), 'XDG_RUNTIME_DIR': self.runtime}
+        self.env = {'PATH': os.environ['PATH'], 'HOME': str(self.home), 'XDG_RUNTIME_DIR': self.runtime, 'PANPAK_TEST_REAL_HOME': str(self.home)}
         # A private session bus for the app to (not) find, and fake agent variables.
         self.bus_address = f'unix:path={self.runtime}/bus'
         self.bus = subprocess.Popen(['dbus-daemon', '--session', '--nofork', f'--address={self.bus_address}'],
@@ -133,7 +137,7 @@ class Lab:
 
     def run(self, *args):
         """Run the launcher; return (returncode, report dict, stderr)."""
-        report = self.home / f'.local/share/panpak/userdata/{ID}/data/report.txt'
+        report = self.home / f'.local/share/panpak/userdata/{ID}/.local/share/report.txt'
         report.unlink(missing_ok=True)
         p = subprocess.run([str(self.home / '.local/bin' / ID), *args], env=self.env, capture_output=True,
                            text=True, timeout=120, stdin=subprocess.DEVNULL)
@@ -151,6 +155,9 @@ def expect(rep, **want):
 
 
 def main():
+    if not VIEW:
+        print('skipped: the layered home needs bubblewrap with user namespaces (without it HOME is the private home)')
+        return
     work = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / 'target/app-dirs'
     if work.exists():
         # Store trees are read-only: make them removable first (inside the work directory only).
@@ -163,6 +170,8 @@ def main():
     # The user's own files: theme, a secret, icons, notes, a font, an old app folder.
     (h / '.config/gtk-3.0').mkdir(parents=True)
     (h / '.config/gtk-3.0/settings.ini').write_text('[Settings]\ngtk-application-prefer-dark-theme=1\n')
+    (h / '.config/gtk-3.0/bookmarks').write_text('file:///home/secret-place\n')
+    gtk_before = (h / '.config/gtk-3.0/settings.ini').read_text()
     (h / '.config/gh').mkdir()
     (h / '.config/gh/hosts.yml').write_text('oauth_token: fake\n')
     # A theme of the user's, and the hicolor folder where the menu icons of the apps go: the first is readable, the second is not in the view.
@@ -191,38 +200,33 @@ def main():
     assert rc == 0, err
     userdata = h / f'.local/share/panpak/userdata/{ID}'
     cache = h / f'.cache/panpak/{ID}'
+    # The app lives in a private home at the path of the real one: it writes there (also files it makes up), the
+    # environment of the user is there at the real paths, a write to it is the app's own copy and is gone at the end.
     expect(rep, write_config='ok', write_data='ok', rename_across_dirs='ok', link_tree_file='deny', move_tree_file='deny', link_system_file='deny', write_state='ok', write_cache='ok', write_tmpdir='ok',
-           write_home_config='deny', write_home_file='deny', read_gtk='ok', write_gtk='deny', read_gh='deny',
-           list_config='ok' if VIEW else 'deny', read_icons='ok', write_icons='deny', read_hicolor='deny', read_icons_dir='ok' if VIEW else 'deny', read_old_appdata='deny',
-           read_other_userdata='ok' if VIEW else 'deny', read_notes='deny', write_notes='deny', read_docs='deny', write_docs='deny',
+           write_home_config='ok', write_home_file='ok', read_gtk='ok', write_gtk='ok', read_gtk_after_write='ok', read_gtk_bookmarks='deny', read_gh='deny',
+           list_config='ok', read_icons='ok', write_icons='ok', read_hicolor='deny', read_icons_dir='ok', read_old_appdata='deny',
+           read_other_userdata='deny', read_notes='deny', write_notes='deny', read_docs='deny', write_docs='deny',
            write_tmp='ok', args='one two', fonts_found='1')
-    assert (userdata / 'config/c.txt').exists() and (userdata / 'data/d.txt').exists()
-    assert (userdata / 'state/s.txt').exists() and (cache / 'k.txt').exists() and (userdata / 'tmp/t.txt').exists() != VIEW
-    assert not (h / '.config/something').exists() and not (h / 'stray.txt').exists()
+    cfg, dat, st = userdata / '.config', userdata / '.local/share', userdata / '.local/state'
+    assert (cfg / 'c.txt').exists() and (dat / 'd.txt').exists() and (st / 's.txt').exists() and (cache / 'k.txt').exists()
+    assert (userdata / '.config/something/x').exists() and (userdata / 'stray.txt').exists(), 'the app has its home'
+    assert not (h / '.config/something').exists() and not (h / 'stray.txt').exists(), 'the real home was written'
+    assert (h / '.config/gtk-3.0/settings.ini').read_text() == gtk_before, 'a write to the environment reached the user'
+    assert not (cfg / 'gtk-3.0/settings.ini').exists() and not (userdata / '.local/share/icons/MyTheme/x').exists(), 'the user files were copied into the private home'
+    assert not (h / '.local/share/icons/MyTheme/x').exists()
     assert (old / 'legacy.txt').read_text() == 'old data\n', 'old app folder was touched'
-    for d in [userdata, userdata / 'config', userdata / 'data', userdata / 'state', userdata / 'tmp', cache]:
+    for d in [userdata, cfg, userdata / '.local', dat, st, cache]:
         assert d.stat().st_mode & 0o777 == 0o700, d
     assert rep['env_HOME'] == str(h) and rep['env_XDG_RUNTIME_DIR'] == lab.runtime
-    assert rep['env_XDG_CONFIG_HOME'] == str(userdata / 'config')
-    assert rep['env_XDG_DATA_HOME'] == str(userdata / 'data')
-    assert rep['env_XDG_STATE_HOME'] == str(userdata / 'state')
-    assert rep['env_XDG_CACHE_HOME'] == str(cache)
-    tmp = '/tmp' if VIEW else str(userdata / 'tmp')
-    assert rep['env_TMPDIR'] == tmp and rep['env_SQLITE_TMPDIR'] == tmp
-    assert rep['env_XDG_CONFIG_DIRS'] == f'/etc/xdg:{h}/.config', rep['env_XDG_CONFIG_DIRS']
-    assert rep['env_XDG_DATA_DIRS'] == f'/usr/local/share:/usr/share:{h}/.local/share', rep['env_XDG_DATA_DIRS']
-    fonts_conf = (userdata / 'config/fontconfig/fonts.conf').read_text()
-    assert 'X-Panpak-Generated' in fonts_conf and f'<dir>{h}/.local/share/fonts</dir>' in fonts_conf
+    assert rep['env_XDG_CONFIG_HOME'] == f'{h}/.config'
+    assert rep['env_XDG_DATA_HOME'] == f'{h}/.local/share'
+    assert rep['env_XDG_STATE_HOME'] == f'{h}/.local/state'
+    assert rep['env_XDG_CACHE_HOME'] == f'{h}/.cache'
+    assert rep['env_TMPDIR'] == '/tmp' and rep['env_SQLITE_TMPDIR'] == '/tmp'
+    assert rep['env_XDG_CONFIG_DIRS'] == '/etc/xdg', rep['env_XDG_CONFIG_DIRS']
+    assert rep['env_XDG_DATA_DIRS'] == '/usr/local/share:/usr/share', rep['env_XDG_DATA_DIRS']
+    assert not (cfg / 'fontconfig/fonts.conf').exists(), 'no generated fonts.conf in the view: fontconfig reads the real one'
     print('base layout: ok')
-
-    # 2. The generated fonts.conf is replaced when stale, kept when the user owns it.
-    (userdata / 'config/fontconfig/fonts.conf').write_text('<!-- X-Panpak-Generated -->\n<fontconfig/>\n')
-    lab.run()
-    assert f'<dir>{h}/.local/share/fonts</dir>' in (userdata / 'config/fontconfig/fonts.conf').read_text()
-    (userdata / 'config/fontconfig/fonts.conf').write_text('<fontconfig/>\n')
-    lab.run()
-    assert (userdata / 'config/fontconfig/fonts.conf').read_text() == '<fontconfig/>\n', 'user fonts.conf overwritten'
-    print('fonts.conf marker: ok')
 
     # 2b. gsettings is looked for in system paths only: a program planted in PATH is not run.
     fake = work / 'fakebin'
@@ -272,9 +276,9 @@ def main():
         assert want in p.stdout, (want, p.stdout)
     rc, rep, err = lab.run('tail')
     assert rc == 0, err
-    expect(rep, write_notes='ok', read_notes='ok', read_docs='ok', write_docs='deny', write_home_file='deny',
-           read_gh='deny', args=f'--profile {userdata}/config/prof --tmp={userdata}/tmp tail',
-           env_FOO=f'{userdata}/state/foo', env_IPYTHONDIR=f'{userdata}/config/ipython')
+    expect(rep, write_notes='ok', read_notes='ok', read_docs='ok', write_docs='deny', write_home_file='ok',
+           read_gh='deny', args=f'--profile {h}/.config/prof --tmp=/tmp tail',
+           env_FOO=f'{h}/.local/state/foo', env_IPYTHONDIR=f'{h}/.config/ipython')
     assert (h / 'Notes/n.txt').exists() and not (h / 'Docs/new.txt').exists()
     assert (h / 'Missing/Dir').is_dir(), 'rw home path was not created'
     assert not (h / 'Absent').exists(), 'ro home path was created'
@@ -329,7 +333,7 @@ def main():
     # 7. data path / data clear.
     p = lab.cli('data', 'path', ID)
     assert str(userdata) in p.stdout and str(cache) in p.stdout, p.stdout
-    (userdata / 'data/link-out').symlink_to(outside)
+    (userdata / '.local/share/link-out').symlink_to(outside)
     (outside / 'keep.txt').write_text('keep\n')
     p = lab.cli('data', 'clear', ID, check=False)
     assert p.returncode != 0 and 'PANPAK-E5004' in p.stderr and userdata.exists(), 'clear without --yes must not delete'

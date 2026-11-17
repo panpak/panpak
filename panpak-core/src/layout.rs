@@ -16,8 +16,11 @@ pub const FONTS_CONF_MARKER: &str = "X-Panpak-Generated";
 /// The folders an app owns. `root` and `cache` are the only writable roots
 /// besides `/tmp` and the `home_paths` of the manifest.
 ///
-/// - `root`  = `$XDG_DATA_HOME/panpak/userdata/<id>`, with `config`, `data`, `state`, `tmp`;
-/// - `cache` = `$XDG_CACHE_HOME/panpak/<id>`.
+/// - `root`  = `$XDG_DATA_HOME/panpak/userdata/<id>`: the private home of the app, the only folder of its data. It holds
+///   `.config`, `.local/share` and `.local/state`. In the isolated view it is mounted at the path of the real home;
+///   without the view it is the `HOME` of the app;
+/// - `cache` = `$XDG_CACHE_HOME/panpak/<id>`, mounted as `~/.cache` in the view; `cache/tmp` is the folder for large
+///   temporary files.
 #[derive(Debug, Clone)]
 pub struct AppDirs {
     pub root: PathBuf,
@@ -34,14 +37,7 @@ pub fn app_dirs(id: &str) -> Result<AppDirs> {
     validate_app_id(id)?;
     let root = dirs::data_dir().context("no data dir")?.join("panpak").join("userdata").join(id);
     let cache = dirs::cache_dir().context("no cache dir")?.join("panpak").join(id);
-    Ok(AppDirs {
-        config: root.join("config"),
-        data: root.join("data"),
-        state: root.join("state"),
-        tmp: root.join("tmp"),
-        root,
-        cache,
-    })
+    Ok(AppDirs::below(root, cache))
 }
 
 /// Directory with mode 0700. An existing real directory is kept (and its mode
@@ -66,12 +62,32 @@ fn private_dir(path: &Path) -> Result<()> {
 }
 
 impl AppDirs {
+    /// The folders of an app whose private home is `root` and whose cache is `cache`.
+    fn below(root: PathBuf, cache: PathBuf) -> AppDirs {
+        AppDirs {
+            config: root.join(".config"),
+            data: root.join(".local").join("share"),
+            state: root.join(".local").join("state"),
+            tmp: cache.join("tmp"),
+            root,
+            cache,
+        }
+    }
+
+    /// The same folders as the isolated view shows them: the private home is mounted at `home` and the cache at
+    /// `home/.cache`. The variables of the app and the paths in its launch values use these.
+    pub fn seen_at(&self, home: &Path) -> AppDirs {
+        // `/tmp` of the view is a tmpfs of its own, the `TMPDIR` of the app there.
+        AppDirs { tmp: PathBuf::from("/tmp"), ..AppDirs::below(home.to_path_buf(), home.join(".cache")) }
+    }
+
     /// Create the folders with mode 0700. Run before the sandbox is applied.
     pub fn create(&self) -> Result<()> {
         for parent in [self.root.parent(), self.cache.parent()].into_iter().flatten() {
             fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         }
-        for d in [&self.root, &self.config, &self.data, &self.state, &self.tmp, &self.cache] {
+        let local = self.root.join(".local");
+        for d in [&self.root, &self.config, &local, &self.data, &self.state, &self.cache, &self.tmp] {
             private_dir(d)?;
         }
         Ok(())
@@ -185,6 +201,70 @@ pub fn readonly_user_paths_in(config: Option<&Path>, data: Option<&Path>, home: 
     all
 }
 
+/// What the isolated view shows of the user's own environment (fonts, themes, icons, cursors, GTK, Qt and KDE settings)
+/// at the real paths, inside the private home.
+///
+/// Every folder is mounted whole as an overlay: the user's folder is the lower layer, writes go to a memory-only upper
+/// layer that is gone when the app ends, and a change the user makes meanwhile (another theme) is seen by the running
+/// app. Only entries that exist.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EnvLayers {
+    /// Folders mounted as overlays.
+    pub overlays: Vec<PathBuf>,
+    /// Single files, mounted read-only (an overlay needs a folder).
+    pub files: Vec<PathBuf>,
+    /// Files inside an overlay that are private to the user and are replaced by an empty file.
+    pub hidden: Vec<PathBuf>,
+}
+
+impl EnvLayers {
+    /// Number of mounts the layers cost.
+    pub fn mounts(&self) -> usize {
+        self.overlays.len() + self.files.len() + self.hidden.len()
+    }
+}
+
+/// The layers for the folders of the user (`config`, `data`, `home`; others in tests). The reason of each entry:
+///
+/// - `fontconfig`, `.fonts`, `.local/share/fonts`: the fonts of the user and the rules that choose them;
+/// - `gtk-3.0`, `gtk-4.0`: GTK settings (`settings.ini`, `gtk.css`) and, in `gtk-3.0`, the bookmarks, which are hidden;
+/// - `qt5ct`, `qt6ct`, `Trolltech.conf`, `kdeglobals`: Qt and KDE settings (style, fonts, colours);
+/// - `.local/share/themes`: GTK themes of the user; each theme folder of `.local/share/icons` and `.icons` except `hicolor`
+///   (one overlay each, not the whole folder: see `HIDDEN_ICON_THEME`; measured, a `hicolor` that is there, even empty, costs
+///   QOwnNotes 50 to 170 ms);
+/// - `.local/share/mime`: the types of the user, for names and icons of files.
+pub fn env_layers_in(config: Option<&Path>, data: Option<&Path>, home: Option<&Path>) -> EnvLayers {
+    const CONFIG_DIRS: &[&str] = &["fontconfig", "gtk-3.0", "gtk-4.0", "qt5ct", "qt6ct"];
+    const CONFIG_FILES: &[&str] = &["kdeglobals", "Trolltech.conf"];
+    const DATA_DIRS: &[&str] = &["fonts", "themes", "mime"];
+    // Files of the user's folders that tell what the user has been doing, not how things look.
+    const PRIVATE: &[&str] = &["gtk-3.0/bookmarks", "gtk-3.0/servers", "gtk-4.0/bookmarks"];
+    let mut out = EnvLayers::default();
+    if let Some(c) = config {
+        out.overlays.extend(CONFIG_DIRS.iter().map(|n| c.join(n)));
+        out.files.extend(CONFIG_FILES.iter().map(|n| c.join(n)));
+        out.hidden.extend(PRIVATE.iter().map(|n| c.join(n)));
+    }
+    if let Some(d) = data {
+        out.overlays.extend(DATA_DIRS.iter().map(|n| d.join(n)));
+        out.overlays.extend(icon_themes(&d.join("icons")));
+    }
+    if let Some(h) = home {
+        out.overlays.push(h.join(".fonts"));
+        out.overlays.extend(icon_themes(&h.join(".icons")));
+    }
+    out.overlays.retain(|p| p.is_dir());
+    out.files.retain(|p| p.is_file());
+    let overlays = out.overlays.clone();
+    out.hidden.retain(|p| p.is_file() && overlays.iter().any(|o| p.starts_with(o)));
+    out
+}
+
+/// `env_layers_in` for the user of this process.
+pub fn env_layers() -> EnvLayers {
+    env_layers_in(dirs::config_dir().as_deref(), dirs::data_dir().as_deref(), dirs::home_dir().as_deref())
+}
+
 /// System caches outside `/usr` that the app reads at start, read-only. The view has an empty `/var`, and
 /// Landlock lets an app read only a few system folders, so each of these is mounted into the view and given one
 /// read rule. `/var/cache/fontconfig` holds the font index of the system fonts: without it the first start of
@@ -195,13 +275,18 @@ pub fn system_cache_paths() -> Vec<PathBuf> {
 }
 
 /// `XDG_CONFIG_DIRS` and `XDG_DATA_DIRS` for the app: the existing value, or the default of the
-/// XDG Base Directory Specification, then the user's real config and data folder at the end.
+/// XDG Base Directory Specification, then (`with_real`) the user's real config and data folder at the end.
 /// Landlock lets the app read only part of those two (`readonly_user_paths`).
-pub fn xdg_search_dirs(config_dirs: Option<String>, data_dirs: Option<String>) -> Result<(String, String)> {
+pub fn xdg_search_dirs(config_dirs: Option<String>, data_dirs: Option<String>, with_real: bool) -> Result<(String, String)> {
     let real_config = dirs::config_dir().context("no config dir")?;
     let real_data = dirs::data_dir().context("no data dir")?;
+    // With the private home of the view the real folders of the user are the folders of the app (`XDG_CONFIG_HOME` and
+    // `XDG_DATA_HOME`, with the environment mounted in them), so they are not added a second time.
     let join = |current: Option<String>, default: &str, real: &Path| -> Result<String> {
         let base = current.filter(|v| !v.is_empty()).unwrap_or_else(|| default.to_string());
+        if !with_real {
+            return Ok(base);
+        }
         Ok(format!("{base}:{}", real.to_str().context("XDG folder is not UTF-8")?))
     };
     Ok((join(config_dirs, "/etc/xdg", &real_config)?, join(data_dirs, "/usr/local/share:/usr/share", &real_data)?))
@@ -389,22 +474,14 @@ mod tests {
     }
 
     fn dirs_at(base: &str) -> AppDirs {
-        let root = PathBuf::from(base).join("userdata/org.example.app");
-        AppDirs {
-            config: root.join("config"),
-            data: root.join("data"),
-            state: root.join("state"),
-            tmp: root.join("tmp"),
-            root,
-            cache: PathBuf::from(base).join("cache/org.example.app"),
-        }
+        AppDirs::below(PathBuf::from(base).join("userdata/org.example.app"), PathBuf::from(base).join("cache/org.example.app"))
     }
 
     #[test]
     fn expand_replaces_only_known_placeholders() {
         let d = dirs_at("/x");
-        assert_eq!(d.expand("--profile=${XDG_CONFIG_HOME}/p").unwrap(), "--profile=/x/userdata/org.example.app/config/p");
-        assert_eq!(d.expand("${TMPDIR}:${XDG_CACHE_HOME}").unwrap(), "/x/userdata/org.example.app/tmp:/x/cache/org.example.app");
+        assert_eq!(d.expand("--profile=${XDG_CONFIG_HOME}/p").unwrap(), "--profile=/x/userdata/org.example.app/.config/p");
+        assert_eq!(d.expand("${TMPDIR}:${XDG_CACHE_HOME}").unwrap(), "/x/cache/org.example.app/tmp:/x/cache/org.example.app");
         assert_eq!(d.expand("a$b").unwrap(), "a$b");
         assert!(d.expand("${HOME}").is_err());
         assert!(d.expand("${XDG_CONFIG_HOME").is_err());
@@ -421,10 +498,10 @@ mod tests {
 
     #[test]
     fn xdg_dirs_keep_existing_or_default_and_append_real() {
-        let (c, d) = xdg_search_dirs(Some("/a:/b".into()), None).unwrap();
+        let (c, d) = xdg_search_dirs(Some("/a:/b".into()), None, true).unwrap();
         assert!(c.starts_with("/a:/b:"), "{c}");
         assert!(d.starts_with("/usr/local/share:/usr/share:"), "{d}");
-        let (c, _) = xdg_search_dirs(Some(String::new()), None).unwrap();
+        let (c, _) = xdg_search_dirs(Some(String::new()), None, true).unwrap();
         assert!(c.starts_with("/etc/xdg:"), "{c}");
     }
 
@@ -501,12 +578,53 @@ mod tests {
     }
 
     #[test]
+    fn the_private_home_is_one_folder_with_the_standard_folders_in_it() {
+        let d = dirs_at("/x");
+        let root = Path::new("/x/userdata/org.example.app");
+        assert_eq!((d.config.as_path(), d.data.as_path(), d.state.as_path()), (root.join(".config").as_path(), root.join(".local/share").as_path(), root.join(".local/state").as_path()));
+        // The cache is its own folder, and the large temporary files go below it.
+        assert_eq!((d.cache.as_path(), d.tmp.as_path()), (Path::new("/x/cache/org.example.app"), Path::new("/x/cache/org.example.app/tmp")));
+        // As the view shows them: the home is the private home, `~/.cache` the cache.
+        let s = d.seen_at(Path::new("/home/u"));
+        assert_eq!((s.root.as_path(), s.config.as_path(), s.data.as_path(), s.state.as_path()), (Path::new("/home/u"), Path::new("/home/u/.config"), Path::new("/home/u/.local/share"), Path::new("/home/u/.local/state")));
+        assert_eq!((s.cache.as_path(), s.tmp.as_path()), (Path::new("/home/u/.cache"), Path::new("/tmp")));
+        assert_eq!(s.expand("${XDG_STATE_HOME}/a").unwrap(), "/home/u/.local/state/a");
+    }
+
+    #[test]
+    fn the_layers_name_whole_folders_and_hide_the_private_files() {
+        let base = std::env::temp_dir().join(format!("panpak-envlayers-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (cfg, data, home) = (base.join(".config"), base.join(".local/share"), base.clone());
+        for d in ["gtk-3.0", "fontconfig", "qt5ct"] {
+            fs::create_dir_all(cfg.join(d)).unwrap();
+        }
+        fs::write(cfg.join("gtk-3.0/bookmarks"), "file:///secret\n").unwrap();
+        fs::write(cfg.join("gtk-3.0/settings.ini"), "[Settings]\n").unwrap();
+        fs::write(cfg.join("kdeglobals"), "x").unwrap();
+        for d in ["icons/hicolor", "icons/Adwaita", "fonts", "themes"] {
+            fs::create_dir_all(data.join(d)).unwrap();
+        }
+        fs::create_dir_all(home.join(".icons/hicolor")).unwrap();
+        assert!(!env_layers_in(Some(&cfg), Some(&data), Some(&home)).overlays.iter().any(|p| p.ends_with("hicolor")), "hicolor is never mounted");
+        let l = env_layers_in(Some(&cfg), Some(&data), Some(&home));
+        assert_eq!(l.overlays, [cfg.join("fontconfig"), cfg.join("gtk-3.0"), cfg.join("qt5ct"), data.join("fonts"), data.join("themes"), data.join("icons/Adwaita")]);
+        assert_eq!(l.files, [cfg.join("kdeglobals")]);
+        assert_eq!(l.hidden, [cfg.join("gtk-3.0/bookmarks")]);
+        // About ten mounts for a full environment, not one per file or theme.
+        assert!(l.mounts() <= 12, "{}", l.mounts());
+        // Nothing exists: nothing is mounted.
+        assert_eq!(env_layers_in(Some(&base.join("none")), Some(&base.join("none")), None), EnvLayers::default());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn create_makes_private_folders_and_refuses_links() {
         let base = std::env::temp_dir().join(format!("panpak-layout-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         let d = dirs_at(base.to_str().unwrap());
         d.create().unwrap();
-        for p in [&d.root, &d.config, &d.data, &d.state, &d.tmp, &d.cache] {
+        for p in [&d.root, &d.config, &d.root.join(".local"), &d.data, &d.state, &d.tmp, &d.cache] {
             assert_eq!(fs::metadata(p).unwrap().permissions().mode() & 0o777, 0o700, "{p:?}");
         }
         // clear removes the content, never follows a link inside.

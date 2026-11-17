@@ -287,6 +287,27 @@ pub fn in_system_view(p: &Path) -> bool {
     ["/usr", "/etc", "/sys", "/dev", "/proc", "/tmp", "/run", "/nix/store", "/gnu/store"].iter().any(|d| p.starts_with(d))
 }
 
+/// The folders of the app that are the home in the view: its data (`.config`, `.local/share`, `.local/state`) is the home
+/// folder and its cache is `~/.cache`. Both are folders of the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrivateHome {
+    pub data: PathBuf,
+    pub cache: PathBuf,
+}
+
+/// The environment of the user (fonts, themes, icons, GTK and Qt settings) shown at the real paths inside the private home.
+/// See `panpak_core::EnvLayers` for what is in it and why.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Layers {
+    /// Folders mounted as overlays: `src` is the folder of the user (the lower layer), `dest` the place in the view. The
+    /// upper layer is a tmpfs that only the view knows: writes are lost when the last process of the view ends.
+    pub overlays: Vec<Mount>,
+    /// Single files of the user, mounted read-only (an overlay needs a folder).
+    pub files: Vec<Mount>,
+    /// Files inside an overlay that are shown as empty files.
+    pub hidden: Vec<PathBuf>,
+}
+
 /// What the view contains besides `/dev` and `/proc`.
 pub struct ViewPlan {
     /// The system folders and top-level links of the host. See `root_layout`.
@@ -299,10 +320,15 @@ pub struct ViewPlan {
     pub ro_run_dirs: Vec<PathBuf>,
     /// X11 sockets (`/tmp/.X11-unix/X<n>`): present only when the manifest asks for X11.
     pub x11: Vec<PathBuf>,
-    /// The home folder (canonical). It becomes an empty tmpfs, made read-only after the binds.
+    /// The home folder (canonical). It becomes the private home of the app (`private_home`), or an empty tmpfs made read-only after the binds.
     /// None: the home folder is left as `/` shows it (no home, or the home is `/`).
     pub home: Option<PathBuf>,
-    /// What is put back into the empty home, and what is mounted writable elsewhere. See `merge_binds`.
+    /// The private home of the app and its cache, mounted at `home` and `home/.cache` instead of the empty
+    /// tmpfs. Needs `home`. None: the old shape, an empty home that is sealed read-only.
+    pub private_home: Option<PrivateHome>,
+    /// The environment of the user inside the private home. Only with `private_home`.
+    pub layers: Layers,
+    /// What is put back into the home, and what is mounted writable elsewhere. See `merge_binds`.
     pub binds: Vec<Bind>,
     /// Files mounted read-only at a place of their own: the opener channel and the stub as `xdg-open`.
     pub mounts: Vec<Mount>,
@@ -372,8 +398,24 @@ fn view_args(plan: &ViewPlan) -> Vec<OsString> {
     }
     // The home folder is empty; the binds below put back only what the app needs. It comes after
     // /tmp and /run so that a home below them is not hidden again.
-    if let Some(h) = &plan.home {
-        a.extend([os("--perms"), os("0700"), os("--tmpfs"), h.as_os_str().into()]);
+    match (&plan.home, &plan.private_home) {
+        // The home is the private folder of the app, the cache is `~/.cache`, and the environment of the user comes in as
+        // overlays. Every mount below creates its mount point in the private folder (an empty folder or file).
+        (Some(h), Some(p)) => {
+            a.extend([os("--bind"), p.data.as_os_str().into(), h.as_os_str().into()]);
+            a.extend([os("--bind"), p.cache.as_os_str().into(), h.join(".cache").into_os_string()]);
+            for m in &plan.layers.overlays {
+                a.extend([os("--overlay-src"), m.src.as_os_str().into(), os("--tmp-overlay"), m.dest.as_os_str().into()]);
+            }
+            for f in &plan.layers.files {
+                a.extend([os("--ro-bind"), f.src.as_os_str().into(), f.dest.as_os_str().into()]);
+            }
+            for f in &plan.layers.hidden {
+                a.extend([os("--ro-bind"), os("/dev/null"), f.as_os_str().into()]);
+            }
+        }
+        (Some(h), None) => a.extend([os("--perms"), os("0700"), os("--tmpfs"), h.as_os_str().into()]),
+        _ => {}
     }
     for d in &plan.ro_run_dirs {
         a.extend([os("--ro-bind"), d.as_os_str().into(), d.as_os_str().into()]);
@@ -393,8 +435,8 @@ fn view_args(plan: &ViewPlan) -> Vec<OsString> {
     for (target, link) in &plan.symlinks {
         a.extend([os("--symlink"), target.as_os_str().into(), link.as_os_str().into()]);
     }
-    // Nothing can be created in the home folder any more, outside the binds.
-    if let Some(h) = &plan.home {
+    // Nothing can be created in an empty home folder any more, outside the binds. The private home stays writable.
+    if let (Some(h), None) = (&plan.home, &plan.private_home) {
         a.extend([os("--remount-ro"), h.as_os_str().into()]);
     }
     a.extend(["--remount-ro", "/var", "--remount-ro", "/"].map(os));
@@ -477,11 +519,15 @@ mod tests {
             ro_run_dirs: vec!["/run/systemd/resolve".into()],
             x11: vec![],
             home: Some("/home/u".into()),
+            private_home: Some(PrivateHome { data: "/home/u/.local/share/panpak/userdata/org.example.app".into(), cache: "/home/u/.cache/panpak/org.example.app".into() }),
+            layers: Layers {
+                overlays: vec![Mount::ro("/home/u/.config/gtk-3.0".into(), "/home/u/.config/gtk-3.0".into()), Mount::ro("/home/u/.local/share/icons/Adwaita".into(), "/home/u/.local/share/icons/Adwaita".into())],
+                files: vec![Mount::ro("/home/u/.config/kdeglobals".into(), "/home/u/.config/kdeglobals".into())],
+                hidden: vec!["/home/u/.config/gtk-3.0/bookmarks".into()],
+            },
             binds: merge_binds(vec![
-                Bind { path: "/home/u/.local/share/panpak/userdata/org.example.app".into(), rw: true },
-                Bind { path: "/home/u/.cache/panpak/org.example.app".into(), rw: true },
                 Bind { path: "/home/u/.local/share/panpak/trees/abc".into(), rw: false },
-                Bind { path: "/home/u/.config/gtk-3.0".into(), rw: false },
+                Bind { path: "/home/u/Documents".into(), rw: true },
             ]),
             mounts: vec![],
             symlinks: vec![],
@@ -521,16 +567,26 @@ mod tests {
         assert!(run < rt);
         assert!(rt < pos(&a, &["--bind", "/run/user/1000/wayland-0", "/run/user/1000/wayland-0"]).unwrap());
         assert!(pos(&a, &["--bind", "/run/systemd/journal/socket", "/run/systemd/journal/socket"]).is_some());
-        // The home folder is an empty tmpfs after /tmp and /run, then only what is listed comes back,
-        // read-only except the two app folders, and the tmpfs is made read-only at the end.
-        let home = pos(&a, &["--perms", "0700", "--tmpfs", "/home/u"]).unwrap();
+        // The private home of the app is mounted at the path of the real home, after /tmp and /run, and the cache is its
+        // `.cache`. The home is not emptied and not sealed: the app writes there.
+        let home = pos(&a, &["--bind", "/home/u/.local/share/panpak/userdata/org.example.app", "/home/u"]).unwrap();
         assert!(pos(&a, &["--tmpfs", "/run"]).unwrap() < home);
-        assert!(home < pos(&a, &["--ro-bind", "/home/u/.config/gtk-3.0", "/home/u/.config/gtk-3.0"]).unwrap());
-        assert!(pos(&a, &["--ro-bind", "/home/u/.local/share/panpak/trees/abc", "/home/u/.local/share/panpak/trees/abc"]).is_some());
-        let writable: Vec<&String> = a.iter().enumerate().filter(|(i, s)| *s == "--bind" && a[*i + 1].contains("panpak")).map(|(_, s)| s).collect();
-        assert_eq!(writable.len(), 2);
-        let last_bind = a.iter().rposition(|s| s == "--bind" || s == "--ro-bind").unwrap();
-        assert!(last_bind < pos(&a, &["--remount-ro", "/home/u"]).unwrap());
+        assert!(pos(&a, &["--tmpfs", "/home/u"]).is_none() && pos(&a, &["--remount-ro", "/home/u"]).is_none());
+        let cache = pos(&a, &["--bind", "/home/u/.cache/panpak/org.example.app", "/home/u/.cache"]).unwrap();
+        assert!(home < cache);
+        // The environment of the user: an overlay with a memory-only upper layer for each folder, then the private
+        // files hidden, all inside the private home.
+        let gtk = pos(&a, &["--overlay-src", "/home/u/.config/gtk-3.0", "--tmp-overlay", "/home/u/.config/gtk-3.0"]).unwrap();
+        let icons = pos(&a, &["--overlay-src", "/home/u/.local/share/icons/Adwaita", "--tmp-overlay", "/home/u/.local/share/icons/Adwaita"]).unwrap();
+        assert!(cache < gtk && gtk < icons);
+        let hidden = pos(&a, &["--ro-bind", "/dev/null", "/home/u/.config/gtk-3.0/bookmarks"]).unwrap();
+        assert!(gtk < hidden);
+        assert!(pos(&a, &["--ro-bind", "/home/u/.config/kdeglobals", "/home/u/.config/kdeglobals"]).unwrap() > cache);
+        assert!(!a.iter().any(|s| s == "--overlay"), "the upper layer is never a folder of the host");
+        // The tree comes back read-only and a granted folder writable, both after the private home.
+        let tree = pos(&a, &["--ro-bind", "/home/u/.local/share/panpak/trees/abc", "/home/u/.local/share/panpak/trees/abc"]).unwrap();
+        let docs = pos(&a, &["--bind", "/home/u/Documents", "/home/u/Documents"]).unwrap();
+        assert!(home < tree && home < docs);
         assert_eq!(&a[a.len() - 4..], ["--", "/home/u/.local/share/panpak/runtimes/1/panpak-stub", "--panpak-inner", "7"]);
         // Nothing of the session is in the plan.
         assert!(!a.iter().any(|s| s.ends_with("/bus") || s.contains("gnupg") || s.contains("systemd/private") || s.contains("pulse") || s.contains("pipewire")));
@@ -655,6 +711,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&host);
     }
 
+    /// The layered home in a real view: the app writes in its home and its cache; the environment of the user is there at the
+    /// real paths, a write to it stays in the view, the private files are empty, and nothing reaches the host's folders.
+    #[test]
+    fn the_layered_home_in_a_real_view() {
+        if !panpak_core::view_status().usable() || !Path::new("/usr/bin/python3").exists() {
+            eprintln!("skipped: bubblewrap or python3 is not usable here");
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("panpak-layered-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (data, cache, env) = (base.join("data"), base.join("cache"), base.join("env"));
+        for d in [data.clone(), cache.clone(), env.join("gtk-3.0"), env.join("icons/hicolor"), env.join("icons/Adwaita")] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(env.join("gtk-3.0/settings.ini"), "[Settings]\n").unwrap();
+        std::fs::write(env.join("gtk-3.0/bookmarks"), "file:///private\n").unwrap();
+        std::fs::write(env.join("icons/hicolor/menu"), "menu").unwrap();
+        std::fs::write(env.join("icons/Adwaita/theme"), "adwaita").unwrap();
+        let mut p = plan();
+        p.root = root_layout(Path::new("/"));
+        p.runtime_dir = None;
+        p.sockets = vec![];
+        p.ro_run_dirs = vec![];
+        p.binds = vec![];
+        p.home = Some("/home/lh".into());
+        p.private_home = Some(PrivateHome { data: data.clone(), cache: cache.clone() });
+        p.layers = Layers {
+            overlays: vec![Mount::ro(env.join("gtk-3.0"), "/home/lh/.config/gtk-3.0".into()), Mount::ro(env.join("icons/Adwaita"), "/home/lh/.local/share/icons/Adwaita".into())],
+            files: vec![],
+            hidden: vec!["/home/lh/.config/gtk-3.0/bookmarks".into()],
+        };
+        let script = "set -e\n\
+            cd /home/lh\n\
+            echo conf > .config/app.conf; echo c > .cache/c; mkdir newdir; echo n > newdir/f\n\
+            test \"$(cat .config/gtk-3.0/settings.ini)\" = '[Settings]'\n\
+            echo 'gtk-theme-name=X' >> .config/gtk-3.0/settings.ini; echo new > .config/gtk-3.0/extra.ini\n\
+            test ! -s .config/gtk-3.0/bookmarks\n\
+            test \"$(cat .local/share/icons/Adwaita/theme)\" = adwaita\n\
+            test ! -e .local/share/icons/hicolor\n\
+            test \"$(ls .local/share/icons)\" = Adwaita\n\
+            echo done\n";
+        let out = Command::new(panpak_core::BWRAP).args(view_args(&p)).args(["--", "/usr/bin/sh", "-c", script]).output().unwrap();
+        assert!(out.status.success(), "{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        // The app's own files are in the private folders of the host.
+        assert_eq!(std::fs::read_to_string(data.join(".config/app.conf")).unwrap(), "conf\n");
+        assert_eq!(std::fs::read_to_string(data.join("newdir/f")).unwrap(), "n\n");
+        assert_eq!(std::fs::read_to_string(cache.join("c")).unwrap(), "c\n");
+        // The folders of the user are as they were: the writes went to the upper layer, which is gone.
+        assert_eq!(std::fs::read_to_string(env.join("gtk-3.0/settings.ini")).unwrap(), "[Settings]\n");
+        assert!(!env.join("gtk-3.0/extra.ini").exists());
+        assert_eq!(std::fs::read_to_string(env.join("gtk-3.0/bookmarks")).unwrap(), "file:///private\n");
+        assert_eq!(std::fs::read_to_string(env.join("icons/hicolor/menu")).unwrap(), "menu");
+        // What the mounts left in the private folder: empty mount points, no copy of the user's files.
+        assert!(std::fs::read_dir(data.join(".config/gtk-3.0")).unwrap().next().is_none());
+        assert!(!data.join(".config/gtk-3.0/settings.ini").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn no_network_gives_the_view_a_network_namespace_of_its_own() {
         let mut p = plan();
@@ -690,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn mounts_come_after_the_runtime_folder_and_before_the_home_is_sealed() {
+    fn mounts_come_after_the_runtime_folder_and_before_the_root_is_sealed() {
         let mut p = plan();
         p.mounts = vec![
             Mount::ro("/h/open.5.sock".into(), "/run/user/1000/panpak/open.sock".into()),
@@ -701,7 +815,7 @@ mod tests {
         let sock = pos(&a, &["--ro-bind", "/h/open.5.sock", "/run/user/1000/panpak/open.sock"]).unwrap();
         let exe = pos(&a, &["--ro-bind", "/h/panpak-stub", "/usr/bin/xdg-open"]).unwrap();
         assert!(rt < sock && sock < exe);
-        assert!(exe < pos(&a, &["--remount-ro", "/home/u"]).unwrap());
+        assert!(exe < pos(&a, &["--remount-ro", "/var"]).unwrap());
         assert!(pos(&a, &["--ro-bind", "/usr", "/usr"]).unwrap() < exe);
     }
 

@@ -143,7 +143,7 @@ def main():
     need(p.returncode == 0, p.stdout + p.stderr)
     p = run(home / '.local/bin' / ID)
     need(p.returncode == 0, f'the app failed ({p.returncode}): {p.stdout}{p.stderr}')
-    result = home / f'.local/share/panpak/userdata/{ID}/data/result.json'
+    result = home / f'.local/share/panpak/userdata/{ID}/.local/share/result.json'
     need(result.exists(), 'the app wrote no result: ' + p.stderr)
     res = json.loads(result.read_text())
     need(res['openpty'] is True, f'openpty: {res["openpty"]}')
