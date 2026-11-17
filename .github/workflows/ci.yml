@@ -177,7 +177,7 @@ jobs:
         run: python3 tests/x11.py
       - name: The unit tests of the app harness
         run: python3 -m unittest discover -s tests/apps -p 'test_*.py'
-      - name: The isolated view, end to end (full level only: 2.5 minutes)
+      - name: The isolated view, end to end (full level only, 2.5 minutes)
         # `fuzz` is the output of the full level (a push to main, a manual or weekly run, the label full-ci) and of a change that is not documentation.
         if: ${{ needs.changes.outputs.fuzz == 'true' }}
         run: python3 tests/view.py
