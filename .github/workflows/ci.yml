@@ -181,10 +181,13 @@ jobs:
         run: python3 tests/socket_probe.py
       - name: The app folders and the private home (what an app can read and write in its home)
         run: python3 tests/app_dirs.py
-      - name: The warm cache of the library resolution, the licenses of a package, a start against a removal
+      - name: The warm cache of the library resolution, the licenses of a package
         run: |
           python3 tests/abi_cache.py
           python3 tests/licenses.py
+      - name: A start against a removal (needs the debug panpak, which has the hook that makes a removal slow)
+        run: |
+          cargo build --locked -p panpak
           python3 tests/remove_race.py
       - name: A real X11 client under Landlock (a dedicated Xvfb)
         run: python3 tests/x11.py
