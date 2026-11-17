@@ -2,6 +2,14 @@
 //! Helpers for tests that fork or start many processes.
 use std::io::Read as _;
 
+/// A test that cannot run here says why and returns false (the caller returns). In the CI (`PANPAK_CI=1`) it fails with the reason instead:
+/// a skip there is a test that passes without having run.
+pub fn skip(reason: &str) -> bool {
+    assert!(std::env::var_os("PANPAK_CI").is_none_or(|v| v != "1"), "cannot run here and PANPAK_CI=1 forbids a skip: {reason}");
+    eprintln!("skipped: {reason}");
+    false
+}
+
 /// The tests that fork run the body in the child, which allocates and takes locks. A fork of a process
 /// that has other threads (the other tests, the opener) can copy the allocator in the middle of a call by
 /// another thread, and the child then waits for ever. So each of them runs again alone in a new

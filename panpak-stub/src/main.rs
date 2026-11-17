@@ -2816,10 +2816,7 @@ mod tests {
     fn require_abi(min: landlock::ABI, what: &str) -> bool {
         match panpak_core::detect_abi() {
             Ok(a) if a >= min => true,
-            other => {
-                eprintln!("SKIP {what}: detected ABI {other:?}, requires {min:?}");
-                false
-            }
+            other => crate::testutil::skip(&format!("{what}: detected ABI {other:?}, requires {min:?}")),
         }
     }
 

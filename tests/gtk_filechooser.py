@@ -108,8 +108,7 @@ print('EXIT clean', flush=True)
 
 
 def skip(why):
-    print('SKIP:', why)
-    sys.exit(0)
+    isolation.skip(why)
 
 
 def main():

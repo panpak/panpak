@@ -21,8 +21,8 @@ IMPL = ['Settings', 'Notification', 'Inhibit', 'Access', 'Account', 'AppChooser'
 
 
 def required():
-    """True when the lab must run (PANPAK_REQUIRE_LAB=1, set by the CI job that is meant to run it): a skip is then a failure."""
-    return os.environ.get('PANPAK_REQUIRE_LAB') == '1'
+    """True when the lab must run (PANPAK_REQUIRE_LAB=1, set by the CI job that is meant to run it, or PANPAK_CI=1): a skip is then a failure."""
+    return os.environ.get('PANPAK_REQUIRE_LAB') == '1' or os.environ.get('PANPAK_CI') == '1'
 
 
 def missing():

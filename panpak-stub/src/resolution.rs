@@ -400,7 +400,7 @@ mod tests {
             && cc(&["-Wl,-soname,libpx.so.1", "-o", "host/libpx.so.1", "px.c", "host/libbar.so.1"])
             && zig_cc(&dir, &["-o", "tree/bin/app", "main.c", "host/libpx.so.1", "tree/lib/libfoo.so.1", "-Wl,-z,now"]);
         if !built || !Path::new("/lib64/ld-linux-x86-64.so.2").exists() {
-            eprintln!("skipped: Zig cannot be run (set PANPAK_ZIG) or no glibc at the usual place");
+            crate::testutil::skip("Zig cannot be run (set PANPAK_ZIG) or no glibc at the usual place");
             let _ = fs::remove_dir_all(&dir);
             return;
         }

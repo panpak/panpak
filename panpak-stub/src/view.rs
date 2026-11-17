@@ -591,15 +591,9 @@ mod tests {
         assert!(!a.iter().any(|s| s.ends_with("/bus") || s.contains("gnupg") || s.contains("systemd/private") || s.contains("pulse") || s.contains("pipewire")));
     }
 
-    /// Whether the tests that run a real view can run. Where they cannot (no bubblewrap, no user namespaces, no python3) they are skipped,
-    /// unless `PANPAK_REQUIRE_VIEW` is set, as in the CI: there a skip would be a test that passes without having run.
+    /// Whether the tests that run a real view can run (no bubblewrap, no user namespaces or no python3: they are skipped, and fail in the CI).
     fn view_usable_or_skip() -> bool {
-        if panpak_core::view_status().usable() && Path::new("/usr/bin/python3").exists() {
-            return true;
-        }
-        assert!(std::env::var_os("PANPAK_REQUIRE_VIEW").is_none(), "PANPAK_REQUIRE_VIEW is set and bubblewrap or python3 is not usable here");
-        eprintln!("skipped: bubblewrap or python3 is not usable here");
-        false
+        panpak_core::view_status().usable() && Path::new("/usr/bin/python3").exists() || crate::testutil::skip("bubblewrap or python3 is not usable here")
     }
 
     /// A fake host root with the folders of a typical system, a Silverblue-like `/home` link and
