@@ -23,7 +23,7 @@ if [ -z "$want" ]; then
 fi
 have=$(git show "$head:REPRODUCIBLE-HASHES.md" | sed -n 's/^Build date: `SOURCE_DATE_EPOCH=\([0-9][0-9]*\)`.*/\1/p' | head -n 1)
 if [ "$have" != "$want" ]; then
-  echo "::error::this change touches the code, so its last commit has the date $want, and REPRODUCIBLE-HASHES.md says ${have:-nothing}. Run scripts/repro-build.sh --update (with your real HOME) after the last code commit and commit the file"
+  echo "::error::this change touches the code, so its last commit has the date $want, and REPRODUCIBLE-HASHES.md says ${have:-nothing}. Run scripts/repro-build.sh --update after the last code commit and commit the file"
   exit 1
 fi
 echo "ok: the build date of the reference is $want"
