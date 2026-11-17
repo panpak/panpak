@@ -292,6 +292,31 @@ fn doctor_names_every_unresolved_library_in_one_line() {
     assert!(line.contains("libfirst.so.1") && line.contains("Second.so") && line.contains("missing on the host and not included in the tree"), "{line}");
 }
 
+#[test]
+fn inspect_says_in_one_line_when_a_script_of_a_converted_app_sets_the_library_path() {
+    let l = lab("inspectscript");
+    let origin = "[origin]\nconverted_from = \"x.AppImage\"\nversion = \"1\"\nsha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\nsigned_by_upstream = false\n";
+    let script = b"#!/bin/sh\nHERE=$(dirname \"$(readlink -f \"$0\")\")\nexport LD_LIBRARY_PATH=\"$HERE/lib\":$LD_LIBRARY_PATH\nexec \"$HERE/bin/app\" \"$@\"\n".to_vec();
+    let quiet = b"#!/bin/sh\n# export LD_LIBRARY_PATH=$HERE/lib\nexec true\n".to_vec();
+    let app = ("bin/app", b"#!/bin/sh\nexec true\n".to_vec());
+    let inspect = |pkg: &Path| text(&cli(&l.home, &["inspect", pkg.to_str().unwrap()]));
+    // Converted, with a script that sets it: one line, with the path of the script.
+    let (o, pkg) = l.pack("withscript", &[app.clone(), ("usr/bin/launcher", script.clone())], origin);
+    assert!(o.status.success(), "{}", text(&o));
+    let t = inspect(&pkg);
+    let lines: Vec<&str> = t.lines().filter(|ln| ln.contains("LD_LIBRARY_PATH")).collect();
+    assert_eq!(lines.len(), 1, "{t}");
+    assert!(lines[0].contains("usr/bin/launcher") && lines[0].contains("sets LD_LIBRARY_PATH"), "{}", lines[0]);
+    // Converted, with a script that only mentions it in a comment: nothing.
+    let (o, pkg) = l.pack("quietscript", &[app.clone(), ("usr/bin/launcher", quiet)], origin);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!inspect(&pkg).contains("LD_LIBRARY_PATH"));
+    // Not converted (a package made here): the line is for converted apps only.
+    let (o, pkg) = l.pack("madehere", &[app, ("usr/bin/launcher", script)], "");
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!inspect(&pkg).contains("LD_LIBRARY_PATH"));
+}
+
 /// A minimal little-endian ELF64 shared object whose only dynamic entry is DT_NEEDED `name` (enough for the DT_NEEDED reader).
 fn elf_needing(name: &str) -> Vec<u8> {
     let mut strtab = vec![0u8];

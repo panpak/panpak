@@ -186,6 +186,42 @@ pub fn env_value(app_id: &str, tree: &Path, farm: &Path, ld_path: &[PathBuf]) ->
     Ok(OsString::from_vec(out))
 }
 
+/// Does this script set `LD_LIBRARY_PATH` itself? A line that is not a comment and holds an assignment (`LD_LIBRARY_PATH=...`, alone, after `export`, after
+/// `env`, after `;` or `&&`) counts; a mention (`echo $LD_LIBRARY_PATH`), `unset`, a comment and another name that ends in it (`MY_LD_LIBRARY_PATH=`) do not.
+pub fn sets_library_path(text: &str) -> bool {
+    const VAR: &str = "LD_LIBRARY_PATH=";
+    text.lines().any(|line| {
+        let line = line.trim_start();
+        if line.starts_with('#') {
+            return false;
+        }
+        line.match_indices(VAR).any(|(i, _)| line[..i].chars().next_back().is_none_or(|c| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | '{' | '"' | '\'' | '`')))
+    })
+}
+
+/// The scripts of a package that set `LD_LIBRARY_PATH` themselves (a converted AppImage often has one: its own launcher). Candidates are the executable files of
+/// at most 64 KiB, not named like a library, that start with `#!`; `read` gives the bytes of one of them (the caller knows where they are: the chunks of a package
+/// file, or the tree of an installed app) or `None` when it cannot. The paths come back in order.
+pub fn scripts_setting_the_path(raw_index: &[u8], mut read: impl FnMut(&crate::Entry, &[crate::Chunk]) -> Option<Vec<u8>>) -> Result<Vec<String>> {
+    const MAX: u64 = 64 << 10;
+    let (chunks, entries) = crate::parse_index(raw_index)?;
+    let mut out = Vec::new();
+    for e in &entries {
+        let crate::Kind::File { chunks: ids } = &e.kind else { continue };
+        let name = e.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let size: u64 = ids.iter().map(|&id| chunks.get(id as usize).map_or(u64::MAX, |c| c.raw as u64)).fold(0, u64::saturating_add);
+        if e.mode & 0o111 == 0 || name.contains(".so") || !(4..=MAX).contains(&size) {
+            continue;
+        }
+        let Some(bytes) = read(e, &chunks) else { continue };
+        if bytes.starts_with(b"#!") && std::str::from_utf8(&bytes).is_ok_and(sets_library_path) {
+            out.push(e.path.display().to_string());
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +387,25 @@ mod tests {
         assert!(!v.to_str().unwrap().contains("/home/"));
         // A folder that is neither the farm nor in the tree is a bug of the caller: refused.
         assert!(env_value("org.example.app", tree, farm, &[PathBuf::from("/usr/lib")]).is_err());
+    }
+
+    #[test]
+    fn a_script_that_sets_the_library_path_itself_is_told_from_one_that_only_mentions_it() {
+        // The script of Shotcut 26.9.27 (usr/bin/shotcut).
+        let shotcut = "#!/bin/sh\nCURRENT_DIR=$(readlink -f \"$0\")\nINSTALL_DIR=$(dirname \"$CURRENT_DIR\")\nexport LD_LIBRARY_PATH=\"$INSTALL_DIR/lib\":$LD_LIBRARY_PATH\nexport MLT_REPOSITORY=\"$INSTALL_DIR/lib/mlt-7\"\n";
+        assert!(sets_library_path(shotcut));
+        for yes in ["LD_LIBRARY_PATH=/opt/x prog\n", "  export LD_LIBRARY_PATH=$HERE/lib\n", "exec env LD_LIBRARY_PATH=/x/lib app\n", "a; LD_LIBRARY_PATH=/y app\n"] {
+            assert!(sets_library_path(yes), "{yes:?}");
+        }
+        for no in [
+            "# export LD_LIBRARY_PATH=${HERE}/usr/lib\n",                // the AppRun of FreeCAD: commented out
+            "echo $LD_LIBRARY_PATH\n",
+            "unset LD_LIBRARY_PATH\n",
+            "MY_LD_LIBRARY_PATH=/x\n",
+            "export LD_LIBRARY_PATH_PRIVATE=/x\n",
+            "",
+        ] {
+            assert!(!sets_library_path(no), "{no:?}");
+        }
     }
 }

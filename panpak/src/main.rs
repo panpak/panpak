@@ -2572,12 +2572,36 @@ fn print_isolation(man: &panpak_core::Manifest) {
 }
 
 /// `panpak inspect [--json] <package or app id>`: what a package is, who signed it, what it may do and may not do, and how it is isolated.
+/// One line for `inspect` of a converted app when scripts of the app set `LD_LIBRARY_PATH` themselves (a launcher of the AppImage: Shotcut's `usr/bin/shotcut`). The
+/// scripts are read from the package (its chunks) or, for an installed app, from its tree when that is on the disk; when they cannot be read there is no line.
+fn scripts_with_own_library_path(o: &panpak_core::record::Opened) -> Option<String> {
+    let tree = store_dir().ok().map(|s| s.join("trees").join(panpak_core::hex(&o.footer.root)));
+    let mut file = o.file.try_clone().ok()?;
+    let found = panpak_core::libpath::scripts_setting_the_path(&o.raw_index, |e, chunks| {
+        if o.is_record {
+            let t = tree.as_ref()?;
+            std::fs::read(t.join(&e.path)).ok()
+        } else {
+            let panpak_core::Kind::File { chunks: ids } = &e.kind else { return None };
+            panpak_core::read_chunks(&mut file, chunks, ids).ok()
+        }
+    })
+    .ok()?;
+    if found.is_empty() {
+        return None;
+    }
+    let shown: Vec<&str> = found.iter().take(3).map(String::as_str).collect();
+    let more = if found.len() > 3 { format!(" and {} more", found.len() - 3) } else { String::new() };
+    Some(format!("note: {}{more} set{} LD_LIBRARY_PATH itself, so the library path of panpak does not reach the programs they start (the scripts of the app are not rewritten)", shown.join(", "), if found.len() > 1 { "" } else { "s" }))
+}
+
 fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
     use panpak_core::permissions as perms;
     let given = Path::new(arg);
     let path = if given.is_file() { given.to_path_buf() } else { store_dir()?.join("apps").join(arg).join("current") };
     ensure_code!(path.exists(), ErrorCode::E5001, "{arg}: not a package file and not an installed app (see `panpak list`)");
-    let man = panpak_core::record::open_verified(&path)?.manifest;
+    let opened = panpak_core::record::open_verified(&path)?;
+    let man = opened.manifest.clone();
     let key = man.update.as_ref().map(|u| u.key.clone()).unwrap_or_default();
     let fp = panpak_core::parse_pubkey(&key).map(|vk| panpak_core::fingerprint(&vk)).unwrap_or_else(|_| "?".into());
     let (lang, style) = (panpak_core::i18n::current(), perm_style());
@@ -2599,6 +2623,10 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
     println!("signed with the key {fp}");
     if let Some(o) = &man.origin {
         println!("converted from {} (NOT verified by the author; signed by the converter, not upstream)", o.converted_from);
+        // The scripts of the app are not rewritten; one that sets LD_LIBRARY_PATH itself overrides the library path of panpak for the programs it starts.
+        if let Some(line) = scripts_with_own_library_path(&opened) {
+            println!("{line}");
+        }
     }
     println!();
     let lines = perms::render_block(lang, style, &man, perms::Enforced::detect(), perms::documents_available());

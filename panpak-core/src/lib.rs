@@ -807,6 +807,11 @@ pub fn read_package_file(f: &mut File, raw_index: &[u8], path: &str, max: usize)
     let Kind::File { chunks: ids } = &e.kind else { bail!("{path}: not a regular file") };
     let total: u64 = ids.iter().map(|&id| chunks.get(id as usize).map_or(u64::MAX, |c| c.raw as u64)).fold(0, u64::saturating_add);
     ensure!(total <= max as u64, "{path}: larger than {max} bytes");
+    read_chunks(f, &chunks, ids)
+}
+
+/// The bytes of a file of a package (not of a record: the chunks are in the file): its chunks, read, decompressed and checked against their hashes.
+pub fn read_chunks(f: &mut File, chunks: &[Chunk], ids: &[u32]) -> Result<Vec<u8>> {
     let mut dec = ChunkDecoder::new()?;
     let (mut data, mut raw) = (Vec::new(), Vec::new());
     for &id in ids {
