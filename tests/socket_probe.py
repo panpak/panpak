@@ -105,11 +105,13 @@ def run(lab, work):
     out, err = pr.communicate(timeout=60)
     assert pr.returncode == 7, (pr.returncode, err)
     rep = report()
-    assert rep['seccomp'] == 0 and 'SOCKET PROBE' not in err, (rep, err)
+    # The app always has the filter of the stub (mode 2, since step 7), so the mode does not tell the probe; what is off without it is the
+    # message and the log (checked below: the log file exists only after a run with the probe).
+    assert rep['seccomp'] == 2 and 'SOCKET PROBE' not in err, (rep, err)
     (userdata / 'report.json').unlink()
     print('probe off by default: ok')
 
-    # On: exit code, log, filter active, variable hidden from the app.
+    # On: exit code, log, variable hidden from the app.
     log = work / 'probe.jsonl'
     pr = start('exit7', probe=log)
     out, err = pr.communicate(timeout=120)

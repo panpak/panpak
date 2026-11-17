@@ -164,6 +164,8 @@ jobs:
           bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
       - name: Hardening (seccomp filter and system font cache, through the real launcher)
         run: python3 tests/hardening.py
+      - name: The socket probe (a measurement mode that must stay off unless asked for)
+        run: python3 tests/socket_probe.py
       - name: A pty in the isolated view (shell, window size, job control, a full-screen program)
         run: python3 tests/pty.py
       - name: The [env] table (variables that point an app at its own tree)
