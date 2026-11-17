@@ -141,5 +141,5 @@ Every window start of a run also reads the environment of every process under th
 (`display.library_path_offenders`) the values that take effect: an absolute path into the store (a tree, a farm, a package) in a process that is not a program of the
 app is a fault; a program of the app (whose executable is under the `trees` folder of the store) must hold the relative value (`/$ORIGIN/.panpak-lib-<h>/...`,
 PANPAK-FORMAT.md section 7.1), not a path of the store. The relative value in a program of the host (the `sh` or `bash` that runs the script of a converted AppImage) is
-inert by construction (it names a folder that does not exist at the root) and is no fault. A fault ends the app's row with the pids and the executables. The unit tests of the rule are in
+inert by construction (it names a folder that does not exist at the root) and is no fault. A fault ends the app's row with the pids and the executables. In a converted AppImage a program that holds another value was given it by a script of the app (Shotcut's `usr/bin/shotcut` exports its own absolute `LD_LIBRARY_PATH`): that is a note on the row (the scripts are not rewritten), not a fault; `panpak inspect` says the same in one line. The unit tests of the rule are in
 `tests/apps/test_harness.py` (`LibraryPath`).

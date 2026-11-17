@@ -216,6 +216,7 @@ class Run:
         self.home = ctx.runs / app.name / "h"
         isolation.require_isolated_home(self.home, ctx.work)
         self.launcher = self.home / ".local/bin" / app.id
+        self.notes = []              # what a start found that is not a fault (the notes of the row)
 
     def prepare(self):
         isolation.safe_rmtree(self.home.parent, self.ctx.work)
@@ -272,7 +273,8 @@ class Run:
             if found is not None:
                 time.sleep(0.5)
                 # The library path must be valid only for the programs of the app: the outer stub and the helpers do not hold it.
-                bad = display.library_path_offenders(display.process_rows(p.pid), self.home / ".local/share/panpak/trees")
+                bad, notes = display.library_path_report(display.process_rows(p.pid), self.home / ".local/share/panpak/trees", converted=not self.app.source)
+                self.notes += [n for n in notes if n not in self.notes]
                 if bad:
                     raise StepError("library path: " + "; ".join(bad))
         finally:

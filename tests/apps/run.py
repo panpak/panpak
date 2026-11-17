@@ -106,6 +106,7 @@ def one(ctx, app, disp_of, full, use_cache):
             else:
                 row["error"] = "no window appeared"
         row["starts_s"] = round(time.monotonic() - t0, 1)
+        row["notes"] += [n for n in run.notes if n not in row["notes"]]
     except (pipeline.StepError, display.Missing) as e:
         row["error"] = str(e)
     return row

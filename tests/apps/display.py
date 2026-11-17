@@ -192,15 +192,15 @@ def process_rows(root_pid):
     return rows
 
 
-def library_path_offenders(rows, tree_dir):
-    """What is wrong with the library path in a run (PANPAK-FORMAT.md section 7.1). `rows` as from `process_rows`, `tree_dir` the folder with the trees of the
-    store (the store is the folder above it). Only values that take effect are faults: an absolute path into the store (a tree, a farm, a package) in a process that is
-    not an app program, or in any process that is not a program of the tree; the relative `/$ORIGIN/.panpak-lib-...` that the stub makes names a folder that does not exist
-    at the root, so it is inert in the `sh` or `bash` of the host that runs the script of an AppImage, and is no fault. A program of the app must hold the relative value,
-    never a path of the store. Returns a list of texts, empty when all is well."""
+def library_path_report(rows, tree_dir, converted=False):
+    """What is wrong with the library path in a run (PANPAK-FORMAT.md section 7.1): `(faults, notes)`. `rows` as from `process_rows`, `tree_dir` the folder with the
+    trees of the store (the store is the folder above it). Only values that take effect count: an absolute path into the store (a tree, a farm, a package) in a process
+    that is not an app program is a fault; the relative `/$ORIGIN/.panpak-lib-...` that the stub makes names a folder that does not exist at the root, so it is inert in
+    the `sh` or `bash` of the host that runs the script of an AppImage, and is no fault. A program of the app must hold the relative value. When it holds anything else
+    the stub did not put it there: a script of the app set it (Shotcut's `usr/bin/shotcut`). In a converted AppImage that is a note (the scripts of the app are not
+    rewritten); in an app made from source it is a fault."""
     tree_dir = str(tree_dir).rstrip("/") + "/"
     store = str(Path(tree_dir.rstrip("/")).parent).rstrip("/") + "/"
-    byp = {r["pid"]: r for r in rows}
     inside = set()
     for r in rows:
         if r["exe"].startswith(tree_dir):
@@ -212,18 +212,28 @@ def library_path_offenders(rows, tree_dir):
             if r["pid"] not in inside and r["ppid"] in inside:
                 inside.add(r["pid"])
                 changed = True
-    out = []
+    faults, notes = [], []
     for r in rows:
         if r["ld"] is None:
             continue
         effective = [e for e in r["ld"].split(":") if e.startswith(store)]
         if r["exe"].startswith(tree_dir):
             if not r["ld"].startswith("/$ORIGIN/"):
-                out.append(f"pid {r['pid']} ({r['exe']}) holds {LIBRARY_PATH_VAR} with a path that is not relative to the program: {r['ld'][:120]}")
+                if converted:
+                    text = f"{r['exe'][len(tree_dir):].split('/', 1)[-1]} holds an absolute {LIBRARY_PATH_VAR} that a script of the app set (a converted AppImage: the scripts are not rewritten): {r['ld'][:100]}"
+                    if text not in notes:
+                        notes.append(text)
+                else:
+                    faults.append(f"pid {r['pid']} ({r['exe']}) holds {LIBRARY_PATH_VAR} with a path that is not relative to the program: {r['ld'][:120]}")
         elif effective:
             where = "outside the app" if r["pid"] not in inside else "started by the app"
-            out.append(f"pid {r['pid']} ({r['exe']}) is {where} and holds {LIBRARY_PATH_VAR} with a path of the store that takes effect: {effective[0][:120]}")
-    return out
+            faults.append(f"pid {r['pid']} ({r['exe']}) is {where} and holds {LIBRARY_PATH_VAR} with a path of the store that takes effect: {effective[0][:120]}")
+    return faults, notes
+
+
+def library_path_offenders(rows, tree_dir):
+    """The faults of `library_path_report` for an app made from source (a converted AppImage is `library_path_report(..., converted=True)`)."""
+    return library_path_report(rows, tree_dir, converted=False)[0]
 
 
 def window_counts(win, min_size, is_first):

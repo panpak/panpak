@@ -242,6 +242,35 @@ class LibraryPath(unittest.TestCase):
         self.assertTrue(me[0]["exe"].startswith("/"))
 
 
+class ScriptsOfConvertedApps(unittest.TestCase):
+    TREES = "/h/.local/share/panpak/trees"
+
+    def rows(self):
+        shotcut = "/h/.local/share/panpak/trees/abc/usr/bin/bin/shotcut"
+        own = self.TREES + "/abc/usr/bin/lib:" + self.TREES + "/abc/usr/bin/lib/qt6"
+        return [
+            {"pid": 11, "ppid": 10, "exe": "/usr/bin/dash", "ld": "/$ORIGIN/.panpak-lib-ab/.farm"},
+            {"pid": 12, "ppid": 11, "exe": shotcut, "ld": own},      # its own script set an absolute value
+        ]
+
+    def test_an_absolute_value_that_the_script_of_a_converted_app_set_is_a_warning(self):
+        faults, notes = display.library_path_report(self.rows(), self.TREES, converted=True)
+        self.assertEqual(faults, [])
+        self.assertEqual(len(notes), 1)
+        self.assertIn("bin/shotcut", notes[0])
+        self.assertIn("script of the app", notes[0])
+
+    def test_the_same_value_in_an_app_made_from_source_is_a_fault(self):
+        faults, notes = display.library_path_report(self.rows(), self.TREES, converted=False)
+        self.assertEqual(len(faults), 1)
+        self.assertEqual(notes, [])
+        self.assertEqual(faults, display.library_path_offenders(self.rows(), self.TREES))
+
+    def test_a_converted_app_with_the_relative_value_has_neither(self):
+        rows = [{"pid": 12, "ppid": 1, "exe": self.TREES + "/abc/bin/app", "ld": "/$ORIGIN/.panpak-lib-ab/lib"}]
+        self.assertEqual(display.library_path_report(rows, self.TREES, converted=True), ([], []))
+
+
 class Windows(unittest.TestCase):
     def test_a_window_must_be_wide_enough_and_tall_enough_unless_it_is_the_first_one_of_the_app(self):
         self.assertTrue(display.window_counts({"w": 500, "h": 114}, (200, 120), True), "LMMS: the first window is a dialog of 500 x 114")
