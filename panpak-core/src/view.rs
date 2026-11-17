@@ -168,6 +168,50 @@ pub fn view_status_at(bwrap: &Path, cache_dir: Option<&Path>) -> ViewStatus {
     status
 }
 
+/// Run `bwrap` once with an overlay (bubblewrap 0.11 and later; the Ubuntu 24.04 and Debian 12 packages are older and fail with
+/// "Unknown option --overlay-src") and say whether it works. The kernel can refuse it too.
+fn probe_overlay(bwrap: &Path) -> bool {
+    let Some(truebin) = ["/usr/bin/true", "/bin/true"].into_iter().find(|p| Path::new(p).is_file()) else { return false };
+    Command::new(bwrap)
+        .args(["--unshare-user", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"])
+        .args(["--overlay-src", "/usr", "--tmp-overlay", "/tmp", "--", truebin])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Whether the view can give the environment of the user as overlays (a copy the app may write and that is gone at the end), or only
+/// as read-only mounts. Kept in the same private folder as the quick test, for the same program and kernel, whatever the answer: it
+/// changes only with another bubblewrap or kernel.
+pub fn overlay_supported_at(bwrap: &Path, cache_dir: Option<&Path>) -> bool {
+    let line = cache_line(bwrap);
+    let file = cache_dir.map(|d| d.join("view-overlay"));
+    if let (Some(f), Some(l)) = (&file, &line) {
+        if let Ok(c) = fs::read_to_string(f) {
+            let mut it = c.lines();
+            if it.next() == Some(l.as_str()) {
+                return it.next() == Some("yes");
+            }
+        }
+    }
+    let ok = probe_overlay(bwrap);
+    if let (Some(f), Some(l), Some(d)) = (&file, &line, cache_dir) {
+        let _ = fs::DirBuilder::new().recursive(true).mode(0o700).create(d);
+        let tmp = d.join(format!(".view-overlay.{}", std::process::id()));
+        if fs::write(&tmp, format!("{l}\n{}\n", if ok { "yes" } else { "no" })).is_ok() && fs::rename(&tmp, f).is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+    }
+    ok
+}
+
+/// `overlay_supported_at` for `/usr/bin/bwrap`.
+pub fn overlay_supported() -> bool {
+    overlay_supported_at(Path::new(BWRAP), runtime_cache_dir().as_deref())
+}
+
 /// Where the cache lives: `$XDG_RUNTIME_DIR/panpak` (a private folder of the user).
 fn runtime_cache_dir() -> Option<PathBuf> {
     let d = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty())?);
@@ -321,6 +365,30 @@ mod tests {
         fs::create_dir_all(&bad_cache).unwrap();
         fs::copy(cache.join("view-probe"), bad_cache.join("view-probe")).unwrap();
         assert!(matches!(view_status_at(&bad, Some(&bad_cache)), ViewStatus::Unusable(_)));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn a_bubblewrap_without_overlays_is_told_and_the_answer_is_kept() {
+        let d = temp("overlay");
+        let cache = d.join("cache");
+        // The old bubblewrap of Ubuntu 24.04 and Debian 12: it fails on the option it does not know.
+        let old = fake_bwrap(&d, "case \"$*\" in *--overlay-src*) echo 'bwrap: Unknown option --overlay-src' >&2; exit 1;; esac; exit 0");
+        assert!(!overlay_supported_at(&old, Some(&cache)));
+        let entry = fs::read_to_string(cache.join("view-overlay")).unwrap();
+        assert!(entry.ends_with("\nno\n"), "{entry}");
+        assert_eq!(fs::metadata(&cache).unwrap().permissions().mode() & 0o777, 0o700);
+        // The answer comes from the entry: nothing runs the program again (the entry says no, the program would say yes).
+        fs::write(&old, "#!/bin/sh\nexit 0\n").unwrap();
+        let line = cache_line(&old).unwrap();
+        fs::write(cache.join("view-overlay"), format!("{line}\nno\n")).unwrap();
+        assert!(!overlay_supported_at(&old, Some(&cache)));
+        // A bubblewrap that does it, and a different program: the entry of the first is not used.
+        let new_dir = d.join("new");
+        fs::create_dir_all(&new_dir).unwrap();
+        let new = fake_bwrap(&new_dir, "exit 0");
+        assert!(overlay_supported_at(&new, Some(&cache)));
+        assert!(fs::read_to_string(cache.join("view-overlay")).unwrap().ends_with("\nyes\n"));
         fs::remove_dir_all(&d).unwrap();
     }
 

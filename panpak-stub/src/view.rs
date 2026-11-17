@@ -299,6 +299,9 @@ pub struct PrivateHome {
 /// See `panpak_core::EnvLayers` for what is in it and why.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Layers {
+    /// This bubblewrap does overlays (0.11 and later). Without it the folders of `overlays` are mounted read-only: same paths, same
+    /// live view of the user's folders, but the app cannot change its own copy.
+    pub overlay: bool,
     /// Folders mounted as overlays: `src` is the folder of the user (the lower layer), `dest` the place in the view. The
     /// upper layer is a tmpfs that only the view knows: writes are lost when the last process of the view ends.
     pub overlays: Vec<Mount>,
@@ -405,7 +408,11 @@ fn view_args(plan: &ViewPlan) -> Vec<OsString> {
             a.extend([os("--bind"), p.data.as_os_str().into(), h.as_os_str().into()]);
             a.extend([os("--bind"), p.cache.as_os_str().into(), h.join(".cache").into_os_string()]);
             for m in &plan.layers.overlays {
-                a.extend([os("--overlay-src"), m.src.as_os_str().into(), os("--tmp-overlay"), m.dest.as_os_str().into()]);
+                if plan.layers.overlay {
+                    a.extend([os("--overlay-src"), m.src.as_os_str().into(), os("--tmp-overlay"), m.dest.as_os_str().into()]);
+                } else {
+                    a.extend([os("--ro-bind"), m.src.as_os_str().into(), m.dest.as_os_str().into()]);
+                }
             }
             for f in &plan.layers.files {
                 a.extend([os("--ro-bind"), f.src.as_os_str().into(), f.dest.as_os_str().into()]);
@@ -521,6 +528,7 @@ mod tests {
             home: Some("/home/u".into()),
             private_home: Some(PrivateHome { data: "/home/u/.local/share/panpak/userdata/org.example.app".into(), cache: "/home/u/.cache/panpak/org.example.app".into() }),
             layers: Layers {
+                overlay: true,
                 overlays: vec![Mount::ro("/home/u/.config/gtk-3.0".into(), "/home/u/.config/gtk-3.0".into()), Mount::ro("/home/u/.local/share/icons/Adwaita".into(), "/home/u/.local/share/icons/Adwaita".into())],
                 files: vec![Mount::ro("/home/u/.config/kdeglobals".into(), "/home/u/.config/kdeglobals".into())],
                 hidden: vec!["/home/u/.config/gtk-3.0/bookmarks".into()],
@@ -590,6 +598,18 @@ mod tests {
         assert_eq!(&a[a.len() - 4..], ["--", "/home/u/.local/share/panpak/runtimes/1/panpak-stub", "--panpak-inner", "7"]);
         // Nothing of the session is in the plan.
         assert!(!a.iter().any(|s| s.ends_with("/bus") || s.contains("gnupg") || s.contains("systemd/private") || s.contains("pulse") || s.contains("pipewire")));
+    }
+
+    #[test]
+    fn without_overlays_the_environment_is_mounted_read_only_at_the_same_paths() {
+        let mut p = plan();
+        p.layers.overlay = false;
+        let a = strings(&p);
+        assert!(!a.iter().any(|s| s.contains("overlay")), "no overlay option reaches a bubblewrap that does not know it");
+        let cache = pos(&a, &["--bind", "/home/u/.cache/panpak/org.example.app", "/home/u/.cache"]).unwrap();
+        let gtk = pos(&a, &["--ro-bind", "/home/u/.config/gtk-3.0", "/home/u/.config/gtk-3.0"]).unwrap();
+        let hidden = pos(&a, &["--ro-bind", "/dev/null", "/home/u/.config/gtk-3.0/bookmarks"]).unwrap();
+        assert!(cache < gtk && gtk < hidden);
     }
 
     /// A fake host root with the folders of a typical system, a Silverblue-like `/home` link and
@@ -715,11 +735,26 @@ mod tests {
     /// real paths, a write to it stays in the view, the private files are empty, and nothing reaches the host's folders.
     #[test]
     fn the_layered_home_in_a_real_view() {
+        if !panpak_core::overlay_supported() {
+            eprintln!("skipped: this bubblewrap has no overlays (the other test covers it)");
+            return;
+        }
+        layered_home(true);
+    }
+
+    /// The same view with the environment of the user as read-only mounts (bubblewrap before 0.11): same paths, same home, same hidden
+    /// files; the app cannot change its copy.
+    #[test]
+    fn the_layered_home_without_overlays_in_a_real_view() {
+        layered_home(false);
+    }
+
+    fn layered_home(overlay: bool) {
         if !panpak_core::view_status().usable() || !Path::new("/usr/bin/python3").exists() {
             eprintln!("skipped: bubblewrap or python3 is not usable here");
             return;
         }
-        let base = std::env::temp_dir().join(format!("panpak-layered-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("panpak-layered-{}-{overlay}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let (data, cache, env) = (base.join("data"), base.join("cache"), base.join("env"));
         for d in [data.clone(), cache.clone(), env.join("gtk-3.0"), env.join("icons/hicolor"), env.join("icons/Adwaita")] {
@@ -738,6 +773,7 @@ mod tests {
         p.home = Some("/home/lh".into());
         p.private_home = Some(PrivateHome { data: data.clone(), cache: cache.clone() });
         p.layers = Layers {
+            overlay,
             overlays: vec![Mount::ro(env.join("gtk-3.0"), "/home/lh/.config/gtk-3.0".into()), Mount::ro(env.join("icons/Adwaita"), "/home/lh/.local/share/icons/Adwaita".into())],
             files: vec![],
             hidden: vec!["/home/lh/.config/gtk-3.0/bookmarks".into()],
@@ -746,13 +782,13 @@ mod tests {
             cd /home/lh\n\
             echo conf > .config/app.conf; echo c > .cache/c; mkdir newdir; echo n > newdir/f\n\
             test \"$(cat .config/gtk-3.0/settings.ini)\" = '[Settings]'\n\
-            echo 'gtk-theme-name=X' >> .config/gtk-3.0/settings.ini; echo new > .config/gtk-3.0/extra.ini\n\
+            if [ \"$OV\" = 1 ]; then echo 'gtk-theme-name=X' >> .config/gtk-3.0/settings.ini; echo new > .config/gtk-3.0/extra.ini; else if ( echo x >> .config/gtk-3.0/settings.ini ) 2>/dev/null; then exit 3; fi; fi\n\
             test ! -s .config/gtk-3.0/bookmarks\n\
             test \"$(cat .local/share/icons/Adwaita/theme)\" = adwaita\n\
             test ! -e .local/share/icons/hicolor\n\
             test \"$(ls .local/share/icons)\" = Adwaita\n\
             echo done\n";
-        let out = Command::new(panpak_core::BWRAP).args(view_args(&p)).args(["--", "/usr/bin/sh", "-c", script]).output().unwrap();
+        let out = Command::new(panpak_core::BWRAP).args(view_args(&p)).args(["--", "/usr/bin/sh", "-c", script]).env("OV", if overlay { "1" } else { "0" }).output().unwrap();
         assert!(out.status.success(), "{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         // The app's own files are in the private folders of the host.
         assert_eq!(std::fs::read_to_string(data.join(".config/app.conf")).unwrap(), "conf\n");

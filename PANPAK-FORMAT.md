@@ -1072,6 +1072,8 @@ exist:
 - `~/.local/share`: `fonts`, `themes`, `mime`, and each theme folder of `icons` except `hicolor` (overlays);
 - `~`: `.fonts`, and each theme folder of `.icons` except `hicolor` (overlays).
 
+Overlays need bubblewrap 0.11 or later and the overlayfs of the kernel (the runtime tests it once with `bwrap --overlay-src ... --tmp-overlay` and keeps the answer, like the test of the view). Where they are not there (the packages of Ubuntu 24.04 and Debian 12 are 0.9 and 0.8), the same folders are mounted read-only at the same paths: the app has the same home and the same look, follows a change of theme, and cannot change its own copy. `panpak doctor` says which of the two applies.
+
 In the overlays, `gtk-3.0/bookmarks`, `gtk-3.0/servers` and `gtk-4.0/bookmarks` are empty files (they list what the user has
 been doing), and the user's `hicolor` icon theme (`~/.local/share/icons/hicolor`, `~/.icons/hicolor`) is not in the view, which is why the icon folders are mounted theme by theme. It is the folder where `install` puts the menu icons of the apps (§3.1.3), which the app has no use for, and it has no
 `icon-theme.cache`, so Qt looks up each icon name file by file in every size folder: 40,247 failed `access()` calls and

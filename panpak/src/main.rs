@@ -2909,6 +2909,9 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         panpak_core::ViewStatus::Usable => {
             let v = panpak_core::bwrap_version().unwrap_or_else(|| "version unknown".to_string());
             println!("OK   isolated view: {v} at {} works (private /tmp and /run, only allowed sockets)", panpak_core::BWRAP);
+            if !panpak_core::overlay_supported() {
+                println!("NOTE overlays: {v} cannot make overlays (it needs bubblewrap 0.11 or later, and the kernel's overlayfs); the fonts, themes and settings of your desktop are mounted read-only instead: an app sees them and follows a change, but cannot change its own copy");
+            }
         }
         panpak_core::ViewStatus::Unusable(why) => {
             println!("NOTE isolated view: not available, {}", why.reason());

@@ -2463,6 +2463,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
 fn layers_of(env: &panpak_core::EnvLayers) -> view::Layers {
     let canon = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     view::Layers {
+        overlay: panpak_core::overlay_supported(),
         overlays: env.overlays.iter().map(|p| view::Mount::ro(canon(p), p.clone())).collect(),
         files: env.files.iter().map(|p| view::Mount::ro(canon(p), p.clone())).collect(),
         hidden: env.hidden.clone(),
