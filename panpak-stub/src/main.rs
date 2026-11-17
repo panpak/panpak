@@ -2816,7 +2816,11 @@ mod tests {
     fn require_abi(min: landlock::ABI, what: &str) -> bool {
         match panpak_core::detect_abi() {
             Ok(a) if a >= min => true,
-            other => crate::testutil::skip(&format!("{what}: detected ABI {other:?}, requires {min:?}")),
+            other => {
+                let why = format!("{what}: detected ABI {other:?}, requires {min:?}");
+                // A test that needs more than the kernel of the CI runner has cannot run there: that is named, not hidden.
+                if min > crate::testutil::RUNNER_ABI { crate::testutil::skip_known(&why) } else { crate::testutil::skip(&why) }
+            }
         }
     }
 

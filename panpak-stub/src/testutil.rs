@@ -10,6 +10,17 @@ pub fn skip(reason: &str) -> bool {
     false
 }
 
+/// The Landlock ABI of the kernel of the CI runner (the Ubuntu 24.04 image of GitHub): V8. A test that needs a newer one cannot run there; it
+/// says so (`skip_known`) and runs on a machine with a newer kernel. The list of them is what the CI log shows as `known skip`.
+pub const RUNNER_ABI: landlock::ABI = landlock::ABI::V8;
+
+/// A skip that the CI cannot avoid, for a reason that is named (the runner's kernel is older than the test needs): it is reported and does
+/// not fail with `PANPAK_CI=1`.
+pub fn skip_known(reason: &str) -> bool {
+    eprintln!("known skip (the CI runner cannot run this): {reason}");
+    false
+}
+
 /// The tests that fork run the body in the child, which allocates and takes locks. A fork of a process
 /// that has other threads (the other tests, the opener) can copy the allocator in the middle of a call by
 /// another thread, and the child then waits for ever. So each of them runs again alone in a new

@@ -159,7 +159,8 @@ jobs:
           bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
           bwrap --version
       - name: Test (musl)
-        run: cargo test --locked --target x86_64-unknown-linux-musl
+        # --no-fail-fast: one failing test does not hide the others (the first run with PANPAK_CI=1 shows every test that used to skip).
+        run: cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl
       - name: Release build (conformance and artifacts)
         run: cargo build --locked --release --target x86_64-unknown-linux-musl
       - name: Format conformance (independent verifier)
