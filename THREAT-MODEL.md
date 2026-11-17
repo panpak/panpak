@@ -107,7 +107,7 @@ Each app has its own home (spec §9.1), created with mode 0700 outside the store
 `$XDG_DATA_HOME/panpak/userdata/<id>/{.config,.local/share,.local/state}` and the cache
 `$XDG_CACHE_HOME/panpak/<id>`. In the isolated view the private home is mounted at the path of
 the real home and the cache as `~/.cache`; `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` name
-the folders there, and these are the only writable places besides `/tmp` and the `rw` home paths of the manifest. Without
+the folders there, and these are the only writable places besides `/tmp` (a tmpfs of the view with a size cap of 256 MiB) and the `rw` home paths of the manifest. Without
 the view `HOME` is the private home. The old `~/.local/share/<id>` is not touched and not writable. What the app
 writes in its home is its own data: it cannot reach the real home, so a program it starts finds only that. The user's fonts,
 themes, icons and toolkit settings are mounted into it read-only (§9.1): the app cannot change them. A file the app writes in its home may

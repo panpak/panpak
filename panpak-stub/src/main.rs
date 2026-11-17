@@ -2246,8 +2246,8 @@ fn check_farm(tree: &Path, farm: &Path, root_hex: &str) -> Result<()> {
 fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     let perms = ctx.man.permissions.as_ref();
     let x11 = perms.is_some_and(|p| p.x11 == Some(true));
-    // The private /tmp is in the view: the app's TMPDIR is /tmp there (short, and not shared).
-    cmd.env("TMPDIR", "/tmp").env("SQLITE_TMPDIR", "/tmp");
+    // `/tmp` of the view is a small tmpfs (memory, with a cap). TMPDIR is the folder for large temporary files, on disk, in the cache of the
+    // app (`~/.cache/tmp` in the view): `real_main` set it from the folders as the view shows them.
     // Sockets: the ones the manifest lists and the ones every app gets. Only existing ones.
     let mut sockets = Vec::new();
     for s in perms.and_then(|p| p.sockets_allow.as_ref()).into_iter().flatten() {
@@ -2346,7 +2346,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         }
     }
     // /tmp and /dev/shm are shared by the copies of this app that run together, and by no other app.
-    let shared = ctx.runtime_dir.zip(app_dirs.as_ref()).and_then(|(rt, dirs)| match sharedtmp::prepare(&rt.join("panpak").join(&ctx.man.app.id), &panpak_core::stalelocks::in_use_marker(dirs), ctx.early_lock.as_ref().and_then(|f| f.try_clone().ok())) {
+    let shared = ctx.runtime_dir.zip(app_dirs.as_ref()).and_then(|(rt, dirs)| match sharedtmp::prepare(&rt.join("panpak").join(&ctx.man.app.id), &dirs.tmp, &panpak_core::stalelocks::in_use_marker(dirs), ctx.early_lock.as_ref().and_then(|f| f.try_clone().ok())) {
         Ok(s) => Some(s),
         Err(e) => {
             eprintln!("panpak: shared /tmp off, using a private one: {}", panpak_core::err_text(&e));
@@ -2367,7 +2367,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     stage("shared folders");
     let plan = view::ViewPlan {
         root: view::root_layout(Path::new("/")),
-        shared_tmp: shared.as_ref().map(|s| s.tmp.clone()),
+        tmp_size: view::TMP_SIZE,
         shared_shm: shared.as_ref().map(|s| s.shm.clone()),
         mounts,
         symlinks,

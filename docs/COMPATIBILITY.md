@@ -136,3 +136,15 @@ therefore cannot work on Ubuntu 24.04 and later, nor on any system with
 `apparmor_restrict_unprivileged_userns`. Also: the process that runs the app is the inner stub itself, which
 is pid 2, so it would have to fork the app and wait for it. The lock files are removed instead (see above).
 Start cost of the stale-lock search: scanning at every start took 38.8 ms against 33.4 ms with the mark `userdata/<id>.in-use` (median of 40 alternating pairs, a private folder of 2,200 entries); with the mark the search runs only after a run that did not end normally.
+
+## Size of `/tmp` and `/dev/shm` in the view (measured 2026-11-17)
+
+How much an app writes in the `/tmp` and `/dev/shm` of its view, to set the cap of `/tmp` (256 MiB, `view::TMP_SIZE`). Method: the harness starts each app once (fast mode); a sampler on the host reads, every 0.2 s, the files under `/proc/<pid>/root/tmp` and `/proc/<pid>/root/dev/shm` of the processes of the app (the ones with the seccomp filter of the inner stub, inside the view), in disk blocks; the maximum seen is kept. The runtime folder that the harness puts in `/tmp` is left out (on a desktop it is `/run/user/<uid>`). The script is not in the repository.
+
+| App | `/tmp` | `/dev/shm` |
+|---|---|---|
+| Zulip | 1.7 MiB (sockets and files of Chromium) | 36 KiB (Chromium) |
+| Audacity | 0 | 372 KiB (the database of JACK) |
+| Bitwarden, FreeCAD, Joplin, Kdenlive, Krita, LMMS, Obsidian, OpenShot, QOwnNotes, Shotcut, Simplenote, qBittorrent | 0 | 0 |
+
+Limits of the measure: one start of about 12 s with no work in the app; an app that renders, downloads or exports uses `TMPDIR` (on disk) if it follows the convention, and `/tmp` only if it writes there by name. The cap is 150 times the largest value seen; an app that needs more in `/tmp` gets ENOSPC and the remedy is its `TMPDIR`. On disk `TMPDIR` has no cap (like the private home); on a machine with the cache on a small partition the disk is what fills.

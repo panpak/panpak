@@ -77,8 +77,7 @@ impl AppDirs {
     /// The same folders as the isolated view shows them: the private home is mounted at `home` and the cache at
     /// `home/.cache`. The variables of the app and the paths in its launch values use these.
     pub fn seen_at(&self, home: &Path) -> AppDirs {
-        // `/tmp` of the view is a tmpfs of its own, the `TMPDIR` of the app there.
-        AppDirs { tmp: PathBuf::from("/tmp"), ..AppDirs::below(home.to_path_buf(), home.join(".cache")) }
+        AppDirs::below(home.to_path_buf(), home.join(".cache"))
     }
 
     /// Create the folders with mode 0700. Run before the sandbox is applied.
@@ -588,7 +587,7 @@ mod tests {
         // As the view shows them: the home is the private home, `~/.cache` the cache.
         let s = d.seen_at(Path::new("/home/u"));
         assert_eq!((s.root.as_path(), s.config.as_path(), s.data.as_path(), s.state.as_path()), (Path::new("/home/u"), Path::new("/home/u/.config"), Path::new("/home/u/.local/share"), Path::new("/home/u/.local/state")));
-        assert_eq!((s.cache.as_path(), s.tmp.as_path()), (Path::new("/home/u/.cache"), Path::new("/tmp")));
+        assert_eq!((s.cache.as_path(), s.tmp.as_path()), (Path::new("/home/u/.cache"), Path::new("/home/u/.cache/tmp")));
         assert_eq!(s.expand("${XDG_STATE_HOME}/a").unwrap(), "/home/u/.local/state/a");
     }
 

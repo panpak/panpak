@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / 'tests'))
 import isolation  # noqa: E402
 
 ID = 'org.example.dirs'
-# With a usable /usr/bin/bwrap the app runs in the isolated view (tests/view.py), where TMPDIR is /tmp.
+# With a usable /usr/bin/bwrap the app runs in the isolated view (tests/view.py), where /tmp is a tmpfs with a size cap and TMPDIR is a folder of the cache.
 VIEW = subprocess.run(['/usr/bin/bwrap', '--unshare-user', '--ro-bind', '/', '/', '/usr/bin/true'], capture_output=True).returncode == 0
 # The folders of the app are the home in the view (see tests/view.py); this test checks that layout.
 PROBE = r'''#!/bin/sh
@@ -59,6 +59,8 @@ try write_notes 'echo x > "$HOME/Notes/n.txt"'
 try read_docs 'cat "$HOME/Docs/ro.txt" >/dev/null'
 try write_docs 'echo x > "$HOME/Docs/new.txt"'
 try write_tmp 'echo x > /tmp/panpak-dirs-test-$$ && rm /tmp/panpak-dirs-test-$$'
+try tmp_cap 'dd if=/dev/zero of=/tmp/cap-test bs=1M count=300 2>/dev/null; rc=$?; rm -f /tmp/cap-test; [ $rc -eq 0 ]'
+try tmpdir_big 'dd if=/dev/zero of="$TMPDIR/big" bs=1M count=300 2>/dev/null && rm -f "$TMPDIR/big"'
 echo "libdbus=$(timeout 10 dbus-send --session --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames >/dev/null 2>&1 && echo found || echo none)"
 echo "gdbus=$(timeout 10 gdbus call --session --dest org.freedesktop.DBus --object-path / --method org.freedesktop.DBus.ListNames >/dev/null 2>&1 && echo found || echo none)"
 echo "sdbus=$(timeout 10 busctl --user list >/dev/null 2>&1 && echo found || echo none)"
@@ -206,7 +208,7 @@ def main():
            write_home_config='ok', write_home_file='ok', read_gtk='ok', write_gtk='deny', read_gtk_after_write='deny', read_gtk_bookmarks='deny', read_gh='deny',
            list_config='ok', read_icons='ok', write_icons='deny', read_hicolor='deny', read_icons_dir='ok', read_old_appdata='deny',
            read_other_userdata='deny', read_notes='deny', write_notes='deny', read_docs='deny', write_docs='deny',
-           write_tmp='ok', args='one two', fonts_found='1')
+           write_tmp='ok', tmp_cap='deny', tmpdir_big='ok', args='one two', fonts_found='1')
     cfg, dat, st = userdata / '.config', userdata / '.local/share', userdata / '.local/state'
     assert (cfg / 'c.txt').exists() and (dat / 'd.txt').exists() and (st / 's.txt').exists() and (cache / 'k.txt').exists()
     assert (userdata / '.config/something/x').exists() and (userdata / 'stray.txt').exists(), 'the app has its home'
@@ -222,7 +224,9 @@ def main():
     assert rep['env_XDG_DATA_HOME'] == f'{h}/.local/share'
     assert rep['env_XDG_STATE_HOME'] == f'{h}/.local/state'
     assert rep['env_XDG_CACHE_HOME'] == f'{h}/.cache'
-    assert rep['env_TMPDIR'] == '/tmp' and rep['env_SQLITE_TMPDIR'] == '/tmp'
+    # /tmp is a tmpfs of the view with a size cap (the 300 MB write above fails); TMPDIR is a folder of the cache, on disk, for large files.
+    assert rep['env_TMPDIR'] == f'{h}/.cache/tmp' and rep['env_SQLITE_TMPDIR'] == f'{h}/.cache/tmp', (rep['env_TMPDIR'], rep['env_SQLITE_TMPDIR'])
+    assert (cache / 'tmp').is_dir() and not any((cache / 'tmp').iterdir()), 'the last copy to end empties TMPDIR'
     assert rep['env_XDG_CONFIG_DIRS'] == '/etc/xdg', rep['env_XDG_CONFIG_DIRS']
     assert rep['env_XDG_DATA_DIRS'] == '/usr/local/share:/usr/share', rep['env_XDG_DATA_DIRS']
     assert not (cfg / 'fontconfig/fonts.conf').exists(), 'no generated fonts.conf in the view: fontconfig reads the real one'
@@ -277,7 +281,7 @@ def main():
     rc, rep, err = lab.run('tail')
     assert rc == 0, err
     expect(rep, write_notes='ok', read_notes='ok', read_docs='ok', write_docs='deny', write_home_file='ok',
-           read_gh='deny', args=f'--profile {h}/.config/prof --tmp=/tmp tail',
+           read_gh='deny', args=f'--profile {h}/.config/prof --tmp={h}/.cache/tmp tail',
            env_FOO=f'{h}/.local/state/foo', env_IPYTHONDIR=f'{h}/.config/ipython')
     assert (h / 'Notes/n.txt').exists() and not (h / 'Docs/new.txt').exists()
     assert (h / 'Missing/Dir').is_dir(), 'rw home path was not created'

@@ -159,15 +159,15 @@ marker = [a for a in sys.argv[1:] if a.startswith('/tmp/')]
 if marker:
     out['tmp_marker'] = 'visible' if os.path.exists(marker[0]) else 'hidden'
 if '--hold' in sys.argv:
-    # A first copy of the app: leave marks in /tmp and /dev/shm and wait for the harness to let go.
+    # A first copy of the app: leave marks in TMPDIR (on disk, shared by the copies) and /dev/shm and wait for the harness to let go.
     import time as _t
-    open('/tmp/copy-held', 'w').write('x')
+    open(os.environ['TMPDIR'] + '/copy-held', 'w').write('x')
     open('/dev/shm/copy-shm', 'w').write('x')
     for _ in range(300):
-        if os.path.exists('/tmp/copy-release'):
+        if os.path.exists(os.environ['TMPDIR'] + '/copy-release'):
             break
         _t.sleep(0.1)
-out['tmp_copy'] = ','.join(sorted(n for n in os.listdir('/tmp') if n.startswith('copy-')))
+out['tmp_copy'] = ','.join(sorted(n for n in os.listdir(os.environ['TMPDIR']) if n.startswith('copy-')))
 out['shm_copy'] = ','.join(sorted(n for n in os.listdir('/dev/shm') if n.startswith('copy-')))
 out['tmp_entries'] = len(os.listdir('/tmp'))
 out['env_TMPDIR'] = os.environ.get('TMPDIR', 'UNSET')
@@ -482,7 +482,7 @@ def main():
                     sock_pipewire='absent', sock_pulse='absent', sock_wayland='ok', sock_journal='ok', sock_journal_devlog='ok', sock_journal_sendto='ok',
                     sock_docker='absent', sock_docker_var='absent', sock_containerd='absent', sock_podman='absent',
                     sock_snapd='absent', sock_libvirt='absent',
-                    x11_dir='absent', tmp_marker='hidden', env_TMPDIR='/tmp', env_SQLITE_TMPDIR='/tmp',
+                    x11_dir='absent', tmp_marker='hidden', env_TMPDIR=f'{h}/.cache/tmp', env_SQLITE_TMPDIR=f'{h}/.cache/tmp',
                     write_tmpdir='ok', write_data='ok', write_runtime='ok',
                     uid=str(os.getuid()), uid_map=f'{os.getuid()} 0 1')
         if view_here:
@@ -680,37 +680,38 @@ def main():
             print('addresses: https and mailto pass, file: and attach are refused, GIO goes through the opener:', rep['gio_https'])
         lab.env['PATH'] = lab.env['PATH'].split(':', 1)[1]
 
-        # 6d. Copies of one app that run together share /tmp and /dev/shm; a start with no copy alive begins empty.
+        # 6d. Copies of one app that run together share TMPDIR (a folder of the cache, on disk) and /dev/shm; /tmp is a tmpfs of each copy. A start with no copy alive begins empty, and the last copy to end empties TMPDIR.
         if view_here:
             lab.install('')
             shared = Path(lab.runtime) / 'panpak' / app_dirs.ID
+            disktmp = h / '.cache/panpak' / app_dirs.ID / 'tmp'   # TMPDIR of the copies: on disk, in the cache of the app
             launcher = str(h / '.local/bin' / app_dirs.ID)
             first_err = work / 'first.err'
             first = subprocess.Popen([launcher, '--hold'], env=lab.env, stdout=subprocess.DEVNULL, stderr=first_err.open('wb'))
             t0 = time.time()
             for _ in range(300):
-                if (shared / 'tmp/copy-held').exists() and (shared / 'shm/copy-shm').exists():
+                if (disktmp / 'copy-held').exists() and (shared / 'shm/copy-shm').exists():
                     break
                 time.sleep(0.1)
             else:
                 listing = sorted(str(q.relative_to(shared)) for q in shared.rglob('*')) if shared.exists() else 'no shared folder'
                 raise AssertionError(f'the first copy did not start (exit {first.poll()}): {first_err.read_text()} {listing}')
             print(f'first copy ready after {time.time() - t0:.1f} s')
-            assert oct((shared / 'tmp').stat().st_mode & 0o777) == '0o700'
+            assert oct(disktmp.stat().st_mode & 0o777) == '0o700'
             rss = stub_memory(first.pid)
             print('outer stub while the app runs: VmRSS', rss['VmRSS'], 'kB, VmHWM', rss['VmHWM'], 'kB, threads', rss['Threads'])
             assert rss['VmRSS'] < 32 * 1024, rss
             _, rep = run_report(lab, [], mask=False)
             check(rep, tmp_copy='copy-held', shm_copy='copy-shm')
-            (shared / 'tmp/copy-release').write_text('x')
+            (disktmp / 'copy-release').write_text('x')
             assert first.wait(timeout=60) == 0
-            assert (shared / 'tmp/copy-held').exists(), 'nothing may empty the folder of a copy that has just left'
+            assert not (disktmp / 'copy-held').exists(), 'the last copy to end empties the folder for large temporary files'
             _, rep = run_report(lab, [], mask=False)
             check(rep, tmp_copy='', shm_copy='')
-            assert not (shared / 'tmp/copy-held').exists() and not (shared / 'shm/copy-shm').exists()
+            assert not (disktmp / 'copy-held').exists() and not (shared / 'shm/copy-shm').exists()
             real_shm = [n for n in os.listdir('/dev/shm') if n.startswith('copy-')]
             assert not real_shm, f'the app wrote in the real /dev/shm: {real_shm}'
-            print('copies of one app share /tmp and /dev/shm, a start with none alive begins empty: ok')
+            print('copies of one app share TMPDIR (on disk) and /dev/shm, the last one to end empties TMPDIR, a start with none alive begins empty: ok')
 
             # 6e. Stale lock files with a process id: kept while a copy is alive, removed when none is, and never
             # a link's target or anything outside the private folders.
@@ -735,7 +736,7 @@ def main():
             def hold():
                 p = subprocess.Popen([launcher, '--hold'], env=lab.env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 for _ in range(300):
-                    if (shared / 'tmp/copy-held').exists():
+                    if (disktmp / 'copy-held').exists():
                         return p
                     time.sleep(0.1)
                 raise AssertionError('the copy did not start')
@@ -747,7 +748,7 @@ def main():
             # Normal end: the mark is gone, so the next start does not even look (the planted locks stay).
             first = hold()
             assert marker.exists(), 'no mark "in use" while the app runs'
-            (shared / 'tmp/copy-release').write_text('x')
+            (disktmp / 'copy-release').write_text('x')
             assert first.wait(timeout=60) == 0
             assert not marker.exists(), 'the mark stays after a normal end'
             plant()
@@ -769,7 +770,7 @@ def main():
                     break
                 time.sleep(0.1)
             assert marker.exists(), 'a killed run must leave the mark'
-            (shared / 'tmp/copy-release').unlink(missing_ok=True)
+            (disktmp / 'copy-release').unlink(missing_ok=True)
             _, rep = run_report(lab, [], mask=False)
             for gone in ('App/SingletonLock', 'App/SingletonSocket', 'App/SingletonCookie', 'qt.lock'):
                 assert not os.path.lexists(cfg / gone), f'{gone} is stale and was not removed'

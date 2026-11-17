@@ -307,6 +307,9 @@ pub struct Layers {
     pub hidden: Vec<PathBuf>,
 }
 
+/// The size cap of `/tmp` in the view, in bytes (memory; the measurement is in docs/COMPATIBILITY.md).
+pub const TMP_SIZE: u64 = 256 * 1024 * 1024;
+
 /// What the view contains besides `/dev` and `/proc`.
 pub struct ViewPlan {
     /// The system folders and top-level links of the host. See `root_layout`.
@@ -333,9 +336,10 @@ pub struct ViewPlan {
     pub mounts: Vec<Mount>,
     /// Symbolic links made in the view: (target, link).
     pub symlinks: Vec<(PathBuf, PathBuf)>,
-    /// Folders of the host mounted as `/tmp` and `/dev/shm`, shared by the copies of one app.
-    /// None: a private tmpfs for `/tmp`, and the host's `/dev/shm`.
-    pub shared_tmp: Option<PathBuf>,
+    /// `/tmp` is a new tmpfs of the view (never shared with another copy) with this size cap, in bytes: what an app writes there is memory.
+    /// Large temporary files go to `TMPDIR`, on disk (`~/.cache/tmp`).
+    pub tmp_size: u64,
+    /// A folder of the host mounted as `/dev/shm`, shared by the copies of one app. None: the host's `/dev/shm`.
     pub shared_shm: Option<PathBuf>,
     /// The manifest asks for X11: the IPC namespace stays shared (MIT-SHM).
     pub x11_access: bool,
@@ -387,10 +391,7 @@ fn view_args(plan: &ViewPlan) -> Vec<OsString> {
     // `ptmx`), not the host's: a terminal emulator or an IDE opens a pty, and it must get one that belongs to the view, never
     // the host's devpts, where it would see the terminals of the user. The GPU nodes are put back by name.
     a.extend(["--dev", "/dev", "--dev-bind-try", "/dev/dri", "/dev/dri", "--proc", "/proc"].map(os));
-    match &plan.shared_tmp {
-        Some(t) => a.extend([os("--bind"), t.as_os_str().into(), os("/tmp")]),
-        None => a.extend(["--tmpfs", "/tmp"].map(os)),
-    }
+    a.extend([os("--size"), plan.tmp_size.to_string().into(), os("--tmpfs"), os("/tmp")]);
     a.extend(["--tmpfs", "/run"].map(os));
     if let Some(shm) = &plan.shared_shm {
         a.extend([os("--bind"), shm.as_os_str().into(), os("/dev/shm")]);
@@ -530,7 +531,7 @@ mod tests {
             ]),
             mounts: vec![],
             symlinks: vec![],
-            shared_tmp: None,
+            tmp_size: TMP_SIZE,
             shared_shm: None,
             x11_access: false,
             no_network: false,
@@ -820,16 +821,17 @@ mod tests {
     }
 
     #[test]
-    fn shared_folders_replace_the_private_tmp_and_the_host_shm() {
+    fn tmp_is_a_tmpfs_with_a_size_cap_and_shm_is_shared() {
         let mut p = plan();
-        p.shared_tmp = Some("/run/user/1000/panpak/org.example.app/tmp".into());
+        p.tmp_size = 100 * 1024 * 1024;
         p.shared_shm = Some("/run/user/1000/panpak/org.example.app/shm".into());
         let a = strings(&p);
-        assert!(pos(&a, &["--tmpfs", "/tmp"]).is_none());
         let dev = pos(&a, &["--dev", "/dev"]).unwrap();
-        let tmp = pos(&a, &["--bind", "/run/user/1000/panpak/org.example.app/tmp", "/tmp"]).unwrap();
+        let tmp = pos(&a, &["--size", "104857600", "--tmpfs", "/tmp"]).unwrap();
         let shm = pos(&a, &["--bind", "/run/user/1000/panpak/org.example.app/shm", "/dev/shm"]).unwrap();
-        assert!(dev < tmp && dev < shm, "the binds come after the device tree they cover");
+        assert!(dev < tmp && dev < shm, "the mounts come after the device tree they cover");
+        // No folder of the host is /tmp any more: a copy never sees the /tmp of another one.
+        assert!(!a.windows(3).any(|w| w[0] == "--bind" && w[2] == "/tmp"));
     }
 
     #[test]

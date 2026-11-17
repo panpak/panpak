@@ -1047,7 +1047,7 @@ cache is `$XDG_CACHE_HOME/panpak/<id>`, and the rules of the earlier format appl
 | `HOME` | unchanged in the view; the private home without it |
 | `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` | `~/.config`, `~/.local/share`, `~/.local/state` (the folders of the private home) |
 | `XDG_CACHE_HOME` | `~/.cache` in the view (the cache folder); the cache folder without it |
-| `TMPDIR`, `SQLITE_TMPDIR` | `/tmp` inside the view (§9.2); the folder `tmp` of the cache without it; the placeholder `${TMPDIR}` in `[launch]` means the same |
+| `TMPDIR`, `SQLITE_TMPDIR` | the folder `tmp` of the cache of the app (`~/.cache/tmp` in the view, on disk, emptied when the last copy ends); `/tmp` of the view is a small tmpfs (§9.2); the placeholder `${TMPDIR}` in `[launch]` means the same |
 | `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS` | the existing value, or the XDG default (`/etc/xdg`; `/usr/local/share:/usr/share`); without the view then the user's real config or data folder |
 | `GTK_THEME` | see below |
 | `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `SSH_AGENT_PID` | removed |
@@ -1113,7 +1113,7 @@ ssh-agent, audio servers) with independent layers, and uses every layer the mach
    `/mnt`, `/media`, `/root`, `/boot`, `/snap`, nor the part of `/nix` and `/gnu` that is not the store, because a
    folder of the host can hold a socket that a Landlock below V9 does not stop the app from using. A path
    that the runtime must give to the app (a granted folder, an opened file) is mounted at its own place wherever it is. `/dev` is a new
-   minimal one (the nodes of §9, a devpts of its own, and the GPU folder `dri` of the host); a new `/proc`; a new tmpfs for `/run`; `/tmp` and `/dev/shm` as in §9.4, or a new tmpfs for `/tmp` when the runtime folder is not usable; the private home of the app (§9.1) mounted at `$HOME` (writable),
+   minimal one (the nodes of §9, a devpts of its own, and the GPU folder `dri` of the host); a new `/proc`; a new tmpfs for `/run`; `/tmp` a new tmpfs of the view with a size cap of 256 MiB (it is memory; `--size`), `/dev/shm` as in §9.4; the private home of the app (§9.1) mounted at `$HOME` (writable),
    with the cache of the app as `~/.cache`, the `home_paths` as declared, the environment of the user listed in §9.1 (read-only), the Xauthority file with `x11 = true`, a file opened with
    `panpak open` as granted, and from the store the tree, the library folder `farms/<root>`, the loader and
    the stub (read-only); a new tmpfs for `$XDG_RUNTIME_DIR`
@@ -1123,7 +1123,7 @@ ssh-agent, audio servers) with independent layers, and uses every layer the mach
    manifest asks for network (`network = true`, `network_allow_tcp` or `network_bind_tcp`) and has a network
    namespace of its own, with only the loopback interface, when it does not; the resolver socket is
    in the view only in the first case. The app
-   is in a new session and ends with the runtime. Inside, `TMPDIR` and `SQLITE_TMPDIR` are `/tmp`.
+   is in a new session and ends with the runtime. Inside, `TMPDIR` and `SQLITE_TMPDIR` are `~/.cache/tmp` (§9.1, §9.4).
 2. *Landlock*, as in §9, applied inside the view when there is one. With Landlock V9 (path
    sockets) the sockets of the policy get a `ResolveUnix` rule and every other path socket is denied.
 3. *None*: the runtime starts the app with Landlock alone, as before the view existed, and `install`,
@@ -1185,11 +1185,14 @@ Without the isolated view the app runs with Landlock alone and nothing intercept
 
 ### 9.4 Copies of the same app [NORMATIVE for the policy; the mechanism is INFORMATIVE]
 
-In the isolated view, `/tmp` is the folder `$XDG_RUNTIME_DIR/panpak/<id>/tmp` (0700) and `/dev/shm` is
-`$XDG_RUNTIME_DIR/panpak/<id>/shm`, instead of a new tmpfs and the `/dev/shm` of the machine. Copies of one app
-that run at the same time share them and no other app sees them. Each runtime holds a shared `flock` on
-`panpak/<id>/lock` while it runs. A runtime that gets the exclusive lock (no copy is alive) first empties
-both folders without following links. This does not make two copies see each other's System V
+In the isolated view, `/tmp` is a new tmpfs of each copy with a size cap (256 MiB: it is memory, and an app that fills it
+gets "no space left on device" instead of taking the memory of the machine). It is not shared. What copies of one app need
+to share is in two folders, which no other app sees: `TMPDIR`, the folder `tmp` of the cache of the app
+(`$XDG_CACHE_HOME/panpak/<id>/tmp`, on disk; `~/.cache/tmp` in the view), for the large and the shared temporary files (the
+local sockets and lock files of Qt and Electron use `TMPDIR`), and `/dev/shm`, the folder `$XDG_RUNTIME_DIR/panpak/<id>/shm`,
+instead of the `/dev/shm` of the machine. Each runtime holds a shared `flock` on `panpak/<id>/lock` while it runs. A runtime
+that gets the exclusive lock (no copy is alive) first empties both folders without following links, and the last copy to end
+empties `TMPDIR` again, so a large file that an app forgot does not stay on disk. This does not make two copies see each other's System V
 IPC objects: that depends on the IPC namespace (§9.2). With `x11 = true` the namespace is shared and,
 for example, a Qt single-instance guard works; without it each copy has its own and both start (known limit).
 
@@ -1327,7 +1330,7 @@ for both.
    lower-case hex digits;
 4. delete the packages of the app (those whose manifest has the id) and the trees and farms of its roots, except the
    roots that a package left in the store still uses;
-5. delete the shared `/tmp` and `/dev/shm` of the app (§9.4) and the mark "in use";
+5. delete the shared `/dev/shm` of the app and the folder for large temporary files (§9.4) and the mark "in use";
 6. keep the settings, data and cache unless `--purge-data` is given, and print where they are and what they weigh. With
    `--purge-data` it MUST ask for a yes (or take `--yes`) before any removal. A data or cache folder that is a link or
    a file is not followed and not removed: the exit status is `PANPAK-E2003` and the message names it.
