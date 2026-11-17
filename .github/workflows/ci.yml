@@ -8,7 +8,8 @@
 #     isolated view) and private-bus (the private bus against a systemd user session).
 #     The heavy ones run only when the pull request touches more than documentation
 #     (*.md and docs/**, see scripts/ci-changes.sh). repro also runs on a pull request
-#     that changes REPRODUCIBLE-HASHES.md.
+#     that changes REPRODUCIBLE-HASHES.md. `changes` also checks, with no build, that a pull request that touches the code carries a
+#     reference with the date of its last code commit (scripts/check-repro-date.sh).
 #   - full, on every push to main (which also fills the caches that pull requests
 #     start from), on a manual run, on the weekly run, and on a pull request that has
 #     the label `full-ci`: the fast level plus fuzz-smoke, repro and distro.
@@ -108,6 +109,12 @@ jobs:
           else
             ./scripts/ci-changes.sh "" "" true | tee -a "$GITHUB_OUTPUT"
           fi
+      - name: The build date of the reference follows the code (no build)
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/check-repro-date.sh "$BASE_SHA" "$HEAD_SHA"
 
   build-test:
     needs: changes
@@ -434,6 +441,7 @@ jobs:
       - name: CI helper scripts
         run: |
           ./tests/ci-changes-test.sh
+          ./tests/check-repro-date-test.sh
           ./tests/ci-gate-test.sh
           python3 -I tests/ci-workflow-test.py
       - name: Cache the cargo-deny binary

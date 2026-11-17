@@ -8,7 +8,7 @@ The workflow is `.github/workflows/ci.yml`; the weekly app harness is `.github/w
 
 | Level | When | Jobs | Wall time |
 |---|---|---|---|
-| Fast | every pull request that changes more than documentation (`*.md`, `docs/**`) | changes, DCO, secrets, licenses, clippy, build-test, private-bus; repro too when `REPRODUCIBLE-HASHES.md` changes | about 4 minutes |
+| Fast | every pull request that changes more than documentation (`*.md`, `docs/**`) | changes, DCO, secrets, licenses, clippy, build-test, private-bus; repro too when `REPRODUCIBLE-HASHES.md` changes; `changes` also checks, with no build, that a change of code carries the build date of its last code commit in `REPRODUCIBLE-HASHES.md` (`scripts/check-repro-date.sh`) | about 4 minutes |
 | Full | every push to main, a manual run, the weekly run, a pull request with the label `full-ci` | the fast level, and fuzz-smoke (19 targets, 30 s each), repro (two builds, same bytes), distro (the runtime in four containers) | about 4 minutes (the jobs run in parallel), 32 job-minutes |
 | Weekly | Monday 03:17 UTC | the full level with 300 s for each fuzz target; the workflow apps-harness builds and starts Text Editor | |
 

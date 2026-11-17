@@ -28,7 +28,12 @@ for a in "$@"; do
 done
 
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
-export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+# Where cargo and rustup live is not part of the result: both homes are remapped below wherever they are (CARGO_HOME and RUSTUP_HOME, else the
+# defaults under $HOME).
+CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+export CARGO_HOME RUSTUP_HOME
+export PATH="$CARGO_HOME/bin:$HOME/.local/bin:$PATH"
 # The date of the build (`panpak --build-epoch`) is SOURCE_DATE_EPOCH, from the first of these that gives one:
 #  1. the environment;
 #  2. git: the date of the last commit that touched the code, by the one rule of scripts/code-epoch.sh that panpak/build.rs uses too (needs the whole
@@ -78,9 +83,9 @@ for d in a b; do
   # Zig caches inside each build directory (never shared between a and b).
   export ZIG_GLOBAL_CACHE_DIR="$work/$d/target/zig-cache/global" ZIG_LOCAL_CACHE_DIR="$work/$d/target/zig-cache/local"
   # Source AND registry remap: absolute paths end up in the strings
-  # of dependency panics; without it, builds in different $HOMEs diverge.
+  # of dependency panics; without it, builds with the homes of cargo and rustup in different places diverge.
   if [ "$REMAP" = 1 ]; then
-    export RUSTFLAGS="$LINKFLAGS --remap-path-prefix=$work/$d=/panpak-src --remap-path-prefix=$HOME/.cargo=/cargo-home"
+    export RUSTFLAGS="$LINKFLAGS --remap-path-prefix=$work/$d=/panpak-src --remap-path-prefix=$CARGO_HOME=/cargo-home --remap-path-prefix=$RUSTUP_HOME=/rustup-home"
   else
     export RUSTFLAGS="$LINKFLAGS"
   fi
