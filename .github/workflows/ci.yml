@@ -160,7 +160,13 @@ jobs:
           bwrap --version
       - name: Test (musl)
         # --no-fail-fast: one failing test does not hide the others (the first run with PANPAK_CI=1 shows every test that used to skip).
-        run: cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl
+        run: cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl -- --show-output 2>&1 | tee /tmp/cargo-test.log
+      - name: The tests that cannot run on this runner (named, never silent)
+        run: |
+          {
+            echo "### Known skips (the runner's kernel is older than the test needs)"
+            grep -h "known skip" /tmp/cargo-test.log | sort -u || true
+          } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Release build (conformance and artifacts)
         run: cargo build --locked --release --target x86_64-unknown-linux-musl
       - name: Format conformance (independent verifier)
