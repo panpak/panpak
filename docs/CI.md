@@ -8,8 +8,8 @@ The workflow is `.github/workflows/ci.yml`; the weekly app harness is `.github/w
 
 | Level | When | Jobs | Wall time |
 |---|---|---|---|
-| Fast | every pull request that changes more than documentation (`*.md`, `docs/**`) | changes, DCO, secrets, licenses, clippy, build-test, private-bus; repro too when `REPRODUCIBLE-HASHES.md` changes; `changes` also checks, with no build, that a change of code carries the build date of its last code commit in `REPRODUCIBLE-HASHES.md` (`scripts/check-repro-date.sh`) | about 4 minutes |
-| Full | every push to main, a manual run, the weekly run, a pull request with the label `full-ci` | the fast level, and fuzz-smoke (19 targets, 30 s each), repro (two builds, same bytes), distro (the runtime in four containers) | about 4 minutes (the jobs run in parallel), 32 job-minutes |
+| Fast | every pull request that changes more than documentation (`*.md`, `docs/**`) | changes, DCO, secrets, licenses, clippy, build-test (with `tests/app_dirs.py`, 5 s), private-bus; repro too when `REPRODUCIBLE-HASHES.md` changes; `changes` also checks, with no build, that a change of code carries the build date of its last code commit in `REPRODUCIBLE-HASHES.md` (`scripts/check-repro-date.sh`) | about 4 minutes |
+| Full | every push to main, a manual run, the weekly run, a pull request with the label `full-ci` | the fast level, `tests/view.py` (the isolated view end to end, 2.5 minutes, a step of build-test), and fuzz-smoke (19 targets, 30 s each), repro (two builds, same bytes), distro (the runtime in four containers) | about 4 minutes (the jobs run in parallel), 32 job-minutes |
 | Weekly | Monday 03:17 UTC | the full level with 300 s for each fuzz target; the workflow apps-harness builds and starts Text Editor | |
 
 Why the split: a pull request used 63 job-minutes on a cold cache and 34 on a warm one, and 18 of them were fuzz jobs that run the same corpus on code that mostly
@@ -41,3 +41,7 @@ level (label) 225 s.
 
 The wall time was already under ten minutes: the jobs run in parallel. What changes is the cost of a run (a quarter of it for the fast level), and that main now
 fills the caches.
+
+## Every test runs in a level
+
+Every file of `tests/` runs in at least one level of the CI, or is listed in `tests/ci-coverage.txt` with its kind (`helper`: not a test; `manual`: needs a VM, a desktop session or a real app) and the reason. `tests/ci-workflow-test.py` fails for a file that is in neither place, and for a listed file that is also in a workflow.

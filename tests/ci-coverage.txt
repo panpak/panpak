@@ -1,0 +1,25 @@
+# Every file of tests/ that is not a test run by a workflow of .github/workflows is listed here with its kind and the reason
+# (tests/ci-workflow-test.py fails for any other). A line: <path> | <kind> | <reason>.
+# kind: helper = not a test (a library, a fake, a server or a tool that tests use); manual = a test or a measurement that needs
+# what the CI does not have (a virtual machine, a desktop session, a real app) and is run by hand.
+tests/isolation.py | helper | the rules for isolated homes, imported by the tests
+tests/incremental.py | helper | the packages and the Range server that the tests of the store build on (also a test with its own arguments)
+tests/range_server.py | helper | an HTTP server with Range support, started by the tests of update
+tests/dbus_lab.py | helper | the private bus, portals and fake backends of dbus_filter.py and privbus.py
+tests/dbus_fake_backend.py | helper | a fake portal backend for dbus_filter.py
+tests/fake_native.py | helper | a fake native application on the session bus for dbus_filter.py
+tests/fake_portal_files.py | helper | a fake file-chooser portal for gtk_filechooser.py
+tests/gui_session.py | helper | a dedicated Xvfb session and key injector for the pilot tests
+tests/apps/appcfg.py | helper | the reader of the list of apps of the harness
+tests/apps/display.py | helper | the display, window and process checks of the harness
+tests/apps/ed25519.py | helper | the signer the harness uses to add permissions to a package
+tests/apps/pipeline.py | helper | the steps of the harness (download, convert, install, start)
+tests/pilot_cycle.py | manual | needs the real Mu app and a dedicated Xvfb; repeats a pilot of saves
+tests/pilot_saves.py | manual | needs the real app and ImageMagick; checks files saved through the GUI
+tests/mu_crash_rate.py | manual | 150 starts of the real Mu app, a measurement of a crash rate
+tests/joplin_fts_probe.py | manual | needs the real Joplin app; a probe of one defect
+tests/kdenlive_clip.py | manual | needs the real Kdenlive app and its output
+tests/menu_refresh.py | manual | needs a GNOME session with a Shell extension, run as the logged-in user
+tests/power_loss_vm.py | manual | needs a virtual machine that is killed (virsh destroy); docs/POWER-LOSS.md
+tests/power_loss_dmlog.py | manual | needs a virtual machine, root and dm-log-writes; docs/POWER-LOSS.md
+tests/power_loss_packs.py | manual | makes the packages for the two power-loss tests

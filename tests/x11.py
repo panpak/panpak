@@ -50,7 +50,7 @@ def main():
                     f'[permissions]\nx11={str(x11).lower()}\n[update]\nkey="ed25519:{PUBLIC}"\n')
                 run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file',
                      tmp / 'secret.key', '-o', tmp / 'x.panpak'], env)
-                result = run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'x.panpak'], env)
+                result = run([BIN / 'panpak', 'install', '--yes', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', tmp / 'x.panpak'], env)
                 assert ('WARNING X11' in result.stdout) == x11
                 result = run([BIN / 'panpak-stub', 'run', tmp / 'x.panpak'], env, ok=x11)
                 if x11:

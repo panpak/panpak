@@ -79,6 +79,31 @@ for wf in sorted(path.parent.glob('*.yml')):
         head = body.split('\n    steps:', 1)[0]
         if 'timeout-minutes:' not in head and 'uses:' not in head.split('\n    steps:')[0]:
             bad.append(f'{wf.name}: job {name} has no timeout-minutes')
+# Every test of the repository runs in at least one level of the CI, or is listed in tests/ci-coverage.txt with its kind and its reason.
+root = path.parent.parent.parent
+workflows = ''.join(wf.read_text() for wf in sorted(path.parent.glob('*.yml')))
+listed = {}
+for line in (root / 'tests/ci-coverage.txt').read_text().splitlines():
+    if line.strip() and not line.startswith('#'):
+        parts = [x.strip() for x in line.split('|')]
+        if len(parts) != 3 or parts[1] not in ('helper', 'manual') or not parts[2]:
+            bad.append(f'tests/ci-coverage.txt: bad line {line!r}')
+        else:
+            listed[parts[0]] = parts[1]
+for f in sorted(list((root / 'tests').rglob('*.py')) + list((root / 'tests').rglob('*.sh'))):
+    rel = str(f.relative_to(root))
+    if '__pycache__' in rel or f.name == '__init__.py':
+        continue
+    in_ci = (rel in workflows) or (f.name in workflows and not f.name.startswith('test_')) or (f.parent.name == 'apps' and f.name.startswith('test_') and "-s tests/apps -p 'test_*.py'" in workflows)
+    if in_ci and rel in listed:
+        bad.append(f'{rel} is in a workflow and also listed in tests/ci-coverage.txt: remove the line')
+    elif not in_ci and rel not in listed:
+        bad.append(f'{rel} runs in no workflow and is not listed in tests/ci-coverage.txt (add it to a level, or list it with a reason)')
+for rel in listed:
+    if not (root / rel).exists():
+        bad.append(f'tests/ci-coverage.txt names {rel}, which does not exist')
+if not any('ci-coverage' in b or 'runs in no workflow' in b for b in bad):
+    print(f'ok   every test runs in a level of the CI or is listed with a reason ({len(listed)} listed)')
 for b in bad:
     print('FAIL', b)
 if not bad:

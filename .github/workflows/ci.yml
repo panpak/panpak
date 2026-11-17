@@ -159,13 +159,28 @@ jobs:
         # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
         # tests below run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
         run: |
-          sudo apt-get install -y -qq bubblewrap
+          sudo apt-get install -y -qq bubblewrap xvfb
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
       - name: Hardening (seccomp filter and system font cache, through the real launcher)
         run: python3 tests/hardening.py
       - name: The socket probe (a measurement mode that must stay off unless asked for)
         run: python3 tests/socket_probe.py
+      - name: The app folders and the private home (what an app can read and write in its home)
+        run: python3 tests/app_dirs.py
+      - name: The warm cache of the library resolution, the licenses of a package, a start against a removal
+        run: |
+          python3 tests/abi_cache.py
+          python3 tests/licenses.py
+          python3 tests/remove_race.py
+      - name: A real X11 client under Landlock (a dedicated Xvfb)
+        run: python3 tests/x11.py
+      - name: The unit tests of the app harness
+        run: python3 -m unittest discover -s tests/apps -p 'test_*.py'
+      - name: The isolated view, end to end (full level only: 2.5 minutes)
+        # `fuzz` is the output of the full level (a push to main, a manual or weekly run, the label full-ci) and of a change that is not documentation.
+        if: ${{ needs.changes.outputs.fuzz == 'true' }}
+        run: python3 tests/view.py
       - name: A pty in the isolated view (shell, window size, job control, a full-screen program)
         run: python3 tests/pty.py
       - name: The [env] table (variables that point an app at its own tree)
