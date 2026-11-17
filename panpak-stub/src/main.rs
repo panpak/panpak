@@ -2369,6 +2369,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         root: view::root_layout(Path::new("/")),
         tmp_size: view::TMP_SIZE,
         watch_tmp: Some(ctx.man.app.name.clone()),
+        var_tmp: app_dirs.as_ref().map(|d| d.tmp.clone()),
         shared_shm: shared.as_ref().map(|s| s.shm.clone()),
         mounts,
         symlinks,
@@ -2389,6 +2390,8 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     // app are the home (with the cache in it) there.
     let mut job_rw: Vec<PathBuf> = ctx.access.rw.iter().filter(|p| !is_root(p)).cloned().collect();
     job_rw.extend(private.as_ref().map(|(h, _)| h.clone()));
+    // TMPDIR: the folder on disk is mounted at /var/tmp (not in `access`: a grant there would bind the host's /var/tmp), and a rule is by path.
+    job_rw.extend(private.as_ref().map(|_| PathBuf::from(panpak_core::VIEW_TMP)));
     job_rw.extend(ctx.runtime_dir.map(Path::to_path_buf));
     // With X11 access the app reads the Xauthority file, which is put back into the view above.
     let mut job_ro = ctx.access.ro.clone();

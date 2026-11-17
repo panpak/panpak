@@ -1047,7 +1047,7 @@ cache is `$XDG_CACHE_HOME/panpak/<id>`, and the rules of the earlier format appl
 | `HOME` | unchanged in the view; the private home without it |
 | `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` | `~/.config`, `~/.local/share`, `~/.local/state` (the folders of the private home) |
 | `XDG_CACHE_HOME` | `~/.cache` in the view (the cache folder); the cache folder without it |
-| `TMPDIR`, `SQLITE_TMPDIR` | the folder `tmp` of the cache of the app (`~/.cache/tmp` in the view, on disk, emptied when the last copy ends); `/tmp` of the view is a small tmpfs (§9.2); the placeholder `${TMPDIR}` in `[launch]` means the same |
+| `TMPDIR`, `SQLITE_TMPDIR` | the folder `tmp` of the cache of the app, on disk, emptied when the last copy ends; in the view it is mounted at `/var/tmp` and `TMPDIR` is `/var/tmp`, a short path whatever the home is; without the view it is the folder itself; `/tmp` of the view is a small tmpfs (§9.2); the placeholder `${TMPDIR}` in `[launch]` means the same |
 | `XDG_CONFIG_DIRS`, `XDG_DATA_DIRS` | the existing value, or the XDG default (`/etc/xdg`; `/usr/local/share:/usr/share`); without the view then the user's real config or data folder |
 | `GTK_THEME` | see below |
 | `SSH_AUTH_SOCK`, `GPG_AGENT_INFO`, `SSH_AGENT_PID` | removed |
@@ -1123,7 +1123,7 @@ ssh-agent, audio servers) with independent layers, and uses every layer the mach
    manifest asks for network (`network = true`, `network_allow_tcp` or `network_bind_tcp`) and has a network
    namespace of its own, with only the loopback interface, when it does not; the resolver socket is
    in the view only in the first case. The app
-   is in a new session and ends with the runtime. Inside, `TMPDIR` and `SQLITE_TMPDIR` are `~/.cache/tmp` (§9.1, §9.4).
+   is in a new session and ends with the runtime. Inside, `TMPDIR` and `SQLITE_TMPDIR` are `/var/tmp` (§9.4).
 2. *Landlock*, as in §9, applied inside the view when there is one. With Landlock V9 (path
    sockets) the sockets of the policy get a `ResolveUnix` rule and every other path socket is denied.
 3. *None*: the runtime starts the app with Landlock alone, as before the view existed, and `install`,
@@ -1188,7 +1188,7 @@ Without the isolated view the app runs with Landlock alone and nothing intercept
 In the isolated view, `/tmp` is a new tmpfs of each copy with a size cap (256 MiB: it is memory, and an app that fills it
 gets "no space left on device" instead of taking the memory of the machine). It is not shared. What copies of one app need
 to share is in two folders, which no other app sees: `TMPDIR`, the folder `tmp` of the cache of the app
-(`$XDG_CACHE_HOME/panpak/<id>/tmp`, on disk; `~/.cache/tmp` in the view), for the large and the shared temporary files (the
+(`$XDG_CACHE_HOME/panpak/<id>/tmp`, on disk; mounted at `/var/tmp` in the view, and `TMPDIR` is that path: Chromium makes its single-instance socket in `TMPDIR`, and a Unix socket path holds 107 bytes, so a path below a long home would stop the app. Without bubblewrap there is no view: `TMPDIR` is the folder itself, a long path, and an app that makes a socket there fails when the home is over about 60 bytes), for the large and the shared temporary files (the
 local sockets and lock files of Qt and Electron use `TMPDIR`), and `/dev/shm`, the folder `/dev/shm/panpak-<uid>/<id>` of the system's own `/dev/shm`
 (the runtime folder if that cannot be used: it is not there, or the folder is not ours), instead of the whole `/dev/shm`. It is on the file system of the
 system's `/dev/shm`, with its size (Chromium fails with a small one, as in a container with 64 MB), and not in `$XDG_RUNTIME_DIR`, which is small and holds the sockets of the session.

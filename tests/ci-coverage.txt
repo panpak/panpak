@@ -23,3 +23,4 @@ tests/menu_refresh.py | manual | needs a GNOME session with a Shell extension, r
 tests/power_loss_vm.py | manual | needs a virtual machine that is killed (virsh destroy); docs/POWER-LOSS.md. Run when the code of the store or of the durable writes changes, and before the beta
 tests/power_loss_dmlog.py | manual | needs a virtual machine, root and dm-log-writes; docs/POWER-LOSS.md. Run when the code of the store or of the durable writes changes, and before the beta
 tests/power_loss_packs.py | manual | makes the packages for the two power-loss tests; run with them (when the store or the durable writes change, and before the beta)
+tests/tmp_use.py | manual | a measurement, not a test: the peak of /tmp, /dev/shm and TMPDIR of an app while it works. Run at the next round on the VMs during an export in OpenShot and in Audacity, and with an Electron app in use; the cap of /tmp is 256 MiB

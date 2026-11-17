@@ -139,6 +139,8 @@ Start cost of the stale-lock search: scanning at every start took 38.8 ms agains
 
 ## Size of `/tmp` and `/dev/shm` in the view (measured 2026-11-17)
 
+During use, not only at the start: Obsidian with 50 windows of 20 MB each (opened through the debugging port, in a scope of 7 GB) kept nothing in `/tmp` or `/dev/shm` and did not crash. Not measured yet: an export in OpenShot and in Audacity; `tests/tmp_use.py` is the tool, and the next round on the VMs runs it.
+
 How much an app writes in the `/tmp` and `/dev/shm` of its view, to set the cap of `/tmp` (256 MiB, `view::TMP_SIZE`). Method: the harness starts each app once (fast mode); a sampler on the host reads, every 0.2 s, the files under `/proc/<pid>/root/tmp` and `/proc/<pid>/root/dev/shm` of the processes of the app (the ones with the seccomp filter of the inner stub, inside the view), in disk blocks; the maximum seen is kept. The runtime folder that the harness puts in `/tmp` is left out (on a desktop it is `/run/user/<uid>`). The script is not in the repository.
 
 | App | `/tmp` | `/dev/shm` |

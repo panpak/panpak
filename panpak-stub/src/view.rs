@@ -340,6 +340,9 @@ pub struct ViewPlan {
     /// `/tmp` is a new tmpfs of the view (never shared with another copy) with this size cap, in bytes: what an app writes there is memory.
     /// Large temporary files go to `TMPDIR`, on disk (`~/.cache/tmp`).
     pub tmp_size: u64,
+    /// The folder on disk for large temporary files (`~/.cache/tmp` of the host), mounted as `/var/tmp`: a path that is short whatever the home is
+    /// (the single-instance socket of Chromium is made in `TMPDIR`, and a Unix socket path holds 107 bytes). None: `/var/tmp` stays empty.
+    pub var_tmp: Option<PathBuf>,
     /// The name of the app to name in the notice when its `/tmp` is full; None: nobody watches.
     pub watch_tmp: Option<String>,
     /// A folder of the host mounted as `/dev/shm`, shared by the copies of one app. None: the host's `/dev/shm`.
@@ -390,6 +393,9 @@ fn view_args(plan: &ViewPlan) -> Vec<OsString> {
         a.extend([os("--symlink"), target.as_os_str().into(), dest.as_os_str().into()]);
     }
     a.extend(["--tmpfs", "/var", "--symlink", "../run", "/var/run", "--symlink", "../run/lock", "/var/lock"].map(os));
+    if let Some(t) = &plan.var_tmp {
+        a.extend([os("--bind"), t.as_os_str().into(), os("/var/tmp")]);
+    }
     // `/dev` is bubblewrap's own minimal one (null, zero, full, random, urandom, tty, shm, and a devpts of its own with
     // `ptmx`), not the host's: a terminal emulator or an IDE opens a pty, and it must get one that belongs to the view, never
     // the host's devpts, where it would see the terminals of the user. The GPU nodes are put back by name.
@@ -605,6 +611,7 @@ mod tests {
             symlinks: vec![],
             tmp_size: TMP_SIZE,
             watch_tmp: None,
+            var_tmp: None,
             shared_shm: None,
             x11_access: false,
             no_network: false,
@@ -631,6 +638,17 @@ mod tests {
         let m = tmp_full_message("Audacity", TMP_SIZE);
         assert!(m.contains("Audacity") && m.contains("256 MiB") && m.contains("TMPDIR"), "{m}");
         assert!(!m.contains("ENOSPC"), "plain words: {m}");
+    }
+
+    #[test]
+    fn var_tmp_is_the_folder_on_disk_and_comes_after_var() {
+        let mut p = plan();
+        p.var_tmp = Some("/home/u/.cache/panpak/org.example.app/tmp".into());
+        let a = strings(&p);
+        let var = pos(&a, &["--tmpfs", "/var"]).unwrap();
+        let t = pos(&a, &["--bind", "/home/u/.cache/panpak/org.example.app/tmp", "/var/tmp"]).unwrap();
+        assert!(var < t, "the mount comes after the tmpfs of /var that it is in");
+        assert!(pos(&strings(&plan()), &["--bind", "/home/u/.cache/panpak/org.example.app/tmp", "/var/tmp"]).is_none());
     }
 
     #[test]

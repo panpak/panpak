@@ -482,7 +482,7 @@ def main():
                     sock_pipewire='absent', sock_pulse='absent', sock_wayland='ok', sock_journal='ok', sock_journal_devlog='ok', sock_journal_sendto='ok',
                     sock_docker='absent', sock_docker_var='absent', sock_containerd='absent', sock_podman='absent',
                     sock_snapd='absent', sock_libvirt='absent',
-                    x11_dir='absent', tmp_marker='hidden', env_TMPDIR=f'{h}/.cache/tmp', env_SQLITE_TMPDIR=f'{h}/.cache/tmp',
+                    x11_dir='absent', tmp_marker='hidden', env_TMPDIR='/var/tmp', env_SQLITE_TMPDIR='/var/tmp',
                     write_tmpdir='ok', write_data='ok', write_runtime='ok',
                     uid=str(os.getuid()), uid_map=f'{os.getuid()} 0 1')
         if view_here:
@@ -684,13 +684,14 @@ def main():
         if view_here:
             lab.install('')
             shared = Path(lab.runtime) / 'panpak' / app_dirs.ID
+            shm_dir = Path('/dev/shm') / f'panpak-{os.getuid()}' / app_dirs.ID   # the shared /dev/shm of the copies: in the system's own
             disktmp = h / '.cache/panpak' / app_dirs.ID / 'tmp'   # TMPDIR of the copies: on disk, in the cache of the app
             launcher = str(h / '.local/bin' / app_dirs.ID)
             first_err = work / 'first.err'
             first = subprocess.Popen([launcher, '--hold'], env=lab.env, stdout=subprocess.DEVNULL, stderr=first_err.open('wb'))
             t0 = time.time()
             for _ in range(300):
-                if (disktmp / 'copy-held').exists() and (shared / 'shm/copy-shm').exists():
+                if (disktmp / 'copy-held').exists() and (shm_dir / 'copy-shm').exists():
                     break
                 time.sleep(0.1)
             else:
@@ -708,7 +709,7 @@ def main():
             assert not (disktmp / 'copy-held').exists(), 'the last copy to end empties the folder for large temporary files'
             _, rep = run_report(lab, [], mask=False)
             check(rep, tmp_copy='', shm_copy='')
-            assert not (disktmp / 'copy-held').exists() and not (shared / 'shm/copy-shm').exists()
+            assert not (disktmp / 'copy-held').exists() and not (shm_dir / 'copy-shm').exists()
             real_shm = [n for n in os.listdir('/dev/shm') if n.startswith('copy-')]
             assert not real_shm, f'the app wrote in the real /dev/shm: {real_shm}'
             print('copies of one app share TMPDIR (on disk) and /dev/shm, the last one to end empties TMPDIR, a start with none alive begins empty: ok')

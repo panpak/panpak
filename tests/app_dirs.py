@@ -60,6 +60,7 @@ try read_docs 'cat "$HOME/Docs/ro.txt" >/dev/null'
 try write_docs 'echo x > "$HOME/Docs/new.txt"'
 try write_tmp 'echo x > /tmp/panpak-dirs-test-$$ && rm /tmp/panpak-dirs-test-$$'
 try tmp_cap 'dd if=/dev/zero of=/tmp/cap-test bs=1M count=300 2>/dev/null; rc=$?; sleep 5; rm -f /tmp/cap-test; [ $rc -eq 0 ]'
+try sock_in_tmpdir 'python3 -c "import os,socket;d=os.environ[\"TMPDIR\"]+\"/scoped_dirAbCdEf\";os.makedirs(d,exist_ok=True);f=d+\"/SingletonSocket\";os.path.lexists(f) and os.unlink(f);s=socket.socket(socket.AF_UNIX);s.bind(f)"'
 try tmpdir_big 'dd if=/dev/zero of="$TMPDIR/big" bs=1M count=300 2>/dev/null && rm -f "$TMPDIR/big"'
 echo "shm_dev=$(stat -c %d /dev/shm)"
 echo "shm_kb=$(df -Pk /dev/shm | awk 'NR==2{print $2}')"
@@ -81,11 +82,13 @@ fc-list 2>/dev/null | grep -c "$HOME/.local/share/fonts/panpak-test-font" | sed 
 
 
 class Lab:
-    def __init__(self, work):
+    def __init__(self, work, long_home=False):
         self.work = work
-        self.home = work / 'home'
+        # A long home (over 60 bytes): Chromium makes its single-instance socket in TMPDIR, and a Unix socket path holds 107 bytes.
+        self.home = (work / ('a-long-name-for-the-home-of-the-user-' + 'x' * 30) if long_home else work) / 'home'
         isolation.require_isolated_home(self.home, work)
         self.home.mkdir(parents=True)
+        assert not long_home or len(str(self.home)) > 60
         self.runtime = isolation.owned_mkdtemp('dirs-rt-')
         self.env = {'PATH': os.environ['PATH'], 'HOME': str(self.home), 'XDG_RUNTIME_DIR': self.runtime, 'PANPAK_TEST_REAL_HOME': str(self.home)}
         # A private session bus for the app to (not) find, and fake agent variables.
@@ -171,7 +174,7 @@ def main():
         subprocess.run(['chmod', '-R', 'u+w', str(work)], check=True)
         isolation.safe_rmtree(work, work.parent)
     work.mkdir(parents=True)
-    lab = Lab(work)
+    lab = Lab(work, long_home=True)
     h = lab.home
     # The user's own files: theme, a secret, icons, notes, a font, an old app folder.
     (h / '.config/gtk-3.0').mkdir(parents=True)
@@ -212,7 +215,7 @@ def main():
            write_home_config='ok', write_home_file='ok', read_gtk='ok', write_gtk='deny', read_gtk_after_write='deny', read_gtk_bookmarks='deny', read_gh='deny',
            list_config='ok', read_icons='ok', write_icons='deny', read_hicolor='deny', read_icons_dir='ok', read_old_appdata='deny',
            read_other_userdata='deny', read_notes='deny', write_notes='deny', read_docs='deny', write_docs='deny',
-           write_tmp='ok', tmp_cap='deny', tmpdir_big='ok', args='one two', fonts_found='1')
+           write_tmp='ok', tmp_cap='deny', tmpdir_big='ok', sock_in_tmpdir='ok', args='one two', fonts_found='1')
     # A full /tmp is said in plain words, once (the app holds it full for a few seconds; the watcher looks every two).
     assert err.count('its temporary folder /tmp is full') == 1, f'a full /tmp was not said once:\n{err}'
     # /dev/shm is as big as the one of the system (Chromium crashes with a small one), and the memory counters that it reads to
@@ -236,8 +239,8 @@ def main():
     assert rep['env_XDG_DATA_HOME'] == f'{h}/.local/share'
     assert rep['env_XDG_STATE_HOME'] == f'{h}/.local/state'
     assert rep['env_XDG_CACHE_HOME'] == f'{h}/.cache'
-    # /tmp is a tmpfs of the view with a size cap (the 300 MB write above fails); TMPDIR is a folder of the cache, on disk, for large files.
-    assert rep['env_TMPDIR'] == f'{h}/.cache/tmp' and rep['env_SQLITE_TMPDIR'] == f'{h}/.cache/tmp', (rep['env_TMPDIR'], rep['env_SQLITE_TMPDIR'])
+    # /tmp is a tmpfs of the view with a size cap (the 300 MB write above fails); TMPDIR is /var/tmp, the folder of the cache mounted there (on disk, a short path whatever the home), for large files.
+    assert rep['env_TMPDIR'] == '/var/tmp' and rep['env_SQLITE_TMPDIR'] == '/var/tmp', (rep['env_TMPDIR'], rep['env_SQLITE_TMPDIR'])
     assert (cache / 'tmp').is_dir() and not any((cache / 'tmp').iterdir()), 'the last copy to end empties TMPDIR'
     assert rep['env_XDG_CONFIG_DIRS'] == '/etc/xdg', rep['env_XDG_CONFIG_DIRS']
     assert rep['env_XDG_DATA_DIRS'] == '/usr/local/share:/usr/share', rep['env_XDG_DATA_DIRS']
@@ -293,7 +296,7 @@ def main():
     rc, rep, err = lab.run('tail')
     assert rc == 0, err
     expect(rep, write_notes='ok', read_notes='ok', read_docs='ok', write_docs='deny', write_home_file='ok',
-           read_gh='deny', args=f'--profile {h}/.config/prof --tmp={h}/.cache/tmp tail',
+           read_gh='deny', args=f'--profile {h}/.config/prof --tmp=/var/tmp tail',
            env_FOO=f'{h}/.local/state/foo', env_IPYTHONDIR=f'{h}/.config/ipython')
     assert (h / 'Notes/n.txt').exists() and not (h / 'Docs/new.txt').exists()
     assert (h / 'Missing/Dir').is_dir(), 'rw home path was not created'
