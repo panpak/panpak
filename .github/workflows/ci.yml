@@ -147,7 +147,18 @@ jobs:
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Test dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd python3 python3-cryptography squashfs-tools
+      - name: Bubblewrap and user namespaces (for the isolated view)
+        # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
+        # tests after it run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
+        run: |
+          sudo apt-get install -y -qq bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
+          bwrap --version
       - name: Test (musl)
+        # The tests of the isolated view fail, and are not skipped, when bubblewrap cannot run here (see `view_usable_or_skip` in panpak-stub/src/view.rs).
+        env:
+          PANPAK_REQUIRE_VIEW: "1"
         run: cargo test --locked --target x86_64-unknown-linux-musl
       - name: Release build (conformance and artifacts)
         run: cargo build --locked --release --target x86_64-unknown-linux-musl
@@ -155,13 +166,6 @@ jobs:
         run: |
           python3 conformance/gen.py
           python3 conformance/run.py --rust
-      - name: Bubblewrap and user namespaces (for the isolated view)
-        # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
-        # tests below run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
-        run: |
-          sudo apt-get install -y -qq bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
       - name: Hardening (seccomp filter and system font cache, through the real launcher)
         run: python3 tests/hardening.py
       - name: The socket probe (a measurement mode that must stay off unless asked for)

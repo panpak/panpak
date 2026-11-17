@@ -591,6 +591,17 @@ mod tests {
         assert!(!a.iter().any(|s| s.ends_with("/bus") || s.contains("gnupg") || s.contains("systemd/private") || s.contains("pulse") || s.contains("pipewire")));
     }
 
+    /// Whether the tests that run a real view can run. Where they cannot (no bubblewrap, no user namespaces, no python3) they are skipped,
+    /// unless `PANPAK_REQUIRE_VIEW` is set, as in the CI: there a skip would be a test that passes without having run.
+    fn view_usable_or_skip() -> bool {
+        if panpak_core::view_status().usable() && Path::new("/usr/bin/python3").exists() {
+            return true;
+        }
+        assert!(std::env::var_os("PANPAK_REQUIRE_VIEW").is_none(), "PANPAK_REQUIRE_VIEW is set and bubblewrap or python3 is not usable here");
+        eprintln!("skipped: bubblewrap or python3 is not usable here");
+        false
+    }
+
     /// A fake host root with the folders of a typical system, a Silverblue-like `/home` link and
     /// folders that the view must leave out.
     fn fake_host(tag: &str) -> PathBuf {
@@ -664,8 +675,7 @@ mod tests {
     /// sockets in the places of real services (LXD, a daemon in /opt, a service in /srv, Nix).
     #[test]
     fn no_socket_of_the_host_is_reachable_in_the_view() {
-        if !panpak_core::view_status().usable() || !Path::new("/usr/bin/python3").exists() {
-            eprintln!("skipped: bubblewrap or python3 is not usable here");
+        if !view_usable_or_skip() {
             return;
         }
         let host = fake_host("scan");
@@ -715,8 +725,7 @@ mod tests {
     /// nothing reaches the folders of the host.
     #[test]
     fn the_layered_home_in_a_real_view() {
-        if !panpak_core::view_status().usable() || !Path::new("/usr/bin/python3").exists() {
-            eprintln!("skipped: bubblewrap or python3 is not usable here");
+        if !view_usable_or_skip() {
             return;
         }
         let base = std::env::temp_dir().join(format!("panpak-layered-{}", std::process::id()));
