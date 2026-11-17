@@ -49,7 +49,7 @@ def main():
         for f in (home / 'doc.txt', home / '.config/app.conf', home / 'Documents/note.txt', home / 'Documents/neighbour.txt'):
             f.write_text('x\n')
         probes = {'bashrc': home / '.bashrc', 'autostart': home / '.config/autostart/evil.desktop', 'neighbour': home / 'Documents/neighbour.txt'}
-        script = '#!/bin/sh\n' + ''.join(f'if ( : >> {p} ) 2>/dev/null; then echo {k}=ok; else echo {k}=denied; fi\n' for k, p in probes.items())
+        script = '#!/bin/sh\n' + ''.join(f'if ( echo x >> {p} ) 2>/dev/null; then echo {k}=ok; else echo {k}=denied; fi\n' for k, p in probes.items())
         tree = tmp / 'tree'
         tree.mkdir()
         (tree / 'hello').write_text(script)
@@ -78,14 +78,30 @@ def main():
                     failures.append(f'{how}: {path.relative_to(home)}: the app started with write access to the folder ({got}); stderr: {p.stderr.strip()[-120:]}')
                 elif 'refus' not in p.stderr:
                     failures.append(f'{how}: {path.relative_to(home)}: refused without saying why: {p.stderr.strip()[-200:]}')
-            # An ordinary folder works as before: its neighbours can be written (that is the grant), the rest of the home cannot.
+            # In the view the app has a private home at the same path: a write outside the grant succeeds there and never reaches
+            # the real file (a folder of the real home that the private home does not have, like `.config/autostart`, is not there at all).
+            # With Landlock alone the same write is denied.
+            outside = 'ok' if not only else 'denied'
+            real = {'bashrc': home / '.bashrc', 'autostart': home / '.config/autostart/evil.desktop', 'neighbour': home / 'Documents/neighbour.txt'}
+
+            def real_changed():
+                return {'bashrc': real['bashrc'].read_text() != '# mine\n', 'autostart': real['autostart'].exists(), 'neighbour': real['neighbour'].read_text() != 'x\n'}
+
+            def reset():
+                real['bashrc'].write_text('# mine\n')
+                real['autostart'].unlink(missing_ok=True)
+                real['neighbour'].write_text('x\n')
+
+            # An ordinary folder works as before: its neighbours can be written (that is the grant), the rest of the home cannot be reached.
             p, got = opened(home / 'Documents/note.txt', landlock_only=only)
-            if got != {'bashrc': 'denied', 'autostart': 'denied', 'neighbour': 'ok'}:
-                failures.append(f'{how}: Documents/note.txt: {got} {p.stderr.strip()[-200:]}')
+            if got != {'bashrc': outside, 'autostart': 'denied', 'neighbour': 'ok'} or real_changed() != {'bashrc': False, 'autostart': False, 'neighbour': True}:
+                failures.append(f'{how}: Documents/note.txt: {got} {real_changed()} {p.stderr.strip()[-200:]}')
+            reset()
             # Without --write-rename nothing but the file is writable.
             p, got = opened(home / 'doc.txt', '--write', landlock_only=only)
-            if got != {'bashrc': 'denied', 'autostart': 'denied', 'neighbour': 'denied'}:
-                failures.append(f'{how}: --write only: {got} {p.stderr.strip()[-200:]}')
+            if got != {'bashrc': outside, 'autostart': 'denied', 'neighbour': outside} or any(real_changed().values()):
+                failures.append(f'{how}: --write only: {got} {real_changed()} {p.stderr.strip()[-200:]}')
+            reset()
         assert not failures, 'FAILED:\n' + '\n'.join(failures)
         for f in (home / '.bashrc',):
             assert f.read_text() == '# mine\n', 'the file of the user was not touched'
