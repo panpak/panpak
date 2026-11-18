@@ -755,7 +755,8 @@ mod tests {
     /// the folders to look in (default: all). Python 3 and `find` from the host's /usr.
     const SCAN: &str = "import subprocess, sys\n\
         host = set(sys.argv[1].split(','))\n\
-        roots = sys.argv[2:]\n\
+        once = set(sys.argv[2].split(','))\n\
+        roots = sys.argv[3:]\n\
         skip = {'proc', 'sysfs', 'devpts', 'mqueue', 'cgroup', 'cgroup2', 'securityfs', 'debugfs', 'tracefs', 'configfs', 'fusectl', 'pstore', 'bpf', 'autofs', 'binfmt_misc', 'hugetlbfs'}\n\
         points = []\n\
         for line in open('/proc/self/mountinfo'):\n\
@@ -763,10 +764,27 @@ mod tests {
         \tf = left.split(' ')\n\
         \tdev, mp, fstype = f[2], f[4].replace('\\\\040', ' '), right.split(' ')[0]\n\
         \tinside = not roots or any(mp == r or mp.startswith(r.rstrip('/') + '/') for r in roots)\n\
-        \tif dev in host and fstype not in skip and inside: points.append(mp)\n\
+        \tif dev in host and fstype not in skip and inside and mp not in once: points.append(mp)\n\
         for mp in points:\n\
         \tout = subprocess.run(['/usr/bin/find', mp, '-xdev', '-type', 's'], capture_output=True, text=True).stdout\n\
         \tprint(out, end='')\n";
+
+    /// The mounts that the scan in the view leaves out because the test looks at them once, on the host: `/usr` is bound read-only from the host's own folder and
+    /// is by far the largest tree (250,000 entries here, far more on a CI runner, read cold); the test of the view and the counter-proof would each read it again.
+    const SCANNED_ON_THE_HOST: &[&str] = &["/usr"];
+
+    /// The sockets in the folders of `SCANNED_ON_THE_HOST` of the host, found once for the whole test run.
+    fn host_sockets() -> &'static Vec<String> {
+        static FOUND: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+        FOUND.get_or_init(|| {
+            let mut v = Vec::new();
+            for d in SCANNED_ON_THE_HOST {
+                let out = Command::new("/usr/bin/find").args([d, "-xdev", "-type", "s"]).output().unwrap();
+                v.extend(String::from_utf8(out.stdout).unwrap().lines().map(str::to_string));
+            }
+            v
+        })
+    }
 
     /// The device numbers (`major:minor`) of the mounts of this process, which is the host for the view that a test makes.
     fn host_devices() -> String {
@@ -778,9 +796,13 @@ mod tests {
     }
 
     fn sockets_in(bwrap_args: Vec<OsString>, roots: &[&str]) -> Vec<String> {
-        let out = Command::new(panpak_core::BWRAP).args(bwrap_args).args(["--", "/usr/bin/python3", "-I", "-c", SCAN, &host_devices()]).args(roots).output().unwrap();
+        let out = Command::new(panpak_core::BWRAP).args(bwrap_args).args(["--", "/usr/bin/python3", "-I", "-c", SCAN, &host_devices(), &SCANNED_ON_THE_HOST.join(",")]).args(roots).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let mut v: Vec<String> = String::from_utf8(out.stdout).unwrap().lines().map(str::to_string).collect();
+        // The folders looked at on the host are the ones the view binds from there; a scan of the whole view adds what was found in them.
+        if roots.is_empty() {
+            v.extend(host_sockets().iter().cloned());
+        }
         v.sort();
         v.dedup();
         v
