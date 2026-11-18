@@ -12,6 +12,7 @@ mod background;
 mod gc;
 mod happy;
 mod icons;
+mod protected;
 mod remove;
 mod source;
 mod treewriter;
@@ -33,7 +34,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak allow-internet [--undo] [--yes] <app-id>   (an app in protected mode: turn the internet back on, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -528,6 +529,7 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
     }
     panpak_core::pending::clear(&appdir)?;
     panpak_core::failpoint!("apply.pending_removed");
+    protected::mode_ended(&appdir, man, old_man.release.as_ref().map_or(0, |r| r.revision));
     let (best_abi, _) = best_runtime(&store)?;
     let stub = stable_stub_link(&store)?;
     ensure_stable_panpak(&store)?;
@@ -2937,6 +2939,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
 
     let appdir = store.join("apps").join(&man.app.id);
     fs::create_dir_all(&appdir)?;
+    let revision_before = installed_manifest(&appdir).map(|o| o.release.as_ref().map_or(0, |r| r.revision));
     // The user folders the manifest asks for, found now in the real user-dirs.dirs.
     let (xdg_found, xdg_problems) = resolve_xdg_dirs(&man);
     let pin = appdir.join("pinned-key");
@@ -3026,6 +3029,9 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     panpak_core::failpoint!("install.current_linked");
     if let Some(apps) = appdir.parent() {
         panpak_core::durable::fsync_dir(apps)?;
+    }
+    if let Some(r) = revision_before {
+        protected::mode_ended(&appdir, &man, r);
     }
 
     fs::create_dir_all(launcher.parent().unwrap())?;
@@ -3187,6 +3193,10 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
     match best_runtime(&store) {
         Ok((abi, p)) => line(true, &format!("installed runtime: ABI {abi} ({})", p.display())),
         Err(e) => line(false, &panpak_core::err_text(&e)),
+    }
+    // The apps that are in protected mode (a floor above the installed version): a fixed state, said at every `doctor`, with the way out.
+    for l in protected::doctor_lines() {
+        println!("NOTE {l}");
     }
     // Package: COMPLETE verification (including every chunk: a doctor that
     // approved corrupt chunks would lie; see conformance/invalid-chunk.panpak).
@@ -3922,6 +3932,19 @@ fn real_main() -> Result<()> {
                 background::cmd_background(id, force, after_start, at_exit, insecure)
             }
         }
+        Some("allow-internet") => {
+            let (mut undo, mut yes, mut id) = (false, false, None);
+            for a in &args[2..] {
+                match a.as_str() {
+                    "--undo" => undo = true,
+                    "--yes" => yes = true,
+                    x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    x => id = Some(x),
+                }
+            }
+            protected::cmd_allow_internet(id.ok_or_else(|| coded(ErrorCode::E5002, "allow-internet <app-id>"))?, undo, yes)
+        }
+        Some("protected-notice") => protected::cmd_notice(args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "protected-notice <app-id>"))?),
         Some("gc") => {
             let mut dry = false;
             for a in &args[2..] {

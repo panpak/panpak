@@ -184,16 +184,31 @@ msgstr ""
 msgid "The app and its launcher are removed."
 msgstr ""
 
+msgid "The author of {name} reported a serious problem in this version. Until you update, it runs without internet and does not run programs that it downloads. Your files are safe and stay open."
+msgstr ""
+
+msgid "The author of {name} reported a serious problem in this version. With the internet on, the problem can be used against you, for example to send your files out. This applies only to {name}, it ends when you update, and you can cancel it at any time."
+msgstr ""
+
 msgid "The folder is the one of your user-dirs.dirs, not a copy."
 msgstr ""
 
 msgid "The folder is the one of your user-dirs.dirs. The app cannot change it."
 msgstr ""
 
+msgid "The internet is back on for {name} from its next start, until you update. To cancel: {command}"
+msgstr ""
+
+msgid "The internet is off again for {name}."
+msgstr ""
+
 msgid "The links of this kind, in your browser or in other apps, are given to this app."
 msgstr ""
 
 msgid "The shell of your desktop and the media keys of your keyboard can play, pause and skip in it."
+msgstr ""
+
+msgid "The update of {name} is ready and applies the next time it starts. Close it and open it again."
 msgstr ""
 
 msgid "The whole home folder is open to it for reading: your documents, settings and everything other programs keep there."
@@ -215,6 +230,15 @@ msgid "This place holds passwords, keys, browser data or files that run at login
 msgstr ""
 
 msgid "This update asks for more than the version you have:"
+msgstr ""
+
+msgid "To update now, run: {command}"
+msgstr ""
+
+msgid "Turn the internet back on for {name}?"
+msgstr ""
+
+msgid "Update now"
 msgstr ""
 
 msgid "Use the message bus of your whole desktop"
@@ -253,13 +277,40 @@ msgstr ""
 msgid "none"
 msgstr ""
 
+msgid "protected mode: no internet and no downloaded programs until updated"
+msgstr ""
+
+msgid "protected mode: you turned the internet back on; no downloaded programs until updated"
+msgstr ""
+
+msgid "{name} ({id}) is in protected mode: the author reported a serious problem in the installed version. It runs without internet and does not run programs that it downloads; your files are safe. To update: {command}"
+msgstr ""
+
+msgid "{name} asks for new permissions. To read and accept them, run: {command}"
+msgstr ""
+
+msgid "{name} is not in protected mode: there is nothing to turn back on."
+msgstr ""
+
 msgid "{name} is open. Close it and try again."
+msgstr ""
+
+msgid "{name} is running in protected mode"
+msgstr ""
+
+msgid "{name} now runs a version that fixes the problem. Protected mode is over: the internet and downloaded programs work again."
+msgstr ""
+
+msgid "{name} was not updated: {why}"
 msgstr ""
 
 msgid "{name} was removed."
 msgstr ""
 
 msgid "{name} was removed. Your settings and data are kept."
+msgstr ""
+
+msgid "{name}: update done"
 msgstr ""
 
 msgid "{n} permission"

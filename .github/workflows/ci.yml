@@ -307,6 +307,8 @@ jobs:
         run: python3 tests/update_footer.py
       - name: The release table over HTTP (revision, floor, channel, history, the security number)
         run: python3 tests/release_update.py
+      - name: Protected mode (below the floor, no host network and no written programs; the internet back on; the end of the mode)
+        run: python3 tests/protected_mode.py
       - name: The folder that --write-rename opens (PP-07)
         run: python3 tests/open_rename.py
       - name: The collection keeps what it cannot read the links of (P2-04)

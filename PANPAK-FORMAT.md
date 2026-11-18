@@ -619,6 +619,25 @@ It is read only when a package enters, never when an app starts. The client requ
 Otherwise the package is not a continuation of the installed version (a fork or a forgery) and is refused (`PANPAK-E4006`); at an update the
 downloaded record is taken away. Stable and beta are legitimate branches: each channel has its own history.
 
+**Protected mode.** A version that is installed and whose revision is below the floor that a client has seen for the app (from a package that
+entered, or was refused, or was staged) is not blocked: the person keeps the app and the data. The client MUST run it in protected mode:
+
+- no network: the manifest is read as `network = false` with no TCP port to connect to or to listen on, so the app has the loopback inside its
+  own view and nothing else; the signed manifest is not changed, the restriction is made in memory at each start;
+- no program that the app wrote is run: the manifest is read as `exec_written = false`;
+- the person is told at every start: on the terminal when the start has one, otherwise in a notification with the button "Update now". The text
+  says who reported the problem (today the author of the app, the holder of the key that signed it), what happened, that the files are safe and
+  stay open, and how to update;
+- the state is shown in `panpak list` and `panpak doctor`;
+- the person can turn the internet back on for that app (`panpak allow-internet <app-id>`) after a text that explains the risk. The choice is kept in
+  the state of the client, holds for that app only, takes effect at the next start, never gives back the programs the app wrote, and can be cancelled
+  (`--undo`);
+- when a version at or above the floor is put in place, the mode ends: the choice is cleared and the person is told. What enters below the floor
+  stays refused (§ rule 2 above).
+
+A catalog or a distribution MAY in the future put an app in protected mode (never block it) with a required `reason` field (one sentence and a
+link); only the name is reserved here.
+
 ### 3.2 Public key and TOFU [NORMATIVE]
 
 Strict parsing of `[update].key`: exact prefix `ed25519:`

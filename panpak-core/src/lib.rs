@@ -293,7 +293,7 @@ pub struct HomePath {
     /// `ro` or `rw`.
     pub access: String,
 }
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Permissions {
     /// X11 opt-in: disables ONLY the abstract Unix scope (signals stay).
     pub x11: Option<bool>,

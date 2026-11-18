@@ -1765,6 +1765,42 @@ fn start_exit_work(lock: &File, panpak: &Path, id: &str) {
     let _ = cmd.spawn();
 }
 
+/// Protected mode: the installed version is below a floor that its author set (and that this machine saw in an update). It is not blocked: it starts without
+/// the network and without running what it wrote, the person is told (the text on the terminal, or a notification with the button "Update now" made by
+/// `panpak protected-notice`), and its files stay as they are. The manifest is changed in memory only: nothing signed is touched. One small file is read
+/// at every start; the rest happens only in this mode.
+fn protected_start(man: &mut panpak_core::Manifest, pkg: &Path) {
+    let Some((id, apps)) = installed_app_id(pkg) else { return };
+    let appdir = apps.join(&id);
+    let Some(rev) = man.release.as_ref().map(|r| r.revision) else { return };
+    if panpak_core::release::protected_floor(&appdir, rev).is_none() {
+        return;
+    }
+    let back_on = panpak_core::release::internet_is_back_on(&appdir);
+    if let Some(p) = man.permissions.as_mut() {
+        panpak_core::release::protect(p, back_on);
+    }
+    use panpak_core::{i18n::{fill, tr}, messages as m};
+    if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        let name = man.app.name.clone();
+        let how = fill(&tr(m::PROTECTED_HOW), &[("command", format!("panpak update {id}"))]);
+        eprintln!("panpak: {}\n{}\n{how}", fill(&tr(m::PROTECTED_TITLE), &[("name", name.clone())]), fill(&tr(m::PROTECTED_BODY), &[("name", name)]));
+        return;
+    }
+    let Some(panpak) = apps.parent().map(|s| s.join("bin/panpak")).filter(|p| p.exists()) else { return };
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new(&panpak);
+    cmd.args(["protected-notice", &id]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    // SAFETY: setsid is async-signal-safe; the notice leaves the process group of the app and survives the exec of the app.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let _ = cmd.spawn();
+}
+
 /// What the state file of an installed app says at a start. Nothing here reaches the network or waits: files that the job found damaged are named (the app
 /// starts if it can; the repair is done when the last copy ends, or by `panpak repair`), and when the daily job is due it is started detached and the start goes on.
 fn background_work(pkg: &Path) {
@@ -1959,8 +1995,11 @@ fn real_main() -> Result<()> {
     // A package, or the record of an installed version (no stub, no chunks: the tree is the only copy of the files).
     let (ft, is_record) = panpak_core::record::read_any_footer(&mut f)?;
     ensure_code!(!is_record || installed_mode, ErrorCode::E0010, "{}", panpak_core::record::NOT_A_PACKAGE);
-    let (man, raw_index) = verify(&mut f, &ft)?;
+    let (mut man, raw_index) = verify(&mut f, &ft)?;
     panpak_core::check_runtime(&man, panpak_core::RUNTIME_ABI)?;
+    if installed_mode {
+        protected_start(&mut man, &pkg);
+    }
     // The filtered session bus takes 15 to 25 ms to come up (a systemd scope, the proxy): its checks are made now and
     // the rest runs on a thread while the package is verified, the view is made and the app is prepared.
     let view_usable = panpak_core::view_status().usable();
@@ -2962,6 +3001,46 @@ mod tests {
         assert!(default.contains("exec_system=run"), "a program of the system no longer runs:\n{default}");
         let asked = run("[permissions]\nexec_written = true\n", "wx-asked");
         assert!(asked.contains("exec_data=run") && asked.contains("exec_tmp=run"), "exec_written does not allow it:\n{asked}");
+    }
+
+    /// Protected mode at a start: the manifest in memory loses the network and the programs the app wrote when the installed revision is below the floor
+    /// seen for the app, keeps them when the person turned the internet back on (the programs still go), and is left alone in every other case.
+    #[test]
+    fn a_version_below_the_floor_starts_without_the_network_and_without_written_programs() {
+        let root = std::env::temp_dir().join(format!("panpak-protected-start-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let appdir = root.join("apps/org.example.hello");
+        fs::create_dir_all(&appdir).unwrap();
+        let current = appdir.join("current");
+        let manifest = || -> panpak_core::Manifest {
+            let text = fake_toml("ed25519:AAAA", "[permissions]\nnetwork = true\nnetwork_allow_tcp = [443]\nexec_written = true\n");
+            toml::from_str(std::str::from_utf8(&text).unwrap()).unwrap()
+        };
+        let net = |m: &panpak_core::Manifest| {
+            let p = m.permissions.as_ref().unwrap();
+            (p.network, p.network_allow_tcp.clone(), p.exec_written)
+        };
+        let asked = (Some(true), Some(vec![443]), Some(true));
+        let mut m = manifest();
+        protected_start(&mut m, &current);
+        assert_eq!(net(&m), asked, "no floor seen: left alone");
+        panpak_core::release::note_floor(&appdir, 1).unwrap();
+        let mut m = manifest();
+        protected_start(&mut m, &current);
+        assert_eq!(net(&m), asked, "the floor is the installed revision: left alone");
+        panpak_core::release::note_floor(&appdir, 2).unwrap();
+        let mut m = manifest();
+        protected_start(&mut m, &current);
+        assert_eq!(net(&m), (Some(false), None, Some(false)));
+        panpak_core::release::set_internet_back_on(&appdir, true).unwrap();
+        let mut m = manifest();
+        protected_start(&mut m, &current);
+        assert_eq!(net(&m), (Some(true), Some(vec![443]), Some(false)));
+        // A path that is not an installed app is not touched, whatever files lie around.
+        let mut m = manifest();
+        protected_start(&mut m, &root.join("somewhere/else.panpak"));
+        assert_eq!(net(&m), asked);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

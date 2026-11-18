@@ -223,6 +223,47 @@ pub fn note_floor(appdir: &std::path::Path, floor: u64) -> Result<()> {
     Ok(())
 }
 
+/// The file of `<app folder>` that says the person turned the internet back on for an app that is in protected mode.
+pub const INTERNET_BACK_ON: &str = "protected-net";
+
+/// The floor that puts the installed version in protected mode: the highest floor seen for the app, when the installed revision is below it.
+/// Nothing is read but the one small file; an app that never saw a floor above its own revision is not in protected mode.
+pub fn protected_floor(appdir: &std::path::Path, installed_revision: u64) -> Option<u64> {
+    let floor = seen_floor(appdir);
+    (installed_revision < floor).then_some(floor)
+}
+
+/// Whether the person turned the internet back on for this app (a regular file of the app folder; a link or a folder of that name counts for nothing).
+pub fn internet_is_back_on(appdir: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(appdir.join(INTERNET_BACK_ON)).is_ok_and(|m| m.file_type().is_file())
+}
+
+/// Turn the internet back on (`true`) or off again (`false`) for an app in protected mode. It is the person's act and is kept in the state of the client,
+/// not in the manifest; it ends with the mode (`end_protection`).
+pub fn set_internet_back_on(appdir: &std::path::Path, on: bool) -> Result<()> {
+    let path = appdir.join(INTERNET_BACK_ON);
+    if on {
+        crate::durable::write_file(&path, b"1\n", 0o644)?;
+    } else if let Err(e) = std::fs::remove_file(&path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
+/// What protected mode takes away from the permissions of the manifest in memory (the signed manifest is not changed): no program that the app wrote is
+/// run, and no network, not even the ports it listed, unless the person turned the internet back on. The network that stays is the one inside the app's
+/// own view (its loopback), which is what an app without any network permission has.
+pub fn protect(perms: &mut crate::Permissions, internet_back_on: bool) {
+    perms.exec_written = Some(false);
+    if !internet_back_on {
+        perms.network = Some(false);
+        perms.network_allow_tcp = None;
+        perms.network_bind_tcp = None;
+    }
+}
+
 /// The history that a package made after `previous` carries: the previous one, then the previous release itself.
 pub fn extend_history(previous_history: Option<&[Entry]>, previous_revision: u64, previous_signed: [u8; 32]) -> Result<Vec<Entry>> {
     let mut h: Vec<Entry> = previous_history.map(|h| h.to_vec()).unwrap_or_default();
@@ -254,6 +295,42 @@ mod tests {
 
     fn code(e: anyhow::Error) -> ErrorCode {
         crate::code_of(&e, ErrorCode::E4000)
+    }
+
+    #[test]
+    fn protected_mode_is_a_floor_above_the_installed_revision_and_takes_the_network_and_written_programs() {
+        let d = std::env::temp_dir().join(format!("panpak-protected-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(protected_floor(&d, 1), None, "no floor seen: not protected");
+        note_floor(&d, 3).unwrap();
+        assert_eq!(protected_floor(&d, 2), Some(3));
+        assert_eq!(protected_floor(&d, 3), None, "the revision of the floor itself is fine");
+        assert_eq!(protected_floor(&d, 9), None);
+        assert!(!internet_is_back_on(&d));
+        set_internet_back_on(&d, true).unwrap();
+        assert!(internet_is_back_on(&d));
+        set_internet_back_on(&d, false).unwrap();
+        set_internet_back_on(&d, false).unwrap();
+        assert!(!internet_is_back_on(&d));
+        // A link or a folder of that name is not the person's act.
+        std::os::unix::fs::symlink("/etc/passwd", d.join(INTERNET_BACK_ON)).unwrap();
+        assert!(!internet_is_back_on(&d));
+        let _ = std::fs::remove_dir_all(&d);
+
+        let asked = || crate::Permissions {
+            network: Some(true),
+            network_allow_tcp: Some(vec![443]),
+            network_bind_tcp: Some(vec![8080]),
+            exec_written: Some(true),
+            ..crate::Permissions::default()
+        };
+        let mut p = asked();
+        protect(&mut p, false);
+        assert_eq!((p.network, p.network_allow_tcp, p.network_bind_tcp, p.exec_written), (Some(false), None, None, Some(false)));
+        let mut p = asked();
+        protect(&mut p, true);
+        assert_eq!((p.network, p.network_allow_tcp.clone(), p.network_bind_tcp.clone(), p.exec_written), (Some(true), Some(vec![443]), Some(vec![8080]), Some(false)), "the internet back on keeps the network that the app asked for, not the programs it wrote");
     }
 
     #[test]

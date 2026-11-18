@@ -98,6 +98,7 @@ struct PkgInfo {
     name: String,
     version: String,
     root: String,
+    revision: u64,
     perms: Vec<panpak_core::permissions::Item>,
 }
 
@@ -106,7 +107,8 @@ fn read_pkg(packages: &Dir, name: &OsStr) -> Option<PkgInfo> {
     let (ft, _) = panpak_core::record::read_any_footer(&mut f).ok()?;
     let (m, _) = panpak_core::verify(&mut f, &ft).ok()?;
     let perms = panpak_core::permissions::items(&m);
-    Some(PkgInfo { id: m.app.id, name: m.app.name, version: m.app.version, root: panpak_core::hex(&ft.root), perms })
+    let revision = m.release.as_ref().map_or(0, |r| r.revision);
+    Some(PkgInfo { id: m.app.id, name: m.app.name, version: m.app.version, root: panpak_core::hex(&ft.root), revision, perms })
 }
 
 fn package_names(packages: &Option<Dir>) -> Vec<String> {
@@ -134,6 +136,8 @@ struct Facts {
     has_launcher: bool,
     has_desktop: bool,
     has_icon: bool,
+    /// Protected mode (the installed version is below the floor its author set): `Some(true)` when the person turned the internet back on.
+    protected: Option<bool>,
     /// An update that is staged: its version, and whether it waits for the user (it asks for permissions that the installed version does not have).
     pending: Option<(String, bool)>,
     /// When the background verification last came to the end of the files of the installed version.
@@ -211,17 +215,22 @@ impl Ctx {
             last_round: None,
             has_desktop: false,
             has_icon: false,
+            protected: None,
         };
         let appdir = self.apps.as_ref().and_then(|a| match a.lstat(OsStr::new(id)) {
             Ok(Some(st)) => Some((a, st)),
             _ => None,
         });
         let mut current_pkg: Option<String> = None;
+        // What the folder of the app says about protected mode: the highest floor seen, and the person's choice.
+        let (mut floor_seen, mut internet_back_on) = (0u64, false);
         if let Some((apps, st)) = appdir {
             f.in_apps = true;
             if st.kind != Kind::Dir {
                 f.problems.push("its store folder is a link or a file".into());
             } else if let Ok(d) = apps.open_dir(OsStr::new(id)) {
+                floor_seen = read_text(&d, OsStr::new("floor")).and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+                internet_back_on = matches!(d.lstat(OsStr::new(panpak_core::release::INTERNET_BACK_ON)), Ok(Some(st)) if st.kind == Kind::File);
                 let bg = read_text(&d, OsStr::new(panpak_core::bgstate::FILE)).map(|t| panpak_core::bgstate::parse(&t)).unwrap_or_default();
                 if bg.damaged > 0 {
                     f.problems.push(format!("{} file(s) do not match the signed index (for example {}): run `panpak repair {id}`", bg.damaged, bg.damaged_first));
@@ -270,6 +279,7 @@ impl Ctx {
                         f.name = Some(i.name.clone());
                         f.version = Some(i.version.clone());
                         f.perms = Some(i.perms.clone());
+                        f.protected = (i.revision < floor_seen).then_some(internet_back_on);
                     }
                     if !f.roots.contains(&i.root) {
                         f.roots.push(i.root);
@@ -331,7 +341,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
             let opt = |v: Option<u64>| v.map_or("null".to_string(), |n| n.to_string());
             let strs = |v: &[String]| format!("[{}]", v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(","));
             out.push_str(&format!(
-                "\n  {{\"id\":{},\"name\":{},\"version\":{},\"status\":{},\"problems\":{},\"package_bytes\":{},\"tree_bytes\":{},\"data_bytes\":{},\"cache_bytes\":{},\"permissions\":{},\"pending\":{},\"verified_round\":{},\"packages\":{}}}",
+                "\n  {{\"id\":{},\"name\":{},\"version\":{},\"status\":{},\"problems\":{},\"package_bytes\":{},\"tree_bytes\":{},\"data_bytes\":{},\"cache_bytes\":{},\"permissions\":{},\"protected\":{},\"pending\":{},\"verified_round\":{},\"packages\":{}}}",
                 json_str(&f.id),
                 f.name.as_deref().map_or("null".into(), json_str),
                 f.version.as_deref().map_or("null".into(), json_str),
@@ -342,6 +352,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
                 opt(f.data_bytes),
                 opt(f.cache_bytes),
                 f.perms.as_deref().map_or("null".to_string(), panpak_core::permissions::items_json),
+                f.protected.map_or("null".to_string(), |b| format!("{{\"internet_back_on\":{b}}}")),
                 f.pending.as_ref().map_or("null".to_string(), |(v, w)| format!("{{\"version\":{},\"waits_for_you\":{}}}", json_str(v), w)),
                 f.last_round.map_or("null".to_string(), |n| n.to_string()),
                 strs(&f.packages),
@@ -359,6 +370,9 @@ pub fn cmd_list(json: bool) -> Result<()> {
         .iter()
         .map(|f| {
             let mut status = if f.problems.is_empty() { f.status().to_string() } else { format!("{}: {}", f.status(), f.problems.join(", ")) };
+            if let Some(back_on) = f.protected {
+                status.push_str(&format!(" ({})", tr(if back_on { m::PROTECTED_LIST_NET } else { m::PROTECTED_LIST })));
+            }
             if let Some((v, waits)) = &f.pending {
                 if *waits {
                     status.push_str(&format!(" (update {v} waits for you: `panpak update --accept-new-permissions {}`)", f.id));
