@@ -439,7 +439,7 @@ jobs:
           PANPAK_LAB_LOG: ${{ runner.temp }}/lab.log
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          python3 tests/privbus.py --only A,B,C,F,L,D || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
+          python3 tests/privbus.py --only A,B,C,F,L,P,D || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
       - name: A real GTK 4 program against the answers of the file chooser (a refused dialog must not crash the app)
         run: python3 tests/gtk_filechooser.py
       - name: Private bus, all scenarios (advisory until they have passed on the runners for a while; the portal here is 1.18, older than the one the identity needs)

@@ -1993,7 +1993,16 @@ fn real_main() -> Result<()> {
     panpak_core::check_runtime(&man, panpak_core::RUNTIME_ABI)?;
     // In protected mode: no network, no written programs, no addresses (see `protected_start`).
     let protected = if installed_mode { protected_start(&mut man, &pkg) } else { None };
-    opener::forbid_addresses(protected == Some(false));
+    {
+        use panpak_core::{i18n::{fill, tr}, messages as m};
+        let name: String = man.app.name.chars().filter(|c| !c.is_control()).collect();
+        let notice = (protected == Some(false)).then(|| opener::Notice {
+            title: fill(&tr(m::PROTECTED_TITLE), &[("name", name.clone())]),
+            text: fill(&tr(m::LINKS_BLOCKED), &[("name", name)]),
+            graphical: panpak_core::release::is_graphical(&man),
+        });
+        opener::forbid_addresses(protected == Some(false), notice);
+    }
     // The filtered session bus takes 15 to 25 ms to come up (a systemd scope, the proxy): its checks are made now and
     // the rest runs on a thread while the package is verified, the view is made and the app is prepared.
     let view_usable = panpak_core::view_status().usable();

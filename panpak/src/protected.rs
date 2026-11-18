@@ -44,12 +44,9 @@ impl Kind {
     }
 }
 
-/// An app is taken as graphical when its package says it has windows of its own to show: a window class or icons (`[desktop]`), or X11. Any other app
-/// is a program of the terminal. The manifest has no field that says it outright; this is the rule until it has one.
+/// How an app is shown (see `release::is_graphical`).
 pub fn kind_of(man: &Manifest) -> Kind {
-    let desktop = man.desktop.as_ref().is_some_and(|d| d.wm_class.is_some() || d.icons.as_ref().is_some_and(|i| !i.is_empty()));
-    let x11 = man.permissions.as_ref().and_then(|p| p.x11) == Some(true);
-    if desktop || x11 {
+    if release::is_graphical(man) {
         Kind::Graphical
     } else {
         Kind::Terminal

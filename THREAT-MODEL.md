@@ -577,8 +577,8 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
 - **A version below the floor of its author (protected mode, spec §3.1.10)**: it is not blocked. It runs with **no network but its own loopback**: in
   the isolated view this is the network namespace of an app with no network permission, so no TCP, UDP (DNS and QUIC too), IPv6 or other protocol
   leaves it (tested with datagrams that a socket of the test must not receive); **without the view** the filter of the system calls makes every IPv4 and
-  IPv6 socket fail, the loopback of the app included (not tested end to end here: the runners have a view). It does not run programs that it wrote, and it
-  cannot open addresses (`xdg-open` and OpenURI), which would otherwise carry data out in the browser of the person. What it does **not** take away: the
+  IPv6 socket fail, the loopback of the app included (tested end to end with the view masked). It does not run programs that it wrote, and it
+  cannot open addresses (`xdg-open` and OpenURI, tested through the filtered bus too), which would otherwise carry data out in the browser of the person; it fails, and the person is told in one line or one notification, so that a link that does nothing is not a mystery. **Without the view the app can run the `xdg-open` of the system itself: the addresses are not stopped there** (the network is, by the filter of the system calls: tested with the view masked). What it does **not** take away: the
   sockets the manifest asks for (D-Bus, portals, the display), what the app can already read and write, and the network of a host service that the app
   reaches through such a socket. The floor must have been seen by this machine (an update check, an install, an update that was refused): a machine that never
   saw it runs the version as usual. The person can turn the internet back on for one app; the programs it wrote stay refused. Nobody is told to type a

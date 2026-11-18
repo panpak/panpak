@@ -360,3 +360,6 @@ msgstr "Non è stato cambiato nulla: serve una tua risposta, e non c'è né un t
 
 msgid "The internet is back on for {name}, until you update."
 msgstr "Internet è di nuovo attivo per {name}, fino all'aggiornamento."
+
+msgid "{name} is in protected mode: links do not open until you update."
+msgstr "{name} è in modalità protetta: i link non si aprono finché non aggiorni."

@@ -22,6 +22,7 @@ pub const CANNOT_TAKE_BACK: &str = "Panpak could not take back the files that {n
 pub const PROTECTED_TITLE: &str = "{name} is running in protected mode";
 pub const PROTECTED_BODY: &str = "The author of {name} reported a serious problem in this version. Until you update, it runs without internet and does not run programs that it downloads. Your files are safe and stay open.";
 pub const PROTECTED_LINE: &str = "{name} is in protected mode: no internet, no downloaded programs. Your files are safe.";
+pub const LINKS_BLOCKED: &str = "{name} is in protected mode: links do not open until you update.";
 pub const UPDATE_NOW: &str = "Update now";
 pub const PROTECTED_LIST: &str = "protected mode: no internet and no downloaded programs until updated";
 pub const PROTECTED_LIST_NET: &str = "protected mode: you turned the internet back on; no downloaded programs until updated";
@@ -71,6 +72,7 @@ pub const ALL: &[&str] = &[
     PROTECTED_TITLE,
     PROTECTED_BODY,
     PROTECTED_LINE,
+    LINKS_BLOCKED,
     UPDATE_NOW,
     PROTECTED_LIST,
     PROTECTED_LIST_NET,

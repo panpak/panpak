@@ -629,7 +629,10 @@ entered, or was refused, or was staged) is not blocked: the person keeps the app
   the loopback of the app goes too, and that is the only case where it does;
 - no program that the app wrote is run: the manifest is read as `exec_written = false`;
 - **no address is opened** (`xdg-open`, `OpenURI`): an address in the browser of the person (`https://host/?data=...`) is a way for data to leave. The
-  app is told why. The addresses of every kind are refused (the ones that are ever allowed are `http`, `https` and `mailto`; §9.3);
+  app is told that it failed, and **the person is told too, in the way that fits the app** (a notification for a program with windows, one line on the
+  standard error for the other; at most once in 20 seconds, whatever the number of links): "<App> is in protected mode: links do not open until you
+  update." The addresses of every kind are refused (the ones that are ever allowed are `http`, `https` and `mailto`; §9.3). Without an isolated view the
+  app can run the `xdg-open` of the system itself, so the addresses are not stopped in that case;
 - the person is told at every start, in the way that fits how the app was started, and never has to type a command to answer:
   - a program with windows (its package has a window class or icons, or asks for X11), started from the menu or from a terminal: a desktop
     notification with the text and, **only when an update that fixes the problem is ready**, one button "Update now"; in a terminal the most that is

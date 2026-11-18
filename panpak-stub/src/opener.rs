@@ -113,11 +113,46 @@ fn user_manager_data_dirs() -> Option<String> {
 
 /// Protected mode: no address is opened (an address, `https://host/?data=...` in the browser of the person, is a way for data to leave). Set once by the
 /// outer stub, before any thread that opens addresses starts; both ways of opening (the channel of `xdg-open` and OpenURI of the router) end in
-/// `SystemXdgOpen`, so the one flag covers both.
+/// `SystemXdgOpen`, so the one flag covers both. A refusal is told to the person (`Notice`): the app alone would just see a link that does nothing.
 static ADDRESSES_FORBIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static NOTICE: std::sync::OnceLock<Notice> = std::sync::OnceLock::new();
+/// When the person was told last (seconds since the epoch): an app that tries a hundred links is told about once.
+static TOLD_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const TELL_EVERY_SECS: u64 = 20;
 
-pub fn forbid_addresses(forbid: bool) {
+/// What a refused address says, and to whom: a notification for a graphical app (and one line when the standard error is a terminal), the standard error for
+/// the other.
+pub struct Notice {
+    pub title: String,
+    pub text: String,
+    pub graphical: bool,
+}
+
+pub fn forbid_addresses(forbid: bool, notice: Option<Notice>) {
     ADDRESSES_FORBIDDEN.store(forbid, std::sync::atomic::Ordering::SeqCst);
+    if let Some(n) = notice {
+        let _ = NOTICE.set(n);
+    }
+}
+
+/// Tell the person that an address was refused, at most once in `TELL_EVERY_SECS`.
+fn tell_refusal() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let Some(n) = NOTICE.get() else { return };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let last = TOLD_AT.load(SeqCst);
+    if last != 0 && now.saturating_sub(last) < TELL_EVERY_SECS {
+        return;
+    }
+    TOLD_AT.store(now, SeqCst);
+    if n.graphical {
+        panpak_core::chooserhost::notify(&n.title, &n.text);
+        if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+            eprintln!("panpak: {}", n.text);
+        }
+    } else {
+        eprintln!("panpak: {}", n.text);
+    }
 }
 
 impl Target for SystemXdgOpen {
@@ -125,7 +160,11 @@ impl Target for SystemXdgOpen {
     /// ends), "started" if it is still running then (a browser that was started by it is not waited for). An app and a user are not told "done" for
     /// a program that failed or that found nothing to open the address with.
     fn open(&mut self, url: &str) -> Result<(), String> {
-        self.open_unless(url, ADDRESSES_FORBIDDEN.load(std::sync::atomic::Ordering::SeqCst))
+        let forbidden = ADDRESSES_FORBIDDEN.load(std::sync::atomic::Ordering::SeqCst);
+        if forbidden {
+            tell_refusal();
+        }
+        self.open_unless(url, forbidden)
     }
 }
 

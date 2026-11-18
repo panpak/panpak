@@ -13,6 +13,9 @@ the script says whether each one arrived.
   2. a package of another channel with floor 2 is refused (and the floor is seen): the app is marked and the next start is in protected mode: no host TCP,
      no UDP, no DNS, no IPv6, no address opened, the loopback inside the app works, no written program is run; a start with nobody to ask writes one line
      with no instruction; `protected --json` says the state and the actions;
+     The same two starts again with no isolated view (bubblewrap masked): the network is taken away by a filter of the system calls, so that no IP socket
+     is made at all (and no datagram, query or connection leaves), and the programs that the app wrote are still not run. (Without a view the app
+     can run the `xdg-open` of the system itself: the addresses are not stopped there, and the test does not say they are.)
   3. a program of the terminal started from an interactive terminal asks its question with one key, and the answer is acted on; a graphical app (a window
      class in `[desktop]`) is not asked in the terminal, whatever the terminal is;
   4. `allow-internet --yes` (for scripts): the network is back (TCP, UDP, DNS, addresses), written programs still are not; `--undo` takes it away again;
@@ -171,12 +174,15 @@ class Lab:
         rep['opened'] = opened
         return rep
 
-    def start(self, stdin='null', stderr='pipe', keys=None):
+    def start(self, stdin='null', stderr='pipe', keys=None, masked=False):
         """Start the app through its launcher. `stdin`/`stderr` is `null`, `pipe` or `tty` (a pseudo terminal); with a tty on both, `keys` are typed one at a
         time as the prompts come. Returns the report and the text written on the standard error (and, with a tty, on the terminal)."""
         self.report_file().unlink(missing_ok=True)
         self.drain()
         cmd = [str(self.home / '.local/bin' / ID), *self.args()]
+        if masked:
+            # A copy of the machine where /usr/bin/bwrap cannot be used (as tests/view.py does): the start has no isolated view.
+            cmd = ['/usr/bin/bwrap', '--unshare-user', '--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc', '--ro-bind', '/dev/null', '/usr/bin/bwrap', '--'] + cmd
         master = slave = None
         if 'tty' in (stdin, stderr):
             master, slave = os.openpty()
@@ -240,7 +246,10 @@ def main():
         rep, err = lab.start()
         everything_opened = ['https://example.org/?data=secret']
         expect(rep, host='ok', loop='ok', written='ok', arrived=everything, opened=everything_opened)
-        assert 'protected mode' not in err, err
+        assert 'protected mode' not in err and 'links do not open' not in err, err
+        # The same with no view: Landlock filters the TCP ports and nothing filters UDP, so the datagrams arrive.
+        rep, err = lab.start(masked=True)
+        expect(rep, host='ok', loop='ok', written='ok', arrived=everything)
         assert lab.cli('protected', '--json', ID).stdout.strip() == '{"protected":false}'
         p = lab.cli('allow-internet', '--yes', ID, check=False)
         assert p.returncode != 0 and 'not in protected mode' in p.stdout + p.stderr, p.stdout + p.stderr
@@ -253,8 +262,10 @@ def main():
         rep, err = lab.start()
         expect(rep, host='deny', loop='ok', written='deny', arrived=[], opened=[], open='deny')
         assert 'protected mode' in err and 'Your files are safe' in err, err
+        # The app tried to open an address: it is told to the person, in one line with no instruction (the program of the terminal has no window).
+        assert 'is in protected mode: links do not open until you update' in err, err
         assert 'panpak update' not in err and 'allow-internet' not in err, f'an instruction in the line: {err}'
-        assert err.count('\n') <= 2, f'one line is the most that a start with nobody to ask says: {err!r}'
+        assert len([l for l in err.splitlines() if l.strip()]) <= 2, f'the line of the start, and the one of the refused address, are the most that is said: {err!r}'
         listing = lab.cli('list').stdout
         assert 'protected mode: no internet' in listing, listing
         assert '"protected":{"internet_back_on":false}' in lab.cli('list', '--json').stdout
@@ -264,6 +275,10 @@ def main():
         assert state['protected'] and state['kind'] == 'terminal' and state['floor'] == 2 and state['revision'] == 1, state
         assert state['update'] is None and state['actions'] == ['internet_on'] and 'protected mode' in state['texts']['title'] and 'serious problem' in state['texts']['body'], state
         assert [s['id'] for s in json.loads(lab.cli('protected', '--json').stdout)] == [ID]
+        # With no view: no IP socket at all.
+        rep, err = lab.start(masked=True)
+        expect(rep, host='deny', loop='deny', written='deny', udp='deny', dns='deny', arrived=[])
+        assert 'protected mode' in err, err
         print('  below the floor: no host TCP, UDP, DNS, IPv6 or address; loopback works; no written program; one line without an instruction; list, doctor and `protected --json` say it: ok')
 
         # 3. A program of the terminal, started from an interactive terminal: the question, one key, no Enter.
@@ -318,6 +333,7 @@ def main():
         rep, text = lab.start(stdin='tty', stderr='tty', keys=[])
         expect(rep, host='deny', arrived=[])
         assert 'protected mode' in text and '[y/N]' not in text and '[Y/n]' not in text, text
+        assert 'links do not open until you update' in text, text
         entry = (lab.home / f'.local/share/applications/panpak.{ID}.desktop').read_text()
         assert 'Actions=Uninstall;Internet;' in entry and f'allow-internet --ask {ID}' in entry and 'Name=Turn the internet back on' in entry, entry
         print('  a graphical app is not asked in the terminal; its menu entry gets the action to turn the internet back on: ok')

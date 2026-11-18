@@ -328,6 +328,9 @@ msgstr ""
 msgid "{name} asks for new permissions, and nothing here can show them to you (a dialog tool such as zenity or kdialog is missing)."
 msgstr ""
 
+msgid "{name} is in protected mode: links do not open until you update."
+msgstr ""
+
 msgid "{name} is in protected mode: no internet, no downloaded programs. Your files are safe."
 msgstr ""
 

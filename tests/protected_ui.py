@@ -15,7 +15,8 @@ Everything runs in an isolated HOME. An update is made ready with `panpak update
   3. the same window and the same update when a copy of the app is running: it is accepted, waits, and the next start applies it without asking;
   4. the menu action: the window that explains the risk (and the one that turns the internet off again), No changes nothing, Yes does;
   5. a program of the terminal that is run from an interactive terminal is asked: the permissions and the question for the update, then the internet;
-  6. the actions as JSON for a front end.
+  6. the actions as JSON for a front end;
+  7. an address that a graphical app tries to open in protected mode is not opened, and the person is told in a notification (not a silent no).
 """
 import json
 import os
@@ -96,7 +97,13 @@ class Lab:
         self.zenity.chmod(0o755)
         (self.tools / 'notify-send').write_text(f'#!/bin/sh\necho "$@" >> {self.nlog}\n')
         (self.tools / 'notify-send').chmod(0o755)
-        self.env = {'PATH': os.environ['PATH'], 'HOME': str(tmp), 'XDG_DATA_HOME': str(tmp / 'data'), 'XDG_CACHE_HOME': str(tmp / 'cache'), 'XDG_CONFIG_HOME': str(tmp / 'config'),
+        # A fake `xdg-open` that the outer stub finds in its PATH: it records the address it is given.
+        self.opened = tmp / 'opened.txt'
+        fakebin = tmp / 'fakebin'
+        fakebin.mkdir()
+        (fakebin / 'xdg-open').write_text(f'#!/bin/sh\necho "$1" >> {self.opened}\n')
+        (fakebin / 'xdg-open').chmod(0o755)
+        self.env = {'PATH': f'{fakebin}:{os.environ["PATH"]}', 'HOME': str(tmp), 'XDG_DATA_HOME': str(tmp / 'data'), 'XDG_CACHE_HOME': str(tmp / 'cache'), 'XDG_CONFIG_HOME': str(tmp / 'config'),
                     'XDG_RUNTIME_DIR': self.runtime, 'LC_ALL': 'C', 'PANPAK_TEST_REAL_HOME': str(tmp), 'PANPAK_TEST_TOOLS_DIR': str(self.tools), 'PANPAK_NO_BACKGROUND': '1'}
         out = self.cli('keygen', '-o', str(tmp / 'secret.key')).stdout
         self.pub = next(l.split()[-1] for l in out.splitlines() if l.startswith('key:'))
@@ -325,6 +332,25 @@ def main_inner(lab, tmp):
     r = json.loads(lab.cli('protected-action', 'update', ID).stdout)
     assert r['result'] == 'nothing_ready', r
     print('  the actions answer in JSON: ok')
+
+    # 7. A link that a graphical app tries to open in protected mode: refused, and the person is told.
+    lab.cli('remove', '--yes', ID, ok=None)
+    lab.opened.unlink(missing_ok=True)
+    x1 = lab.pack('x1', '[release]\nrevision = 1\n', desktop=graphical, body='xdg-open "https://example.org/?data=secret" || true')
+    lab.cli('install', '--yes', '--runtime', BIN / 'panpak-stub', x1)
+    run([launcher], lab.env_bus)
+    assert lab.opened.exists(), 'outside protected mode the address is opened'
+    lab.opened.unlink(missing_ok=True)
+    lab.nlog_daemon.unlink(missing_ok=True)
+    (lab.appdir / 'floor').write_text('2\n')
+    (lab.appdir / 'protected').write_text('2\n')
+    run([launcher], lab.env_bus)
+    wait_for(lambda: lab.nlog_daemon.exists() and 'links do not open until you update' in lab.nlog_daemon.read_text(), 'the notification about the refused link')
+    notices = [json.loads(l) for l in lab.nlog_daemon.read_text().splitlines()]
+    link = [n for n in notices if 'links do not open' in n['body']][0]
+    assert link['summary'] == 'Prui is running in protected mode' and link['body'] == 'Prui is in protected mode: links do not open until you update.' and link['actions'] == [], link
+    assert not lab.opened.exists(), 'the address was not opened'
+    print('  an address that a graphical app tries to open is refused, and the person is told in a notification: ok')
     print('protected ui PASS')
 
 

@@ -547,6 +547,23 @@ def scenario_links(lab):
     print('L   OpenURI is answered by the router and the app is told what happened: ok')
 
 
+def scenario_protected_links(lab):
+    """P: an app in protected mode (a floor above its revision) asks OpenURI through the router: nothing is opened, the app is told it failed (as for any
+    address the system could not open), and the person is told in one line (a program of the terminal: the standard error)."""
+    app = 'org.panpaktest.ProtLinks'
+    lab.install(app, '[permissions]\nnotifications = true\n')
+    (lab.home / '.local/share/panpak/apps' / app / 'floor').write_text('2\n')
+    lab.opened.unlink(missing_ok=True)
+    r = lab.run(app, 'link', '-')
+    for uri in ('https://example.org/a', 'mailto:a@b.org', 'https://example.org/fail'):
+        got = r['links'][uri]
+        need(got[0].startswith('ok ') and got[1] == [2], f'P: {uri}: the app was told {got}, expected the answer 2 (it was not opened)')
+    opened = lab.opened.read_text().split() if lab.opened.exists() else []
+    need(opened == [], f'P: the system opener got {opened} in protected mode')
+    need('is in protected mode: links do not open until you update' in lab.last_out, f'P: the person was not told: {lab.last_out[-400:]}')
+    print('P   in protected mode OpenURI through the router opens nothing, the app is told, and so is the person: ok')
+
+
 docshare_link_prefix = 'the file you chose is a link to '
 
 
@@ -750,7 +767,7 @@ def main():
             print(p.communicate(timeout=60)[0][-3000:])
             return skip(f'the app got no bus here (no systemd user session for its scope, or no xdg-dbus-proxy): {smoke}')
         for key, fn in (('A', scenario_a), ('B', scenario_b), ('C', scenario_c), ('F', scenario_f22_f23_f11), ('S', scenario_single_instance),
-                        ('R', scenario_lifecycle), ('E', scenario_end_race), ('I', scenario_identity), ('L', scenario_links), ('D', scenario_dialog), ('M', scenario_mpris)):
+                        ('R', scenario_lifecycle), ('E', scenario_end_race), ('I', scenario_identity), ('L', scenario_links), ('P', scenario_protected_links), ('D', scenario_dialog), ('M', scenario_mpris)):
             if want(key):
                 fn(lab)
     finally:

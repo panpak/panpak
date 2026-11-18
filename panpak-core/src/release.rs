@@ -223,6 +223,14 @@ pub fn note_floor(appdir: &std::path::Path, floor: u64) -> Result<()> {
     Ok(())
 }
 
+/// An app is taken as graphical when its package says it has windows of its own to show: a window class or icons (`[desktop]`), or X11. Any other app is a
+/// program of the terminal. The manifest has no field that says it outright; when it has one (step 14), that field is the rule. It decides how protected mode
+/// speaks to the person: a notification for a graphical app, the terminal for the other.
+pub fn is_graphical(man: &crate::Manifest) -> bool {
+    let desktop = man.desktop.as_ref().is_some_and(|d| d.wm_class.is_some() || d.icons.as_ref().is_some_and(|i| !i.is_empty()));
+    desktop || man.permissions.as_ref().and_then(|p| p.x11) == Some(true)
+}
+
 /// The file of `<app folder>` that exists while the installed version is in protected mode (its content is the floor). A start looks for this one file and
 /// nothing else; the restrictions themselves are decided by the floor and the revision (`protected_floor`), so a file that is out of date costs one missed
 /// question, never a missed restriction.
