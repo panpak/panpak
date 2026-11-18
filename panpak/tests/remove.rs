@@ -384,41 +384,51 @@ fn intact(outside: &Path) {
     assert_eq!(fs::read_to_string(outside.join("deep/precious")).unwrap(), "keep");
 }
 
-#[test]
-fn a_link_in_place_of_any_folder_never_deletes_outside() {
-    // Each case: install, make the place a link to a folder with precious files, remove with --purge-data.
-    type Place = Box<dyn Fn(&Env) -> PathBuf>;
-    let places: Vec<(&str, Place)> = vec![
-        ("apps/<id>", Box::new(|e| e.store().join("apps").join(A))),
-        ("userdata/<id>", Box::new(|e| e.userdata(A))),
-        ("cache/<id>", Box::new(|e| e.cache(A))),
-        ("trees/<root>", Box::new(|e| e.store().join("trees").join(root_of(&e.home.join(format!("{A}-1.src.panpak")))))),
-        ("farms/<root>", Box::new(|e| e.store().join("farms").join(root_of(&e.home.join(format!("{A}-1.src.panpak")))))),
-        ("packages", Box::new(|e| e.store().join("packages"))),
-        ("trees", Box::new(|e| e.store().join("trees"))),
-        ("userdata", Box::new(|e| e.store().join("userdata"))),
-        ("run/panpak/<id>", Box::new(|e| e.home.join("run/panpak").join(A))),
-        ("run/panpak", Box::new(|e| e.home.join("run/panpak"))),
-        ("removing", Box::new(|e| e.store().join("removing"))),
-        (".cache/panpak", Box::new(|e| e.home.join(".cache/panpak"))),
-    ];
-    for (label, place) in &places {
-        let e = env(&format!("link-{}", label.replace(['/', '<', '>'], "_")));
-        let root = e.install(A, "1", "a");
-        e.fake_tree(&root);
-        e.fake_data(A);
-        e.shared_tmp(A);
-        let at = place(&e);
-        let outside = plant(&e, &at);
-        let o = e.remove(&["--purge-data", "--yes", A]);
-        let _ = o; // refused or finished: either way nothing outside may change
-        intact(&outside);
-        // A second pass and a list do not follow it either.
-        let _ = e.remove(&["--purge-data", "--yes", A]);
-        let _ = cli(&e.home, &["list"]);
-        intact(&outside);
-        assert!(fs::symlink_metadata(&at).is_ok() || !at.exists(), "{label}");
-    }
+/// One case: install, make `place` a link to a folder with precious files, remove with --purge-data; nothing outside may change.
+fn a_link_in_place_of_the_folder_never_deletes_outside(label: &str, place: impl Fn(&Env) -> PathBuf) {
+    let e = env(&format!("link-{}", label.replace(['/', '<', '>'], "_")));
+    let root = e.install(A, "1", "a");
+    e.fake_tree(&root);
+    e.fake_data(A);
+    e.shared_tmp(A);
+    let at = place(&e);
+    let outside = plant(&e, &at);
+    let o = e.remove(&["--purge-data", "--yes", A]);
+    let _ = o; // refused or finished: either way nothing outside may change
+    intact(&outside);
+    // A second pass and a list do not follow it either.
+    let _ = e.remove(&["--purge-data", "--yes", A]);
+    let _ = cli(&e.home, &["list"]);
+    intact(&outside);
+    assert!(fs::symlink_metadata(&at).is_ok() || !at.exists(), "{label}");
+}
+
+/// A test for each place that is made a link: they were the twelve rounds of one test, which took 140 s alone on one thread and set the length
+/// of this whole file; now they run side by side. Same cases, same checks.
+macro_rules! link_cases {
+    ($($name:ident: $label:literal => |$e:ident| $place:expr;)*) => {
+        $(
+            #[test]
+            fn $name() {
+                a_link_in_place_of_the_folder_never_deletes_outside($label, |$e: &Env| $place);
+            }
+        )*
+    };
+}
+
+link_cases! {
+    a_link_in_place_of_apps_id_never_deletes_outside: "apps/<id>" => |e| e.store().join("apps").join(A);
+    a_link_in_place_of_userdata_id_never_deletes_outside: "userdata/<id>" => |e| e.userdata(A);
+    a_link_in_place_of_cache_id_never_deletes_outside: "cache/<id>" => |e| e.cache(A);
+    a_link_in_place_of_trees_root_never_deletes_outside: "trees/<root>" => |e| e.store().join("trees").join(root_of(&e.home.join(format!("{A}-1.src.panpak"))));
+    a_link_in_place_of_farms_root_never_deletes_outside: "farms/<root>" => |e| e.store().join("farms").join(root_of(&e.home.join(format!("{A}-1.src.panpak"))));
+    a_link_in_place_of_packages_never_deletes_outside: "packages" => |e| e.store().join("packages");
+    a_link_in_place_of_trees_never_deletes_outside: "trees" => |e| e.store().join("trees");
+    a_link_in_place_of_userdata_never_deletes_outside: "userdata" => |e| e.store().join("userdata");
+    a_link_in_place_of_run_panpak_id_never_deletes_outside: "run/panpak/<id>" => |e| e.home.join("run/panpak").join(A);
+    a_link_in_place_of_run_panpak_never_deletes_outside: "run/panpak" => |e| e.home.join("run/panpak");
+    a_link_in_place_of_removing_never_deletes_outside: "removing" => |e| e.store().join("removing");
+    a_link_in_place_of_dot_cache_panpak_never_deletes_outside: ".cache/panpak" => |e| e.home.join(".cache/panpak");
 }
 
 #[test]
