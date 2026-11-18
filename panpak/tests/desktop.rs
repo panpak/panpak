@@ -418,11 +418,10 @@ fn resign(pkg: &Path, key_file: &Path, edit: impl Fn(String) -> String, out: &Pa
     let root = &f[48..80];
     let man = edit(String::from_utf8(d[moff..moff + mlen].to_vec()).unwrap()).into_bytes();
     let sk = panpak_core::parse_secret(fs::read_to_string(key_file).unwrap().trim()).unwrap();
-    let mut signed = man.clone();
-    signed.extend_from_slice(root);
+    let signed = panpak_core::package_message(ver, flags, root.try_into().unwrap(), &man);
     let mut o = d[..moff].to_vec();
     o.extend_from_slice(&man);
-    o.extend_from_slice(&sk.sign(&signed).to_bytes());
+    o.extend_from_slice(&panpak_core::encode_sig_block(&sk.sign(&signed).to_bytes()));
     o.extend_from_slice(&f[..8]);
     o.extend_from_slice(&ver.to_le_bytes());
     o.extend_from_slice(&flags.to_le_bytes());

@@ -232,15 +232,14 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     let new_key = man.update.as_ref().context("manifest without [update].key")?.key.trim().to_string();
     if new_key != pin {
         let u = man.update.as_ref().unwrap();
-        panpak_core::verify_rotation(&pin, &new_key, u.rotation_old.as_deref(), u.rotation_sig.as_deref())
+        panpak_core::verify_rotation(app_id, &pin, &new_key, u.rotation_old.as_deref(), u.rotation_sig.as_deref())
             .context("key differs from the pin and succession invalid")?;
     }
     ensure!(man.app.id == app_id, "remote id differs from the installed app");
-    let (sig_b, sig_total) = http_range(&agent, &url, ft.man_off + ft.man_len, ft.man_off + ft.man_len + 63)?;
+    let (sig_b, sig_total) = http_range(&agent, &url, ft.man_off + ft.man_len, total - panpak_core::FOOTER_LEN - 1)?;
     ensure!(sig_total == total, "file changed during download");
-    let mut signed = man_b.clone();
-    signed.extend_from_slice(&ft.root);
-    let sig = ed25519_dalek::Signature::from_slice(&sig_b)?;
+    let signed = panpak_core::package_message(ft.version, ft.flags, &ft.root, &man_b);
+    let sig = ed25519_dalek::Signature::from_bytes(&panpak_core::parse_sig_block(&sig_b)?);
     panpak_core::parse_pubkey(&new_key)?.verify_strict(&signed, &sig)
         .map_err(|_| coded(ErrorCode::E1001, "invalid remote signature: update refused"))?;
     panpak_core::check_runtime(&man, panpak_core::RUNTIME_ABI)?;
@@ -428,7 +427,7 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool) -> Resul
     let mut rotated_to: Option<String> = None;
     if new_key != pin {
         let u = man.update.as_ref().unwrap();
-        panpak_core::verify_rotation(&pin, &new_key, u.rotation_old.as_deref(), u.rotation_sig.as_deref()).context("key differs from the pin and succession invalid")?;
+        panpak_core::verify_rotation(app_id, &pin, &new_key, u.rotation_old.as_deref(), u.rotation_sig.as_deref()).context("key differs from the pin and succession invalid")?;
         rotated_to = Some(new_key.clone());
     }
     let added = panpak_core::permissions::added(old_man, man);
@@ -1045,7 +1044,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
         use ed25519_dalek::Signer;
         let old_sk = parse_secret(old_hex)?;
         let old_pub = format!("ed25519:{}", panpak_core::hex(old_sk.verifying_key().as_bytes()));
-        let sig = old_sk.sign(sk.verifying_key().as_bytes()).to_bytes();
+        let sig = old_sk.sign(&panpak_core::succession_message(&man.app.id, &old_sk.verifying_key(), &sk.verifying_key())).to_bytes();
         let upd = man.update.as_mut().context("manifest without [update]")?;
         upd.rotation_old = Some(old_pub);
         upd.rotation_sig = Some(panpak_core::hex(&sig));
@@ -1295,15 +1294,15 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
     let man_off = index_off + comp_index.len() as u64;
 
     let toml_b = toml::to_string(&man)?.into_bytes();
-    let mut msg = Vec::with_capacity(toml_b.len() + 32);
-    msg.extend_from_slice(&toml_b);
-    msg.extend_from_slice(&root);
+    let msg = panpak_core::package_message(panpak_core::FORMAT_VERSION, panpak_core::FORMAT_FLAGS, &root, &toml_b);
     use ed25519_dalek::Signer;
     let sig = sk.sign(&msg).to_bytes();
     fout.write_all(&toml_b)?;
-    fout.write_all(&sig)?;
+    fout.write_all(&panpak_core::encode_sig_block(&sig))?;
 
     let ft = Footer {
+        version: panpak_core::FORMAT_VERSION,
+        flags: panpak_core::FORMAT_FLAGS,
         index_off,
         index_len: comp_index.len() as u64,
         man_off,
@@ -4169,22 +4168,30 @@ mod tests {
         let evil_sk = ed25519_dalek::SigningKey::from_bytes(&[33u8; 32]);
         let old_pub = format!("ed25519:{}", panpak_core::hex(old_sk.verifying_key().as_bytes()));
         let new_pub = format!("ed25519:{}", panpak_core::hex(new_sk.verifying_key().as_bytes()));
-        let good_sig = panpak_core::hex(&old_sk.sign(new_sk.verifying_key().as_bytes()).to_bytes());
+        let sign = |sk: &ed25519_dalek::SigningKey, app: &str| {
+            panpak_core::hex(&sk.sign(&panpak_core::succession_message(app, &old_sk.verifying_key(), &new_sk.verifying_key())).to_bytes())
+        };
+        let good_sig = sign(&old_sk, "a.b");
         // Valid chain.
-        assert!(panpak_core::verify_rotation(&old_pub, &new_pub, Some(&old_pub), Some(&good_sig)).is_ok());
+        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&old_pub), Some(&good_sig)).is_ok());
+        // The signature belongs to one app: the same succession for another app is refused.
+        assert!(panpak_core::verify_rotation("a.c", &old_pub, &new_pub, Some(&old_pub), Some(&good_sig)).is_err());
+        // The old form, a bare signature of the 32 bytes of the new key, is not a succession any more.
+        let bare = panpak_core::hex(&old_sk.sign(new_sk.verifying_key().as_bytes()).to_bytes());
+        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&old_pub), Some(&bare)).is_err());
         // Signed by the wrong key.
-        let bad_sig = panpak_core::hex(&evil_sk.sign(new_sk.verifying_key().as_bytes()).to_bytes());
-        assert!(panpak_core::verify_rotation(&old_pub, &new_pub, Some(&old_pub), Some(&bad_sig)).is_err());
+        let bad_sig = sign(&evil_sk, "a.b");
+        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&old_pub), Some(&bad_sig)).is_err());
         // rotation_old different from the pin (someone else's rotation replay).
         let evil_pub = format!("ed25519:{}", panpak_core::hex(evil_sk.verifying_key().as_bytes()));
-        assert!(panpak_core::verify_rotation(&old_pub, &new_pub, Some(&evil_pub), Some(&good_sig)).is_err());
+        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&evil_pub), Some(&good_sig)).is_err());
         // Tampered signature.
         let mut tampered = good_sig.clone();
         tampered.replace_range(0..2, if &tampered[0..2] == "00" { "ff" } else { "00" });
-        assert!(panpak_core::verify_rotation(&old_pub, &new_pub, Some(&old_pub), Some(&tampered)).is_err());
+        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&old_pub), Some(&tampered)).is_err());
         // Missing fields.
-        assert!(panpak_core::verify_rotation(&old_pub, &new_pub, None, Some(&good_sig)).is_err());
-        assert!(panpak_core::verify_rotation(&old_pub, &new_pub, Some(&old_pub), None).is_err());
+        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, None, Some(&good_sig)).is_err());
+        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&old_pub), None).is_err());
     }
 
     #[test]

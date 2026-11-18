@@ -2669,10 +2669,7 @@ mod tests {
         let raw_index = encode_index(p.chunks, p.entries);
         let root = *blake3::hash(&raw_index).as_bytes();
         let toml = fake_toml(p.key, p.manifest_extra);
-        let mut msg = Vec::with_capacity(toml.len() + 32);
-        msg.extend_from_slice(&toml);
-        msg.extend_from_slice(&root);
-        let sig = p.sk.sign(&msg).to_bytes();
+        let sig = p.sk.sign(&panpak_core::package_message(1, 0, &root, &toml)).to_bytes();
 
         let comp_index = zstd::encode_all(&raw_index[..], 0).unwrap();
         let stub = b"FAKE-STUB";
@@ -2685,8 +2682,10 @@ mod tests {
         }
         out.extend_from_slice(&comp_index);
         out.extend_from_slice(&toml);
-        out.extend_from_slice(&sig);
+        out.extend_from_slice(&panpak_core::encode_sig_block(&sig));
         let ft = Footer {
+            version: 1,
+            flags: 0,
             index_off,
             index_len: comp_index.len() as u64,
             man_off,
@@ -2695,7 +2694,7 @@ mod tests {
         };
         out.extend_from_slice(&encode_footer(&ft));
         assert_eq!(&out[out.len() - 80..out.len() - 72], MAGIC);
-        assert_eq!(out.len() as u64 - 80, man_off + toml.len() as u64 + 64);
+        assert_eq!(out.len() as u64 - 80, man_off + toml.len() as u64 + panpak_core::MIN_SIG_BLOCK);
 
         let path = p.dir.join(p.name);
         fs::write(&path, &out).unwrap();
@@ -3160,6 +3159,139 @@ mod tests {
         let ft = read_footer(&mut f).unwrap();
         assert!(verify(&mut f, &ft).is_err());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A fake package whose signature block is replaced by `block` (the file is rewritten and its footer is kept).
+    /// What makes the block: the signature of the right message, the manifest and the root.
+    type BlockMaker<'a> = &'a dyn Fn(&[u8; 64], &[u8], &[u8; 32]) -> Vec<u8>;
+
+    fn with_block(tag: &str, block: BlockMaker) -> (PathBuf, PathBuf) {
+        let dir = tmpdir(tag);
+        let (sk, key) = test_keypair();
+        let (path, toml, root) = fake_panpak(&dir, &sk, &key);
+        let bytes = fs::read(&path).unwrap();
+        let mut f = File::open(&path).unwrap();
+        let ft = read_footer(&mut f).unwrap();
+        let sig = sk.sign(&panpak_core::package_message(1, 0, &root, &toml)).to_bytes();
+        let mut out = bytes[..(ft.man_off + ft.man_len) as usize].to_vec();
+        out.extend_from_slice(&block(&sig, &toml, &root));
+        out.extend_from_slice(&bytes[bytes.len() - FOOTER_LEN as usize..]);
+        let p2 = dir.join("rewritten.panpak");
+        fs::write(&p2, &out).unwrap();
+        (dir, p2)
+    }
+
+    fn entry(ty: u16, flags: u16, data: &[u8]) -> Vec<u8> {
+        let mut e = Vec::new();
+        e.extend_from_slice(&ty.to_le_bytes());
+        e.extend_from_slice(&flags.to_le_bytes());
+        e.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        e.extend_from_slice(data);
+        e
+    }
+
+    fn verify_file(p: &Path) -> anyhow::Result<()> {
+        let mut f = File::open(p).unwrap();
+        let ft = read_footer(&mut f)?;
+        verify(&mut f, &ft).map(|_| ())
+    }
+
+    fn code_of(e: &anyhow::Error) -> panpak_core::ErrorCode {
+        panpak_core::code_of(e, panpak_core::ErrorCode::E1000)
+    }
+
+    #[test]
+    fn a_signature_over_the_old_unlabeled_message_is_refused() {
+        // manifest || root, as signed before the labels: a good signature of the wrong message.
+        let (sk, _) = test_keypair();
+        let (dir, p) = with_block("old-msg", &|_, toml, root| {
+            let mut old = toml.to_vec();
+            old.extend_from_slice(root);
+            panpak_core::encode_sig_block(&sk.sign(&old).to_bytes())
+        });
+        assert_eq!(code_of(&verify_file(&p).unwrap_err()), panpak_core::ErrorCode::E1001);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_footer_version_and_flags_are_covered_by_the_signature() {
+        let dir = tmpdir("covered");
+        let (sk, key) = test_keypair();
+        let (path, _toml, _root) = fake_panpak(&dir, &sk, &key);
+        let mut f = File::open(&path).unwrap();
+        let ft = read_footer(&mut f).unwrap();
+        verify(&mut f, &ft).unwrap();
+        // A footer that says another version or flags (set by hand: the reader refuses them at the footer today, and the day it does not,
+        // the signature still does).
+        for (v, fl) in [(1u32, 1u32), (2, 0), (1, 0x8000_0000)] {
+            let altered = Footer { version: v, flags: fl, ..ft.clone() };
+            assert_eq!(code_of(&verify(&mut f, &altered).unwrap_err()), panpak_core::ErrorCode::E1001, "version {v} flags {fl:#x}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_signature_block_takes_unknown_entries_by_their_critical_bit() {
+        // A good block: the package signature alone.
+        let (dir, p) = with_block("blk-good", &|sig, _, _| panpak_core::encode_sig_block(sig));
+        verify_file(&p).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        // An unknown entry that is not critical is ignored, before or after the signature.
+        let (dir, p) = with_block("blk-noncrit", &|sig, _, _| {
+            let mut b = entry(9, 0, b"a proof of some kind");
+            b.extend_from_slice(&panpak_core::encode_sig_block(sig));
+            b.extend_from_slice(&entry(10, 0, b""));
+            b
+        });
+        verify_file(&p).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        // An unknown entry marked critical refuses the file and says what to do.
+        let (dir, p) = with_block("blk-crit", &|sig, _, _| {
+            let mut b = panpak_core::encode_sig_block(sig);
+            b.extend_from_slice(&entry(9, 1, b"x"));
+            b
+        });
+        let e = verify_file(&p).unwrap_err();
+        assert_eq!(code_of(&e), panpak_core::ErrorCode::E0002);
+        assert!(format!("{e:#}").contains("update panpak"), "{e:#}");
+        let _ = fs::remove_dir_all(&dir);
+        // The reserved types 2, 3 and 4 are unknown too: critical refuses.
+        for ty in [2u16, 3, 4] {
+            let (dir, p) = with_block("blk-reserved", &|sig, _, _| {
+                let mut b = panpak_core::encode_sig_block(sig);
+                b.extend_from_slice(&entry(ty, 1, b"x"));
+                b
+            });
+            assert_eq!(code_of(&verify_file(&p).unwrap_err()), panpak_core::ErrorCode::E0002, "type {ty}");
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_malformed_signature_block_is_refused() {
+        type Make = Box<dyn Fn(&[u8; 64]) -> Vec<u8>>;
+        type Case = (&'static str, Make);
+        let cases: Vec<Case> = vec![
+            ("two package signatures", Box::new(|s| [panpak_core::encode_sig_block(s), panpak_core::encode_sig_block(s)].concat())),
+            ("no package signature", Box::new(|_| entry(9, 0, &[0u8; 80]))),
+            ("package signature not critical", Box::new(|s| entry(1, 0, s))),
+            ("package signature of 63 bytes", Box::new(|s| entry(1, 1, &s[..63]))),
+            ("flags not defined", Box::new(|s| [panpak_core::encode_sig_block(s), entry(9, 2, b"")].concat())),
+            ("an extra byte after the entries", Box::new(|s| [panpak_core::encode_sig_block(s), vec![0u8]].concat())),
+            ("an entry longer than the block", Box::new(|s| {
+                let mut b = panpak_core::encode_sig_block(s);
+                b.extend_from_slice(&entry(9, 0, &[0u8; 4])[..9]);
+                b
+            })),
+            ("a block over 64 KiB", Box::new(|s| [panpak_core::encode_sig_block(s), entry(9, 0, &vec![0u8; 64 * 1024])].concat())),
+            ("the old 64 bytes with no block", Box::new(|s| s.to_vec())),
+        ];
+        for (name, make) in cases {
+            let (dir, p) = with_block("blk-bad", &|sig, _, _| make(sig));
+            let e = verify_file(&p).unwrap_err();
+            assert!(matches!(code_of(&e), panpak_core::ErrorCode::E0003 | panpak_core::ErrorCode::E0002), "{name}: {e:#}");
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

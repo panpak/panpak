@@ -27,10 +27,27 @@ def sign_ed25519(sk32: bytes, msg: bytes) -> bytes:
     return Ed25519PrivateKey.from_private_bytes(sk32).sign(msg)
 
 
+LABEL_PACKAGE = b"panpak/package/v1\0"
+
+
+def sig_message(version: int, flags: int, root: bytes, manifest: bytes) -> bytes:
+    """What the package signature covers (PANPAK-FORMAT.md section 5)."""
+    return LABEL_PACKAGE + struct.pack("<II", version, flags) + root + manifest
+
+
+def sig_block(sig: bytes, extra: bytes = b"") -> bytes:
+    """A signature block: the package signature (type 1, critical), then `extra` entries."""
+    return struct.pack("<HHI", 1, 1, len(sig)) + sig + extra
+
+
+def sig_entry(ty: int, flags: int, data: bytes) -> bytes:
+    return struct.pack("<HHI", ty, flags, len(data)) + data
+
+
 def build(stub: bytes, index_raw: bytes, manifest_toml: bytes, secret: bytes) -> bytes:
     comp_index = zstd_enc(index_raw)
     root = blake3(index_raw)
-    sig = sign_ed25519(secret, manifest_toml + root)
+    sig = sig_block(sign_ed25519(secret, sig_message(1, 0, root, manifest_toml)))
     index_off = len(stub)
     man_off = index_off + len(comp_index)
     out = bytearray()

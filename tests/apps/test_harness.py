@@ -13,6 +13,7 @@ import appcfg  # noqa: E402
 import display  # noqa: E402
 import ed25519  # noqa: E402
 import pipeline  # noqa: E402
+import sigfmt  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 GOOD = """
@@ -122,7 +123,7 @@ class Signing(unittest.TestCase):
         self.assertIn("audio = false", text)
         self.assertNotIn("audio = true", text)
         self.assertIn("network = true", text)
-        self.assertEqual(out[moff2 + mlen2:moff2 + mlen2 + 64], ed25519.sign(seed, newman + root))
+        self.assertEqual(out[moff2 + mlen2:len(out) - 80], sigfmt.block(ed25519.sign(seed, sigfmt.message(ver, flags, root, newman))))
 
 
 FAKE_PANPAK = r"""#!/usr/bin/env python3

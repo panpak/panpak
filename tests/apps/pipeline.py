@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import isolation  # noqa: E402
 import display  # noqa: E402
 import ed25519  # noqa: E402
+import sigfmt  # noqa: E402
 
 BASE_ENV = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LANG": "C.UTF-8"}
 
@@ -118,7 +119,7 @@ def add_permissions(src, dst, extra, seed):
         extra = extra.replace("[permissions]\n", "[permissions]\n" + "".join(ln + "\n" for ln in keep), 1)
         man = man[:m.start()] + man[m.end():]
     newman = (man + "\n" + extra).encode()
-    out = d[:moff] + newman + ed25519.sign(seed, newman + root) + struct.pack("<8sIIQQQQ32s", magic, ver, flags, ioff, ilen, moff, len(newman), root)
+    out = d[:moff] + newman + sigfmt.block(ed25519.sign(seed, sigfmt.message(ver, flags, root, newman))) + struct.pack("<8sIIQQQQ32s", magic, ver, flags, ioff, ilen, moff, len(newman), root)
     Path(dst).write_bytes(out)
     Path(dst).chmod(0o755)
 

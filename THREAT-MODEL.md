@@ -25,7 +25,7 @@ The local store (`~/.local/share/panpak`) is considered **trusted**
 ## 2. What the sandbox guarantees (tested)
 
 - **No execution before verification** (spec §5): Ed25519 signature
-  over `manifest || root_hash`, BLAKE3 hash of the stub bound to the
+  over a labeled message (footer `version` and `flags`, `root_hash`, manifest; spec §3.0), BLAKE3 hash of the stub bound to the
   signature (`[runtime].stub_hash`, verified at every run/install/
   update), index root-hash, per-chunk BLAKE3 hash before writing.
   Tampered file or replaced stub = refusal (tests + e2e).
@@ -575,7 +575,7 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   case stays with the future broker (see PORTAL-DESIGN.md).
 - **Rollback**: `apps/<id>/previous` + `panpak rollback` (atomic swap).
 - **Key succession**: supported and verified against the pin
-  (`rotation_old` + `rotation_sig`, spec §3.2); without a valid
+  (`rotation_old` + `rotation_sig` over a message that names the app, spec §3.0 and §3.2); without a valid
   succession, key change = manual reinstall.
 
 ## 5. Known limitations

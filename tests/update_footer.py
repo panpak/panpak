@@ -37,11 +37,12 @@ def footer(index_off, index_len, man_off, man_len):
 
 # (name, footer bytes, total size of the remote file)
 CASES = [
-    ('zero lengths that close', footer(0, 0, 0, 0), 64 + 80),
-    ('manifest of length 0 after an index', footer(0, 100, 100, 0), 100 + 64 + 80),
-    ('index of length 0', footer(0, 0, 0, 40), 40 + 64 + 80),
+    ('zero lengths that close', footer(0, 0, 0, 0), 72 + 80),
+    ('manifest of length 0 after an index', footer(0, 100, 100, 0), 100 + 72 + 80),
+    ('index of length 0', footer(0, 0, 0, 40), 40 + 72 + 80),
     ('index and manifest not adjacent', footer(0, 10, 500, 40), 1000),
-    ('manifest and signature do not end at the footer', footer(0, 10, 10, 40), 4000),
+    ('the signature block is over 64 KiB', footer(0, 10, 10, 40), 100000),
+    ('the signature block is shorter than one signature', footer(0, 10, 10, 40), 10 + 40 + 71 + 80),
     ('offsets past the end of the file', footer(1 << 40, 10, (1 << 40) + 10, 40), 1000),
     ('lengths that overflow', footer(0, 2 ** 64 - 1, 5, 2 ** 64 - 1), 1000),
 ]

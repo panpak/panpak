@@ -16,6 +16,7 @@ import sys
 import tempfile
 
 import isolation
+import sigfmt
 import time
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -55,7 +56,7 @@ def resign(data, version, port, scheme='http'):
     man = re.sub(r'^url = .*\n', '', man, flags=re.M)
     man = man.replace('[update]', f'[update]\nurl = "{scheme}://127.0.0.1:{port}/remote.panpak"')
     man = man.encode()
-    return data[:moff] + man + KEY.sign(man + root) + struct.pack(
+    return data[:moff] + man + sigfmt.block(KEY.sign(sigfmt.message(ver, flags, root, man))) + struct.pack(
         "<8sIIQQQQ32s", magic, ver, flags, off, ilen, moff, len(man), root)
 
 
@@ -104,9 +105,9 @@ def main():
         stub = min([c[1] for c in chunks], default=ft[3])
         old_stub = min([c[1] for c in old_chunks], default=index(old)[0][3])
         stub_reuse = old[:old_stub] == new[:stub]
-        # What an update downloads: the footer, the manifest, the signature, the index and the chunks that the installed version does not have.
+        # What an update downloads: the footer, the manifest, the signature block (72 bytes), the index and the chunks that the installed version does not have.
         # The stub of the new package is never downloaded: the runtime is installed, and the store keeps no copy of the stub of a package.
-        analytical = 80 + ft[4] + ft[6] + 64 + sum(end - start for start, end in missing)
+        analytical = 80 + ft[4] + ft[6] + 72 + sum(end - start for start, end in missing)
         store = tmp / 'data/panpak'
         current = store / 'apps/org.example.incremental/current'
         run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'old.panpak'], env)

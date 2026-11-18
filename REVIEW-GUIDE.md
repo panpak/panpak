@@ -121,7 +121,7 @@ before trusting beyond the smoke.
 1. Is the verify order signature→index→chunk→stub correct and
    complete, or is there a path that runs before verifying?
 2. Does the rotation chain hold against replay and downgrade (pin vs
-   remote manifest, `rotation_sig` over the 32 raw bytes)?
+   remote manifest, `rotation_sig` over the labeled message that names the app)?
 3. Does symlink resolution have escapes (absolute, composed chains,
    `../` past the root, hardlinks into the tree)?
 4. Does the Landlock single-file rule with `--write-rename` expose

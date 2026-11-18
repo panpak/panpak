@@ -374,6 +374,55 @@
   ],
   "ok": false
  },
+ "invalid-sig-bare-64-bytes.panpak": {
+  "err": [
+   "not adjacent"
+  ],
+  "ok": false
+ },
+ "invalid-sig-block-no-signature.panpak": {
+  "err": [
+   "no package signature"
+  ],
+  "ok": false
+ },
+ "invalid-sig-block-too-large.panpak": {
+  "err": [
+   "not adjacent",
+   "too large"
+  ],
+  "ok": false
+ },
+ "invalid-sig-block-trailing-byte.panpak": {
+  "err": [
+   "truncated"
+  ],
+  "ok": false
+ },
+ "invalid-sig-block-two-signatures.panpak": {
+  "err": [
+   "repeated"
+  ],
+  "ok": false
+ },
+ "invalid-sig-block-undefined-flags.panpak": {
+  "err": [
+   "flags"
+  ],
+  "ok": false
+ },
+ "invalid-sig-block-unknown-critical.panpak": {
+  "err": [
+   "critical"
+  ],
+  "ok": false
+ },
+ "invalid-sig-unlabeled.panpak": {
+  "err": [
+   "signature"
+  ],
+  "ok": false
+ },
  "invalid-sig.panpak": {
   "err": [
    "signature"
@@ -469,6 +518,10 @@
   ],
   "ok": false
  },
+ "valid-appendix-a.panpak": {
+  "err": [],
+  "ok": true
+ },
  "valid-bus-fields.panpak": {
   "err": [],
   "ok": true
@@ -490,6 +543,10 @@
   "ok": true
  },
  "valid-multi.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-sig-block-unknown-noncritical.panpak": {
   "err": [],
   "ok": true
  },

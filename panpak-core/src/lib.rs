@@ -69,7 +69,20 @@ use std::{
 
 pub const MAGIC: &[u8; 8] = b"PANP\0\x01\0\0";
 pub const FOOTER_LEN: u64 = 80;
+/// Footer `version` and `flags` that this reader knows; both are part of the signed message.
+pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_FLAGS: u32 = 0;
+/// Length of an Ed25519 signature.
 pub const SIG_LEN: u64 = 64;
+/// The signature block sits between the manifest and the footer: entries `u16 type, u16 flags, u32 length, data`.
+pub const SIG_ENTRY_HEAD: u64 = 8;
+/// The smallest block: one package signature.
+pub const MIN_SIG_BLOCK: u64 = SIG_ENTRY_HEAD + SIG_LEN;
+pub const MAX_SIG_BLOCK: u64 = 64 * 1024;
+/// Type of the entry that holds the signature of the package (exactly one, critical). 2 is a transparency proof, 3 another algorithm and
+/// 4 a countersignature of a third party: reserved, not implemented, so a reader that finds them marked critical refuses.
+pub const SIG_TYPE_PACKAGE: u16 = 1;
+pub const SIG_FLAG_CRITICAL: u16 = 1;
 
 /// Anti-DoS caps on data read before/during verification.
 pub const MAX_MANIFEST_TOML: u64 = 1 << 20; // 1 MiB: the manifest is metadata
@@ -110,6 +123,9 @@ pub fn err_text(e: &anyhow::Error) -> String {
 
 #[derive(Debug, Clone)]
 pub struct Footer {
+    /// `version` and `flags` of the footer: covered by the signature.
+    pub version: u32,
+    pub flags: u32,
     pub index_off: u64,
     pub index_len: u64,
     pub man_off: u64,
@@ -416,11 +432,10 @@ pub fn check_range_parts(req_start: u64, req_end: u64, header: &str, body_len: u
     Ok(total)
 }
 
-/// Verify a signed succession: `rotation_sig` must be a signature
-/// of the PINNED (old) key over the 32 raw bytes of the NEW public key,
-/// and `rotation_old` must match the pin. Used when the manifest key
+/// Verify a signed succession: `rotation_sig` must be a signature of the PINNED (old) key over the labeled message of
+/// `succession_message` (the app id, the old key and the new key), and `rotation_old` must match the pin. Used when the manifest key
 /// does not match the pin (rotation).
-pub fn verify_rotation(pinned: &str, new_key: &str, rot_old: Option<&str>, rot_sig: Option<&str>) -> Result<()> {
+pub fn verify_rotation(app_id: &str, pinned: &str, new_key: &str, rot_old: Option<&str>, rot_sig: Option<&str>) -> Result<()> {
     let ro = rot_old.ok_or_else(|| coded(ErrorCode::E1005, "key changed and no rotation in manifest"))?;
     crate::ensure_code!(ro.trim() == pinned.trim(), ErrorCode::E1005, "rotation from a non-pin key: refused");
     let rs = rot_sig.ok_or_else(|| coded(ErrorCode::E1005, "rotation without signature: rotation_sig signed by the old key required"))?;
@@ -434,7 +449,7 @@ pub fn verify_rotation(pinned: &str, new_key: &str, rot_old: Option<&str>, rot_s
     }
     let sig = ed25519_dalek::Signature::from_bytes(&raw);
     old_vk
-        .verify_strict(new_vk.as_bytes(), &sig)
+        .verify_strict(&succession_message(app_id, &old_vk, &new_vk), &sig)
         .map_err(|_| coded(ErrorCode::E1005, "invalid succession: bad old-key signature"))?;
     Ok(())
 }
@@ -953,13 +968,13 @@ pub fn parse_footer(size: u64, b: &[u8]) -> Result<Footer> {
     crate::ensure_code!(&b[0..8] == MAGIC, ErrorCode::E0001, "wrong magic: not a panpak file");
     let mut r = Reader::new(&b[8..]);
     let version = r.u32()?;
-    crate::ensure_code!(version == 1, ErrorCode::E0002, "unsupported format version {version} (this runtime reads only v1): update panpak to the latest version");
+    crate::ensure_code!(version == FORMAT_VERSION, ErrorCode::E0002, "unsupported format version {version} (this runtime reads only v1): update panpak to the latest version");
     let flags = r.u32()?;
-    crate::ensure_code!(flags == 0, ErrorCode::E0002, "unknown flags ({flags:#x}): future format, update the runtime");
+    crate::ensure_code!(flags == FORMAT_FLAGS, ErrorCode::E0002, "unknown flags ({flags:#x}): future format, update the runtime");
     let (index_off, index_len) = (r.u64()?, r.u64()?);
     let (man_off, man_len) = (r.u64()?, r.u64()?);
     let root: [u8; 32] = b[48..80].try_into()?;
-    Ok(Footer { index_off, index_len, man_off, man_len, root })
+    Ok(Footer { version, flags, index_off, index_len, man_off, man_len, root })
 }
 
 /// Layout coherence (spec §3): adjacent index and manifest, no extra bytes.
@@ -970,15 +985,14 @@ pub fn check_layout(size: u64, ft: &Footer) -> Result<()> {
         ErrorCode::E0003,
         "incoherent layout: index not adjacent to the manifest (corrupt or tampered file: redownload it from a trusted source)"
     );
-    let manifest_end = ft
-        .man_off
-        .checked_add(ft.man_len)
-        .and_then(|v| v.checked_add(SIG_LEN))
-        .unwrap_or(u64::MAX);
+    let manifest_end = ft.man_off.saturating_add(ft.man_len);
+    let body_end = size.saturating_sub(FOOTER_LEN);
+    // Between the manifest and the footer: the signature block, and nothing else.
+    let block = body_end.checked_sub(manifest_end);
     crate::ensure_code!(
-        manifest_end == size.saturating_sub(FOOTER_LEN),
+        block.is_some_and(|b| (MIN_SIG_BLOCK..=MAX_SIG_BLOCK).contains(&b)),
         ErrorCode::E0003,
-        "incoherent layout: manifest+signature not adjacent to the footer (corrupt or tampered file: redownload it from a trusted source)"
+        "incoherent layout: manifest+signature block not adjacent to the footer (corrupt or tampered file: redownload it from a trusted source)"
     );
     // A manifest or an index of length 0 is not one: it would also make an empty range (`off + len - 1`) when the file is read by ranges.
     crate::ensure_code!(ft.man_len > 0 && ft.index_len > 0, ErrorCode::E0003, "incoherent layout: empty manifest or index (corrupt or tampered file: redownload it from a trusted source)");
@@ -990,8 +1004,8 @@ pub fn check_layout(size: u64, ft: &Footer) -> Result<()> {
 pub fn encode_footer(ft: &Footer) -> [u8; 80] {
     let mut b = [0u8; 80];
     b[0..8].copy_from_slice(MAGIC);
-    b[8..12].copy_from_slice(&1u32.to_le_bytes());
-    b[12..16].copy_from_slice(&0u32.to_le_bytes());
+    b[8..12].copy_from_slice(&ft.version.to_le_bytes());
+    b[12..16].copy_from_slice(&ft.flags.to_le_bytes());
     b[16..24].copy_from_slice(&ft.index_off.to_le_bytes());
     b[24..32].copy_from_slice(&ft.index_len.to_le_bytes());
     b[32..40].copy_from_slice(&ft.man_off.to_le_bytes());
@@ -1277,8 +1291,83 @@ pub fn parse_secret(s: &str) -> Result<ed25519_dalek::SigningKey> {
     Ok(ed25519_dalek::SigningKey::from_bytes(&raw))
 }
 
+/// Label of the message that the package signature covers. Every signed object has its own label, so a signature made for one kind of
+/// object can never be read as another (the same key signs packages and successions).
+pub const LABEL_PACKAGE: &[u8] = b"panpak/package/v1\0";
+pub const LABEL_SUCCESSION: &[u8] = b"panpak/succession/v1\0";
+
+/// The bytes the package signature covers: label, footer `version` and `flags`, the hash of the index, then the manifest. The fixed-length
+/// root comes before the manifest, so the message cannot be read two ways.
+pub fn package_message(version: u32, flags: u32, root: &[u8; 32], manifest: &[u8]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(LABEL_PACKAGE.len() + 8 + 32 + manifest.len());
+    m.extend_from_slice(LABEL_PACKAGE);
+    m.extend_from_slice(&version.to_le_bytes());
+    m.extend_from_slice(&flags.to_le_bytes());
+    m.extend_from_slice(root);
+    m.extend_from_slice(manifest);
+    m
+}
+
+/// The bytes a succession signature covers: label, the app id (length first), the old key and the new key. The signature belongs to one
+/// app and one step.
+pub fn succession_message(app_id: &str, old: &ed25519_dalek::VerifyingKey, new: &ed25519_dalek::VerifyingKey) -> Vec<u8> {
+    let mut m = Vec::with_capacity(LABEL_SUCCESSION.len() + 2 + app_id.len() + 64);
+    m.extend_from_slice(LABEL_SUCCESSION);
+    m.extend_from_slice(&(app_id.len() as u16).to_le_bytes());
+    m.extend_from_slice(app_id.as_bytes());
+    m.extend_from_slice(old.as_bytes());
+    m.extend_from_slice(new.as_bytes());
+    m
+}
+
+/// A signature block with the package signature as its only entry.
+pub fn encode_sig_block(sig: &[u8; 64]) -> Vec<u8> {
+    let mut b = Vec::with_capacity(MIN_SIG_BLOCK as usize);
+    b.extend_from_slice(&SIG_TYPE_PACKAGE.to_le_bytes());
+    b.extend_from_slice(&SIG_FLAG_CRITICAL.to_le_bytes());
+    b.extend_from_slice(&(SIG_LEN as u32).to_le_bytes());
+    b.extend_from_slice(sig);
+    b
+}
+
+/// The length of the signature block of a file of `size` bytes (check_layout has said it is a sound one).
+pub fn sig_block_len(size: u64, ft: &Footer) -> u64 {
+    size.saturating_sub(FOOTER_LEN).saturating_sub(ft.man_off.saturating_add(ft.man_len))
+}
+
+/// Read a signature block and return the package signature. Rules: exactly one entry of type 1, critical, 64 bytes; an entry of a type
+/// that this reader does not know is ignored when it is not marked critical and refuses the file when it is; flag bits other than
+/// the critical bit are not defined and refuse; the entries fill the block exactly.
+pub fn parse_sig_block(block: &[u8]) -> Result<[u8; 64]> {
+    let bad = |m: &str| coded(ErrorCode::E0003, format!("signature block: {m} (corrupt or tampered file: redownload it from a trusted source)"));
+    if block.len() as u64 > MAX_SIG_BLOCK {
+        return Err(bad("too large"));
+    }
+    let mut r = Reader::new(block);
+    let mut found: Option<[u8; 64]> = None;
+    while r.p < block.len() {
+        let (ty, fl, len) = (r.u16().map_err(|_| bad("truncated entry"))?, r.u16().map_err(|_| bad("truncated entry"))?, r.u32().map_err(|_| bad("truncated entry"))?);
+        let data = r.take(len as usize).map_err(|_| bad("an entry is longer than the block"))?;
+        if fl & !SIG_FLAG_CRITICAL != 0 {
+            return Err(bad("an entry has flags that this panpak does not know"));
+        }
+        if ty == SIG_TYPE_PACKAGE {
+            if fl & SIG_FLAG_CRITICAL == 0 || data.len() as u64 != SIG_LEN || found.is_some() {
+                return Err(bad("the package signature entry is malformed or repeated"));
+            }
+            found = Some(data.try_into().expect("length checked"));
+        } else if fl & SIG_FLAG_CRITICAL != 0 {
+            return Err(coded(
+                ErrorCode::E0002,
+                format!("the package has a signature entry of type {ty} that this panpak does not know and cannot ignore: update panpak to the latest version"),
+            ));
+        }
+    }
+    found.ok_or_else(|| bad("no package signature"))
+}
+
 /// Verify signature and index BEFORE any other operation (spec §5).
-/// The signature covers `manifest_toml || root_hash` (root in raw bytes).
+/// The signature covers the labeled message of `package_message` (footer version and flags, root, manifest).
 /// TOFU NOTE: the key lives in the manifest it signs (self-signed) and alone
 /// proves nothing about the author's identity (spec §3.2).
 pub fn verify(f: &mut File, ft: &Footer) -> Result<(Manifest, Vec<u8>)> {
@@ -1286,16 +1375,14 @@ pub fn verify(f: &mut File, ft: &Footer) -> Result<(Manifest, Vec<u8>)> {
     // Adjacent layout (spec §3): no holes nor extra data.
     check_layout(size, ft)?;
 
-    let blob = read_at(f, ft.man_off, ft.man_len + SIG_LEN)?;
-    let (toml_b, sig_b) = blob.split_at(ft.man_len as usize);
+    let blob = read_at(f, ft.man_off, ft.man_len + sig_block_len(size, ft))?;
+    let (toml_b, block) = blob.split_at(ft.man_len as usize);
     let man: Manifest =
         toml::from_str(std::str::from_utf8(toml_b).context("non-UTF-8 manifest")?)?;
     let vk = parse_pubkey(&man.update.as_ref().context("manifest without [update].key")?.key)?;
 
-    let sig = ed25519_dalek::Signature::from_bytes(sig_b.try_into().context("truncated signature")?);
-    let mut msg = Vec::with_capacity(toml_b.len() + 32);
-    msg.extend_from_slice(toml_b);
-    msg.extend_from_slice(&ft.root);
+    let sig = ed25519_dalek::Signature::from_bytes(&parse_sig_block(block)?);
+    let msg = package_message(ft.version, ft.flags, &ft.root, toml_b);
     vk.verify_strict(&msg, &sig).map_err(|_| {
         coded(ErrorCode::E1001, "invalid manifest signature: tampered or badly downloaded file; redownload it from a trusted source and verify the key")
     })?;
@@ -1542,6 +1629,8 @@ mod tests {
 
     #[test]
     fn footer_roundtrip() {        let ft = Footer {
+            version: 1,
+            flags: 0,
             index_off: 123,
             index_len: 456,
             man_off: 579,
@@ -1566,7 +1655,7 @@ mod tests {
         assert_eq!(MAGIC.len(), 8);
         assert_eq!(MAGIC, b"PANP\0\x01\0\0");
         assert_eq!(FOOTER_LEN, 80);
-        let ft = Footer { index_off: 1, index_len: 2, man_off: 3, man_len: 4, root: [5u8; 32] };
+        let ft = Footer { version: 1, flags: 0, index_off: 1, index_len: 2, man_off: 3, man_len: 4, root: [5u8; 32] };
         assert_eq!(encode_footer(&ft).len(), 80);
     }
 
@@ -1574,7 +1663,7 @@ mod tests {
     fn rejects_unknown_magic() {
         // A magic other than the one defined by the format must NOT
         // be accepted, here as in the verifier.
-        let ft = Footer { index_off: 1, index_len: 2, man_off: 3, man_len: 4, root: [5u8; 32] };
+        let ft = Footer { version: 1, flags: 0, index_off: 1, index_len: 2, man_off: 3, man_len: 4, root: [5u8; 32] };
         let mut b = encode_footer(&ft);
         b[0..8].copy_from_slice(b"XXXX\0\x01\0\0");
         let e = parse_footer(81, &b).unwrap_err();
@@ -1596,7 +1685,7 @@ mod tests {
     #[test]
     fn user_errors_have_stable_codes() {
         // Every user error carries a stable code; the text is not asserted.
-        let ft = Footer { index_off: 0, index_len: 0, man_off: 0, man_len: 0, root: [7u8; 32] };
+        let ft = Footer { version: 1, flags: 0, index_off: 0, index_len: 0, man_off: 0, man_len: 0, root: [7u8; 32] };
         let code = |r: Result<(), anyhow::Error>| code_of(&r.unwrap_err(), ErrorCode::E0000);
         let mut b = encode_footer(&ft);
         b[8..12].copy_from_slice(&2u32.to_le_bytes());
@@ -1624,7 +1713,7 @@ mod tests {
         let zero = "ed25519:0000000000000000000000000000000000000000000000000000000000000000";
         let one = "ed25519:1111111111111111111111111111111111111111111111111111111111111111";
         let two = "ed25519:2222222222222222222222222222222222222222222222222222222222222222";
-        let e = verify_rotation(zero, one, Some(two), None).unwrap_err();
+        let e = verify_rotation("a.b", zero, one, Some(two), None).unwrap_err();
         assert_eq!(code_of(&e, ErrorCode::E1000), ErrorCode::E1005, "rotation");
         let m = render(&e, ErrorCode::E1000);
         assert!(m.starts_with("PANPAK-E1005: "), "{m}");
@@ -1852,8 +1941,8 @@ mod tests {
         // only the size caps can reject it.
         let layout = |index_len: u64, man_len: u64| {
             let man_off = index_len;
-            let size = man_off + man_len + SIG_LEN + FOOTER_LEN;
-            (size, Footer { index_off: 0, index_len, man_off, man_len, root: [0; 32] })
+            let size = man_off + man_len + MIN_SIG_BLOCK + FOOTER_LEN;
+            (size, Footer { version: 1, flags: 0, index_off: 0, index_len, man_off, man_len, root: [0; 32] })
         };
         let (size, ft) = layout(MAX_INDEX_COMP, MAX_MANIFEST_TOML);
         check_layout(size, &ft).expect("values at the limits are accepted");
@@ -1872,8 +1961,8 @@ mod tests {
     #[test]
     fn a_footer_with_an_empty_manifest_or_index_is_refused() {
         for (index_len, man_len) in [(0u64, 40u64), (100, 0), (0, 0)] {
-            let size = index_len + man_len + SIG_LEN + FOOTER_LEN;
-            let ft = Footer { index_off: 0, index_len, man_off: index_len, man_len, root: [0; 32] };
+            let size = index_len + man_len + MIN_SIG_BLOCK + FOOTER_LEN;
+            let ft = Footer { version: 1, flags: 0, index_off: 0, index_len, man_off: index_len, man_len, root: [0; 32] };
             let err = check_layout(size, &ft).unwrap_err();
             assert_eq!(code_of(&err, ErrorCode::E0000), ErrorCode::E0003, "{index_len} {man_len}: {err:#}");
         }

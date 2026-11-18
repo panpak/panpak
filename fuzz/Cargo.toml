@@ -56,6 +56,10 @@ name = "fuzz_http"
 path = "fuzz_targets/fuzz_http.rs"
 
 [[bin]]
+name = "fuzz_sigblock"
+path = "fuzz_targets/fuzz_sigblock.rs"
+
+[[bin]]
 name = "fuzz_rotation"
 path = "fuzz_targets/fuzz_rotation.rs"
 

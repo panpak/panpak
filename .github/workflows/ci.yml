@@ -504,6 +504,7 @@ jobs:
           - fuzz_footer
           - fuzz_pubkey
           - fuzz_rotation
+          - fuzz_sigblock
           - fuzz_path
           - fuzz_locks
           - fuzz_zstd

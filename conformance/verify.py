@@ -3,7 +3,7 @@
 """Independent Panpak v1 format verifier.
 
 Written ONLY from the spec (PANPAK-FORMAT.md), without reading the Rust code.
-Checks: footer, adjacent layout, Ed25519 signature (manifest||root_hash),
+Checks: footer, adjacent layout, signature block, Ed25519 signature (labeled message),
 root hash, index, chunks (hash+before use), stub_hash, safe paths.
 
 Usage: verify.py <file.panpak> [--json]
@@ -23,6 +23,8 @@ from b3 import blake3
 MAGIC = b"PANP\0\x01\0\0"
 FOOTER_LEN = 80
 SIG_LEN = 64
+LABEL_PACKAGE = b"panpak/package/v1\0"
+MAX_SIG_BLOCK = 64 * 1024
 MAX_MANIFEST = 1 << 20
 MAX_INDEX_COMP = 1 << 28
 MAX_INDEX_RAW = 1 << 28
@@ -448,6 +450,33 @@ def parse_index(raw: bytes):
     return chunks, entries
 
 
+def parse_sig_block(block: bytes) -> bytes:
+    """Entries `u16 type, u16 flags, u32 length, data` that fill the block. Exactly one type 1 (critical, 64 bytes) is the package
+    signature; another type is ignored unless it is critical; flag bits other than bit 0 are not defined."""
+    if len(block) > MAX_SIG_BLOCK:
+        raise Fail("signature block too large")
+    p, sig = 0, None
+    while p < len(block):
+        if p + 8 > len(block):
+            raise Fail("signature block: truncated entry")
+        ty, fl, ln = struct.unpack_from("<HHI", block, p)
+        p += 8
+        if p + ln > len(block):
+            raise Fail("signature block: an entry is longer than the block")
+        data, p = block[p : p + ln], p + ln
+        if fl & ~1:
+            raise Fail("signature block: undefined flags")
+        if ty == 1:
+            if not fl & 1 or ln != SIG_LEN or sig is not None:
+                raise Fail("signature block: package signature malformed or repeated")
+            sig = data
+        elif fl & 1:
+            raise Fail(f"signature block: unknown critical entry (type {ty})")
+    if sig is None:
+        raise Fail("signature block: no package signature")
+    return sig
+
+
 def check(data: bytes):
     size = len(data)
     if size <= FOOTER_LEN:
@@ -465,17 +494,19 @@ def check(data: bytes):
     # Layout coherence (adjacency, no holes nor extras).
     if index_off + index_len != man_off:
         raise Fail("inconsistent layout: index not adjacent to manifest")
-    if man_off + man_len + SIG_LEN != size - FOOTER_LEN:
-        raise Fail("inconsistent layout: manifest+signature not adjacent to footer")
+    block_len = size - FOOTER_LEN - (man_off + man_len)
+    if not (8 + SIG_LEN <= block_len <= MAX_SIG_BLOCK):
+        raise Fail("inconsistent layout: manifest+signature block not adjacent to footer")
     if man_len > MAX_MANIFEST:
         raise Fail("manifest too large")
     if index_len > MAX_INDEX_COMP:
         raise Fail("compressed index too large")
-    # Manifest + signature.
+    # Manifest + signature block.
     toml_b = data[man_off : man_off + man_len]
-    sig = data[man_off + man_len : man_off + man_len + SIG_LEN]
-    if len(toml_b) != man_len or len(sig) != SIG_LEN:
-        raise Fail("manifest/signature outside file bounds")
+    block = data[man_off + man_len : size - FOOTER_LEN]
+    if len(toml_b) != man_len:
+        raise Fail("manifest outside file bounds")
+    sig = parse_sig_block(block)
     try:
         import tomllib
 
@@ -488,8 +519,8 @@ def check(data: bytes):
         entry, app_id = app["entry"], app["id"]
     except KeyError as e:
         raise Fail(f"manifest: missing field {e}")
-    # Verify signature over manifest_toml || root_hash (raw).
-    ed25519_verify(key, toml_b + root, sig)
+    # The signature covers label, footer version and flags, the root (raw) and the manifest.
+    ed25519_verify(key, LABEL_PACKAGE + foot[8:16] + root + toml_b, sig)
     # Field rules: a valid signature does not make the fields safe (spec 3.1.1).
     check_fields(man)
     # stub_hash REQUIRED, verified over bytes [0:first chunk].

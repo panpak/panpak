@@ -20,7 +20,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from b3 import blake3
-from mkpanpak import build, encode_index, sign_ed25519, zstd_enc
+from mkpanpak import build, encode_index, sig_block, sig_entry, sig_message, sign_ed25519, zstd_enc
 
 FIX = os.path.join(HERE, "fixtures")
 os.makedirs(FIX, exist_ok=True)
@@ -72,7 +72,7 @@ def put(name, blob, ok, err=()):
     EXPECTED[name] = {"ok": ok, "err": list(err)}
 
 
-def assemble(stub, index_raw, man_toml, sign_key=SECRET, blobs=()):
+def assemble(stub, index_raw, man_toml, sign_key=SECRET, blobs=(), block=None):
     """Like mkpanpak.build but without signing/verifying anything: trust blindly."""
     from mkpanpak import MAGIC
 
@@ -80,7 +80,8 @@ def assemble(stub, index_raw, man_toml, sign_key=SECRET, blobs=()):
     root = blake3(index_raw)
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-    sig = Ed25519PrivateKey.from_private_bytes(sign_key).sign(man_toml + root)
+    sig = Ed25519PrivateKey.from_private_bytes(sign_key).sign(sig_message(1, 0, root, man_toml))
+    sig = sig_block(sig) if block is None else block(sig)
     index_off = len(stub) + sum(len(b) for b in blobs)
     man_off = index_off + len(comp_index)
     out = bytearray(stub + b"".join(blobs) + comp_index + man_toml + sig)
@@ -120,6 +121,21 @@ def main():
     idx3 = encode_index([], [{"path": "empty", "mode": 0o755, "kind": "dir"}])
     put("valid-empty-tree.panpak", assemble(STUB, idx3, manifest()), True)
 
+    # The package of Appendix A of the specification: built here from its inputs, and its signature block and footer must be
+    # the ones the specification prints (a check that the text and the code do not drift apart).
+    _stub = b"PANPAKTEST-VECTOR-v1\0"
+    _hi = b"hi\n"
+    _hic = zstd_enc(_hi)
+    _vidx = encode_index([(blake3(_hi), len(_stub), len(_hic), len(_hi))], [
+        {"path": "bin", "mode": 0o755, "kind": "dir"},
+        {"path": "bin/hi", "mode": 0o755, "kind": "file", "size": 3, "chunks": [0]}])
+    _vman = (f'[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n[runtime]\nstub_hash = "{blake3(_stub).hex()}"\n'
+             f'[update]\nkey = "{PUBHEX}"\n').encode()
+    _vec = assemble(_stub, _vidx, _vman, blobs=[_hic])
+    _spec = open(os.path.join(HERE, "..", "PANPAK-FORMAT.md")).read()
+    assert len(_vec) == 544 and _vec[-80:].hex() in _spec and _vec[len(_vec) - 80 - 72 : len(_vec) - 80].hex() in _spec, "Appendix A of PANPAK-FORMAT.md does not match the code"
+    put("valid-appendix-a.panpak", _vec, True)
+
     # ---- invalid: mechanical mutations of valid-min ----
     base = open(os.path.join(FIX, "valid-min.panpak"), "rb").read()
 
@@ -141,12 +157,12 @@ def main():
     mut("invalid-layout.panpak", gap_footer, "consistent")
     # signature: flip one byte of the SIGNATURE (not of the TOML: that would give a TOML error)
     def sig_tamper(b):
-        # signature = last 64+80 bytes...: man_off+man_len .. man_off+man_len+64
+        # the signature is the data of the first entry of the block: 8 bytes after the end of the manifest
         import struct as _st
         fsz = len(b)
         man_len = _st.unpack_from("<Q", b, fsz - 40)[0]
         man_off = _st.unpack_from("<Q", b, fsz - 48)[0]
-        b[man_off + man_len + 7] ^= 1
+        b[man_off + man_len + 8 + 7] ^= 1
 
     mut("invalid-sig.panpak", sig_tamper, "signature")
     # stub: flip in the prefix
@@ -162,7 +178,7 @@ def main():
     _root_ok = blake3(_idx_r)
     _root_bad = bytearray(_root_ok)
     _root_bad[0] ^= 1
-    _sig_r = _EP.from_private_bytes(SECRET).sign(_man_r + bytes(_root_bad))
+    _sig_r = sig_block(_EP.from_private_bytes(SECRET).sign(sig_message(1, 0, bytes(_root_bad), _man_r)))
     _comp_r = zstd_enc(_idx_r)
     _ioff_r = len(STUB) + len(_cb)
     _moff_r = _ioff_r + len(_comp_r)
@@ -214,6 +230,22 @@ def main():
         [{"path": "f", "mode": 0o644, "kind": "file", "size": 2, "chunks": [0]}],
     ) + b"\x00"
     put("invalid-trailing.panpak", assemble(STUB, idx_extra, manifest()), False, ["trailing"])
+
+    # ---- the signature block ----
+    # A good signature of the old message (manifest || root, no label): the key signed, but not this object.
+    _old_sig = Ed25519PrivateKey.from_private_bytes(SECRET).sign(man + blake3(idx))
+    put("invalid-sig-unlabeled.panpak", assemble(STUB, idx, man, blobs=blobs, block=lambda s: sig_block(_old_sig)), False, ["signature"])
+    # Unknown entries: ignored when not critical, a refusal when critical (before or after the signature).
+    put("valid-sig-block-unknown-noncritical.panpak",
+        assemble(STUB, idx, man, blobs=blobs, block=lambda s: sig_entry(9, 0, b"a proof of some kind") + sig_block(s, sig_entry(10, 0, b""))), True)
+    put("invalid-sig-block-unknown-critical.panpak",
+        assemble(STUB, idx, man, blobs=blobs, block=lambda s: sig_block(s, sig_entry(9, 1, b"x"))), False, ["critical"])
+    put("invalid-sig-block-two-signatures.panpak", assemble(STUB, idx, man, blobs=blobs, block=lambda s: sig_block(s) + sig_block(s)), False, ["repeated"])
+    put("invalid-sig-block-no-signature.panpak", assemble(STUB, idx, man, blobs=blobs, block=lambda s: sig_entry(9, 0, bytes(64))), False, ["no package signature"])
+    put("invalid-sig-block-trailing-byte.panpak", assemble(STUB, idx, man, blobs=blobs, block=lambda s: sig_block(s) + b"\0"), False, ["truncated"])
+    put("invalid-sig-block-undefined-flags.panpak", assemble(STUB, idx, man, blobs=blobs, block=lambda s: sig_block(s, sig_entry(9, 2, b""))), False, ["flags"])
+    put("invalid-sig-block-too-large.panpak", assemble(STUB, idx, man, blobs=blobs, block=lambda s: sig_block(s, sig_entry(9, 0, bytes(64 * 1024)))), False, ["not adjacent", "too large"])
+    put("invalid-sig-bare-64-bytes.panpak", assemble(STUB, idx, man, blobs=blobs, block=lambda s: s), False, ["not adjacent"])
 
     # manifest without [runtime].stub_hash (previous format), regularly signed
     man_old = b'[app]\nid = "org.example.conf"\nname = "Conf"\nversion = "1.0"\nentry = "bin/hello"\n[update]\nkey = "' + PUBHEX.encode() + b'"\n'

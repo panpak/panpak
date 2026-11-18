@@ -34,7 +34,9 @@ All byte comparisons are exact (no normalization).
 +---------------------------+  <- index_off
 | index (zstd)              |
 +---------------------------+  <- manifest_off
-| manifest.toml | sig (64)  |
+| manifest.toml             |
++---------------------------+
+| signature block           |  (§3.0)
 +---------------------------+
 | footer (80 bytes)         |  last 80 bytes of the file
 +---------------------------+
@@ -72,6 +74,8 @@ is planned.
 - `flags` (u32): all bits reserved, MUST be 0. Readers MUST
   reject other values, so future flags take effect instead of
   going unnoticed.
+- `version` and `flags` are covered by the package signature (§3.0): a
+  footer that says anything else than the signer saw does not verify.
 - Without a major bump, only what old Readers already handle is
   allowed: new **optional** TOML keys/sections (Readers ignore unknown
   ones; `panpak pack` rejects them on *input* instead, so it never
@@ -101,20 +105,63 @@ is planned.
 ## 3. Manifest [NORMATIVE]
 
 `manifest_len` is the length of the **TOML alone**. Immediately after,
-at `manifest_off + manifest_len`, come 64 bytes of Ed25519 signature.
-The signature MUST cover `manifest_toml || root_hash`, where
-`root_hash` is the 32 raw footer bytes (not hex) and `manifest_toml`
-the exact stored bytes.
+at `manifest_off + manifest_len`, comes the **signature block**, which
+ends where the footer starts.
+
+### 3.0 The signed message and the signature block [NORMATIVE]
+
+Every signed object of Panpak starts with an ASCII label that ends in a
+NUL, so that a signature made for one kind of object can never be read as
+another one (the same key signs packages and successions). The signature
+of a package covers:
+
+```
+"panpak/package/v1\0" || u32 version || u32 flags || root_hash || manifest_toml
+```
+
+`version` and `flags` are the footer fields (little-endian, as in the
+footer), `root_hash` the 32 raw footer bytes (not hex), `manifest_toml`
+the exact stored bytes. The fixed-length root comes before the manifest,
+so the message has one reading only.
+
+The signature block is a list of entries that fill the block exactly:
+
+```
+u16 type | u16 flags | u32 length | data[length]       (little-endian)
+```
+
+- bit 0 of `flags` is **critical**; the other bits are not defined and a
+  Reader MUST reject an entry that sets one.
+- Type 1 is the package signature: exactly one entry per block, critical,
+  `length` = 64 (Ed25519, `verify_strict`).
+- A Reader MUST ignore an entry of a type it does not know when it is
+  not critical, and MUST reject the package when it is critical (the
+  message says to update panpak). Types 2 (transparency proof), 3 (a
+  signature with another algorithm) and 4 (countersignature of a third
+  party) are reserved; no Reader of this generation implements them.
+- The block is at least 72 bytes (one signature) and at most 64 KiB.
+- The block is not covered by the package signature (it cannot be).
+  Rule of design: nothing relevant to security may depend on the presence
+  of an entry unless a signed datum says it is required.
+
+A succession (`rotation_sig`, §3.2) covers a message of its own:
+
+```
+"panpak/succession/v1\0" || u16 len(app id) || app id || old public key || new public key
+```
+
+(the keys are the 32 raw bytes). The signature belongs to one app and
+one step: the same bytes do not rotate another app.
 
 Mandatory layout consistency checks (reject on mismatch):
 
 ```
 index_off + index_len == manifest_off
-manifest_off + manifest_len + 64 == file_size - 80
+72 <= file_size - 80 - (manifest_off + manifest_len) <= 65536
 ```
 
-No holes or extra data between index, manifest+signature and footer:
-offsets MUST NOT point at arbitrary file regions.
+No holes or extra data between index, manifest, signature block and
+footer: offsets MUST NOT point at arbitrary file regions.
 
 ### 3.1 Schema (`panpak.toml`) [NORMATIVE]
 
@@ -177,7 +224,7 @@ camera = "ask"
 url = "https://example.org/editor/index.panpak"   # optional
 key = "ed25519:<64 lowercase hex>"              # REQUIRED
 rotation_old = "ed25519:<...>"                  # optional: old key authorizing the new one
-rotation_sig = "<128 hex>"                      # optional: old-key signature over the 32 raw bytes of the new public key
+rotation_sig = "<128 hex>"                      # optional: old-key signature over the succession message (§3.0): app id, old key, new key
 
 [runtime]                          # minimum runtime version (stub)
 min_runtime = 1                    # optional, default 1
@@ -514,7 +561,8 @@ proves nothing about the author's identity. The TOFU rule applies:
 2. The client saves the confirmed key to `apps/<id>/pinned-key`.
 3. Updates MUST use the same key or a signed succession: the new manifest
    includes `rotation_old` (equal to the pin) and `rotation_sig` (old-key
-   signature over the 32 raw bytes of the new public key).
+   signature over the succession message of §3.0: the app id, the old key
+   and the new key).
 4. The client verifies the succession against the pin and only then updates
    the pin, atomically with the verified install. Without a valid
    succession, a key change means manual reinstall.
@@ -596,7 +644,7 @@ A Reader MUST run these checks, in this order, and MUST reject the
 package at the first failure:
 
 1. Read the footer, check magic and version.
-2. Verify the manifest signature, then check the field rules of §3.1.1.
+2. Read the signature block (§3.0) and verify the manifest signature over the labeled message, then check the field rules of §3.1.1.
 3. Verify that the stub bytes (`[0..first chunk)`) match
    `[runtime].stub_hash` (REQUIRED; absent = previous format, rejected).
    No path ever runs or installs a stub different from the signed one:
@@ -708,8 +756,8 @@ magic: the compressed index, the manifest, the signature and a footer, in this o
 +---------------------------+
 ```
 
-The signed message is `manifest || root` and `root` is the hash of the raw index, so the signature of the package is the signature of the record and
-`verify` reads a record as it reads a package. A record has no stub and no chunks.
+The signed message is the one of §3.0 (label, `version`, `flags`, `root`, manifest), where `root` is the hash of the raw index, so the signature of the package is the signature of the record and
+`verify` reads a record as it reads a package. The record keeps the signature block whole, between the manifest and its footer. A record has no stub and no chunks.
 
 - A reader of **packages** (`install`, `update`, `doctor <package>`, `licenses`, every other use of the footer of §2) MUST refuse a record with
   `PANPAK-E0010`: the magic differs from §2 in its third byte, so no other reader takes one for the other.
@@ -1508,7 +1556,7 @@ production). Verified by both the independent verifier
 (`conformance/verify.py`) and the Rust side (`panpak doctor`): both
 MUST accept it and report the same values.
 
-- total size: 536 bytes
+- total size: 544 bytes
 - stub `[0, 21)`: `50414e50414b544553542d564543544f522d763100`
   (`PANPAKTEST-VECTOR-v1\0`)
 - chunk 0 `[21, 37)`, zstd level 3 of `hi\n`:
@@ -1522,17 +1570,22 @@ MUST accept it and report the same values.
 - root_hash = `BLAKE3(raw index)` =
   `ad7a506ac9fbaf289065933e9217f2a552593b0ff77fd458ad16d0695f9853f5`
 - manifest TOML `[140, 392)` (252 bytes):
-  `[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n[runtime]\nstub_hash = "503da793bbca6afccdd883c02e32c139ef3a589894325916eddc2bf67b87520c"\n[update]\nkey = "ed25519:e1f41a83ba433a12cef2009dc083b0af7eb8c92a9edd35109ae291b3373a6f0b"\n`
-- signature `[392, 456)` (64 bytes Ed25519 over `manifest_toml || root_hash`):
-  `a5494d40cdbb4b4e254825dcd258d3ab490c39f6e8e2407c73bea2c331791e4f9c6bb09e7be4c9e87fd958608261aa5de01601ec3d880a365a9edc483443f108`
-- footer `[456, 536)` (80 bytes):
+  `[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n[runtime]\nstub_hash = "503da793bbca6afccdd883c02e32c139ef3a589894325916eddc2bf67b87520c"\n[update]\nkey = "ed25519:783e43d53f1193914442b4346eed8e69d537a4786ee74af8c878230faa875c72"\n`
+  (the key is the public half of the fixed test key of `conformance/gen.py`)
+- signature block `[392, 464)` (72 bytes: one entry, type 1, critical, 64 bytes of
+  Ed25519 over the labeled message of §3.0, that is
+  `"panpak/package/v1\0" || 01000000 || 00000000 || root_hash || manifest_toml`):
+  `0100010040000000b599c8bc13855bcda58dcbc10229bd88d41df0aa9d4c046ac30f9b1d4c0d7adf162f1ae684a73103e45f73f8f037dbdc28fbbde16d0b1ab3a30b53136f0b9d0e`
+- footer `[464, 544)` (80 bytes):
   `50414e50000100000100000000000000250000000000000067000000000000008c00000000000000fc00000000000000ad7a506ac9fbaf289065933e9217f2a552593b0ff77fd458ad16d0695f9853f5`
   (magic `PANP\0\1\0\0`, version=1, flags=0, index_off=37, index_len=103,
   manifest_off=140, manifest_len=252, root_hash=see above)
 
 Invalid vectors: the conformance suite (`conformance/fixtures/`,
-18 cases: wrong magic/version/flags, incoherent layout, tampered
-signature/sizes/root/chunk, non-canonical paths, plus `unknown-magic.bin`:
+wrong magic/version/flags, incoherent layout, tampered
+signature/sizes/root/chunk, a signature over the old unlabeled message, signature blocks (an unknown
+entry that is critical or not, two signatures, no signature, flags that are not defined, an extra byte,
+over 64 KiB, the old bare 64 bytes), non-canonical paths, plus `unknown-magic.bin`:
 a file whose magic is not exactly the one defined in this section MUST be rejected) with expected
 outcome in `conformance/fixtures/expected.json`.
 

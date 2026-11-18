@@ -8,7 +8,7 @@
 //!
 //! A record is never a package: `read_footer` (what `install`, `update` and every reader of packages use) refuses it with
 //! `PANPAK-E0010`, and `panpak-stub` runs a record only from `<store>/packages/`.
-use crate::{coded, encode_footer, read_at, ErrorCode, Footer, FOOTER_LEN, MAGIC, SIG_LEN};
+use crate::{coded, encode_footer, read_at, ErrorCode, Footer, FOOTER_LEN, MAGIC};
 use anyhow::{ensure, Result};
 use std::{fs::File, path::Path};
 
@@ -21,14 +21,15 @@ pub const NOT_A_PACKAGE: &str = "this file is the record of an installed version
 /// The record of the package `f` (whose footer is `ft`, already verified): index, manifest, signature, footer.
 pub fn make_record(f: &mut File, ft: &Footer) -> Result<Vec<u8>> {
     let index = read_at(f, ft.index_off, ft.index_len)?;
-    let man_sig = read_at(f, ft.man_off, ft.man_len + SIG_LEN)?;
+    let size = f.metadata()?.len();
+    let man_sig = read_at(f, ft.man_off, ft.man_len + crate::sig_block_len(size, ft))?;
     let (man, sig) = man_sig.split_at(ft.man_len as usize);
     Ok(record_bytes(&index, man, sig, ft.root))
 }
 
-/// The record from its parts, as `update` has them after it read the footer, manifest, signature and index of a remote package.
+/// The record from its parts, as `update` has them after it read the footer, manifest, signature block and index of a remote package.
 pub fn record_bytes(index_comp: &[u8], manifest: &[u8], sig: &[u8], root: [u8; 32]) -> Vec<u8> {
-    let footer = Footer { index_off: 0, index_len: index_comp.len() as u64, man_off: index_comp.len() as u64, man_len: manifest.len() as u64, root };
+    let footer = Footer { version: crate::FORMAT_VERSION, flags: crate::FORMAT_FLAGS, index_off: 0, index_len: index_comp.len() as u64, man_off: index_comp.len() as u64, man_len: manifest.len() as u64, root };
     let mut b = encode_footer(&footer);
     b[0..8].copy_from_slice(RECORD_MAGIC);
     let mut out = Vec::with_capacity(index_comp.len() + manifest.len() + sig.len() + b.len());
@@ -161,8 +162,8 @@ mod tests {
         body.extend_from_slice(&index);
         let man_off = body.len() as u64;
         body.extend_from_slice(&manifest);
-        body.extend_from_slice(&[9u8; SIG_LEN as usize]);
-        let ft = Footer { index_off, index_len: index.len() as u64, man_off, man_len: manifest.len() as u64, root: [5u8; 32] };
+        body.extend_from_slice(&crate::encode_sig_block(&[9u8; 64]));
+        let ft = Footer { version: 1, flags: 0, index_off, index_len: index.len() as u64, man_off, man_len: manifest.len() as u64, root: [5u8; 32] };
         body.extend_from_slice(&encode_footer(&ft));
         let p = dir.join("p.panpak");
         fs::File::create(&p).unwrap().write_all(&body).unwrap();

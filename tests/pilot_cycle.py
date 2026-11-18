@@ -23,6 +23,7 @@ BIN = ROOT / 'target/x86_64-unknown-linux-musl/release'
 sys.path.insert(0, str(ROOT / 'tests'))
 from incremental import KEY, PUBLIC
 import isolation
+import sigfmt
 
 APPS = ['audacity', 'qbittorrent', 'kdenlive', 'krita', 'darktable',
         'rawtherapee', 'bitwarden', 'joplin', 'openshot', 'mu']
@@ -48,7 +49,7 @@ def prepare(source, work):
                 man += '\n[permissions]\nx11 = true\n'
         man = man.encode()
         pkg = packages / f'{app}.panpak'
-        pkg.write_bytes(data[:moff] + man + KEY.sign(man + root)
+        pkg.write_bytes(data[:moff] + man + sigfmt.block(KEY.sign(sigfmt.message(ver, flags, root, man)))
                         + struct.pack('<8sIIQQQQ32s', magic, ver, flags, off, size, moff, len(man), root))
         env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(home / '.local/share'))
         p = subprocess.run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', pkg],
