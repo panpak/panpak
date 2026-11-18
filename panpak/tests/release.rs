@@ -58,11 +58,14 @@ fn lab(name: &str) -> Lab {
     let o = cli(&home, &["keygen", "-o", key.to_str().unwrap()]);
     assert!(o.status.success(), "{}", text(&o));
     let pubkey = text(&o).lines().find_map(|l| l.strip_prefix("key:    ")).unwrap().trim().to_string();
+    // An install makes the app ready with the runtime, and the checks of a later install read the tree that this made: the runtime is the real
+    // stub next to `panpak` (a file that `cargo test` does not build by itself: `cargo build -p panpak-stub` first). The stub that `pack` embeds
+    // is a script.
+    let real = Path::new(env!("CARGO_BIN_EXE_panpak")).with_file_name("panpak-stub");
+    assert!(real.is_file(), "{} is missing: build it first (cargo build -p panpak-stub, with the same --target)", real.display());
     let stub = home.join("stub");
     fs::write(&stub, "#!/bin/sh\necho 1\n").unwrap();
     fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
-    let o = cli(&home, &["install-runtime", stub.to_str().unwrap(), "--allow-unsigned"]);
-    assert!(o.status.success(), "{}", text(&o));
     Lab { home, key, pubkey }
 }
 

@@ -173,6 +173,8 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
           bwrap --version
+      - name: The stub, which some tests start as the runtime (cargo test does not build it by itself)
+        run: cargo build --locked --target x86_64-unknown-linux-musl -p panpak-stub
       - name: Test (musl)
         # --no-fail-fast: one failing test does not hide the others (the first run with PANPAK_CI=1 shows every test that used to skip).
         env:

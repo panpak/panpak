@@ -44,10 +44,10 @@ def main():
             (tree / 'show').chmod(0o755)
             (tmp / 'secret.key').write_text((bytes([41]) * 32).hex() + '\n')
             (tmp / 'secret.key').chmod(0o600)
-            for x11 in (False, True):
+            for revision, x11 in enumerate((False, True), 1):
                 (tree / 'panpak.toml').write_text(
                     '[app]\nid="org.example.xclient"\nname="X11"\nversion="1"\nentry="show"\n'
-                    f'[permissions]\nx11={str(x11).lower()}\n[update]\nkey="ed25519:{PUBLIC}"\n')
+                    f'[release]\nrevision={revision}\n[permissions]\nx11={str(x11).lower()}\n[update]\nkey="ed25519:{PUBLIC}"\n')
                 run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file',
                      tmp / 'secret.key', '-o', tmp / 'x.panpak'], env)
                 result = run([BIN / 'panpak', 'install', '--yes', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', tmp / 'x.panpak'], env)
