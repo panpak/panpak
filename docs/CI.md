@@ -45,7 +45,7 @@ fills the caches.
 ## The advisory job and the caches of the fixed downloads
 
 - `sway` (the Wayland security context against a real Sway) is a job of its own, advisory (`continue-on-error`, not in `needs` of `gate`), with its own release build, so it runs beside the others and nothing waits for it. It was a step of `build-test`, where it took 7 to 284 s, most of it `apt`.
-- In `build-test` the Rust toolchain and the Zig wheel are cached with keys that hold what they are: `rustup-<toolchain>-minimal-rustfmt-musl` and `zig-wheel-<hash of tools/requirements-zig.txt>` (the file holds the version and the hashes of the wheel, so a new pin is a new key). A cache is never trusted for what it holds: the toolchain step still runs `rustup toolchain install` (a no-op when the cache is right) and the wheel is installed with `--require-hashes` from the cached folder, so a wrong file in the cache fails the install.
+- In `build-test` the Rust toolchain is cached with a key that holds what it is, `rustup-<toolchain>-minimal-rustfmt-musl`. A cache is never trusted for what it holds: the step still runs `rustup toolchain install` (a no-op when the cache is right). Measured: the toolchain took 10 to 21 s, with the cache 3 s (restore 2 s, step 1 s). The Zig wheel was cached too and taken out again: with the cache the two steps took 7 s against 6 to 8 s without it, so there was nothing to save.
 
 ## Every test runs in a level
 

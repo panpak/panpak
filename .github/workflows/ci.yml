@@ -148,22 +148,13 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
-      - name: Cache the Zig wheel (the key holds the version and the hashes of tools/requirements-zig.txt)
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/zig-wheel
-          key: zig-wheel-${{ hashFiles('tools/requirements-zig.txt') }}
       - name: Zig (pinned PyPI wheel, hash-checked)
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
-          # The wheel is downloaded once (three tries, 60 s each: a read timeout failed a run of main) into the cached folder and installed
-          # from it; `--require-hashes` checks the file on every install, from the cache or not.
-          wheels="$HOME/.cache/zig-wheel"
-          mkdir -p "$wheels"
+          # A read timeout of the download (files.pythonhosted.org) failed a run of main: three tries, 60 s each, the hash check stays.
           ok=0
           for try in 1 2 3; do
-            if "$RUNNER_TEMP/zig/bin/pip" download --timeout 60 --require-hashes --no-deps -r tools/requirements-zig.txt -d "$wheels" \
-               && "$RUNNER_TEMP/zig/bin/pip" install --no-index --find-links "$wheels" --require-hashes -r tools/requirements-zig.txt; then ok=1; break; fi
+            if "$RUNNER_TEMP/zig/bin/pip" install --timeout 60 --require-hashes -r tools/requirements-zig.txt; then ok=1; break; fi
             sleep 5
           done
           [ "$ok" = 1 ]
