@@ -769,17 +769,19 @@ mod tests {
         \tout = subprocess.run(['/usr/bin/find', mp, '-xdev', '-type', 's'], capture_output=True, text=True).stdout\n\
         \tprint(out, end='')\n";
 
-    /// The mounts that the scan in the view leaves out because the test looks at them once, on the host: `/usr` is bound read-only from the host's own folder and
-    /// is by far the largest tree (250,000 entries here, far more on a CI runner, read cold); the test of the view and the counter-proof would each read it again.
+    /// The mounts that the scan in the view leaves out: `/usr` is bound read-only from the host's own folder and is by far the largest tree (765,000 entries on a CI
+    /// runner, 131 s to read cold, measured). It holds what packages install, and a package cannot carry a socket (a deb or an rpm has no such file type), so the
+    /// sockets of the services of the host are not there. It is looked at from the host, once for the whole run, to a depth of 3 (`/usr/lib/<x>/<y>`), which costs
+    /// a few milliseconds.
     const SCANNED_ON_THE_HOST: &[&str] = &["/usr"];
 
-    /// The sockets in the folders of `SCANNED_ON_THE_HOST` of the host, found once for the whole test run.
+    /// The sockets in the first levels of the folders of `SCANNED_ON_THE_HOST` of the host, found once for the whole test run.
     fn host_sockets() -> &'static Vec<String> {
         static FOUND: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
         FOUND.get_or_init(|| {
             let mut v = Vec::new();
             for d in SCANNED_ON_THE_HOST {
-                let out = Command::new("/usr/bin/find").args([d, "-xdev", "-type", "s"]).output().unwrap();
+                let out = Command::new("/usr/bin/find").args([d, "-xdev", "-maxdepth", "3", "-type", "s"]).output().unwrap();
                 v.extend(String::from_utf8(out.stdout).unwrap().lines().map(str::to_string));
             }
             v
@@ -870,10 +872,6 @@ mod tests {
         for d in &on_top {
             old.extend([os("--ro-bind"), host.join(d).into(), Path::new("/").join(d).into()]);
         }
-        let t0 = std::time::Instant::now();
-        let n_usr = host_sockets().len();
-        let t_usr = t0.elapsed();
-        let t1 = std::time::Instant::now();
         let before = sockets_in(old, &on_top.iter().map(|d| format!("/{d}")).collect::<Vec<_>>().iter().map(String::as_str).collect::<Vec<_>>());
         for p in planted.iter().filter(|p| on_top.iter().any(|d| p.starts_with(host.join(d)))) {
             let want = p.strip_prefix(&host).unwrap();
@@ -887,13 +885,9 @@ mod tests {
         p.sockets = vec![];
         p.ro_run_dirs = vec![];
         p.binds = vec![];
-        let t_before = t1.elapsed();
-        let t2 = std::time::Instant::now();
         let after = sockets_in(view_args(&p), &[]);
-        let t_after = t2.elapsed();
-        let c = Command::new("/usr/bin/find").args(["/usr", "-xdev"]).output().unwrap();
-        let n = c.stdout.iter().filter(|b| **b == b'\n').count();
-        panic!("DIAG host_sockets {t_usr:?} ({n_usr}), before {t_before:?}, after {t_after:?}, entries of /usr {n}, total {:?}", t0.elapsed());
+        assert!(after.is_empty(), "sockets reachable in the new view: {after:?}");
+        let _ = std::fs::remove_dir_all(&host);
     }
 
     /// The layered home in a real view: the app writes in its home and its cache; the environment of the user is there at the
