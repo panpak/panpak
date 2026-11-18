@@ -870,6 +870,10 @@ mod tests {
         for d in &on_top {
             old.extend([os("--ro-bind"), host.join(d).into(), Path::new("/").join(d).into()]);
         }
+        let t0 = std::time::Instant::now();
+        let n_usr = host_sockets().len();
+        let t_usr = t0.elapsed();
+        let t1 = std::time::Instant::now();
         let before = sockets_in(old, &on_top.iter().map(|d| format!("/{d}")).collect::<Vec<_>>().iter().map(String::as_str).collect::<Vec<_>>());
         for p in planted.iter().filter(|p| on_top.iter().any(|d| p.starts_with(host.join(d)))) {
             let want = p.strip_prefix(&host).unwrap();
@@ -883,9 +887,13 @@ mod tests {
         p.sockets = vec![];
         p.ro_run_dirs = vec![];
         p.binds = vec![];
+        let t_before = t1.elapsed();
+        let t2 = std::time::Instant::now();
         let after = sockets_in(view_args(&p), &[]);
-        assert!(after.is_empty(), "sockets reachable in the new view: {after:?}");
-        let _ = std::fs::remove_dir_all(&host);
+        let t_after = t2.elapsed();
+        let c = Command::new("/usr/bin/find").args(["/usr", "-xdev"]).output().unwrap();
+        let n = c.stdout.iter().filter(|b| **b == b'\n').count();
+        panic!("DIAG host_sockets {t_usr:?} ({n_usr}), before {t_before:?}, after {t_after:?}, entries of /usr {n}, total {:?}", t0.elapsed());
     }
 
     /// The layered home in a real view: the app writes in its home and its cache; the environment of the user is there at the
