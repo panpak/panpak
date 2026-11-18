@@ -10,7 +10,7 @@
 #   HEAVY, FUZZ, DISTRO_ON, REPRO
 #                              outputs of the changes job: "true", "false", or empty
 #   R_<JOB>                    result of each job: success, failure, cancelled, skipped
-#                              (JOB is MONDAY, CHANGES, BUILD_TEST, PRIVATE_BUS, CLIPPY, FUZZ_SMOKE,
+#                              (JOB is MONDAY, CHANGES, BUILD_TEST, RUST_TESTS, PRIVATE_BUS, CLIPPY, FUZZ_SMOKE,
 #                              REPRO_JOB, LICENSES, DISTRO, DCO, SECRETS)
 # Exit status: 0 all as expected, 1 some job is not, 2 input missing.
 set -euo pipefail
@@ -57,18 +57,19 @@ else
   want DCO skipped
 fi
 
-# The changes job decides the rest: build-test and private-bus when something is not documentation; fuzz-smoke and distro in
+# The changes job decides the rest: build-test, rust-tests and private-bus when something is not documentation; fuzz-smoke and distro in
 # addition on the full level; repro on the full level or when the reference hashes changed.
 if [ "$all" = true ]; then
   want CHANGES success
   heavy() { if [ "${!2:-}" = true ]; then want "$1" success; else want "$1" skipped; fi; }
   heavy BUILD_TEST HEAVY
+  heavy RUST_TESTS HEAVY
   heavy PRIVATE_BUS HEAVY
   heavy FUZZ_SMOKE FUZZ
   heavy DISTRO DISTRO_ON
   heavy REPRO_JOB REPRO
 else
-  for j in CHANGES BUILD_TEST PRIVATE_BUS FUZZ_SMOKE DISTRO REPRO_JOB; do want "$j" skipped; done
+  for j in CHANGES BUILD_TEST RUST_TESTS PRIVATE_BUS FUZZ_SMOKE DISTRO REPRO_JOB; do want "$j" skipped; done
 fi
 
 printf '%s' "$rows"

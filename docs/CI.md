@@ -42,6 +42,10 @@ level (label) 225 s.
 The wall time was already under ten minutes: the jobs run in parallel. What changes is the cost of a run (a quarter of it for the fast level), and that main now
 fills the caches.
 
+## build-test in two jobs
+
+`build-test` was one job of 707 s at the full level (531 to 633 s at the fast level), and everything else ended in under four minutes, so it set the length of every run. It is two jobs that run at the same time, with the same set-up (checkout, caches, toolchain, Zig, packages, bubblewrap): `rust-tests` (the unit and integration tests of the workspace, the release build, the test points with the failpoints build, the blob visibility, the lock files of a signal and the icons of an update) and `build-test` (the release build, the conformance, the scripts of `tests/`, `view.py` at the full level, the artifact for the distro matrix). Each does its own release build (about 50 s), which is the price of running beside the other. `gate` needs both (`scripts/ci-gate.sh`, tested by `tests/ci-gate-test.sh`); the rule of `main` requires only `gate`, so there is nothing to change in the settings of the repository. No test was removed, skipped or moved to another level: every step of the old job is in one of the two.
+
 ## The advisory job and the caches of the fixed downloads
 
 - `sway` (the Wayland security context against a real Sway) is a job of its own, advisory (`continue-on-error`, not in `needs` of `gate`), with its own release build, so it runs beside the others and nothing waits for it. It was a step of `build-test`, where it took 7 to 284 s, most of it `apt`.
