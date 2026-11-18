@@ -144,7 +144,13 @@ jobs:
       - name: Zig (pinned PyPI wheel, hash-checked)
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
-          "$RUNNER_TEMP/zig/bin/pip" install --require-hashes -r tools/requirements-zig.txt
+          # A read timeout of the download (files.pythonhosted.org) failed a run of main: three tries, 60 s each, the hash check stays.
+          ok=0
+          for try in 1 2 3; do
+            if "$RUNNER_TEMP/zig/bin/pip" install --timeout 60 --require-hashes -r tools/requirements-zig.txt; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = 1 ]
           # Only the directory with the zig binary goes on PATH: the venv's python3
           # would hide the system Python that the conformance scripts need.
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
@@ -292,7 +298,13 @@ jobs:
       - name: Zig (pinned PyPI wheel, hash-checked)
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
-          "$RUNNER_TEMP/zig/bin/pip" install --require-hashes -r tools/requirements-zig.txt
+          # A read timeout of the download (files.pythonhosted.org) failed a run of main: three tries, 60 s each, the hash check stays.
+          ok=0
+          for try in 1 2 3; do
+            if "$RUNNER_TEMP/zig/bin/pip" install --timeout 60 --require-hashes -r tools/requirements-zig.txt; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = 1 ]
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Release build
         run: cargo build --locked --release --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
@@ -357,7 +369,13 @@ jobs:
       - name: Zig (pinned PyPI wheel, hash-checked)
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
-          "$RUNNER_TEMP/zig/bin/pip" install --require-hashes -r tools/requirements-zig.txt
+          # A read timeout of the download (files.pythonhosted.org) failed a run of main: three tries, 60 s each, the hash check stays.
+          ok=0
+          for try in 1 2 3; do
+            if "$RUNNER_TEMP/zig/bin/pip" install --timeout 60 --require-hashes -r tools/requirements-zig.txt; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = 1 ]
           # Only the directory with the zig binary goes on PATH: the venv's python3
           # would hide the system Python that the conformance scripts need.
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
@@ -444,7 +462,13 @@ jobs:
       - name: Zig (pinned PyPI wheel, hash-checked)
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
-          "$RUNNER_TEMP/zig/bin/pip" install --require-hashes -r tools/requirements-zig.txt
+          # A read timeout of the download (files.pythonhosted.org) failed a run of main: three tries, 60 s each, the hash check stays.
+          ok=0
+          for try in 1 2 3; do
+            if "$RUNNER_TEMP/zig/bin/pip" install --timeout 60 --require-hashes -r tools/requirements-zig.txt; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = 1 ]
           # Only the directory with the zig binary goes on PATH: the venv's python3
           # would hide the system Python that the conformance scripts need.
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
