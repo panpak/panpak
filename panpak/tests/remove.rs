@@ -31,6 +31,8 @@ fn cmd(home: &Path, args: &[&str]) -> Command {
         .env("XDG_RUNTIME_DIR", home.join("run"))
         .env_remove("PANPAK_SECRET_FILE")
         .env_remove("PANPAK_TEST_KILL_AT")
+        // The store of each test holds the debug `panpak` that `install` puts there (about 100 MB): a link, not a copy (a debug build only).
+        .env("PANPAK_TEST_LINK_STORE", "1")
         // The messages are in English whatever the language of the user who runs the tests.
         .env_remove("LANGUAGE")
         .env("LC_ALL", "C")
@@ -61,6 +63,17 @@ impl Drop for Env {
             let _ = std::fs::remove_dir_all(&self.home);
         }
     }
+}
+
+/// The `panpak` that `install` puts in the store of a test is the binary under test itself (a link), not a copy of 100 MB.
+#[test]
+fn the_store_of_a_test_holds_a_link_to_the_binary_not_a_copy() {
+    use std::os::unix::fs::MetadataExt;
+    let e = env("link-binary");
+    e.install(A, "1", "a");
+    let stored = e.store().join("bin/panpak");
+    let me = Path::new(env!("CARGO_BIN_EXE_panpak"));
+    assert_eq!(fs::metadata(&stored).unwrap().ino(), fs::metadata(me).unwrap().ino(), "{} is a copy", stored.display());
 }
 
 fn env(name: &str) -> Env {

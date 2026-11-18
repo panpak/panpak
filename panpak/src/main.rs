@@ -1511,13 +1511,27 @@ fn find_in(dir: &Path, name: &str) -> Result<PathBuf> {
 
 /// Copy `src` next to `dest` and rename it over `dest`. Writing into a runtime that apps are executing fails with
 /// "Text file busy"; a rename leaves the running processes on the old file and gives new starts the new one.
+/// Only a test build asks for it (`PANPAK_TEST_LINK_STORE`, honoured in a debug build and never in a release): the tests of `remove` make a store
+/// each and the debug `panpak` that `install` puts in it is about 100 MB.
+fn link_in_tests() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("PANPAK_TEST_LINK_STORE").is_some()
+}
+
+/// Put `src` at `tmp`: a hard link when `link` is set and the two are on one file system, a copy otherwise (also when the link is refused).
+fn copy_into(src: &Path, tmp: &Path, link: bool) -> std::io::Result<()> {
+    if link && fs::hard_link(src, tmp).is_ok() {
+        return Ok(());
+    }
+    fs::copy(src, tmp).map(|_| ())
+}
+
 fn install_file_atomically(src: &Path, dest: &Path, mode: u32) -> Result<()> {
     let dir = dest.parent().context("destination without a directory")?;
     let name = dest.file_name().context("destination without a file name")?.to_string_lossy();
     let tmp = dir.join(format!(".{name}.panpak-tmp-{}", std::process::id()));
     let _ = fs::remove_file(&tmp);
     let res = (|| -> Result<()> {
-        fs::copy(src, &tmp)?;
+        copy_into(src, &tmp, link_in_tests())?;
         fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))?;
         fs::File::open(&tmp)?.sync_all()?;
         fs::rename(&tmp, dest)?;
@@ -3840,6 +3854,35 @@ fn real_main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_file_is_linked_when_asked_and_possible_and_copied_in_every_other_case() {
+        use std::os::unix::fs::MetadataExt;
+        let d = std::env::temp_dir().join(format!("panpak-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let src = d.join("src");
+        fs::write(&src, b"binary").unwrap();
+        let ino = |p: &Path| fs::metadata(p).unwrap().ino();
+        copy_into(&src, &d.join("linked"), true).unwrap();
+        assert_eq!(ino(&d.join("linked")), ino(&src), "asked and possible: the same file");
+        copy_into(&src, &d.join("copied"), false).unwrap();
+        assert_ne!(ino(&d.join("copied")), ino(&src), "not asked: a copy");
+        assert_eq!(fs::read(d.join("copied")).unwrap(), b"binary");
+        // A target that cannot be linked (it exists): the copy path is tried and reports its own error, never a half file.
+        assert!(copy_into(&src, &d.join("copied"), true).is_ok(), "the copy replaces what is there");
+        // Another file system (tmpfs of /dev/shm against the disk, where they differ): the link is refused and a copy is made.
+        let shm = Path::new("/dev/shm").join(format!("panpak-link-{}", std::process::id()));
+        if fs::write(&shm, b"binary").is_ok() {
+            if fs::metadata(&shm).unwrap().dev() != fs::metadata(&d).unwrap().dev() {
+                copy_into(&shm, &d.join("across"), true).unwrap();
+                assert_ne!(ino(&d.join("across")), ino(&shm));
+                assert_eq!(fs::read(d.join("across")).unwrap(), b"binary");
+            }
+            let _ = fs::remove_file(&shm);
+        }
+        let _ = fs::remove_dir_all(&d);
+    }
+
 
     #[test]
     fn glibc_versions_are_read_from_ldd_output_and_compared() {
