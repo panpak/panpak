@@ -303,6 +303,8 @@ jobs:
         run: python3 tests/record_names.py
       - name: An update against a footer that lies (PP-03)
         run: python3 tests/update_footer.py
+      - name: The release table over HTTP (revision, floor, channel, history, the security number)
+        run: python3 tests/release_update.py
       - name: The folder that --write-rename opens (PP-07)
         run: python3 tests/open_rename.py
       - name: The collection keeps what it cannot read the links of (P2-04)

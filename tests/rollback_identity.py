@@ -50,7 +50,7 @@ def main():
             tree.mkdir()
             (tree / 'hello').write_text(f'#!/bin/sh\necho {name}\n')
             (tree / 'hello').chmod(0o755)
-            (tree / 'panpak.toml').write_text(f'[app]\nid="{app_id}"\nname="T"\nversion="{version}"\nentry="hello"\n[update]\nkey="{keys[who][1]}"\n')
+            (tree / 'panpak.toml').write_text(f'[app]\nid="{app_id}"\nname="T"\nversion="{version}"\nentry="hello"\n[release]\nrevision={version}\n[update]\nkey="{keys[who][1]}"\n')
             out = tmp / f'{name}.panpak'
             run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', keys[who][0], '-o', out], env)
             return out

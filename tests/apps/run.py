@@ -76,10 +76,10 @@ def in_scope(args, argv):
 
 def one(ctx, app, disp_of, full, use_cache):
     """All the phases for one app; returns the row."""
-    row = dict(app=app.name, id=app.id, display=app.display, starts=False, icon=False, window_s=None, package_s=None, cached=None, install_s=None, starts_s=None, notes=[], error=None)
+    row = dict(app=app.name, id=app.id, display=app.display, permissions=None, starts=False, icon=False, window_s=None, package_s=None, cached=None, install_s=None, starts_s=None, notes=[], error=None)
     try:
         pkg, secs, cached, notes = pipeline.ensure_package(ctx, app, use_cache)
-        row.update(package_s=round(secs, 1), cached=cached, notes=list(notes))
+        row.update(package_s=round(secs, 1), cached=cached, notes=list(notes), permissions=pipeline.permissions_digest(ctx, pkg))
         disp = disp_of(app.display)
         run = pipeline.Run(ctx, app)
         run.prepare()
@@ -114,12 +114,12 @@ def one(ctx, app, disp_of, full, use_cache):
 
 def table(rows, full, total, phases):
     lines = [f"mode: {'full (median of 5 starts, the first left out)' if full else 'fast (1 start per app)'}; {len(rows)} app(s)", ""]
-    hdr = f"{'app':<16}{'starts':<8}{'icon':<6}{'window s':>9}{'package':>11}{'install':>9}{'starts':>9}"
+    hdr = f"{'app':<16}{'starts':<8}{'icon':<6}{'window s':>9}{'package':>11}{'install':>9}{'starts':>9}  permissions"
     lines.append(hdr)
     for r in rows:
         pk = "cached" if r["cached"] else (f"{r['package_s']:.1f}s" if r["package_s"] is not None else "-")
         f = lambda v, u="s": "-" if v is None else f"{v}{u}"  # noqa: E731
-        lines.append(f"{r['app']:<16}{'yes' if r['starts'] else 'NO':<8}{'yes' if r['icon'] else 'no':<6}{f(r['window_s'], ''):>9}{pk:>11}{f(r['install_s']):>9}{f(r['starts_s']):>9}")
+        lines.append(f"{r['app']:<16}{'yes' if r['starts'] else 'NO':<8}{'yes' if r['icon'] else 'no':<6}{f(r['window_s'], ''):>9}{pk:>11}{f(r['install_s']):>9}{f(r['starts_s']):>9}  {r.get('permissions') or '-'}")
     lines.append("")
     lines.append(f"phases: package {phases['package']:.1f}s, install {phases['install']:.1f}s, starts {phases['starts']:.1f}s; total {total:.1f}s")
     for r in rows:

@@ -323,6 +323,7 @@ def check_bus(man):
 FORMAT_LEVEL = 1
 # The keys of each critical section that a reader of this level knows (PANPAK-FORMAT.md section 3.1.9).
 KNOWN_CRITICAL = {
+    "release": {"revision", "floor", "security", "channel", "history"},
     "permissions": {"x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs",
                     "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"},
     "launch": {"args", "env"},
@@ -364,6 +365,28 @@ def check_format(man):
     for k in ("chunking", "packed_by"):
         if not text_ok(f[k], 128):
             raise Fail(f"invalid manifest field format.{k}")
+
+
+def check_release(man):
+    """The [release] table (PANPAK-FORMAT.md section 3.1.10). Run on a manifest whose signature is verified."""
+    r = man.get("release")
+    if r is None:
+        raise Fail("no [release] table: a package of a test version of panpak, make it again")
+    if set(r) - {"revision", "floor", "security", "channel", "history"} or "revision" not in r:
+        raise Fail(f"unknown or missing key in [release]: {sorted(r)}")
+    rev, floor, sec, chan = r["revision"], r.get("floor", 0), r.get("security", 0), r.get("channel", "stable")
+    for name, v in (("revision", rev), ("floor", floor), ("security", sec)):
+        if not isinstance(v, int) or isinstance(v, bool) or v < 0 or v > 2**63 - 1:
+            raise Fail(f"[release].{name} is not a number")
+    if rev < 1:
+        raise Fail("[release].revision must be from 1")
+    if floor > rev or sec > rev:
+        raise Fail("[release].floor and security cannot be above the revision")
+    if not (isinstance(chan, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,31}", chan)):
+        raise Fail("[release].channel must be 1 to 32 characters of a-z, 0-9 and -")
+    h = r.get("history")
+    if h is not None and not (isinstance(h, str) and re.fullmatch(r"[0-9a-f]{64}", h)):
+        raise Fail("[release].history must be 64 lowercase hex characters")
 
 
 def check_fields(man):
@@ -571,6 +594,7 @@ def check(data: bytes):
     # The signature covers label, footer version and flags, the root (raw) and the manifest.
     ed25519_verify(key, LABEL_PACKAGE + foot[8:16] + root + toml_b, sig)
     check_format(man)
+    check_release(man)
     # Field rules: a valid signature does not make the fields safe (spec 3.1.1).
     check_fields(man)
     # stub_hash REQUIRED, verified over bytes [0:first chunk].

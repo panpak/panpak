@@ -57,11 +57,19 @@ pub fn open_verified(path: &Path) -> Result<Opened> {
     Ok(Opened { file, footer, is_record, manifest, raw_index })
 }
 
-/// Does this version carry the mark of a security update? The mark belongs to the signed index (step 9 of the plan) and its format is not fixed yet, so
-/// nothing is a mark today and the answer is always no. The callers (the staging, the notice of the background job) already ask, so that fixing the
-/// format is a change here and nowhere else.
-pub fn security_mark(_version: &Opened) -> bool {
-    false
+/// Does this version carry the mark of a security update for the one that is installed? `[release].security` is the number of the latest revision
+/// that fixed a vulnerability, so a version that has a `security` above the installed revision fixes something that the installed one still has.
+/// A number and not a yes or no: a user who skipped a version does not lose the mark.
+pub fn security_mark(version: &Opened, installed_revision: u64) -> bool {
+    version.manifest.release.as_ref().is_some_and(|r| r.security > installed_revision)
+}
+
+/// The BLAKE3 hash of the message that the signature of the package (or record) at `path` covers: what a history names a release by.
+pub fn signed_hash_of(path: &Path) -> Result<[u8; 32]> {
+    let mut f = File::open(path).map_err(|e| anyhow::anyhow!("open {}: {e}", path.display()))?;
+    let (ft, _) = read_any_footer(&mut f)?;
+    let manifest = read_at(&mut f, ft.man_off, ft.man_len)?;
+    Ok(crate::release::signed_hash(ft.version, ft.flags, &ft.root, &manifest))
 }
 
 /// Is the footer in `b` (the last 80 bytes of a file) that of a record?

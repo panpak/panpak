@@ -2662,11 +2662,11 @@ mod tests {
         let stub_hash = hex(blake3::hash(b"FAKE-STUB").as_bytes());
         // The `[format]` table is made as `pack` makes it: the list of critical fields comes from what the manifest uses.
         let plain = format!(
-            "[app]\nid = \"org.example.hello\"\nname = \"Hello\"\nversion = \"0.1.0\"\nentry = \"bin/hello\"\n{manifest_extra}[runtime]\nstub_hash = \"{stub_hash}\"\n[update]\nkey = \"{key}\"\n"
+            "[app]\nid = \"org.example.hello\"\nname = \"Hello\"\nversion = \"0.1.0\"\nentry = \"bin/hello\"\n[release]\nrevision = 1\n{manifest_extra}[runtime]\nstub_hash = \"{stub_hash}\"\n[update]\nkey = \"{key}\"\n"
         );
         let critical = panpak_core::critical_paths(&toml::from_str(&plain).unwrap()).iter().map(|c| format!("{c:?}")).collect::<Vec<_>>().join(", ");
         format!(
-            "[app]\nid = \"org.example.hello\"\nname = \"Hello\"\nversion = \"0.1.0\"\nentry = \"bin/hello\"\n{manifest_extra}[format]\nmin_panpak = 1\ncritical = [{critical}]\ncompression = \"zstd\"\nchunking = \"fastcdc:16384:65536:262144\"\npacked_by = \"test\"\n[runtime]\nstub_hash = \"{stub_hash}\"\n[update]\nkey = \"{key}\"\n"
+            "[app]\nid = \"org.example.hello\"\nname = \"Hello\"\nversion = \"0.1.0\"\nentry = \"bin/hello\"\n[release]\nrevision = 1\n{manifest_extra}[format]\nmin_panpak = 1\ncritical = [{critical}]\ncompression = \"zstd\"\nchunking = \"fastcdc:16384:65536:262144\"\npacked_by = \"test\"\n[runtime]\nstub_hash = \"{stub_hash}\"\n[update]\nkey = \"{key}\"\n"
         )
         .into_bytes()
     }

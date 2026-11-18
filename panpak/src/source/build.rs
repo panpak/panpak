@@ -187,7 +187,7 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
         Some(p) => p.to_path_buf(),
         None => a.dir.join(format!("{}.panpak", r.app.id)),
     };
-    let pkg = crate::cmd_pack(&tree, a.stub, a.secret, None, Some(&outp), Vec::new())?;
+    let pkg = crate::cmd_pack(&tree, a.stub, a.secret, None, Some(&outp), Vec::new(), crate::Previous::Installed)?;
     super::said_phase("pack", tp.elapsed(), false);
     // 9. What was measured.
     let secs = t0.elapsed().as_secs();

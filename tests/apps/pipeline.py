@@ -189,6 +189,24 @@ def build(ctx, app, key):
     return pkg, build_notes(r.stdout + r.stderr) + [f"panpak build took {time.monotonic() - t0:.0f} s"]
 
 
+def permissions_digest(ctx, pkg):
+    """A short digest of what a package asks for: its `[permissions]` table and the libraries it lets be missing. Two packages whose digests differ are not
+    the same app to measure: the start of an app depends on what it may do (a view with a display socket, one without, one with the bus).
+    The harness writes it in every row, and `tests/apps/compare.py` refuses to compare two runs that disagree."""
+    import tempfile
+    import tomllib
+
+    with tempfile.TemporaryDirectory(prefix="panpak-digest-") as d:
+        env = {**os.environ, "HOME": d, "XDG_DATA_HOME": d + "/data", "XDG_CONFIG_HOME": d + "/config", "XDG_CACHE_HOME": d + "/cache"}
+        out = Path(d) / "manifest.toml"
+        r = sh([ctx.panpak, "dump-manifest", pkg, out], env=env, timeout=300)
+        if r.returncode != 0:
+            return None
+        man = tomllib.loads(out.read_text())
+    wanted = {"permissions": man.get("permissions", {}), "allow_missing": sorted(man.get("abi", {}).get("allow_missing", []))}
+    return hashlib.sha256(json.dumps(wanted, sort_keys=True).encode()).hexdigest()[:12]
+
+
 def ensure_package(ctx, app, use_cache=True):
     """The package of an app, from the cache when nothing it depends on changed. Returns (path, seconds, cached, notes)."""
     t0 = time.monotonic()

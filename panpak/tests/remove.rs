@@ -99,7 +99,7 @@ impl Env {
         fs::set_permissions(tree.join("bin/hello"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(
             tree.join("panpak.toml"),
-            format!("[app]\nid = \"{id}\"\nname = \"App {id}\"\nversion = \"{version}\"\nentry = \"bin/hello\"\n[update]\nkey = \"{}\"\n", self.pubkey),
+            format!("[app]\nid = \"{id}\"\nname = \"App {id}\"\nversion = \"{version}\"\nentry = \"bin/hello\"\n[release]\nrevision = {}\n[update]\nkey = \"{}\"\n", revision_of(version), self.pubkey),
         )
         .unwrap();
         let pkg = self.home.join(format!("{id}-{version}.src.panpak"));
@@ -814,4 +814,10 @@ fn list_of_an_empty_store_says_how_to_install() {
     // The table, a blank line, then the explanation of the columns.
     let lines: Vec<&str> = t.lines().collect();
     assert!(lines[0].starts_with("ID") && lines[1].starts_with(A) && lines[2].is_empty() && lines[3].starts_with("APP is "), "{t}");
+}
+
+/// The revision of a test package follows the number in its version or name ("2" and "v2" are revision 2): a package that replaces another
+/// of the same app has to be a later release, and two different packages of one revision are refused.
+fn revision_of(name: &str) -> u64 {
+    name.split(|c: char| !c.is_ascii_digit()).rfind(|s| !s.is_empty()).and_then(|s| s.parse().ok()).unwrap_or(1).max(1)
 }

@@ -31,9 +31,9 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
+    "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -188,7 +188,21 @@ fn fetch_chunks(staging: &Path, needed: &[panpak_core::Chunk], index_off: u64, f
     Ok((todo.len() as u64, bytes_in))
 }
 
-fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, allow_insecure: bool, timeout_secs: u64, stage_only: bool) -> Result<PathBuf> {
+/// The installed release of an app as the checks of `panpak_core::release` need it: its revision, channel and signed hash, the highest floor
+/// seen, and (when `with_history`) the history file of its tree.
+fn installed_release(store: &Path, appdir: &Path, record: &Path, man: &Manifest, root: &[u8; 32], with_history: bool) -> Result<panpak_core::release::Installed> {
+    let rel = man.release.as_ref().context("the installed version has no [release]: it was made with a test version of panpak; remove the app and install it again")?;
+    let history = if with_history { panpak_core::release::read_tree_history(&store.join("trees").join(panpak_core::hex(root)), rel)? } else { None };
+    Ok(panpak_core::release::Installed {
+        revision: rel.revision,
+        channel: rel.channel.clone(),
+        signed: panpak_core::record::signed_hash_of(record)?,
+        history,
+        floor: panpak_core::release::seen_floor(appdir).max(rel.floor),
+    })
+}
+
+fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::release::Allow, allow_insecure: bool, timeout_secs: u64, stage_only: bool) -> Result<PathBuf> {
     panpak_core::validate_app_id(app_id)?;
     remove::recover();
     let store = store_dir()?;
@@ -245,15 +259,17 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
         .map_err(|_| coded(ErrorCode::E1001, "invalid remote signature: update refused"))?;
     panpak_core::check_format(&man)?;
     panpak_core::check_runtime(&man, panpak_core::RUNTIME_ABI)?;
-    match cmp_versions(&man.app.version, &old_man.app.version) {
-        std::cmp::Ordering::Less => {
-            ensure_code!(allow_downgrade, ErrorCode::E4001, "remote version {} older than {}: refused (use --allow-downgrade)", man.app.version, old_man.app.version);
-        }
-        std::cmp::Ordering::Equal => {
-            println!("{} already at version {}", app_id, man.app.version);
-            return Ok(current_pkg);
-        }
-        std::cmp::Ordering::Greater => {}
+    // Old and new are told by the revision, never by the version text. The floor is kept even when the update goes no further.
+    let rel = man.release.as_ref().context("the remote manifest has no [release]")?;
+    panpak_core::release::note_floor(&appdir, rel.floor)?;
+    let standing = {
+        let installed = installed_release(&store, &appdir, &current_pkg, &old_man, &old_ft.root, false)?;
+        let remote_signed = panpak_core::release::signed_hash(ft.version, ft.flags, &ft.root, &man_b);
+        panpak_core::release::check_entering(&installed, rel, &remote_signed, allow)?
+    };
+    if standing == panpak_core::release::Standing::Same {
+        println!("{} already at version {} (revision {})", app_id, man.app.version, rel.revision);
+        return Ok(current_pkg);
     }
     let (index_comp, total3) = http_range(&agent, &url, ft.index_off, ft.index_off + ft.index_len - 1)?;
     ensure!(total3 == total, "file changed during download");
@@ -332,12 +348,25 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
             return Err(e);
         }
         panpak_core::failpoint!("stage.prepared");
-        // The icons of the new version, from its tree, are checked before anything is staged.
+        // The history of the new version, read from its tree now that it is there, must continue the installed one (a fork is refused and the
+        // record goes, as for a failed prepare).
         let new_tree = store.join("trees").join(&root_hex);
+        if standing == panpak_core::release::Standing::Newer {
+            let continued = panpak_core::release::read_tree_history(&new_tree, rel).and_then(|h| {
+                let installed = installed_release(&store, &appdir, &current_pkg, &old_man, &old_ft.root, true)?;
+                panpak_core::release::check_continuity(&installed, rel.revision, h.as_deref())
+            });
+            if let Err(e) = continued {
+                let _ = fs::remove_file(&dest);
+                let _ = fs::remove_dir_all(store.join("staging").join(app_id));
+                return Err(e);
+            }
+        }
+        // The icons of the new version, from its tree, are checked before anything is staged.
         let new_icons = icons::read_from_tree(&new_tree, &man)?;
         icons::check_destinations(app_id, &new_icons)?;
         // Staged: the state first, then the link (the link is what an apply looks for).
-        panpak_core::pending::write_state(&appdir, panpak_core::pending::State { needs_accept: stage_only && !added.is_empty(), security: panpak_core::record::open_verified(&dest).is_ok_and(|o| panpak_core::record::security_mark(&o)) })?;
+        panpak_core::pending::write_state(&appdir, panpak_core::pending::State { needs_accept: stage_only && !added.is_empty(), security: panpak_core::record::open_verified(&dest).is_ok_and(|o| panpak_core::record::security_mark(&o, old_man.release.as_ref().map_or(0, |r| r.revision))) })?;
         panpak_core::durable::replace_symlink(&dest, &panpak_core::pending::link_path(&appdir))?;
         panpak_core::failpoint!("stage.pending_linked");
         let _ = fs::remove_dir_all(store.join("staging").join(app_id));
@@ -351,7 +380,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
         return panpak_core::pending::staged_record(&appdir).context("the staged version is gone");
     }
     drop(first_lock.take());
-    match cmd_apply(app_id, yes, accept_new, false)? {
+    match cmd_apply(app_id, yes, accept_new, false, allow)? {
         Applied::Done { dest, best_abi } => {
             // What the new version made unreachable (the version before the one that was `previous`) goes now, with this command's locks let go.
             drop(store_guard);
@@ -376,7 +405,7 @@ enum Applied {
 
 /// `panpak apply [--yes] [--accept-new-permissions] <app-id>`: move `current` to the staged version. The stub runs it at the start of an app that has one
 /// (`at_start`: it asks nothing, waits for nothing, and when a copy runs or the version asks for new permissions it leaves it for later).
-fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool) -> Result<Applied> {
+fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: panpak_core::release::Allow) -> Result<Applied> {
     panpak_core::validate_app_id(app_id)?;
     let store = store_dir()?;
     let appdir = store.join("apps").join(app_id);
@@ -431,6 +460,27 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool) -> Resul
         let u = man.update.as_ref().unwrap();
         panpak_core::verify_rotation(app_id, &pin, &new_key, u.rotation_old.as_deref(), u.rotation_sig.as_deref()).context("key differs from the pin and succession invalid")?;
         rotated_to = Some(new_key.clone());
+    }
+    // The staged version enters over the installed one by the same rules as when it was staged (the floor may have risen since): a refusal takes
+    // the staging away, so that it is not tried again at every start.
+    {
+        let rel = man.release.as_ref().context("the staged record has no [release]")?;
+        let checked = (|| -> Result<()> {
+            panpak_core::release::note_floor(&appdir, rel.floor)?;
+            let installed = installed_release(&store, &appdir, &current_rec, old_man, &old.footer.root, true)?;
+            let standing = panpak_core::release::check_entering(&installed, rel, &panpak_core::record::signed_hash_of(&staged)?, allow)?;
+            if standing == panpak_core::release::Standing::Newer {
+                let h = panpak_core::release::read_tree_history(&store.join("trees").join(&new_root), rel)?;
+                panpak_core::release::check_continuity(&installed, rel.revision, h.as_deref())?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = checked {
+            if matches!(panpak_core::code_of(&e, ErrorCode::E2000), ErrorCode::E4001 | ErrorCode::E4003 | ErrorCode::E4004 | ErrorCode::E4005 | ErrorCode::E4006) {
+                panpak_core::pending::clear(&appdir)?;
+            }
+            return Err(e);
+        }
     }
     let added = panpak_core::permissions::added(old_man, man);
     if !added.is_empty() {
@@ -697,10 +747,14 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     let pft = {
         let mut pf = File::open(&prev_t).with_context(|| format!("open {}", prev_t.display()))?;
         let (pft, is_record) = panpak_core::record::read_any_footer(&mut pf)?;
+        // Nothing below the floor comes back, not even by a rollback.
+        let (pman_for_floor, _) = panpak_core::verify(&mut pf, &pft)?;
+        let prev_rev = pman_for_floor.release.as_ref().context("the previous version has no [release]")?.revision;
+        let installed_floor = panpak_core::record::open_verified(&cur_t).ok().and_then(|o| o.manifest.release.map(|r| r.floor)).unwrap_or(0);
+        panpak_core::release::check_rollback(panpak_core::release::seen_floor(&appdir).max(installed_floor), prev_rev)?;
         // `previous` must be a record of this app, as the start asks of `current` (PP-01): otherwise the swap would leave the app with a record that it cannot start.
         if is_record {
-            let (pman, _) = panpak_core::verify(&mut pf, &pft)?;
-            panpak_core::record::check_identity(&previous, &pman.app.id, &pman.app.version, &panpak_core::hex(&pft.root))?;
+            panpak_core::record::check_identity(&previous, &pman_for_floor.app.id, &pman_for_floor.app.version, &panpak_core::hex(&pft.root))?;
         }
         pft
     };
@@ -1007,7 +1061,66 @@ fn check_library_path_links(app_id: &str, payload: &[PayloadEntry]) -> Result<()
     }
 }
 
-fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, out: Option<&Path>, extra_icons: Vec<IconInput>) -> Result<PathBuf> {
+/// The release that a new package follows: where its revision starts and what its history lists.
+#[derive(Clone, Copy)]
+pub enum Previous<'a> {
+    /// No earlier package: the revision is the one the input gives, or 1.
+    None,
+    /// A package file (`pack --previous`).
+    File(&'a Path),
+    /// The installed version of the same app, when it was made with this key (`convert` and `build`, which are run by the person who installs).
+    Installed,
+}
+
+/// What `pack` needs of the earlier release of the same channel.
+struct Prev {
+    revision: u64,
+    floor: u64,
+    security: u64,
+    channel: String,
+    signed: [u8; 32],
+    history: Option<Vec<panpak_core::release::Entry>>,
+}
+
+/// The earlier release, verified, from a package file.
+fn previous_from_file(path: &Path, app_id: &str) -> Result<Prev> {
+    let mut f = File::open(path).with_context(|| format!("open --previous {}", path.display()))?;
+    let ft = panpak_core::read_footer(&mut f)?;
+    let (man, raw_index) = panpak_core::verify(&mut f, &ft).context("--previous is not a good package")?;
+    ensure!(man.app.id == app_id, "--previous is the package of {}, not of {app_id}", man.app.id);
+    let rel = man.release.as_ref().context("--previous has no [release]")?;
+    let manifest = panpak_core::read_at(&mut f, ft.man_off, ft.man_len)?;
+    Ok(Prev {
+        revision: rel.revision,
+        floor: rel.floor,
+        security: rel.security,
+        channel: rel.channel.clone(),
+        signed: panpak_core::release::signed_hash(ft.version, ft.flags, &ft.root, &manifest),
+        history: panpak_core::release::read_package_history(&mut f, &raw_index, rel)?,
+    })
+}
+
+/// The earlier release from the installed version of the app, if there is one and it carries the key that signs now.
+fn previous_from_installed(app_id: &str, key: &str) -> Option<Prev> {
+    let store = store_dir().ok()?;
+    let rec = panpak_core::durable::resolve_link(&store.join("apps").join(app_id).join("current")).ok()?;
+    let o = panpak_core::record::open_verified(&rec).ok()?;
+    if o.manifest.app.id != app_id || o.manifest.update.as_ref()?.key.trim() != key.trim() {
+        return None;
+    }
+    let rel = o.manifest.release.as_ref()?;
+    let tree = store.join("trees").join(panpak_core::hex(&o.footer.root));
+    Some(Prev {
+        revision: rel.revision,
+        floor: rel.floor,
+        security: rel.security,
+        channel: rel.channel.clone(),
+        signed: panpak_core::record::signed_hash_of(&rec).ok()?,
+        history: panpak_core::release::read_tree_history(&tree, rel).ok()?,
+    })
+}
+
+fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, out: Option<&Path>, extra_icons: Vec<IconInput>, previous: Previous<'_>) -> Result<PathBuf> {
     let input_toml = fs::read_to_string(dir.join("panpak.toml")).context("read <folder>/panpak.toml")?;
     // Strict schema in pack: future keys must not silently disappear.
     panpak_core::check_panpak_toml_schema(&input_toml)?;
@@ -1055,6 +1168,50 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
     let mut payload = walk_tree(dir)?;
     check_library_path_links(&man.app.id, &payload)?;
     add_license_entries(&mut payload)?;
+    // The release: the numbers come from the input (or from the earlier package) and the history of the channel from the earlier package.
+    // The history is a file of the tree, so it is made here, before the index is.
+    let release = {
+        let input = man.release.take();
+        let derived_key = format!("ed25519:{}", panpak_core::hex(parse_secret(secret)?.verifying_key().as_bytes()));
+        let channel = input.as_ref().map(|r| r.channel.clone()).unwrap_or_else(|| panpak_core::DEFAULT_CHANNEL.to_string());
+        let prev = match previous {
+            Previous::None => None,
+            Previous::File(p) => Some(previous_from_file(p, &man.app.id)?),
+            Previous::Installed => previous_from_installed(&man.app.id, &derived_key),
+        };
+        // Releases of another channel are another line: they do not continue each other.
+        let prev = prev.filter(|p| p.channel == channel);
+        let revision = match (&input, &prev) {
+            (Some(i), Some(p)) => {
+                ensure!(i.revision > p.revision, "[release].revision {} is not above the revision {} of the earlier package", i.revision, p.revision);
+                i.revision
+            }
+            (Some(i), None) => i.revision,
+            (None, Some(p)) => p.revision + 1,
+            (None, None) => 1,
+        };
+        let history = match &prev {
+            Some(p) => {
+                let entries = panpak_core::release::extend_history(p.history.as_deref(), p.revision, p.signed)?;
+                let text = panpak_core::release::encode_history(&entries);
+                payload.push(PayloadEntry {
+                    entry: Entry { path: PathBuf::from(panpak_core::release::HISTORY_PATH), mode: 0o644, kind: Kind::File { chunks: Vec::new() } },
+                    source: None,
+                    embedded: None,
+                    data: Some(text.as_bytes().to_vec()),
+                });
+                payload.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
+                Some(panpak_core::release::history_hash(text.as_bytes()))
+            }
+            None => None,
+        };
+        // The floor and the security number only grow from one release to the next.
+        let floor = input.as_ref().map_or(0, |i| i.floor).max(prev.as_ref().map_or(0, |p| p.floor));
+        let security = input.as_ref().map_or(0, |i| i.security).max(prev.as_ref().map_or(0, |p| p.security));
+        panpak_core::Release { revision, floor, security, channel, history }
+    };
+    man.release = Some(release);
+    panpak_core::check_release(&man).context("[release] of the package")?;
     ensure!(
         payload.iter().any(|p| p.entry.path == entry_rel
             && matches!(p.entry.kind, Kind::File { .. })),
@@ -1921,7 +2078,7 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     tw.replace_file(Path::new("panpak.toml"), toml.as_bytes(), 0o644)?;
     // The links that make the library path of the app valid for its own programs only (PANPAK-FORMAT.md section 7.1).
     panpak_core::libpath::make_links(&tree, id, &mut |p, t| tw.symlink(p, Path::new(t)))?;
-    cmd_pack(&tree, stub, secret, None, out, icons)
+    cmd_pack(&tree, stub, secret, None, out, icons, Previous::Installed)
 }
 
 /// An icon handed to `pack` as bytes: where it came from (for the messages) and the file.
@@ -2723,7 +2880,7 @@ fn cmd_data(action: &str, app_id: &str, yes: bool) -> Result<()> {
     }
 }
 
-fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Path>) -> Result<PathBuf> {
+fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Path>, allow: panpak_core::release::Allow) -> Result<PathBuf> {
     let t0 = std::time::Instant::now();
     let mark = |what: &str| {
         if panpak_core::debug_enabled() {
@@ -2789,8 +2946,19 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         ensure_code!(old.lines().any(|l| l.trim() == key.trim()), ErrorCode::E1004, "key DIFFERS from TOFU pin: possible attack or changed author; manual reinstall required");
         print_isolation(&man);
         print_xdg_dirs(&xdg_found, &xdg_problems);
-        // Installing over an installed app is an update: new permissions need a yes.
+        // Installing over an installed app is an update: it is told by the revision (an older package, a fork, a package below the floor or of
+        // another channel is refused), and new permissions need a yes.
         if let Some(old) = installed_manifest(&appdir) {
+            let rel = man.release.as_ref().context("the package has no [release]")?;
+            panpak_core::release::note_floor(&appdir, rel.floor)?;
+            let current = panpak_core::durable::resolve_link(&appdir.join("current")).context("missing current: reinstall")?;
+            let installed = installed_release(&store, &appdir, &current, &old, &panpak_core::record::open_verified(&current)?.footer.root, true)?;
+            let manifest_bytes = panpak_core::read_at(&mut f, ft.man_off, ft.man_len)?;
+            let signed = panpak_core::release::signed_hash(ft.version, ft.flags, &ft.root, &manifest_bytes);
+            if panpak_core::release::check_entering(&installed, rel, &signed, allow)? == panpak_core::release::Standing::Newer {
+                let h = panpak_core::release::read_package_history(&mut f, &raw_index, rel)?;
+                panpak_core::release::check_continuity(&installed, rel.revision, h.as_deref())?;
+            }
             accept_new_permissions(&panpak_core::permissions::added(&old, &man), yes, accept_new, "package")?;
         }
     } else {
@@ -3355,6 +3523,7 @@ fn real_main() -> Result<()> {
             let mut stub = None;
             let mut secret_file = None;
             let mut rotate_from = None;
+            let mut previous: Option<String> = None;
             let mut out = None;
             let mut i = 3;
             while i < args.len() {
@@ -3371,6 +3540,10 @@ fn real_main() -> Result<()> {
                         rotate_from = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--rotate-from-file <f>"))?.clone());
                         i += 2;
                     }
+                    "--previous" => {
+                        previous = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--previous <package>"))?.clone());
+                        i += 2;
+                    }
                     "-o" => {
                         out = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "-o <out>"))?.as_str());
                         i += 2;
@@ -3381,7 +3554,7 @@ fn real_main() -> Result<()> {
             let secret = load_secret(secret_file.as_deref())?;
             let out_p = out.map(PathBuf::from);
             let rotate_secret = rotate_from.as_deref().map(|f| panpak_core::read_secret_file(Path::new(f))).transpose()?;
-            cmd_pack(Path::new(dir), Path::new(stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?), &secret, rotate_secret.as_deref(), out_p.as_deref(), Vec::new())?;
+            cmd_pack(Path::new(dir), Path::new(stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?), &secret, rotate_secret.as_deref(), out_p.as_deref(), Vec::new(), previous.as_deref().map_or(Previous::None, |p| Previous::File(Path::new(p))))?;
             Ok(())
         }
         Some("install-runtime") => {
@@ -3682,6 +3855,7 @@ fn real_main() -> Result<()> {
             let mut yes = false;
             let mut accept_new = false;
             let mut allow = false;
+            let mut switch_channel = false;
             let mut stage = false;
             let mut insecure = false;
             let mut timeout = 30u64;
@@ -3699,6 +3873,10 @@ fn real_main() -> Result<()> {
                     }
                     "--allow-downgrade" => {
                         allow = true;
+                        i += 1;
+                    }
+                    "--switch-channel" => {
+                        switch_channel = true;
                         i += 1;
                     }
                     "--stage" => {
@@ -3721,7 +3899,7 @@ fn real_main() -> Result<()> {
                     }
                 }
             }
-            cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, yes, accept_new, allow, insecure, timeout, stage)?;
+            cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, yes, accept_new, panpak_core::release::Allow { downgrade: allow, switch_channel }, insecure, timeout, stage)?;
             Ok(())
         }
         Some("background") => {
@@ -3781,7 +3959,7 @@ fn real_main() -> Result<()> {
                     x => id = Some(x),
                 }
             }
-            match cmd_apply(id.ok_or_else(|| coded(ErrorCode::E5002, "apply <app-id>"))?, yes, accept_new, at_start)? {
+            match cmd_apply(id.ok_or_else(|| coded(ErrorCode::E5002, "apply <app-id>"))?, yes, accept_new, at_start, panpak_core::release::Allow::default())? {
                 Applied::Done { .. } => {
                     if !at_start {
                         gc::after(&store_dir()?, &[]);
@@ -3824,6 +4002,8 @@ fn real_main() -> Result<()> {
         Some("install") => {
             let mut yes = false;
             let mut accept_new = false;
+            let mut allow_down = false;
+            let mut switch_channel = false;
             let mut runtime = None;
             let mut pkg = None;
             let mut i = 2;
@@ -3841,6 +4021,14 @@ fn real_main() -> Result<()> {
                         runtime = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--runtime <stub>"))?.as_str());
                         i += 2;
                     }
+                    "--allow-downgrade" => {
+                        allow_down = true;
+                        i += 1;
+                    }
+                    "--switch-channel" => {
+                        switch_channel = true;
+                        i += 1;
+                    }
                     x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
                     _ => {
                         pkg = Some(args[i].as_str());
@@ -3853,6 +4041,7 @@ fn real_main() -> Result<()> {
                 yes,
                 accept_new,
                 runtime.map(Path::new),
+                panpak_core::release::Allow { downgrade: allow_down, switch_channel },
             )?;
             Ok(())
         }
@@ -4086,7 +4275,7 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new()).unwrap();
+        cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new(), Previous::None).unwrap();
         let mut f = File::open(&out).unwrap();
         let ft = panpak_core::read_footer(&mut f).unwrap();
         let (_man, raw) = panpak_core::verify(&mut f, &ft).unwrap();
@@ -4099,12 +4288,12 @@ mod tests {
         }
         // Same input -> same package (licenses do not break determinism).
         let out2 = dir.join("b.panpak");
-        cmd_pack(&tree, &stub, &secret, None, Some(&out2), Vec::new()).unwrap();
+        cmd_pack(&tree, &stub, &secret, None, Some(&out2), Vec::new(), Previous::None).unwrap();
         assert_eq!(fs::read(&out).unwrap(), fs::read(&out2).unwrap());
         // The reserved top level cannot come from the user's tree.
         fs::create_dir_all(tree.join(".panpak")).unwrap();
         fs::write(tree.join(".panpak/x"), "x").unwrap();
-        let e = cmd_pack(&tree, &stub, &secret, None, Some(&dir.join("c.panpak")), Vec::new()).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, None, Some(&dir.join("c.panpak")), Vec::new(), Previous::None).unwrap_err();
         assert!(panpak_core::err_text(&e).contains("reserved"), "{e:?}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -4132,14 +4321,14 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        let e = cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new()).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new(), Previous::None).unwrap_err();
         let text = panpak_core::render(&e, ErrorCode::E0000);
         assert!(text.contains("invalid") && text.contains("abi.needs") && text.contains("nothing was written"), "{text}");
         assert!(!out.exists(), "a file was written for an invalid manifest");
         // The same tree with a valid name is packed.
         elf[241..250].copy_from_slice(b"libc.so.6");
         fs::write(tree.join("bin/app"), &elf).unwrap();
-        cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new()).unwrap();
+        cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new(), Previous::None).unwrap();
         assert!(out.exists());
         let _ = fs::remove_dir_all(&dir);
     }

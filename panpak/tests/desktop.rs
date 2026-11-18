@@ -96,7 +96,7 @@ impl Env {
         }
         fs::write(
             tree.join("panpak.toml"),
-            format!("[app]\nid = \"{ID}\"\nname = \"Icon App\"\nversion = \"{version}\"\nentry = \"bin/hello\"\n{extra_toml}[update]\nkey = \"{}\"\n", self.pubkey),
+            format!("[app]\nid = \"{ID}\"\nname = \"Icon App\"\nversion = \"{version}\"\nentry = \"bin/hello\"\n[release]\nrevision = {}\n{extra_toml}[update]\nkey = \"{}\"\n", revision_of(version), self.pubkey),
         )
         .unwrap();
         tree
@@ -208,7 +208,7 @@ fn an_older_stable_panpak_is_updated_and_a_newer_or_other_one_is_never_replaced(
     if let Some(d) = mine_date {
         for stored in [None, Some(0), Some(d.saturating_sub(1))].into_iter().filter(|s| s.is_none_or(|x| x < d)) {
             say_at(same, stored);
-            let o = e.install("2b", "", &[]);
+            let o = e.install("3", "", &[]);
             assert!(o.status.success(), "{stored:?}: {}", text(&o));
             assert!(text(&o).contains("updated panpak in"), "{stored:?}: {}", text(&o));
             assert_eq!(fs::read(&mine).unwrap(), running, "{stored:?}: the stable panpak was not replaced");
@@ -407,6 +407,12 @@ fn pack_cleans_an_icon_and_says_which_chunks_it_removed() {
     assert!(o.status.success() && !String::from_utf8_lossy(&o.stderr).contains("removed the chunks"), "{}", text(&o));
 }
 
+/// The revision of a test package follows the number in its version or name ("2" and "v2" are revision 2): a package that replaces another
+/// of the same app has to be a later release, and two different packages of one revision are refused.
+fn revision_of(name: &str) -> u64 {
+    name.split(|c: char| !c.is_ascii_digit()).rfind(|s| !s.is_empty()).and_then(|s| s.parse().ok()).unwrap_or(1).max(1)
+}
+
 /// Rewrite the manifest of a package and sign it again with the key of the test (the layout is in PANPAK-FORMAT.md §2). The list
 /// `[format].critical` is made again, as every function that signs a manifest must do.
 fn resign(pkg: &Path, key_file: &Path, edit: impl Fn(String) -> String, out: &Path) {
@@ -462,7 +468,7 @@ fn a_manifest_changed_after_pack_and_signed_again_without_the_list_is_refused() 
     let o = cli(&e.home, &["dump-manifest", good.to_str().unwrap(), m.to_str().unwrap()]);
     assert!(o.status.success(), "{}", text(&o));
     let m = fs::read_to_string(m).unwrap();
-    assert!(m.contains("critical = [\"permissions.audio\", \"permissions.x11\", \"runtime.stub_hash\"]"), "{m}");
+    assert!(m.contains("\"permissions.audio\", \"permissions.x11\", \"release.channel\""), "{m}");
     let o = cli(&e.home, &["install", "--yes", good.to_str().unwrap()]);
     assert!(o.status.success(), "{}", text(&o));
 }
@@ -480,7 +486,10 @@ fn install_warns_about_fields_this_panpak_does_not_know_and_goes_on() {
     assert!(o.status.success(), "{}", text(&o));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("WARNING: this package uses fields that this version of panpak does not know (") && err.contains("app.surprise") && err.contains("future") && err.contains("panpak install-runtime"), "{err}");
-    // A package that only has known fields says nothing of the kind.
+    // A package that only has known fields says nothing of the kind (the app is removed first: this one is a different publication of the same
+    // revision, which an install over the other would refuse).
+    let o = cli(&e.home, &["remove", "--yes", ID]);
+    assert!(o.status.success(), "{}", text(&o));
     let o = cli(&e.home, &["install", "--yes", pkg.to_str().unwrap()]);
     assert!(o.status.success() && !text(&o).contains("fields that this version"), "{}", text(&o));
     // The refusal in `pack` stays, with its own code.

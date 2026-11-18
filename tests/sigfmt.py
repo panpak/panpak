@@ -12,6 +12,7 @@ def message(version, flags, root, manifest):
 
 # The sections whose keys change what is safe, and the keys of each that a reader of this level knows (PANPAK-FORMAT.md section 3.1.9).
 CRITICAL_SECTIONS = {
+    "release": {"revision", "floor", "security", "channel", "history"},
     "abi": {"glibc_min", "needs", "prefer_host", "allow_missing"},
     "permissions": {"x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs",
                     "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"},

@@ -69,7 +69,7 @@ impl Lab {
         let pubkey = fs::read_to_string(self.home.join("k.pub")).unwrap();
         fs::write(
             tree.join("panpak.toml"),
-            format!("[app]\nid = \"org.example.perm\"\nname = \"Perm\"\nversion = \"1\"\nentry = \"bin/app\"\n[update]\nkey = \"{pubkey}\"\n{extra}"),
+            format!("[app]\nid = \"org.example.perm\"\nname = \"Perm\"\nversion = \"1\"\nentry = \"bin/app\"\n[release]\nrevision = {}\n[update]\nkey = \"{pubkey}\"\n{extra}", revision_of(name)),
         )
         .unwrap();
         let stub = self.home.join("pack-stub");
@@ -166,4 +166,10 @@ fn the_table_is_printed_for_the_readme() {
     assert!(md.starts_with("| Level |") && md.contains("See what other apps show"), "the README table is in English whatever the locale: {md}");
     let plain = text(&l.cli("C", &["permissions"]));
     assert!(plain.contains("desktop-bus") && plain.contains("High risk"), "{plain}");
+}
+
+/// The revision of a test package follows the number in its version or name ("2" and "v2" are revision 2): a package that replaces another
+/// of the same app has to be a later release, and two different packages of one revision are refused.
+fn revision_of(name: &str) -> u64 {
+    name.split(|c: char| !c.is_ascii_digit()).rfind(|s| !s.is_empty()).and_then(|s| s.parse().ok()).unwrap_or(1).max(1)
 }

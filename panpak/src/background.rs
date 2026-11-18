@@ -89,7 +89,7 @@ pub fn cmd_background(app_id: &str, force: bool, after_start: bool, at_exit: boo
     if at_exit {
         // The last copy has just ended: what it left undone, in this order. The staged update is applied (nothing is asked: a version with new permissions waits for the user), then
         // the files found damaged are repaired (this may use the network), then the rest of the job as usual.
-        if let Err(e) = cmd_apply(app_id, false, false, true) {
+        if let Err(e) = cmd_apply(app_id, false, false, true, panpak_core::release::Allow::default()) {
             eprintln!("panpak: {app_id}: the staged update was not applied: {}", panpak_core::err_text(&e));
         }
         cmd_repair_if_damaged(app_id, allow_insecure)?;
@@ -114,7 +114,7 @@ pub fn cmd_background(app_id: &str, force: bool, after_start: bool, at_exit: boo
     // 1. The update: staged, never applied here.
     let has_url = fs::read_to_string(appdir.join("update.url")).is_ok_and(|u| !u.trim().is_empty());
     if config.updates && has_url {
-        match cmd_update(app_id, false, false, false, allow_insecure, 30, true) {
+        match cmd_update(app_id, false, false, panpak_core::release::Allow::default(), allow_insecure, 30, true) {
             Ok(_) => {
                 st.failures = 0;
                 st.last_check = now;

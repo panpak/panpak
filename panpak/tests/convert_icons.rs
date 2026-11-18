@@ -164,6 +164,12 @@ fn an_appimage_with_usr_linked_to_dot_gets_its_icons_cleaned_in_the_package() {
     let m = l.manifest(&pkg);
     assert!(m.contains("\".panpak/icons/256.png\", \".panpak/icons/32.png\", \".panpak/icons/16.png\""), "{m}");
     assert!(!m.contains("share/icons"), "{m}");
+    // Converting again gives the same package. It is asked before the install: once the app is installed a conversion follows it (the revision
+    // after the installed one), which is a different package on purpose.
+    let first = fs::read(&pkg).unwrap();
+    let (o, pkg2) = l.convert(&appimage(real_layout()), &[]);
+    assert!(o.status.success());
+    assert_eq!(first, fs::read(pkg2).unwrap(), "the same AppImage always gives the same package");
     let o = l.install(&pkg);
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(l.icons_installed(), [16, 32, 256]);
@@ -172,11 +178,13 @@ fn an_appimage_with_usr_linked_to_dot_gets_its_icons_cleaned_in_the_package() {
     assert_ne!(cleaned, fixture("bad-text.png"));
     assert!(!cleaned.windows(4).any(|w| w == b"tEXt"));
     assert!(l.entry().contains(&format!("\nIcon=panpak.{ID}\n")), "{}", l.entry());
-    // Converting again gives the same package.
-    let first = fs::read(&pkg).unwrap();
-    let (o, pkg2) = l.convert(&appimage(real_layout()), &[]);
-    assert!(o.status.success());
-    assert_eq!(first, fs::read(pkg2).unwrap(), "the same AppImage always gives the same package");
+    // Converting once more, with the app installed, makes the release after the installed one.
+    let (o, pkg3) = l.convert(&appimage(real_layout()), &[]);
+    assert!(o.status.success(), "{}", text(&o));
+    let m = l.manifest(&pkg3);
+    assert!(m.contains("revision = 2") && !m.contains("revision = 1"), "{m}");
+    let o = l.install(&pkg3);
+    assert!(o.status.success(), "{}", text(&o));
 }
 
 #[test]

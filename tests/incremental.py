@@ -52,6 +52,8 @@ def resign(data, version, port, scheme='http'):
     man = data[moff:moff + mlen].decode()
     man = re.sub(r'^id = .*$', 'id = "org.example.incremental"', man, count=1, flags=re.M)
     man = re.sub(r'^version = .*$', f'version = "{version}"', man, count=1, flags=re.M)
+    # The revision is what a client compares: it follows the version of the test ("1.0" is revision 1, "1.1" revision 2, ...).
+    man = re.sub(r'^revision = \d+$', f"revision = {int(version.split('.')[-1]) + 1}", man, count=1, flags=re.M)
     man = re.sub(r'^key = .*$', f'key = "ed25519:{PUBLIC}"', man, flags=re.M)
     man = re.sub(r'^url = .*\n', '', man, flags=re.M)
     man = man.replace('[update]', f'[update]\nurl = "{scheme}://127.0.0.1:{port}/remote.panpak"')

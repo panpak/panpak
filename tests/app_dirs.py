@@ -139,7 +139,7 @@ class Lab:
         probe.write_text(PROBE)
         probe.chmod(0o755)
         (tree / 'panpak.toml').write_text(
-            f'[app]\nid = "{ID}"\nname = "Dirs"\nversion = "{self.n}"\nentry = "bin/probe"\n'
+            f'[app]\nid = "{ID}"\nname = "Dirs"\nversion = "{self.n}"\nentry = "bin/probe"\n[release]\nrevision = {self.n}\n'
             f'{toml_extra}\n[update]\n{f"url = {chr(34)}{url}{chr(34)}" if url else ""}\nkey = "{self.pub}"\n')
         pkg = self.work / f'p{self.n}.panpak'
         self.cli('pack', tree, '--stub', self.stub, '--secret-file', self.key, '-o', pkg)

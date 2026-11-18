@@ -18,6 +18,7 @@ pub mod durable;
 pub mod failpoint;
 pub mod libpath;
 pub mod record;
+pub mod release;
 pub mod messages;
 pub mod startfiles;
 pub mod permissions;
@@ -161,6 +162,8 @@ pub struct Manifest {
     pub app: App,
     /// What a reader needs to understand this package (PANPAK-FORMAT.md §3.3). Written by `panpak pack`; a package without it is refused.
     pub format: Option<Format>,
+    /// Which release this is (PANPAK-FORMAT.md §3.1.10). Written by `panpak pack`; a package without it is refused.
+    pub release: Option<Release>,
     pub abi: Option<Abi>,
     pub permissions: Option<Permissions>,
     /// Extra start arguments and environment (PANPAK-FORMAT.md §3.1.2).
@@ -196,6 +199,34 @@ pub struct Format {
     pub chunking: String,
     /// The tool that made the package (informative, to make the same bytes again).
     pub packed_by: String,
+}
+
+fn default_channel() -> String {
+    DEFAULT_CHANNEL.to_string()
+}
+
+/// The channel of a package that does not name one.
+pub const DEFAULT_CHANNEL: &str = "stable";
+
+/// The `[release]` table: where this package stands in the sequence of releases of its app. `revision` is the only thing a client
+/// compares to tell old from new; the version text is for people.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Release {
+    /// A number that grows with every release of a channel (at least 1).
+    pub revision: u64,
+    /// A revision below which nothing is installed, updated to or rolled back to. At most `revision`.
+    #[serde(default)]
+    pub floor: u64,
+    /// The latest revision that fixed a vulnerability. At most `revision`.
+    #[serde(default)]
+    pub security: u64,
+    /// The line of releases this belongs to (`stable`, `beta`). Fixed at install.
+    #[serde(default = "default_channel")]
+    pub channel: String,
+    /// The BLAKE3 hash (64 hex characters) of `.panpak/history`, the file of the tree that lists the earlier releases of the channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<String>,
 }
 
 /// What `panpak build` records about the build, so that the user can see it at install.
@@ -496,6 +527,7 @@ fn unknown_key(place: &str, key: &str) -> anyhow::Error {
 pub const SECTIONS: &[(&str, bool)] = &[
     ("app", false),
     ("format", false),
+    ("release", true),
     ("abi", true),
     ("permissions", true),
     ("launch", true),
@@ -506,6 +538,7 @@ pub const SECTIONS: &[(&str, bool)] = &[
     ("env", true),
     ("provenance", false),
 ];
+const RELEASE_KEYS: &[&str] = &["revision", "floor", "security", "channel", "history"];
 const FORMAT_KEYS: &[&str] = &["min_panpak", "critical", "compression", "chunking", "packed_by"];
 const ABI_KEYS: &[&str] = &["glibc_min", "needs", "prefer_host", "allow_missing"];
 const PERM_KEYS: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"];
@@ -530,6 +563,29 @@ pub fn critical_paths(man: &Manifest) -> Vec<String> {
     out
 }
 
+/// The `[release]` table of a manifest whose signature is verified: it is there and its numbers make sense. A package without it was
+/// made before the table existed.
+pub fn check_release(man: &Manifest) -> Result<()> {
+    let r = man.release.as_ref().ok_or_else(|| coded(ErrorCode::E0011, "this package has no [release] table: it was made with a test version of panpak; make it again with the current panpak"))?;
+    let bad = |what: &str| coded(ErrorCode::E0003, format!("[release] {what} (corrupt or tampered file: redownload it from a trusted source)"));
+    if r.revision == 0 || r.revision > i64::MAX as u64 {
+        return Err(bad("revision must be a number from 1"));
+    }
+    if r.floor > r.revision || r.security > r.revision {
+        return Err(bad("floor and security cannot be above the revision"));
+    }
+    let ok_channel = !r.channel.is_empty() && r.channel.len() <= 32 && r.channel.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && !r.channel.starts_with('-');
+    if !ok_channel {
+        return Err(bad("channel must be 1 to 32 characters of a-z, 0-9 and -"));
+    }
+    if let Some(h) = &r.history {
+        if h.len() != 64 || !h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            return Err(bad("history must be 64 lowercase hex characters"));
+        }
+    }
+    Ok(())
+}
+
 /// The text of a manifest with its `[format].critical` list made again from what the manifest uses. Every function that signs a
 /// manifest goes through this (or builds the list with `critical_paths`): the list is derived, nobody writes it by hand, and a manifest
 /// that is changed after `pack` and signed again gets the list it now needs. A text with no `[format]` is returned as it is. Unknown keys
@@ -552,6 +608,7 @@ fn known_critical(path: &str) -> bool {
         Some(("permissions", k)) => PERM_KEYS.contains(&k),
         Some(("launch", k)) => LAUNCH_KEYS.contains(&k),
         Some(("abi", k)) => ABI_KEYS.contains(&k),
+        Some(("release", k)) => RELEASE_KEYS.contains(&k),
         Some(("runtime", k)) => RUNTIME_KEYS.contains(&k),
         Some(_) => false,
     }
@@ -652,6 +709,13 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
             }
         }
     }
+    if let Some(v) = get("release") {
+        for k in keys(v, "[release]")? {
+            if !RELEASE_KEYS.contains(&k) {
+                out.push(("[release]".to_string(), k.to_string()));
+            }
+        }
+    }
     if let Some(v) = get("abi") {
         for k in keys(v, "[abi]")? {
             if !ABI_KEYS.contains(&k) {
@@ -733,6 +797,9 @@ pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
     // `[format]` is written by `panpak pack` from what the manifest uses; an author does not write it.
     if toml::from_str::<toml::Value>(input).ok().and_then(|v| v.get("format").cloned()).is_some() {
         return Err(coded(ErrorCode::E0008, "panpak.toml: [format] is written by `panpak pack`, remove it"));
+    }
+    if toml::from_str::<toml::Value>(input).ok().and_then(|v| v.get("release")?.get("history").cloned()).is_some() {
+        return Err(coded(ErrorCode::E0008, "panpak.toml: release.history is written by `panpak pack` (give the earlier package with --previous), remove it"));
     }
     match unknown_keys_of(input)?.into_iter().next() {
         Some((place, key)) => Err(unknown_key(&place, &key)),
@@ -1529,6 +1596,7 @@ pub fn verify(f: &mut File, ft: &Footer) -> Result<(Manifest, Vec<u8>)> {
     })?;
     // The manifest is the author's now: what it needs from a reader is checked first, then the fields.
     check_format(&man)?;
+    check_release(&man)?;
     // A valid signature does not make the fields safe to use as file names.
     validate_manifest(&man)?;
 
@@ -2145,6 +2213,7 @@ mod tests {
         let man_ok = Manifest {
             app: App { id: "a.b".into(), name: "N".into(), version: "1".into(), entry: "x".into() },
             format: None,
+            release: None,
             abi: None,
             permissions: None,
             launch: None,

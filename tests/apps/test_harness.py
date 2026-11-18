@@ -91,6 +91,29 @@ class Config(unittest.TestCase):
             self.assertNotIn(word, text, "no personal path or user name in the example")
 
 
+class CompareRuns(unittest.TestCase):
+    """`compare.py` only compares runs of the same app: the same permissions on both sides."""
+
+    @staticmethod
+    def rows(*items):
+        return {n: dict(app=n, window_s=w, permissions=d) for n, w, d in items}
+
+    def test_the_same_permissions_are_compared(self):
+        import compare
+
+        lines, refused = compare.compare(self.rows(("a", 0.440, "d1"), ("b", 0.600, "d2")), self.rows(("a", 0.450, "d1"), ("b", 0.590, "d2")))
+        self.assertEqual(refused, [])
+        self.assertIn("+10 ms", lines[0])
+        self.assertIn("-10 ms", lines[1])
+
+    def test_a_different_set_of_permissions_is_refused_and_so_is_a_missing_digest(self):
+        import compare
+
+        lines, refused = compare.compare(self.rows(("a", 0.441, "d1"), ("b", 0.6, None)), self.rows(("a", 0.392, "d2"), ("b", 0.6, "d3")))
+        self.assertEqual([r[0] for r in refused], ["a", "b"])
+        self.assertEqual(lines, [])
+
+
 class CriticalList(unittest.TestCase):
     """The list `[format].critical` is made again by every tool that signs a manifest (sigfmt.with_critical); the table it uses is a copy of
     the one of `panpak-core`, and a test reads the Rust source so that the two cannot drift apart."""
@@ -108,7 +131,7 @@ class CriticalList(unittest.TestCase):
 
     def test_the_table_is_the_one_of_the_rust_code(self):
         src = (HERE.parents[1] / "panpak-core/src/lib.rs").read_text()
-        for sect, const in (("abi", "ABI_KEYS"), ("permissions", "PERM_KEYS"), ("launch", "LAUNCH_KEYS"), ("runtime", "RUNTIME_KEYS")):
+        for sect, const in (("release", "RELEASE_KEYS"), ("abi", "ABI_KEYS"), ("permissions", "PERM_KEYS"), ("launch", "LAUNCH_KEYS"), ("runtime", "RUNTIME_KEYS")):
             m = re.search(r"const %s: &\[&str\] = &\[([^\]]*)\];" % const, src)
             self.assertIsNotNone(m, const)
             self.assertEqual(set(re.findall(r'"([a-z_0-9]+)"', m.group(1))), sigfmt.CRITICAL_SECTIONS[sect], sect)

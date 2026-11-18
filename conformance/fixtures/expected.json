@@ -359,6 +359,12 @@
   ],
   "ok": false
  },
+ "invalid-no-release.panpak": {
+  "err": [
+   "release"
+  ],
+  "ok": false
+ },
  "invalid-no-stubhash.panpak": {
   "err": [
    "stub_hash",
@@ -369,6 +375,48 @@
  "invalid-notifications-type.panpak": {
   "err": [
    "notifications"
+  ],
+  "ok": false
+ },
+ "invalid-release-channel.panpak": {
+  "err": [
+   "channel"
+  ],
+  "ok": false
+ },
+ "invalid-release-floor-above-revision.panpak": {
+  "err": [
+   "floor"
+  ],
+  "ok": false
+ },
+ "invalid-release-history-hash.panpak": {
+  "err": [
+   "history"
+  ],
+  "ok": false
+ },
+ "invalid-release-missing-revision.panpak": {
+  "err": [
+   "release"
+  ],
+  "ok": false
+ },
+ "invalid-release-revision-zero.panpak": {
+  "err": [
+   "revision"
+  ],
+  "ok": false
+ },
+ "invalid-release-security-above-revision.panpak": {
+  "err": [
+   "security"
+  ],
+  "ok": false
+ },
+ "invalid-release-unknown-key.panpak": {
+  "err": [
+   "release"
   ],
   "ok": false
  },
@@ -611,6 +659,10 @@
   "ok": true
  },
  "valid-multi.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-release-full.panpak": {
   "err": [],
   "ok": true
  },
