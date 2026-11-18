@@ -135,7 +135,7 @@ def pack_rotated(tmp, env, port):
     tree.mkdir()
     (tree / 'hello').write_text('#!/bin/sh\necho "version 2"\n')
     (tree / 'hello').chmod(0o755)
-    (tree / 'panpak.toml').write_text(f'[app]\nid="{ID}"\nname="Test"\nversion="1.1"\nentry="hello"\n[update]\nkey="ed25519:{pub2}"\nurl="http://127.0.0.1:{port}/remote.panpak"\n')
+    (tree / 'panpak.toml').write_text(f'[app]\nid="{ID}"\nname="Test"\nversion="1.1"\nentry="hello"\n[release]\nrevision=2\n[update]\nkey="ed25519:{pub2}"\nurl="http://127.0.0.1:{port}/remote.panpak"\n')
     rng = random.Random(5)
     for i in range(FILES):
         (tree / f'payload{i}').write_bytes(rng.randbytes(120_000))

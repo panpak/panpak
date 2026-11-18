@@ -70,7 +70,7 @@ def main():
                 names.append(f'"icon{side}.png"')
             desktop = f'[desktop]\nicons = [{", ".join(names)}]\n' if names else ''
             (tree / 'panpak.toml').write_text(f'[app]\nid = "{ID}"\nname = "Update Icons"\nversion = "{version}"\nentry = "bin/app"\n{desktop}'
-                                              f'[update]\nkey = "{pub}"\nurl = "http://127.0.0.1:{port}/remote.panpak"\n')
+                                              f'[release]\nrevision = {version}\n[update]\nkey = "{pub}"\nurl = "http://127.0.0.1:{port}/remote.panpak"\n')
             out = tmp / f'{version}.panpak'
             run(BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', key, '-o', out)
             return out
