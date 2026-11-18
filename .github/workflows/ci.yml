@@ -173,13 +173,15 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
           bwrap --version
-      - name: The stub, which some tests start as the runtime (cargo test does not build it by itself)
-        run: cargo build --locked --target x86_64-unknown-linux-musl -p panpak-stub
+      - name: The programs that some tests start (cargo test does not build the stub by itself, and the tests of the windows use the debug build)
+        run: cargo build --locked --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
       - name: Test (musl)
         # --no-fail-fast: one failing test does not hide the others (the first run with PANPAK_CI=1 shows every test that used to skip).
         env:
           PANPAK_SKIP_LOG: /tmp/panpak-known-skips.txt
         run: cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl
+      - name: Protected mode, the way it is shown (the notification and its button, the windows, the questions of the terminal; fakes of the tools and the service)
+        run: python3 tests/protected_ui.py
       - name: The tests that cannot run on this runner (named, never silent)
         run: |
           {

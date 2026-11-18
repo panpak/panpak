@@ -130,13 +130,23 @@ fn a_floor_above_the_installed_version_shows_in_list_and_doctor_and_the_internet
     let json = text(&cli(&l.home, &["list", "--json"]));
     assert!(json.contains("\"protected\":{\"internet_back_on\":false}"), "{json}");
     let doctor = text(&cli(&l.home, &["doctor"]));
-    assert!(doctor.contains("(org.example.prot) is in protected mode") && doctor.contains(&format!("panpak update {ID}")), "{doctor}");
+    assert!(doctor.contains("(org.example.prot) is in protected mode") && !doctor.contains("panpak update"), "{doctor}");
+    // The state for a front end, with the texts, and the menu of the app (the action to turn the internet back on appears with the mode).
+    let state = text(&cli(&l.home, &["protected", "--json", ID]));
+    assert!(state.contains("\"protected\":true") && state.contains("\"floor\":2") && state.contains("\"actions\":[\"internet_on\"]") && state.contains("\"update\":null") && state.contains("\"kind\":\"terminal\""), "{state}");
+    assert!(state.contains("\"title\":\"Rel is running in protected mode\""), "{state}");
+    assert_eq!(text(&cli(&l.home, &["protected", "--json", "org.example.other"])).trim(), "{\"protected\":false}");
+    let entry = l.home.join(format!(".local/share/applications/panpak.{ID}.desktop"));
+    let menu = fs::read_to_string(&entry).unwrap();
+    assert!(menu.contains("Actions=Uninstall;Internet;") && menu.contains(&format!("allow-internet --ask {ID}")) && menu.contains("Name=Turn the internet back on"), "{menu}");
     // Without a terminal and without --yes the question is not answered for the person.
     let o = cli(&l.home, &["allow-internet", ID]);
     assert!(!ok(&o) && !appdir.join("protected-net").exists(), "{}", text(&o));
     // With --yes: the risk is told first, the choice is kept, and list says so.
     let o = cli(&l.home, &["allow-internet", "--yes", ID]);
-    assert!(ok(&o) && text(&o).contains("can be used against you") && text(&o).contains(&format!("panpak allow-internet --undo {ID}")), "{}", text(&o));
+    assert!(ok(&o) && text(&o).contains("can be used against you") && text(&o).contains("from its next start"), "{}", text(&o));
+    assert!(!text(&o).contains("panpak "), "no command in the text: {}", text(&o));
+    assert!(fs::read_to_string(&entry).unwrap().contains("Name=Turn the internet off again"));
     assert!(appdir.join("protected-net").is_file());
     assert!(text(&cli(&l.home, &["list"])).contains("you turned the internet back on"));
     assert!(text(&cli(&l.home, &["list", "--json"])).contains("\"internet_back_on\":true"));
@@ -150,7 +160,8 @@ fn a_floor_above_the_installed_version_shows_in_list_and_doctor_and_the_internet
     let fixed = l.pack_ok("3", "c", "[release]\nrevision = 2\nfloor = 2\n", Some(&v1));
     let o = l.install(&fixed, &[]);
     assert!(ok(&o) && text(&o).contains("Protected mode is over"), "{}", text(&o));
-    assert!(!appdir.join("protected-net").exists());
+    assert!(!appdir.join("protected-net").exists() && !appdir.join("protected").exists());
+    assert!(!fs::read_to_string(&entry).unwrap().contains("allow-internet"), "the action goes with the mode");
     assert!(!text(&cli(&l.home, &["list"])).contains("protected mode"));
     assert!(!text(&cli(&l.home, &["doctor"])).contains("is in protected mode"));
     // The same status in another language, with the catalog of the program (the words are checked in `po/it.po` by the tests of the core).

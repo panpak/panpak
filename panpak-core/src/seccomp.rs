@@ -208,6 +208,13 @@ pub fn build() -> Result<Vec<Insn>> {
 
 /// The program for an app that may open the uevent socket of netlink (`uevent`: the manifest says `devices = true`) or not.
 pub fn build_with(uevent: bool) -> Result<Vec<Insn>> {
+    build_options(uevent, true)
+}
+
+/// The program for an app, with the two choices: `uevent` (the uevent socket of netlink) and `inet` (sockets of the families IPv4 and IPv6; without it an
+/// app that makes one gets `EAFNOSUPPORT`, so no datagram, no name lookup and no connection leaves the process, the loopback included). `inet` is
+/// false only for an app in protected mode that has no view of its own with an empty network namespace (see `PANPAK-FORMAT.md` 3.1.10).
+pub fn build_options(uevent: bool, inet: bool) -> Result<Vec<Insn>> {
     if NATIVE_ARCH == 0 {
         return Err(coded(ErrorCode::E3002, "the seccomp filter does not cover this architecture"));
     }
@@ -225,7 +232,7 @@ pub fn build_with(uevent: bool) -> Result<Vec<Insn>> {
     }
     for r in all_rules() {
         let nr = u32::try_from(r.nr).map_err(|_| coded(ErrorCode::E3002, format!("bad system call number for {}", r.name)))?;
-        let block = block_of(r.check, uevent);
+        let block = block_of(r.check, uevent, inet);
         let skip = u8::try_from(block.len()).map_err(|_| coded(ErrorCode::E3002, "seccomp block too long"))?;
         p.push(jump(BPF_JEQ_K, nr, 0, skip));
         p.extend(block);
@@ -238,7 +245,7 @@ pub fn build_with(uevent: bool) -> Result<Vec<Insn>> {
 }
 
 /// The instructions that follow `jeq nr` for one rule. Always ends in a `ret`.
-fn block_of(c: Check, uevent: bool) -> Vec<Insn> {
+fn block_of(c: Check, uevent: bool, inet: bool) -> Vec<Insn> {
     match c {
         Check::Deny(e) => vec![ret_errno(e)],
         Check::Ioctl => vec![
@@ -263,11 +270,12 @@ fn block_of(c: Check, uevent: bool) -> Vec<Insn> {
         Check::SocketFamily => {
             // Layout: load the family; one compare for each allowed family (equal -> allow; AF_NETLINK -> look at the protocol); refuse with "family not supported";
             // load the protocol (the third argument); NETLINK_ROUTE (and, with `uevent`, NETLINK_KOBJECT_UEVENT) -> allow; refuse with "protocol not supported"; allow.
-            let n = SOCKET_FAMILIES_OK.len();
+            let families: Vec<u32> = SOCKET_FAMILIES_OK.iter().copied().filter(|f| inet || (*f != libc::AF_INET as u32 && *f != libc::AF_INET6 as u32)).collect();
+            let n = families.len();
             let protocols: Vec<u32> = if uevent { vec![libc::NETLINK_ROUTE as u32, libc::NETLINK_KOBJECT_UEVENT as u32] } else { vec![libc::NETLINK_ROUTE as u32] };
             let allow_at = n + 3 + protocols.len() + 1; // index of the final `ret allow` in the block
             let mut v = vec![stmt(BPF_LD_W_ABS, off_arg(0))];
-            for (i, k) in SOCKET_FAMILIES_OK.iter().enumerate() {
+            for (i, k) in families.iter().enumerate() {
                 let at = 1 + i;
                 let to = if *k == libc::AF_NETLINK as u32 { n + 2 } else { allow_at };
                 v.push(jump(BPF_JEQ_K, *k, (to - at - 1) as u8, 0));
@@ -350,7 +358,12 @@ pub fn install() -> Result<()> {
 
 /// The same for an app that may open the uevent socket (`devices = true`).
 pub fn install_with(uevent: bool) -> Result<()> {
-    install_program(&build_with(uevent)?)
+    install_options(uevent, true)
+}
+
+/// The same with the choice of `build_options`.
+pub fn install_options(uevent: bool, inet: bool) -> Result<()> {
+    install_program(&build_options(uevent, inet)?)
 }
 
 fn install_program(prog: &[Insn]) -> Result<()> {
@@ -428,6 +441,26 @@ mod tests {
 
     fn errno(e: u32) -> u32 {
         SECCOMP_RET_ERRNO | e
+    }
+
+    #[test]
+    fn without_inet_no_ip_socket_is_made_and_local_ones_still_are() {
+        let p = build_options(false, false).unwrap();
+        let socket = |family: i32, ty: i32, proto: i32| run(&p, NATIVE_ARCH, libc::SYS_socket as u32, [family as u64, ty as u64, proto as u64, 0, 0, 0]);
+        for f in [libc::AF_INET, libc::AF_INET6] {
+            for ty in [libc::SOCK_STREAM, libc::SOCK_DGRAM] {
+                assert_eq!(socket(f, ty, 0), errno(EAFNOSUPPORT), "family {f} type {ty}");
+            }
+        }
+        assert_eq!(socket(libc::AF_UNIX, libc::SOCK_STREAM, 0), SECCOMP_RET_ALLOW);
+        assert_eq!(socket(libc::AF_NETLINK, libc::SOCK_RAW, libc::NETLINK_ROUTE), SECCOMP_RET_ALLOW);
+        assert_eq!(socket(libc::AF_NETLINK, libc::SOCK_RAW, libc::NETLINK_KOBJECT_UEVENT), errno(EPROTONOSUPPORT));
+        // socketpair is judged by the same list; every other rule is the one of the full program.
+        assert_eq!(run(&p, NATIVE_ARCH, libc::SYS_socketpair as u32, [libc::AF_INET as u64, 1, 0, 0, 0, 0]), errno(EAFNOSUPPORT));
+        assert_eq!(run(&p, NATIVE_ARCH, libc::SYS_ptrace as u32, [0; 6]), errno(EPERM));
+        // The default program still makes IP sockets.
+        assert_eq!(judge(libc::SYS_socket, [libc::AF_INET as u64, libc::SOCK_DGRAM as u64, 0, 0, 0, 0]), SECCOMP_RET_ALLOW);
+        assert!(p.len() < 600);
     }
 
     #[test]

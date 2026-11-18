@@ -274,11 +274,11 @@ msgstr "{name} è in modalità protetta"
 msgid "The author of {name} reported a serious problem in this version. Until you update, it runs without internet and does not run programs that it downloads. Your files are safe and stay open."
 msgstr "L'autore di {name} ha segnalato un problema grave in questa versione. Finché non aggiorni, l'app funziona senza internet e senza eseguire programmi che scarica. I tuoi file sono al sicuro e restano accessibili."
 
+msgid "{name} is in protected mode: no internet, no downloaded programs. Your files are safe."
+msgstr "{name} è in modalità protetta: senza internet e senza programmi scaricati. I tuoi file sono al sicuro."
+
 msgid "Update now"
 msgstr "Aggiorna ora"
-
-msgid "To update now, run: {command}"
-msgstr "Per aggiornare ora, esegui: {command}"
 
 msgid "protected mode: no internet and no downloaded programs until updated"
 msgstr "modalità protetta: senza internet e senza programmi scaricati fino all'aggiornamento"
@@ -286,8 +286,29 @@ msgstr "modalità protetta: senza internet e senza programmi scaricati fino all'
 msgid "protected mode: you turned the internet back on; no downloaded programs until updated"
 msgstr "modalità protetta: hai riattivato internet; nessun programma scaricato fino all'aggiornamento"
 
-msgid "{name} ({id}) is in protected mode: the author reported a serious problem in the installed version. It runs without internet and does not run programs that it downloads; your files are safe. To update: {command}"
-msgstr "{name} ({id}) è in modalità protetta: l'autore ha segnalato un problema grave nella versione installata. Funziona senza internet e senza eseguire programmi che scarica; i tuoi file sono al sicuro. Per aggiornare: {command}"
+msgid "{name} ({id}) is in protected mode: the author reported a serious problem in the installed version. It runs without internet and does not run programs that it downloads; your files are safe. The mode ends when the app is updated."
+msgstr "{name} ({id}) è in modalità protetta: l'autore ha segnalato un problema grave nella versione installata. Funziona senza internet e senza eseguire programmi che scarica; i tuoi file sono al sicuro. La modalità finisce quando l'app viene aggiornata."
+
+msgid "Update {name} now? [Y/n]"
+msgstr "Aggiornare {name} ora? [S/n]"
+
+msgid "Update {name} now and accept these permissions? [y/N]"
+msgstr "Aggiornare {name} ora e accettare questi permessi? [s/N]"
+
+msgid "Turn the internet back on for {name}? [y/N]"
+msgstr "Riattivare internet per {name}? [s/N]"
+
+msgid "Turn the internet off again for {name}? [y/N]"
+msgstr "Disattivare di nuovo internet per {name}? [s/N]"
+
+msgid "Update {name}"
+msgstr "Aggiorna {name}"
+
+msgid "Update"
+msgstr "Aggiorna"
+
+msgid "Not now"
+msgstr "Non ora"
 
 msgid "Turn the internet back on for {name}?"
 msgstr "Riattivare internet per {name}?"
@@ -295,8 +316,17 @@ msgstr "Riattivare internet per {name}?"
 msgid "The author of {name} reported a serious problem in this version. With the internet on, the problem can be used against you, for example to send your files out. This applies only to {name}, it ends when you update, and you can cancel it at any time."
 msgstr "L'autore di {name} ha segnalato un problema grave in questa versione. Con internet attivo il problema può essere sfruttato contro di te, per esempio per inviare i tuoi file all'esterno. Vale solo per {name}, finisce quando aggiorni e puoi annullarlo in qualsiasi momento."
 
-msgid "The internet is back on for {name} from its next start, until you update. To cancel: {command}"
-msgstr "Internet sarà di nuovo attivo per {name} dal prossimo avvio, fino all'aggiornamento. Per annullare: {command}"
+msgid "Turn the internet on"
+msgstr "Riattiva internet"
+
+msgid "Turn the internet off again for {name}?"
+msgstr "Disattivare di nuovo internet per {name}?"
+
+msgid "Turn the internet off"
+msgstr "Disattiva internet"
+
+msgid "The internet is back on for {name} from its next start, until you update."
+msgstr "Internet sarà di nuovo attivo per {name} dal prossimo avvio, fino all'aggiornamento."
 
 msgid "The internet is off again for {name}."
 msgstr "Internet è di nuovo disattivato per {name}."
@@ -310,11 +340,23 @@ msgstr "{name}: aggiornamento completato"
 msgid "{name} now runs a version that fixes the problem. Protected mode is over: the internet and downloaded programs work again."
 msgstr "{name} ora usa una versione che risolve il problema. La modalità protetta è finita: internet e i programmi scaricati funzionano di nuovo."
 
-msgid "{name} asks for new permissions. To read and accept them, run: {command}"
-msgstr "{name} chiede nuovi permessi. Per leggerli e accettarli, esegui: {command}"
+msgid "The update of {name} is ready and applies the next time it starts. Close it and open it again."
+msgstr "L'aggiornamento di {name} è pronto e si applica al prossimo avvio. Chiudila e aprila di nuovo."
 
 msgid "{name} was not updated: {why}"
 msgstr "{name} non è stata aggiornata: {why}"
 
-msgid "The update of {name} is ready and applies the next time it starts. Close it and open it again."
-msgstr "L'aggiornamento di {name} è pronto e si applica al prossimo avvio. Chiudila e aprila di nuovo."
+msgid "{name} asks for new permissions, and nothing here can show them to you (a dialog tool such as zenity or kdialog is missing)."
+msgstr "{name} chiede nuovi permessi, e qui non c'è nulla che possa mostrarteli (manca uno strumento di dialogo come zenity o kdialog)."
+
+msgid "Turn the internet back on…"
+msgstr "Riattiva internet…"
+
+msgid "Turn the internet off again…"
+msgstr "Disattiva di nuovo internet…"
+
+msgid "Nothing was changed: this needs your answer, and there is no terminal and no dialog to ask it."
+msgstr "Non è stato cambiato nulla: serve una tua risposta, e non c'è né un terminale né un dialogo per chiederla."
+
+msgid "The internet is back on for {name}, until you update."
+msgstr "Internet è di nuovo attivo per {name}, fino all'aggiornamento."

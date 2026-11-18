@@ -622,18 +622,36 @@ downloaded record is taken away. Stable and beta are legitimate branches: each c
 **Protected mode.** A version that is installed and whose revision is below the floor that a client has seen for the app (from a package that
 entered, or was refused, or was staged) is not blocked: the person keeps the app and the data. The client MUST run it in protected mode:
 
-- no network: the manifest is read as `network = false` with no TCP port to connect to or to listen on, so the app has the loopback inside its
-  own view and nothing else; the signed manifest is not changed, the restriction is made in memory at each start;
+- **no network but the loopback of the app itself.** Not only TCP (Landlock covers nothing else): UDP, QUIC, name lookups and every other protocol
+  too. In the isolated view this is the network namespace that an app with no network permission already has (only the loopback of the view); the
+  manifest is read, in memory at each start, as `network = false` with no TCP port, and the signed manifest is not changed. Without a view there is no
+  namespace to take the network away with, so the client MUST make every IPv4 and IPv6 socket fail (a seccomp filter on `socket` and `socketpair`);
+  the loopback of the app goes too, and that is the only case where it does;
 - no program that the app wrote is run: the manifest is read as `exec_written = false`;
-- the person is told at every start: on the terminal when the start has one, otherwise in a notification with the button "Update now". The text
-  says who reported the problem (today the author of the app, the holder of the key that signed it), what happened, that the files are safe and
-  stay open, and how to update;
-- the state is shown in `panpak list` and `panpak doctor`;
-- the person can turn the internet back on for that app (`panpak allow-internet <app-id>`) after a text that explains the risk. The choice is kept in
-  the state of the client, holds for that app only, takes effect at the next start, never gives back the programs the app wrote, and can be cancelled
-  (`--undo`);
+- **no address is opened** (`xdg-open`, `OpenURI`): an address in the browser of the person (`https://host/?data=...`) is a way for data to leave. The
+  app is told why. The addresses of every kind are refused (the ones that are ever allowed are `http`, `https` and `mailto`; §9.3);
+- the person is told at every start, in the way that fits how the app was started, and never has to type a command to answer:
+  - a program with windows (its package has a window class or icons, or asks for X11), started from the menu or from a terminal: a desktop
+    notification with the text and, **only when an update that fixes the problem is ready**, one button "Update now"; in a terminal the most that is
+    written is one line that says what is happening (no instruction);
+  - a program of the terminal started with an interactive terminal (standard input and error are terminals): the text, and the questions are asked
+    there with one key: the update when one is ready (with the new permissions it asks for, if any), then the internet; one key each, `Enter` is the
+    default;
+  - a start with nobody to ask (a script, a pipe): no question, one line on the standard error, and the app goes on in protected mode;
+- "Update now" opens the window of the system (`zenity` or `kdialog`, the one of the menu action "Uninstall") with the new permissions, when the update asks
+  for any; "No" changes nothing; "Yes" updates. Without a window tool nothing is accepted and the person is told;
+- the menu of the app has, while the mode lasts, the action "Turn the internet back on…" (and "Turn the internet off again…" when it is on), with a
+  window that explains the risk;
+- the state is shown in `panpak list`, `panpak doctor` and as JSON by `panpak protected --json [<app-id>]` (the state, whether an update is ready and the
+  permissions it asks for, the actions the person has, and the texts in the language of the person); the actions are `panpak protected-action <update |
+  internet-on | internet-off>`. The commands `panpak update` and `panpak allow-internet` stay for scripts and are not what a message tells a person to
+  type. Another front end (the Panpak app) takes the place of the notification, the windows and the questions without changing any rule;
+- turning the internet back on is the person's choice, kept in the state of the client, for that app only, taking effect at the next start (at once
+  when it is made from the question of a terminal); it gives back the network the app asked for and the addresses, never the programs the app wrote; it
+  can be cancelled; it ends with the mode;
 - when a version at or above the floor is put in place, the mode ends: the choice is cleared and the person is told. What enters below the floor
-  stays refused (§ rule 2 above).
+  stays refused (rule 2 above). An update that asks for permissions that the person accepted while a copy of the app was running is applied at the
+  next start without asking again.
 
 A catalog or a distribution MAY in the future put an app in protected mode (never block it) with a required `reason` field (one sentence and a
 link); only the name is reserved here.

@@ -56,7 +56,7 @@ fn cache_panpak() -> Option<Dir> {
     under(dirs::cache_dir(), "panpak")
 }
 
-fn clean(s: &str) -> String {
+pub(crate) fn clean(s: &str) -> String {
     s.chars().map(|c| if c.is_control() { '?' } else { c }).collect()
 }
 
@@ -74,7 +74,7 @@ fn human(b: u64) -> String {
     format!("{v:.1} {}", U[i])
 }
 
-fn json_str(s: &str) -> String {
+pub(crate) fn json_str(s: &str) -> String {
     let mut o = String::with_capacity(s.len() + 2);
     o.push('"');
     for c in s.chars() {
@@ -919,12 +919,12 @@ fn tool_dirs() -> Vec<PathBuf> {
     ["/usr/bin", "/bin", "/run/current-system/sw/bin"].iter().map(PathBuf::from).collect()
 }
 
-fn find_tool(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_tool(name: &str) -> Option<PathBuf> {
     tool_dirs().into_iter().map(|d| d.join(name)).find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file()))
 }
 
 /// Text for a dialog that reads markup: the characters that start markup are written as entities.
-fn markup_safe(s: &str) -> String {
+pub(crate) fn markup_safe(s: &str) -> String {
     clean(s).replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
@@ -934,7 +934,7 @@ fn gvariant_str(s: &str) -> String {
 }
 
 /// Show a desktop notification with `notify-send` or `gdbus`, if there is one. Returns whether one was sent.
-fn notify(summary: &str, body: &str) -> bool {
+pub(crate) fn notify(summary: &str, body: &str) -> bool {
     use std::process::{Command, Stdio};
     let quiet = |c: &mut Command| c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
     if let Some(t) = find_tool("notify-send") {
@@ -993,7 +993,6 @@ fn revoke_documents(id: &str, purge: bool) -> Result<DocOutcome> {
 }
 
 pub fn cmd_remove_ask(id: &str) -> Result<()> {
-    use std::process::{Command, Stdio};
     panpak_core::validate_app_id(id)?;
     leave_app_scope(id);
     let exe = std::env::current_exe().ok().map(|p| p.display().to_string()).unwrap_or_else(|| "panpak".into());
@@ -1011,29 +1010,19 @@ pub fn cmd_remove_ask(id: &str) -> Result<()> {
         }
     };
     ensure_code!(facts.in_apps || !facts.packages.is_empty(), ErrorCode::E2004, "{id} is not installed");
-    let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_uppercase().contains("KDE"));
-    let order: [&str; 2] = if kde { ["kdialog", "zenity"] } else { ["zenity", "kdialog"] };
-    let Some((tool, path)) = order.iter().find_map(|t| find_tool(t).map(|p| (*t, p))) else {
-        tell_terminal();
-        return Err(coded(ErrorCode::E5004, format!("no dialog tool to ask for a confirmation: nothing was removed; run `{how}` in a terminal")));
-    };
-    let text_with = |esc: &dyn Fn(&str) -> String| {
-        let kept_text = if has_kept { i18n::fill(&tr(m::REMOVE_KEPT), &[("size", human(kept_bytes))]) } else { tr(m::REMOVE_NO_DATA).into_owned() };
-        format!("{}\n\n{}\n\n{}", esc(&i18n::fill(&tr(m::REMOVE_ASK), &[("name", name.clone())])), esc(&tr(m::REMOVE_WHAT)), esc(&kept_text))
-    };
-    let title = tr(m::REMOVE_TITLE);
-    let (ok_label, cancel_label) = (tr(m::REMOVE_OK_LABEL), tr(m::REMOVE_CANCEL_LABEL));
-    let mut cmd = Command::new(&path);
-    if tool == "zenity" {
-        cmd.args(["--question", "--no-markup", "--title", &title, "--text", &text_with(&|s| clean(s)), "--ok-label", &ok_label, "--cancel-label", &cancel_label, "--width", "460"]);
-    } else {
-        cmd.args(["--title", &title, "--warningyesno", &text_with(&markup_safe).replace('\n', "<br>"), "--yes-label", &ok_label, "--no-label", &cancel_label]);
-    }
-    let answered_yes = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
-    if !answered_yes {
-        // No: nothing is removed, and nothing more to say.
-        println!("cancelled: nothing was removed");
-        return Ok(());
+    let kept_text = if has_kept { i18n::fill(&tr(m::REMOVE_KEPT), &[("size", human(kept_bytes))]) } else { tr(m::REMOVE_NO_DATA).into_owned() };
+    let text = format!("{}\n\n{}\n\n{}", i18n::fill(&tr(m::REMOVE_ASK), &[("name", name.clone())]), tr(m::REMOVE_WHAT), kept_text);
+    match crate::dialog::ask(&tr(m::REMOVE_TITLE), &text, &tr(m::REMOVE_OK_LABEL), &tr(m::REMOVE_CANCEL_LABEL)) {
+        crate::dialog::Answer::NoTool => {
+            tell_terminal();
+            return Err(coded(ErrorCode::E5004, format!("no dialog tool to ask for a confirmation: nothing was removed; run `{how}` in a terminal")));
+        }
+        crate::dialog::Answer::No => {
+            // No: nothing is removed, and nothing more to say.
+            println!("cancelled: nothing was removed");
+            return Ok(());
+        }
+        crate::dialog::Answer::Yes => {}
     }
     match cmd_remove(id, false, true) {
         Ok(()) => {

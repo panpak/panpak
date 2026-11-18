@@ -574,12 +574,16 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   per-file grant); the "the app asks the user which file to open/save"
   case stays with the future broker (see PORTAL-DESIGN.md).
 - **Rollback**: `apps/<id>/previous` + `panpak rollback` (atomic swap).
-- **A version below the floor of its author (protected mode, spec §3.1.10)**: it is not blocked. It runs without the TCP network (the loopback of
-  its own view stays) and without running programs that it wrote, so a flaw that the author has reported cannot send the files out or fetch and run code
-  through the network. What it does **not** take away: the sockets the manifest asks for (D-Bus, portals, the display), what the app can already read
-  and write, and the network of a host service that the app reaches through such a socket. The floor must have been seen by this machine (an update
-  check, an install, an update that was refused): a machine that never saw it runs the version as usual. The person can turn the internet back on for
-  one app (`panpak allow-internet`); the programs it wrote stay refused.
+- **A version below the floor of its author (protected mode, spec §3.1.10)**: it is not blocked. It runs with **no network but its own loopback**: in
+  the isolated view this is the network namespace of an app with no network permission, so no TCP, UDP (DNS and QUIC too), IPv6 or other protocol
+  leaves it (tested with datagrams that a socket of the test must not receive); **without the view** the filter of the system calls makes every IPv4 and
+  IPv6 socket fail, the loopback of the app included (not tested end to end here: the runners have a view). It does not run programs that it wrote, and it
+  cannot open addresses (`xdg-open` and OpenURI), which would otherwise carry data out in the browser of the person. What it does **not** take away: the
+  sockets the manifest asks for (D-Bus, portals, the display), what the app can already read and write, and the network of a host service that the app
+  reaches through such a socket. The floor must have been seen by this machine (an update check, an install, an update that was refused): a machine that never
+  saw it runs the version as usual. The person can turn the internet back on for one app; the programs it wrote stay refused. Nobody is told to type a
+  command: the notification has a button (only when an update is ready), the windows of the system show the permissions and the risk, and a program of the
+  terminal asks where it is.
 - **Key succession**: supported and verified against the pin
   (`rotation_old` + `rotation_sig` over a message that names the app, spec §3.0 and §3.2); without a valid
   succession, key change = manual reinstall.

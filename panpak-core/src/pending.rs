@@ -21,6 +21,9 @@ pub struct State {
     pub needs_accept: bool,
     /// The version carries the mark of a security update (read by `record::security_mark`; the format of the mark is not fixed yet).
     pub security: bool,
+    /// The person accepted those permissions (in the dialog of protected mode) while a copy of the app was running: the version is applied at the next start,
+    /// which asks nothing.
+    pub accepted: bool,
 }
 
 pub fn link_path(appdir: &Path) -> PathBuf {
@@ -38,11 +41,12 @@ pub fn staged_record(appdir: &Path) -> Option<PathBuf> {
 
 pub fn read_state(appdir: &Path) -> Option<State> {
     let text = std::fs::read_to_string(state_path(appdir)).ok()?;
-    Some(State { needs_accept: text.lines().any(|l| l.trim() == "needs_accept=1"), security: text.lines().any(|l| l.trim() == "security=1") })
+    let has = |k: &str| text.lines().any(|l| l.trim() == k);
+    Some(State { needs_accept: has("needs_accept=1"), security: has("security=1"), accepted: has("accepted=1") })
 }
 
 pub fn write_state(appdir: &Path, state: State) -> Result<()> {
-    crate::durable::write_file(&state_path(appdir), format!("needs_accept={}\nsecurity={}\n", u8::from(state.needs_accept), u8::from(state.security)).as_bytes(), 0o644)
+    crate::durable::write_file(&state_path(appdir), format!("needs_accept={}\nsecurity={}\naccepted={}\n", u8::from(state.needs_accept), u8::from(state.security), u8::from(state.accepted)).as_bytes(), 0o644)
 }
 
 /// Take the staged version away (the link and its state). Nothing else: the record and the tree stay for whoever names them.
@@ -67,10 +71,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         assert_eq!(read_state(&d), None);
-        write_state(&d, State { needs_accept: true, security: false }).unwrap();
-        assert_eq!(read_state(&d), Some(State { needs_accept: true, security: false }));
-        write_state(&d, State { needs_accept: false, security: true }).unwrap();
-        assert_eq!(read_state(&d), Some(State { needs_accept: false, security: true }));
+        write_state(&d, State { needs_accept: true, security: false, accepted: false }).unwrap();
+        assert_eq!(read_state(&d), Some(State { needs_accept: true, security: false, accepted: false }));
+        write_state(&d, State { needs_accept: false, security: true, accepted: true }).unwrap();
+        assert_eq!(read_state(&d), Some(State { needs_accept: false, security: true, accepted: true }));
         std::os::unix::fs::symlink("../packages/x.rec", link_path(&d)).unwrap();
         assert_eq!(staged_record(&d).unwrap(), d.parent().unwrap().join("packages/x.rec"), "a relative link is read as the path it names");
         clear(&d).unwrap();

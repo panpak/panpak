@@ -111,12 +111,31 @@ fn user_manager_data_dirs() -> Option<String> {
     String::from_utf8_lossy(&out.stdout).lines().find_map(|l| l.strip_prefix("XDG_DATA_DIRS=")).map(|v| v.trim_matches('\'').to_string())
 }
 
+/// Protected mode: no address is opened (an address, `https://host/?data=...` in the browser of the person, is a way for data to leave). Set once by the
+/// outer stub, before any thread that opens addresses starts; both ways of opening (the channel of `xdg-open` and OpenURI of the router) end in
+/// `SystemXdgOpen`, so the one flag covers both.
+static ADDRESSES_FORBIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn forbid_addresses(forbid: bool) {
+    ADDRESSES_FORBIDDEN.store(forbid, std::sync::atomic::Ordering::SeqCst);
+}
+
 impl Target for SystemXdgOpen {
     /// Start `xdg-open` and say what happened: its exit status if it ends within `OPEN_WAIT` (it normally hands the address to the browser and
     /// ends), "started" if it is still running then (a browser that was started by it is not waited for). An app and a user are not told "done" for
     /// a program that failed or that found nothing to open the address with.
     fn open(&mut self, url: &str) -> Result<(), String> {
+        self.open_unless(url, ADDRESSES_FORBIDDEN.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+impl SystemXdgOpen {
+    /// `open`, with the answer to "is the app in protected mode" given by the caller (the tests do not touch the flag of the process).
+    fn open_unless(&mut self, url: &str, forbidden: bool) -> Result<(), String> {
         use std::sync::atomic::Ordering::SeqCst;
+        if forbidden {
+            return Err("this app is in protected mode: it cannot open addresses".into());
+        }
         if self.live.load(SeqCst) >= MAX_LIVE {
             return Err("too many openers running".into());
         }
@@ -603,6 +622,15 @@ mod tests {
     /// Other threads allocate all the time while the opener forks: the child between `fork` and `exec` must
     /// not need the allocator or any lock, or it would wait for ever for a lock that no thread of the
     /// child can release. 500 launches, a watchdog that ends the process if one hangs.
+    #[test]
+    fn in_protected_mode_no_address_reaches_the_program_and_the_app_is_told_why() {
+        let mut t = SystemXdgOpen::new(PathBuf::from("/bin/true"));
+        let e = t.open_unless("https://example.org/?data=secret", true).unwrap_err();
+        assert!(e.contains("protected mode") && e.contains("cannot open addresses"), "{e}");
+        assert_eq!(t.live.load(std::sync::atomic::Ordering::SeqCst), 0, "no program was started");
+        t.open_unless("https://example.org/", false).expect("outside protected mode the program is started");
+    }
+
     #[test]
     fn launches_do_not_hang_while_other_threads_allocate() {
         // 500 forks in this process would also copy the descriptors that other tests have open for writing at

@@ -100,6 +100,12 @@ msgstr ""
 msgid "Normal"
 msgstr ""
 
+msgid "Not now"
+msgstr ""
+
+msgid "Nothing was changed: this needs your answer, and there is no terminal and no dialog to ask it."
+msgstr ""
+
 msgid "Open and save the files you choose in the file window of your desktop"
 msgstr ""
 
@@ -196,7 +202,10 @@ msgstr ""
 msgid "The folder is the one of your user-dirs.dirs. The app cannot change it."
 msgstr ""
 
-msgid "The internet is back on for {name} from its next start, until you update. To cancel: {command}"
+msgid "The internet is back on for {name} from its next start, until you update."
+msgstr ""
+
+msgid "The internet is back on for {name}, until you update."
 msgstr ""
 
 msgid "The internet is off again for {name}."
@@ -232,13 +241,43 @@ msgstr ""
 msgid "This update asks for more than the version you have:"
 msgstr ""
 
-msgid "To update now, run: {command}"
-msgstr ""
-
 msgid "Turn the internet back on for {name}?"
 msgstr ""
 
+msgid "Turn the internet back on for {name}? [y/N]"
+msgstr ""
+
+msgid "Turn the internet back on…"
+msgstr ""
+
+msgid "Turn the internet off"
+msgstr ""
+
+msgid "Turn the internet off again for {name}?"
+msgstr ""
+
+msgid "Turn the internet off again for {name}? [y/N]"
+msgstr ""
+
+msgid "Turn the internet off again…"
+msgstr ""
+
+msgid "Turn the internet on"
+msgstr ""
+
+msgid "Update"
+msgstr ""
+
 msgid "Update now"
+msgstr ""
+
+msgid "Update {name}"
+msgstr ""
+
+msgid "Update {name} now and accept these permissions? [y/N]"
+msgstr ""
+
+msgid "Update {name} now? [Y/n]"
 msgstr ""
 
 msgid "Use the message bus of your whole desktop"
@@ -283,10 +322,13 @@ msgstr ""
 msgid "protected mode: you turned the internet back on; no downloaded programs until updated"
 msgstr ""
 
-msgid "{name} ({id}) is in protected mode: the author reported a serious problem in the installed version. It runs without internet and does not run programs that it downloads; your files are safe. To update: {command}"
+msgid "{name} ({id}) is in protected mode: the author reported a serious problem in the installed version. It runs without internet and does not run programs that it downloads; your files are safe. The mode ends when the app is updated."
 msgstr ""
 
-msgid "{name} asks for new permissions. To read and accept them, run: {command}"
+msgid "{name} asks for new permissions, and nothing here can show them to you (a dialog tool such as zenity or kdialog is missing)."
+msgstr ""
+
+msgid "{name} is in protected mode: no internet, no downloaded programs. Your files are safe."
 msgstr ""
 
 msgid "{name} is not in protected mode: there is nothing to turn back on."

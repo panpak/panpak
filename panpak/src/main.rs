@@ -9,6 +9,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod background;
+mod dialog;
 mod gc;
 mod happy;
 mod icons;
@@ -34,7 +35,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak allow-internet [--undo] [--yes] <app-id>   (an app in protected mode: turn the internet back on, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -263,6 +264,10 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
     // Old and new are told by the revision, never by the version text. The floor is kept even when the update goes no further.
     let rel = man.release.as_ref().context("the remote manifest has no [release]")?;
     panpak_core::release::note_floor(&appdir, rel.floor)?;
+    // The floor may have put the installed version in protected mode (or taken it out): the mark and the menu follow.
+    if panpak_core::release::sync_protected(&appdir, old_man.release.as_ref().map_or(0, |r| r.revision))? {
+        refresh_menu_entry(app_id);
+    }
     let standing = {
         let installed = installed_release(&store, &appdir, &current_pkg, &old_man, &old_ft.root, false)?;
         let remote_signed = panpak_core::release::signed_hash(ft.version, ft.flags, &ft.root, &man_b);
@@ -367,7 +372,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
         let new_icons = icons::read_from_tree(&new_tree, &man)?;
         icons::check_destinations(app_id, &new_icons)?;
         // Staged: the state first, then the link (the link is what an apply looks for).
-        panpak_core::pending::write_state(&appdir, panpak_core::pending::State { needs_accept: stage_only && !added.is_empty(), security: panpak_core::record::open_verified(&dest).is_ok_and(|o| panpak_core::record::security_mark(&o, old_man.release.as_ref().map_or(0, |r| r.revision))) })?;
+        panpak_core::pending::write_state(&appdir, panpak_core::pending::State { needs_accept: stage_only && !added.is_empty(), security: panpak_core::record::open_verified(&dest).is_ok_and(|o| panpak_core::record::security_mark(&o, old_man.release.as_ref().map_or(0, |r| r.revision))), accepted: false })?;
         panpak_core::durable::replace_symlink(&dest, &panpak_core::pending::link_path(&appdir))?;
         panpak_core::failpoint!("stage.pending_linked");
         let _ = fs::remove_dir_all(store.join("staging").join(app_id));
@@ -468,6 +473,9 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
         let rel = man.release.as_ref().context("the staged record has no [release]")?;
         let checked = (|| -> Result<()> {
             panpak_core::release::note_floor(&appdir, rel.floor)?;
+            if panpak_core::release::sync_protected(&appdir, old_man.release.as_ref().map_or(0, |r| r.revision))? {
+                refresh_menu_entry(app_id);
+            }
             let installed = installed_release(&store, &appdir, &current_rec, old_man, &old.footer.root, true)?;
             let standing = panpak_core::release::check_entering(&installed, rel, &panpak_core::record::signed_hash_of(&staged)?, allow)?;
             if standing == panpak_core::release::Standing::Newer {
@@ -484,7 +492,9 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
         }
     }
     let added = panpak_core::permissions::added(old_man, man);
-    if !added.is_empty() {
+    // The person may have accepted the new permissions already, in the dialog of protected mode, while a copy of the app ran: the next start applies it.
+    let accepted = state.is_some_and(|s| s.accepted);
+    if !added.is_empty() && !(at_start && accepted) {
         if at_start {
             return skip("it asks for permissions that the installed version does not have, and only you can accept them: `panpak update --accept-new-permissions`");
         }
@@ -2368,7 +2378,7 @@ fn reconcile_app(store: &Path, stub: &Path, id: &str) -> Result<()> {
 fn entry_text(store: &Path, app_id: &str, name: &str, launcher: &Path, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, icon: bool, twin: bool) -> Result<String> {
     let panpak = dsk::stable_panpak(store);
     let panpak = panpak.is_file().then_some(panpak);
-    dsk::desktop_file(&dsk::Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon, twin })
+    dsk::desktop_file(&dsk::Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon, twin, protected: panpak_core::release::menu_state(&store.join("apps").join(app_id)) })
 }
 
 /// Whether another app with the same id (or window class) is installed. When one is, the name of the entry gets " (Panpak)", and this says so,
@@ -2382,6 +2392,25 @@ fn twin_state(man: &panpak_core::Manifest) -> bool {
         dsk::TWIN_SUFFIX
     );
     true
+}
+
+/// Write the menu entry of an installed app again (protected mode adds or takes away an action of it). Nothing is said and nothing fails: an entry that is
+/// not there, or not ours, is left alone.
+fn refresh_menu_entry(app_id: &str) {
+    let done = (|| -> Result<()> {
+        let store = store_dir()?;
+        let man = installed_manifest(&store.join("apps").join(app_id)).context("not installed")?;
+        let desktop = desktop_path(app_id)?;
+        if !desktop.exists() {
+            return Ok(());
+        }
+        let launcher = dirs::home_dir().context("no home dir")?.join(".local/bin").join(app_id);
+        let wm_class = manifest_wm_class(&man);
+        let twin = dsk::twin_of(&man.app.id, wm_class).is_some();
+        let text = entry_text(&store, app_id, &man.app.name, &launcher, &manifest_schemes(&man), &manifest_mime_types(&man), wm_class, !icons::present(app_id).is_empty(), twin)?;
+        write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))
+    })();
+    let _ = done;
 }
 
 /// GNOME Shell reloads a changed entry about 5 seconds after the file changes, but keeps the old one for an app that
@@ -2954,6 +2983,9 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         if let Some(old) = installed_manifest(&appdir) {
             let rel = man.release.as_ref().context("the package has no [release]")?;
             panpak_core::release::note_floor(&appdir, rel.floor)?;
+            if panpak_core::release::sync_protected(&appdir, old.release.as_ref().map_or(0, |r| r.revision))? {
+                refresh_menu_entry(&man.app.id);
+            }
             let current = panpak_core::durable::resolve_link(&appdir.join("current")).context("missing current: reinstall")?;
             let installed = installed_release(&store, &appdir, &current, &old, &panpak_core::record::open_verified(&current)?.footer.root, true)?;
             let manifest_bytes = panpak_core::read_at(&mut f, ft.man_off, ft.man_len)?;
@@ -3933,18 +3965,48 @@ fn real_main() -> Result<()> {
             }
         }
         Some("allow-internet") => {
-            let (mut undo, mut yes, mut id) = (false, false, None);
+            let (mut undo, mut yes, mut ask, mut id) = (false, false, false, None);
             for a in &args[2..] {
                 match a.as_str() {
                     "--undo" => undo = true,
                     "--yes" => yes = true,
+                    "--ask" => ask = true,
                     x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
                     x => id = Some(x),
                 }
             }
-            protected::cmd_allow_internet(id.ok_or_else(|| coded(ErrorCode::E5002, "allow-internet <app-id>"))?, undo, yes)
+            protected::cmd_allow_internet(id.ok_or_else(|| coded(ErrorCode::E5002, "allow-internet <app-id>"))?, undo, yes, ask)
         }
-        Some("protected-notice") => protected::cmd_notice(args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "protected-notice <app-id>"))?),
+        Some("protected") => {
+            let (mut json, mut id) = (false, None);
+            for a in &args[2..] {
+                match a.as_str() {
+                    "--json" => json = true,
+                    x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    x => id = Some(x),
+                }
+            }
+            protected::cmd_protected(json, id)
+        }
+        Some("protected-start") => protected::cmd_start(args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "protected-start <app-id>"))?),
+        Some("protected-notice") => {
+            let pressed = args.get(2).is_some_and(|a| a == "--pressed");
+            protected::cmd_notice(args.get(if pressed { 3 } else { 2 }).ok_or_else(|| coded(ErrorCode::E5002, "protected-notice [--pressed] <app-id>"))?, pressed)
+        }
+        Some("protected-action") => {
+            let (mut accept, mut rest) = (false, Vec::new());
+            for a in &args[2..] {
+                match a.as_str() {
+                    "--accept-new-permissions" => accept = true,
+                    x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    x => rest.push(x),
+                }
+            }
+            match rest.as_slice() {
+                [what, id] => protected::cmd_action(what, id, accept),
+                _ => bail_code!(ErrorCode::E5002, "protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>"),
+            }
+        }
         Some("gc") => {
             let mut dry = false;
             for a in &args[2..] {
@@ -4543,7 +4605,7 @@ mod tests {
         assert!(!launcher_is_ours("#!/bin/sh\necho mine\n", "org.x"));
         // Written before the marker existed.
         assert!(launcher_is_ours("#!/bin/sh\n# Generated by `panpak install`: do not edit.\n# Points to apps/<id>/current; x\n", "org.x"));
-        let d = dsk::desktop_file(&dsk::Entry { app_id: "org.x", name: "X", launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false }).unwrap();
+        let d = dsk::desktop_file(&dsk::Entry { app_id: "org.x", name: "X", launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false, protected: None }).unwrap();
         assert!(desktop_is_ours(&d, "org.x", l));
         assert!(!desktop_is_ours(&d, "org.y", l));
         assert!(!desktop_is_ours("[Desktop Entry]\nType=Application\nName=Mine\nExec=/bin/mine\n", "org.x", l));

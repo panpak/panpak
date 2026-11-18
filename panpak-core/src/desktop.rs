@@ -127,6 +127,9 @@ pub struct Entry<'a> {
     pub icon: bool,
     /// Another app with the same id is installed (see [`find_twin`]): the name gets [`TWIN_SUFFIX`] and the entry carries [`TWIN_KEY`].
     pub twin: bool,
+    /// The app is in protected mode (see `release::menu_state`): the menu gets a second action to turn the internet back on (`Some(false)`) or off again
+    /// (`Some(true)`).
+    pub protected: Option<bool>,
 }
 
 /// `MimeType` is made of the URL schemes and of `desktop.mime_types`; nothing else, and never
@@ -152,15 +155,22 @@ pub fn desktop_file(e: &Entry) -> Result<String> {
         None => String::new(),
     };
     let (actions, action) = match e.panpak {
-        Some(p) => (
-            "Actions=Uninstall;\n",
-            format!(
+        Some(p) => {
+            let mut text = format!(
                 "\n[Desktop Action Uninstall]\nName=Uninstall\nName[de]=Deinstallieren\nName[es]=Desinstalar\nName[fr]=D\u{e9}sinstaller\nName[it]=Disinstalla\nExec={} remove --ask {}\n",
                 desktop_exec_arg(path_text(p)?)?,
                 desktop_string(e.app_id)?
-            ),
-        ),
-        None => ("", String::new()),
+            );
+            let mut actions = "Actions=Uninstall;";
+            // While the app is in protected mode: the way to turn the internet back on (or off again) from the menu, with a window that explains the risk.
+            if let Some(on) = e.protected {
+                actions = "Actions=Uninstall;Internet;";
+                let (en, it) = if on { ("Turn the internet off again\u{2026}", "Disattiva di nuovo internet\u{2026}") } else { ("Turn the internet back on\u{2026}", "Riattiva internet\u{2026}") };
+                text += &format!("\n[Desktop Action Internet]\nName={en}\nName[it]={it}\nExec={} allow-internet --ask {}\n", desktop_exec_arg(path_text(p)?)?, desktop_string(e.app_id)?);
+            }
+            (format!("{actions}\n"), text)
+        }
+        None => (String::new(), String::new()),
     };
     let icon = if e.icon { icon_name(e.app_id) } else { GENERIC_ICON.to_string() };
     let (name, twin) = if e.twin { (format!("{}{TWIN_SUFFIX}", e.name), format!("{TWIN_KEY}1\n")) } else { (e.name.to_string(), String::new()) };
@@ -409,7 +419,7 @@ pub fn refresh_entry_with(store: &Path, entry_dir: &Path, launcher: &Path, app_i
     let have_icon = old.lines().any(|l| l.strip_prefix("Icon=") == Some(icon_name(app_id).as_str()));
     let panpak = stable_panpak(store);
     let panpak = fs::metadata(&panpak).is_ok_and(|m| m.is_file()).then_some(panpak);
-    let text = desktop_file(&Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon: have_icon, twin })?;
+    let text = desktop_file(&Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon: have_icon, twin, protected: crate::release::menu_state(&store.join("apps").join(app_id)) })?;
     // The launcher first: the entry must never name one that is older than itself.
     let current = store.join("apps").join(app_id).join("current");
     let sh = launcher_sh(app_id, &stub, &current)?;
@@ -430,7 +440,7 @@ mod tests {
     use super::*;
 
     fn entry<'a>(l: &'a Path, name: &'a str) -> Entry<'a> {
-        Entry { app_id: "org.x", name, launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false }
+        Entry { app_id: "org.x", name, launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false, protected: None }
     }
 
     #[test]
@@ -469,6 +479,20 @@ mod tests {
     }
 
     #[test]
+    fn protected_mode_adds_a_menu_action_for_the_internet_that_says_what_it_does() {
+        let (l, p) = (Path::new("/home/u/.local/bin/org.x"), Path::new("/opt/panpak"));
+        let plain = desktop_file(&Entry { panpak: Some(p), ..entry(l, "X") }).unwrap();
+        assert!(!plain.contains("allow-internet"), "{plain}");
+        let off = desktop_file(&Entry { panpak: Some(p), protected: Some(false), ..entry(l, "X") }).unwrap();
+        assert!(off.contains("Actions=Uninstall;Internet;\n") && off.contains("[Desktop Action Internet]\nName=Turn the internet back on\u{2026}\n"), "{off}");
+        assert!(off.contains("Exec=\"/opt/panpak\" allow-internet --ask org.x\n"), "{off}");
+        let on = desktop_file(&Entry { panpak: Some(p), protected: Some(true), ..entry(l, "X") }).unwrap();
+        assert!(on.contains("Name=Turn the internet off again\u{2026}\n") && !on.contains("back on"), "{on}");
+        // Without a panpak path there is no action at all, protected or not.
+        assert!(!desktop_file(&Entry { protected: Some(false), ..entry(l, "X") }).unwrap().contains("Action"));
+    }
+
+    #[test]
     fn the_icon_line_names_the_app_icon_or_the_generic_one() {
         let l = Path::new("/home/u/.local/bin/org.x");
         assert!(desktop_file(&entry(l, "X")).unwrap().contains("\nIcon=application-x-executable\n"));
@@ -504,7 +528,7 @@ mod tests {
             let k = l.split('=').next().unwrap();
             let allowed = if group == "[Desktop Entry]" { ALLOWED } else { ACTION_KEYS };
             assert!(allowed.contains(&k), "key {k:?} is not allowed in {group}: {d}");
-            assert!(group == "[Desktop Entry]" || group == "[Desktop Action Uninstall]", "group {group}");
+            assert!(group == "[Desktop Entry]" || group == "[Desktop Action Uninstall]" || group == "[Desktop Action Internet]", "group {group}");
         }
     }
 
@@ -617,7 +641,7 @@ mod tests {
             self.apps.join("panpak.org.x.desktop")
         }
         fn current(&self) -> String {
-            let e = Entry { app_id: "org.x", name: "X", launcher: &self.launcher, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false };
+            let e = Entry { app_id: "org.x", name: "X", launcher: &self.launcher, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false, protected: None };
             desktop_file(&e).unwrap()
         }
         fn refresh(&self) -> Result<Refresh> {

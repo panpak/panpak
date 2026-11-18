@@ -132,6 +132,7 @@ def main():
     ap.add_argument('--dbus', action='store_true', help='ask for notifications, so that the filtered session bus is started')
     ap.add_argument('--entry-budget-ms', type=float, default=0.3, help='what the check of the menu entry may cost when there is nothing to do')
     ap.add_argument('--entry-csv', help='append one row with the cost of the check of the menu entry to this file')
+    ap.add_argument('--protected', action='store_true', help='measure a start in protected mode (a floor above the installed revision, the app marked): the network namespace, the question of the start and the notice are in the cost')
     ap.add_argument('--advisory', action='store_true', help='report only; never fail on the budget')
     ap.add_argument('--bin-dir', default=str(REL), help='folder with panpak and panpak-stub')
     ap.add_argument('--csv', help='append one row to this file (the machine and the versions are written at the top of a new file)')
@@ -183,6 +184,10 @@ def main():
     if p.returncode:
         sys.exit(p.stdout + p.stderr)
     launcher = home / '.local/bin' / ID
+    if a.protected:
+        appdir = home / '.local/share/panpak/apps' / ID
+        (appdir / 'floor').write_text('2\n')
+        (appdir / 'protected').write_text('2\n')
 
     direct = ['/bin/sh', str(script)]
     bare = ['/usr/bin/bwrap', '--unshare-all', '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib',
@@ -213,7 +218,7 @@ def main():
 
     md, ml = statistics.median(t_direct), statistics.median(t_launch)
     cost = ml - md
-    print(f'runs: {a.runs} each, interleaved; session bus layer: {"on" if a.dbus else "off"}; isolated view: {"yes" if view else "NO (start without the view)"}')
+    print(f'runs: {a.runs} each, interleaved; session bus layer: {"on" if a.dbus else "off"}; isolated view: {"yes" if view else "NO (start without the view)"}; protected mode: {"yes" if a.protected else "no"}')
     print(f'direct   (/bin/sh script):  median {md:6.1f} ms   p90 {pct(t_direct, 90):6.1f} ms')
     print(f'launcher (panpak):          median {ml:6.1f} ms   p90 {pct(t_launch, 90):6.1f} ms')
     if t_bare:

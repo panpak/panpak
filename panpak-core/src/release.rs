@@ -223,6 +223,38 @@ pub fn note_floor(appdir: &std::path::Path, floor: u64) -> Result<()> {
     Ok(())
 }
 
+/// The file of `<app folder>` that exists while the installed version is in protected mode (its content is the floor). A start looks for this one file and
+/// nothing else; the restrictions themselves are decided by the floor and the revision (`protected_floor`), so a file that is out of date costs one missed
+/// question, never a missed restriction.
+pub const PROTECTED_MARK: &str = "protected";
+
+/// Make the mark say what the floor and the installed revision say. Returns whether the state changed (the menu entry of the app follows it).
+pub fn sync_protected(appdir: &std::path::Path, installed_revision: u64) -> Result<bool> {
+    let path = appdir.join(PROTECTED_MARK);
+    let had = std::fs::symlink_metadata(&path).is_ok();
+    match protected_floor(appdir, installed_revision) {
+        Some(floor) => crate::durable::write_file(&path, format!("{floor}\n").as_bytes(), 0o644)?,
+        None => {
+            if let Err(e) = std::fs::remove_file(&path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    return Err(e.into());
+                }
+            }
+        }
+    }
+    Ok(had != protected_floor(appdir, installed_revision).is_some())
+}
+
+/// Whether the mark is there (a regular file of the app folder).
+pub fn is_marked_protected(appdir: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(appdir.join(PROTECTED_MARK)).is_ok_and(|m| m.file_type().is_file())
+}
+
+/// What the menu entry of the app shows: `None` when the app is not in protected mode, `Some(true)` when the person turned the internet back on.
+pub fn menu_state(appdir: &std::path::Path) -> Option<bool> {
+    is_marked_protected(appdir).then(|| internet_is_back_on(appdir))
+}
+
 /// The file of `<app folder>` that says the person turned the internet back on for an app that is in protected mode.
 pub const INTERNET_BACK_ON: &str = "protected-net";
 
