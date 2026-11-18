@@ -131,6 +131,12 @@ msgstr "Isolamento parziale:"
 msgid "Play sound and use the microphone"
 msgstr "Riprodurre l'audio e usare il microfono"
 
+msgid "Run programs that it downloads"
+msgstr "Esegue programmi che scarica"
+
+msgid "Programs that the app writes into its own folders (downloaded, unpacked or built) can be run. Without this, nothing it can write can be executed."
+msgstr "I programmi che l'app scrive nelle sue cartelle (scaricati, estratti o compilati) possono essere eseguiti. Senza questo permesso, nulla di ciò che può scrivere può essere eseguito."
+
 msgid "Put an icon in the notification area"
 msgstr "Mettere un'icona nell'area di notifica"
 

@@ -27,6 +27,7 @@ mod seccomp_test;
 #[cfg(test)]
 mod testutil;
 mod view;
+mod wxhint;
 
 /// Files past this threshold are assembled streaming, not in RAM.
 const MAX_ASSEMBLE: u64 = 8 << 20;
@@ -892,6 +893,8 @@ struct Access {
     /// The home folder, listable (`ReadDir`). Only set when the isolated view is active: there the
     /// home folder is an empty tmpfs that holds the granted folders only. Never set without the view.
     home_list: Option<PathBuf>,
+    /// Places below a writable folder that stay executable (read and execute): the opener names of the runtime folder, which are the stub mounted read-only.
+    exec: Vec<PathBuf>,
 }
 
 /// Refuse a link in `rel` below `home`: every part that exists must be a real
@@ -1117,6 +1120,11 @@ fn build_ruleset(
     let new_scope = abi >= landlock::ABI::V6;
     let new_unix = abi >= landlock::ABI::V9;
     let x11 = man.permissions.as_ref().and_then(|p| p.x11).unwrap_or(false);
+    // Nothing the app can write may be executed (W^X): the rights of every writable place lack Execute, unless the package asks
+    // for `exec_written`. The tree, `/usr` and the other read-only places keep theirs. `mmap` with PROT_EXEC is not a right of
+    // Landlock and stays possible (PANPAK-FORMAT.md 3.1.8).
+    let exec_written = man.permissions.as_ref().and_then(|p| p.exec_written).unwrap_or(false);
+    let no_exec = |a: landlock::BitFlags<AccessFs>| if exec_written { a } else { a & !AccessFs::Execute };
     // TCP network: Enforce / UnfilteredWarn / Refuse (never silent fallback).
     // unfilterable network=true is always an error, even with the flag.
     let net_wanted = man.permissions.as_ref().and_then(|p| p.network).unwrap_or(false);
@@ -1176,7 +1184,7 @@ fn build_ruleset(
     // Without the ioctl right on a device node, an ioctl on a file opened after the sandbox is refused with EACCES;
     // a descriptor that the app inherited (its terminal) is not affected.
     let dev_ioctl = if abi >= landlock::ABI::V5 { AccessFs::IoctlDev.into() } else { landlock::BitFlags::<AccessFs>::empty() };
-    let dev_rw = AccessFs::from_all(abi) & !AccessFs::Refer & !AccessFs::IoctlDev;
+    let dev_rw = no_exec(AccessFs::from_all(abi) & !AccessFs::Refer & !AccessFs::IoctlDev);
     if fine_dev {
         // Minimum legitimate rights for files (no Make*/Remove* from directories).
         // Missing or unopenable nodes (e.g. /dev/tty with no controlling
@@ -1242,9 +1250,15 @@ fn build_ruleset(
     // In the isolated view the tree and the system are read-only mounts of their own, and the kernel refuses a link
     // or a move across mounts (EXDEV, tests/app_dirs.py), so there Refer is granted: a program that creates a file in
     // a private folder and renames it into place, as Qt does for its local sockets, then works.
-    let rw = if access.in_view { AccessFs::from_all(abi) } else { AccessFs::from_all(abi) & !AccessFs::Refer };
+    let rw = no_exec(if access.in_view { AccessFs::from_all(abi) } else { AccessFs::from_all(abi) & !AccessFs::Refer });
     for dir in &access.rw {
         rs = rs.add_rule(PathBeneath::new(panpak_core::open_o_path(dir).with_context(|| format!("open {}", dir.display()))?, rw))?;
+    }
+    // What stays executable inside a writable folder: it is a read-only mount of the stub, not something the app wrote.
+    for p in &access.exec {
+        if let Some(fd) = rule_fd(p) {
+            rs = rs.add_rule(PathBeneath::new(fd, AccessFs::from_read(abi)))?;
+        }
     }
     // The home folder can be listed inside the view, so that the granted user folders show up in it.
     if let (true, Some(home)) = (access.in_view, &access.home_list) {
@@ -1295,7 +1309,7 @@ fn build_ruleset(
                 })?;
                 rs = rs.add_rule(PathBeneath::new(
                     fd,
-                    AccessFs::Execute | AccessFs::MakeReg | AccessFs::RemoveFile | AccessFs::WriteFile | AccessFs::Truncate,
+                    no_exec(AccessFs::Execute | AccessFs::MakeReg | AccessFs::RemoveFile | AccessFs::WriteFile | AccessFs::Truncate),
                 ))?;
             }
         }
@@ -2364,6 +2378,9 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     }
     // The private folders searched for stale locks when the last copy ends.
     let end_roots: Vec<PathBuf> = app_dirs.as_ref().map(|d| panpak_core::stalelocks::roots_of(d).to_vec()).unwrap_or_default();
+    // The permission exec_written, and the start: an app that ends with an error after it wrote a program file gets a line in the log.
+    let exec_written = ctx.man.permissions.as_ref().and_then(|p| p.exec_written).unwrap_or(false);
+    let (app_name, started) = (ctx.man.app.name.clone(), std::time::SystemTime::now());
     stage("shared folders");
     let plan = view::ViewPlan {
         root: view::root_layout(Path::new("/")),
@@ -2412,6 +2429,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
         sockets: ctx.access.sockets.iter().cloned().chain(dbus.iter().flat_map(|l| l.landlock_sockets.iter().cloned())).collect(),
         allow_unfiltered: ctx.allow_unfiltered,
         home_list: ctx.access.home_list.clone(),
+        exec: ctx.runtime_dir.map(|rt| vec![rt.join(opener::BIN_DIR)]).unwrap_or_default(),
         open: ctx.open.map(|(p, g)| view::JobOpen { path: p.clone(), write: g.write, rename: g.rename }),
         program: parts.program,
         args: parts.args,
@@ -2436,6 +2454,12 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     match (opener_server, shared, dbus, wayland) {
         (None, None, None, None) if exit.is_none() => match view::exec_bwrap(&plan)? {},
         (server, shared, dbus, wayland) => match view::run_bwrap(&plan, (server, shared, dbus, wayland), move |(_, shared, _, _), clean| {
+            if !clean && !exec_written {
+                let roots: Vec<&Path> = end_roots.iter().map(PathBuf::as_path).collect();
+                if let Some(m) = wxhint::message(&app_name, &wxhint::written_programs(&roots, started)) {
+                    eprintln!("panpak: {m}");
+                }
+            }
             // The last copy to end looks for the lock files it left (see `Shared::ended`). The cost is at exit, not at start.
             let mut last = None;
             if let Some(s) = shared {
@@ -2601,7 +2625,7 @@ fn run_inner(fd: i32) -> Result<()> {
         w.wait(&mut job.env_set, &mut job.env_remove);
         stage("inner: bus layer ready");
     }
-    let access = Access { rw: job.rw.clone(), ro: job.ro.clone(), sockets: job.sockets.clone(), in_view: true, home_list: job.home_list.clone(), ..Access::default() };
+    let access = Access { rw: job.rw.clone(), ro: job.ro.clone(), sockets: job.sockets.clone(), in_view: true, home_list: job.home_list.clone(), exec: job.exec.clone(), ..Access::default() };
     let open = job.open.as_ref().map(|o| (o.path.as_path(), OpenGrant { write: o.write, rename: o.rename }));
     sandbox(&job.tree, &job.manifest, &access, job.allow_unfiltered, open)?;
     stage("inner: Landlock applied");
@@ -2886,6 +2910,41 @@ mod tests {
         drop(listener2);
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir2);
+    }
+
+    /// Nothing the app can write is executed, unless the package says `exec_written`: a program copied into the folders of the
+    /// app, into `/tmp` or into the shared `/dev/shm` is refused (EACCES); the same program in the tree and in `/usr` runs.
+    #[test]
+    fn a_program_the_app_wrote_is_not_executed_unless_exec_written_is_asked_for() {
+        if !crate::testutil::alone() {
+            return;
+        }
+        let run = |extra: &str, tag: &str| -> String {
+            let (dir, panpak, tree, appdata) = fixture_tree(tag, extra);
+            let res = fork_lines(&appdata.join("r.txt"), |res| {
+                let _man = child_sandboxed(res, &panpak, &tree, &appdata, None)?;
+                let try_run = |res: &mut Vec<String>, name: &str, folder: &Path| {
+                    let target = folder.join(format!("wx-{}", std::process::id()));
+                    let copied = fs::copy("/usr/bin/true", &target).is_ok();
+                    let ran = copied && Command::new(&target).status().is_ok_and(|s| s.success());
+                    let _ = fs::remove_file(&target);
+                    res.push(format!("{name}={}\n", if !copied { "nocopy" } else if ran { "run" } else { "refused" }));
+                };
+                try_run(res, "exec_data", &appdata);
+                try_run(res, "exec_tmp", Path::new("/tmp"));
+                let system = Command::new("/usr/bin/true").status().is_ok_and(|s| s.success());
+                res.push(format!("exec_system={}\n", if system { "run" } else { "refused" }));
+                Ok(())
+            });
+            let _ = fs::remove_dir_all(&dir);
+            res
+        };
+        let default = run("", "wx-default");
+        assert!(default.contains("exec_data=refused"), "a program written in the folder of the app was executed:\n{default}");
+        assert!(default.contains("exec_tmp=refused"), "a program written in /tmp was executed:\n{default}");
+        assert!(default.contains("exec_system=run"), "a program of the system no longer runs:\n{default}");
+        let asked = run("[permissions]\nexec_written = true\n", "wx-asked");
+        assert!(asked.contains("exec_data=run") && asked.contains("exec_tmp=run"), "exec_written does not allow it:\n{asked}");
     }
 
     #[test]
@@ -4289,6 +4348,7 @@ mod tests {
             dbus_own: None,
             mpris: None,
             devices: None,
+            exec_written: None,
         });
         let access = Access { rw: vec![appdata.clone()], ..Access::default() };
         let err = build_ruleset(&tree, &access, &man, abi, true, false, None).unwrap_err();

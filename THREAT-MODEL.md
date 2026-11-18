@@ -36,6 +36,10 @@ The local store (`~/.local/share/panpak`) is considered **trusted**
   write/truncate/create/rename/unlink/hardlink denied; blobs unchanged).
 - **Confined writes** to the two private roots of the app, the `rw` home paths
   of its manifest and `/tmp` (fork tests and `tests/app_dirs.py`, see §2.2).
+- **Nothing written is executed** (W^X): the rights on every folder the app can write lack
+  Execute unless the package asks for `exec_written` (PANPAK-FORMAT.md §3.1.8). An app cannot
+  download a program and run it, nor build one and run it. `mmap(PROT_EXEC)` is not covered by
+  Landlock and stays possible. Tests: `a_program_the_app_wrote_is_not_executed_unless_exec_written_is_asked_for`, `tests/app_dirs.py`.
 - **No silent fallback**: without Landlock the stub aborts;
   post-restrict self-test (`/dev/null` openable, create on tree denied).
 - **TOFU + pin**: the key is self-signed (proves no identity); at the

@@ -150,3 +150,11 @@ How much an app writes in the `/tmp` and `/dev/shm` of its view, to set the cap 
 | Bitwarden, FreeCAD, Joplin, Kdenlive, Krita, LMMS, Obsidian, OpenShot, QOwnNotes, Shotcut, Simplenote, qBittorrent | 0 | 0 |
 
 Limits of the measure: one start of about 12 s with no work in the app; an app that renders, downloads or exports uses `TMPDIR` (on disk) if it follows the convention, and `/tmp` only if it writes there by name. The cap is 150 times the largest value seen; an app that needs more in `/tmp` gets ENOSPC and the remedy is its `TMPDIR`. On disk `TMPDIR` has no cap (like the private home); on a machine with the cache on a small partition the disk is what fills.
+
+## Programs that apps write and run (measured 2026-11-18)
+
+The rule "nothing an app can write is executed" (`exec_written` allows it) was tried on the 15 apps of the harness, and on Joplin, Bitwarden and Jitsi in use for 45 s with `tests/exec_scan.py`.
+
+- All 15 apps start with the rule (window times as before the rule; the first start only).
+- After 45 s the private folders of each of the three apps were searched for files with an execute bit: Joplin has `.config/joplin-desktop/cache/7zip/7za` (it copies the 7-Zip program of its bundle there and runs it to unpack plug-ins and archives), Bitwarden and Jitsi have none (Obsidian, Zulip and Simplenote have none either). So Joplin asks for `exec_written` in its recipe of the harness; the others need nothing.
+- Limits of the scan: Chromium makes its processes non-dumpable, so `/proc/<pid>/maps` and `environ` of most of them cannot be read by another process of the same user; the scanner saw 3 processes of Joplin and 1 of Jitsi and none of Bitwarden. It cannot see an `execve` or a mapping of a renderer. The files with an execute bit that the app left in its folders are a fact that does not depend on it, and are what the table above is made of. An app that writes a program and runs it later (an updater on a schedule, a plug-in installed by hand) is not found by a start of 45 s: the hint in the log (the line "ended with an error after it wrote the program ...") and, later, `panpak trace` are for those.

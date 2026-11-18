@@ -304,7 +304,7 @@ def own_name_ok(name, app):
 
 def check_bus(man):
     perms = man.get("permissions", {})
-    for k in ("notifications", "tray"):
+    for k in ("notifications", "tray", "exec_written"):
         if k in perms and not isinstance(perms[k], bool):
             raise Fail(f"invalid manifest field permissions.{k}")
     own = perms.get("dbus_own", [])

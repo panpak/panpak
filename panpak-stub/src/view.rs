@@ -28,6 +28,9 @@ pub struct Job {
     /// The home folder may be listed inside the view (see `Access::home_list`).
     #[serde(default)]
     pub home_list: Option<PathBuf>,
+    /// Places inside a writable folder where the app may still execute: the names of the opener (`xdg-open`, the stub mounted read-only in the runtime folder).
+    #[serde(default)]
+    pub exec: Vec<PathBuf>,
     pub open: Option<JobOpen>,
     pub program: PathBuf,
     pub args: Vec<String>,
@@ -979,6 +982,7 @@ mod tests {
             sockets: vec!["/s".into()],
             allow_unfiltered: true,
             home_list: None,
+            exec: vec![],
             open: Some(JobOpen { path: "/f".into(), write: true, rename: false }),
             program: parts.program,
             args: parts.args,

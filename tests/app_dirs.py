@@ -28,6 +28,7 @@ VIEW = subprocess.run(['/usr/bin/bwrap', '--unshare-user', '--ro-bind', '/', '/'
 PROBE = r'''#!/bin/sh
 # Reports "name=ok" or "name=deny" for each attempt, then the environment.
 R="$XDG_DATA_HOME/report.txt"
+if [ "$1" = wxfail ]; then cp /usr/bin/true "$XDG_DATA_HOME/wxhint-tool"; exit 3; fi
 H0="$HOME"
 try() { if ( eval "$2" ) 2>/dev/null; then echo "$1=ok"; else echo "$1=deny"; fi; }
 {
@@ -61,6 +62,12 @@ try write_docs 'echo x > "$HOME/Docs/new.txt"'
 try write_tmp 'echo x > /tmp/panpak-dirs-test-$$ && rm /tmp/panpak-dirs-test-$$'
 try tmp_cap 'dd if=/dev/zero of=/tmp/cap-test bs=1M count=300 2>/dev/null; rc=$?; sleep 5; rm -f /tmp/cap-test; [ $rc -eq 0 ]'
 try sock_in_tmpdir 'python3 -c "import os,socket;d=os.environ[\"TMPDIR\"]+\"/scoped_dirAbCdEf\";os.makedirs(d,exist_ok=True);f=d+\"/SingletonSocket\";os.path.lexists(f) and os.unlink(f);s=socket.socket(socket.AF_UNIX);s.bind(f)"'
+try exec_data 'cp /usr/bin/true "$XDG_DATA_HOME/wx" && "$XDG_DATA_HOME/wx"'
+try exec_cache 'cp /usr/bin/true "$XDG_CACHE_HOME/wx" && "$XDG_CACHE_HOME/wx"'
+try exec_tmp 'cp /usr/bin/true /tmp/wx && /tmp/wx'
+try exec_tmpdir 'cp /usr/bin/true "$TMPDIR/wx" && "$TMPDIR/wx"'
+try exec_shm 'cp /usr/bin/true /dev/shm/wx && /dev/shm/wx'
+try exec_system '/usr/bin/true'
 try tmpdir_big 'dd if=/dev/zero of="$TMPDIR/big" bs=1M count=300 2>/dev/null && rm -f "$TMPDIR/big"'
 echo "shm_dev=$(stat -c %d /dev/shm)"
 echo "shm_kb=$(df -Pk /dev/shm | awk 'NR==2{print $2}')"
@@ -215,7 +222,7 @@ def main():
            write_home_config='ok', write_home_file='ok', read_gtk='ok', write_gtk='deny', read_gtk_after_write='deny', read_gtk_bookmarks='deny', read_gh='deny',
            list_config='ok', read_icons='ok', write_icons='deny', read_hicolor='deny', read_icons_dir='ok', read_old_appdata='deny',
            read_other_userdata='deny', read_notes='deny', write_notes='deny', read_docs='deny', write_docs='deny',
-           write_tmp='ok', tmp_cap='deny', tmpdir_big='ok', sock_in_tmpdir='ok', args='one two', fonts_found='1')
+           write_tmp='ok', tmp_cap='deny', tmpdir_big='ok', sock_in_tmpdir='ok', exec_data='deny', exec_cache='deny', exec_tmp='deny', exec_tmpdir='deny', exec_shm='deny', exec_system='ok', args='one two', fonts_found='1')
     # A full /tmp is said in plain words, once (the app holds it full for a few seconds; the watcher looks every two).
     assert err.count('its temporary folder /tmp is full') == 1, f'a full /tmp was not said once:\n{err}'
     # /dev/shm is as big as the one of the system (Chromium crashes with a small one), and the memory counters that it reads to
@@ -246,6 +253,27 @@ def main():
     assert rep['env_XDG_DATA_DIRS'] == '/usr/local/share:/usr/share', rep['env_XDG_DATA_DIRS']
     assert not (cfg / 'fontconfig/fonts.conf').exists(), 'no generated fonts.conf in the view: fontconfig reads the real one'
     print('base layout: ok')
+
+    # 2a. Nothing the app can write is executed (W^X): the probes above ran a copy of /usr/bin/true from the folders of the app, from /tmp, from TMPDIR
+    # and from /dev/shm and were refused, while the program of the system ran. With `exec_written` the same programs run.
+    p = lab.install('[permissions]\nexec_written = true\n')
+    assert p.returncode == 0, p.stdout + p.stderr
+    assert 'Run programs that it downloads' in p.stdout, p.stdout
+    rc, rep, err = lab.run()
+    assert rc == 0, err
+    expect(rep, exec_data='ok', exec_cache='ok', exec_tmp='ok', exec_tmpdir='ok', exec_shm='ok', exec_system='ok')
+    p = lab.install('')
+    assert p.returncode == 0, p.stdout + p.stderr
+    # An app that wrote a program and ended with an error: one line in the log names the file and the permission. With the permission, none.
+    rc, _, err = lab.run('wxfail')
+    assert rc == 3 and err.count('wxhint-tool') == 1 and 'exec_written' in err and 'Run programs that it downloads' in err, (rc, err)
+    p = lab.install('[permissions]\nexec_written = true\n')
+    assert p.returncode == 0, p.stdout + p.stderr
+    rc, _, err = lab.run('wxfail')
+    assert rc == 3 and 'wxhint-tool' not in err, (rc, err)
+    p = lab.install('')
+    assert p.returncode == 0, p.stdout + p.stderr
+    print('written programs: refused by default, allowed with exec_written, a hint in the log when the app fails after writing one: ok')
 
     # 2b. gsettings is looked for in system paths only: a program planted in PATH is not run.
     fake = work / 'fakebin'

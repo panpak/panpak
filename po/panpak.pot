@@ -130,6 +130,9 @@ msgstr ""
 msgid "Play sound and use the microphone"
 msgstr ""
 
+msgid "Programs that the app writes into its own folders (downloaded, unpacked or built) can be run. Without this, nothing it can write can be executed."
+msgstr ""
+
 msgid "Put an icon in the notification area"
 msgstr ""
 
@@ -164,6 +167,9 @@ msgid "Remove an app"
 msgstr ""
 
 msgid "Remove {name}?"
+msgstr ""
+
+msgid "Run programs that it downloads"
 msgstr ""
 
 msgid "See what other apps show and what you type in them (X11)"

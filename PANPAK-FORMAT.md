@@ -149,6 +149,7 @@ tray = false                   # opt-in, §3.1.5: a tray icon
 dbus_own = []                  # §3.1.5: names of the app on its private bus (no effect since step 13p; kept for old packages)
 mpris = false                  # §3.1.5: a media player: one alias org.mpris.MediaPlayer2.panpak.<id> on the host bus
 devices = false                # §3.1.5: hear of devices that come and go (game pads, USB devices, cameras, input devices): the uevent socket of netlink
+exec_written = false           # §3.1.8: the app may run programs that it wrote itself (downloaded, unpacked, built)
 
 [[permissions.home_paths]]     # last resort, §3.1.2: a fixed path in the home folder
 path = ".config/editor"        # relative to the home, no ".."
@@ -485,6 +486,17 @@ is run without it (readers ignore what they do not know): a package that cannot 
 `source` (`git <url> @ <commit>` or `url <url> sha256 <hex>`), `image` (the name of the build image, the digest of its manifest and the date of the package snapshot) and `image_deps`: the
 dependencies that were taken from the build image instead of being built from the source that the author pinned (`name`, the image `package`, and the `version` found). A reader MUST ignore a
 `[provenance]` it cannot use. It carries no measurement that changes from one build to the next (the peak memory of a build is not in it): the same inputs give the same bytes.
+
+### 3.1.8 Programs the app writes [NORMATIVE]
+
+**`permissions.exec_written`** (boolean, default false). By default the runtime grants no right to execute on anything the app can write: its private home (§9.1), its cache, `/tmp`, `/var/tmp`, its `/dev/shm`, the folders granted by `xdg_dirs` and `home_paths`, and the parent folder of a file opened with write and rename. A program that the app wrote there (a downloaded updater, a plugin binary, a unpacked helper, a build result) is refused by `execve` with `EACCES`, whatever its mode bits say. The tree of the app, the system folders and the read-only places keep their right to execute. With `exec_written = true` the rights of those folders include execute. Install shows it, at the level Attention, as "Run programs that it downloads".
+
+Limits, stated here so that nobody reads more in the rule than it gives:
+
+- It is a rule of Landlock, which has no right for `mmap(PROT_EXEC)`: an app can still map a file it wrote as executable code (a plug-in loaded with `dlopen`, a JIT cache on disk), and it can run code from memory. The rule stops a program being started from a written file; it does not stop code from being loaded from one. The seccomp filter does not police `mmap` either.
+- An interpreter is not a program written by the app: `sh script`, `python file.py` and `node app.js` read the written file as data and run. The rule is about the file that `execve` opens.
+- Landlock tells nobody when it refuses an `execve`. When the app ends with an error after it wrote a program file in its private folders, the outer stub writes one line in the log that names the file and the permission (a hint, not a proof; the outer stub exists only when the app runs in the isolated view). `panpak trace` (step 13t) is to name the refusal itself.
+- Without the isolated view (no bubblewrap) the rule is the same: it is a Landlock rule. What changes is which folders the app can write: there is no private `/tmp`, so `/tmp` of the machine is writable and is covered by the same rule, and the hint of the outer stub is not given.
 
 ### 3.2 Public key and TOFU [NORMATIVE]
 

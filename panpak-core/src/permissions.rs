@@ -97,6 +97,8 @@ pub static ROWS: &[Row] = &[
         "It can connect to this Unix socket, and so to the program that listens on it.", ""),
     row("devices", Level::Attention, "input-gaming-symbolic", "\u{2328}", "Be told when devices are plugged in or removed (game pads, USB devices, cameras, keyboards)",
         "It receives the notices that the system sends about devices that come and go, with their names and numbers. It does not open the devices.", ""),
+    row("exec-written", Level::Attention, "system-run-symbolic", "\u{2699}", "Run programs that it downloads",
+        "Programs that the app writes into its own folders (downloaded, unpacked or built) can be run. Without this, nothing it can write can be executed.", ""),
     row("files-chosen", Level::Normal, "document-open-symbolic", "\u{25a4}", "Open and save the files you choose in the file window of your desktop",
         "When the app asks to open or save a file, your desktop shows its own window. The app gets only the files and folders you pick there, and keeps them until it is removed.", ""),
     row("launch-files", Level::Normal, "document-open-symbolic", "\u{25a4}", "Open the files you start it with",
@@ -223,6 +225,9 @@ fn from_permissions(lang: Option<&Catalog>, p: &Permissions) -> Vec<Item> {
     }
     if p.devices == Some(true) {
         out.push(item(lang, "devices", vec![]));
+    }
+    if p.exec_written == Some(true) {
+        out.push(item(lang, "exec-written", vec![]));
     }
     if p.notifications == Some(true) {
         out.push(item(lang, "notifications", vec![]));
