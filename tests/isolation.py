@@ -106,9 +106,24 @@ def _may_delete(path, work):
     return False
 
 
+def _make_removable(path):
+    """Give the owner write and search rights on every folder below `path` (the store makes its trees read-only, and a folder without them cannot be
+    emptied). Links are not followed and not changed: a link in a work folder never reaches outside it this way."""
+    for root, dirs, _ in os.walk(path, followlinks=False):
+        for d in [root] + [os.path.join(root, x) for x in dirs]:
+            try:
+                if not os.path.islink(d):
+                    os.chmod(d, os.stat(d).st_mode | 0o700)
+            except OSError:
+                pass
+
+
 def safe_rmtree(path, work, ignore_errors=True):
     if not _may_delete(path, work):
         raise SystemExit(f'refusing to delete {path}: outside the work directory {work}')
+    # A run that was interrupted leaves read-only trees; without this the folder stays and the next run stops on it ("File exists").
+    if Path(path).is_dir() and not Path(path).is_symlink():
+        _make_removable(path)
     shutil.rmtree(path, ignore_errors=ignore_errors)
 
 
