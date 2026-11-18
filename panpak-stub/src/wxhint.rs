@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! A hint for the log when an app that ended with an error had written a program file.
 //!
 //! The rule "nothing the app can write is executed" is a Landlock rule, and Landlock tells nobody when it refuses an
