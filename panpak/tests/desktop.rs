@@ -407,8 +407,14 @@ fn pack_cleans_an_icon_and_says_which_chunks_it_removed() {
     assert!(o.status.success() && !String::from_utf8_lossy(&o.stderr).contains("removed the chunks"), "{}", text(&o));
 }
 
-/// Rewrite the manifest of a package and sign it again with the key of the test (the layout is in PANPAK-FORMAT.md §2).
+/// Rewrite the manifest of a package and sign it again with the key of the test (the layout is in PANPAK-FORMAT.md §2). The list
+/// `[format].critical` is made again, as every function that signs a manifest must do.
 fn resign(pkg: &Path, key_file: &Path, edit: impl Fn(String) -> String, out: &Path) {
+    resign_with(pkg, key_file, edit, out, true)
+}
+
+/// As `resign`, with the choice of making the critical list again. `false` is the mistake that the reader refuses (PANPAK-E0012).
+fn resign_with(pkg: &Path, key_file: &Path, edit: impl Fn(String) -> String, out: &Path, recompute: bool) {
     use ed25519_dalek::Signer;
     let d = fs::read(pkg).unwrap();
     let f = &d[d.len() - 80..];
@@ -416,7 +422,8 @@ fn resign(pkg: &Path, key_file: &Path, edit: impl Fn(String) -> String, out: &Pa
     let (ver, flags, ioff, ilen, moff) = (u32le(&f[8..12]), u32le(&f[12..16]), u64le(&f[16..24]), u64le(&f[24..32]), u64le(&f[32..40]) as usize);
     let mlen = u64le(&f[40..48]) as usize;
     let root = &f[48..80];
-    let man = edit(String::from_utf8(d[moff..moff + mlen].to_vec()).unwrap()).into_bytes();
+    let edited = edit(String::from_utf8(d[moff..moff + mlen].to_vec()).unwrap());
+    let man = if recompute { panpak_core::with_recomputed_critical(&edited).unwrap() } else { edited }.into_bytes();
     let sk = panpak_core::parse_secret(fs::read_to_string(key_file).unwrap().trim()).unwrap();
     let signed = panpak_core::package_message(ver, flags, root.try_into().unwrap(), &man);
     let mut o = d[..moff].to_vec();
@@ -431,6 +438,33 @@ fn resign(pkg: &Path, key_file: &Path, edit: impl Fn(String) -> String, out: &Pa
     o.extend_from_slice(&(man.len() as u64).to_le_bytes());
     o.extend_from_slice(root);
     fs::write(out, o).unwrap();
+}
+
+#[test]
+fn a_manifest_changed_after_pack_and_signed_again_without_the_list_is_refused() {
+    // Defect 42 by a side door: a restricting field added after `pack`, with the old `critical`, would hide from an older panpak.
+    let e = env("critical-stale");
+    let t = e.tree("1", "", &[]);
+    let (o, pkg) = e.pack(&t, "1.panpak");
+    assert!(o.status.success(), "{}", text(&o));
+    let add = |m: String| format!("{m}\n[permissions]\nx11 = true\naudio = true\n");
+    let stale = e.home.join("stale.panpak");
+    resign_with(&pkg, &e.key, add, &stale, false);
+    let o = cli(&e.home, &["install", "--yes", stale.to_str().unwrap()]);
+    let err = text(&o);
+    assert!(!o.status.success() && err.contains("PANPAK-E0012") && err.contains("permissions.x11") && err.contains("permissions.audio"), "{err}");
+    let o = cli(&e.home, &["doctor", stale.to_str().unwrap()]);
+    assert!(text(&o).contains("PANPAK-E0012"), "{}", text(&o));
+    // The same manifest signed with the function that makes the list again has it complete, and installs.
+    let good = e.home.join("good.panpak");
+    resign(&pkg, &e.key, add, &good);
+    let m = e.home.join("m.toml");
+    let o = cli(&e.home, &["dump-manifest", good.to_str().unwrap(), m.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    let m = fs::read_to_string(m).unwrap();
+    assert!(m.contains("critical = [\"permissions.audio\", \"permissions.x11\", \"runtime.stub_hash\"]"), "{m}");
+    let o = cli(&e.home, &["install", "--yes", good.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
 }
 
 #[test]

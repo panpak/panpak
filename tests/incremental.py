@@ -55,7 +55,7 @@ def resign(data, version, port, scheme='http'):
     man = re.sub(r'^key = .*$', f'key = "ed25519:{PUBLIC}"', man, flags=re.M)
     man = re.sub(r'^url = .*\n', '', man, flags=re.M)
     man = man.replace('[update]', f'[update]\nurl = "{scheme}://127.0.0.1:{port}/remote.panpak"')
-    man = man.encode()
+    man = sigfmt.with_critical(man.encode())
     return data[:moff] + man + sigfmt.block(KEY.sign(sigfmt.message(ver, flags, root, man))) + struct.pack(
         "<8sIIQQQQ32s", magic, ver, flags, off, ilen, moff, len(man), root)
 

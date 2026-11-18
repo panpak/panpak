@@ -182,7 +182,7 @@ entry = "bin/editor"           # REQUIRED, relative path inside the tree
 
 [format]                       # REQUIRED, written by `panpak pack` (§3.1.9)
 min_panpak = 1
-critical = ["permissions.network"]
+critical = ["permissions.network", "runtime.stub_hash"]
 compression = "zstd"
 chunking = "fastcdc:16384:65536:262144"
 packed_by = "panpak 0.1.0 zstd 1.5.7"
@@ -564,7 +564,7 @@ higher `min_panpak`. A package without it was made before the table existed (a t
 | key | type | meaning |
 |---|---|---|
 | `min_panpak` | integer ≥ 1 | the level of the manifest that a reader needs. This format is level 1. It goes up only when the **meaning** of something that exists changes; a new field that changes what is safe does not need it, it is named in `critical`. A Reader with a lower level refuses (`PANPAK-E0002`, "update panpak"). It is a separate number from `[runtime].min_runtime`, which is about the behaviours the runner must have |
-| `critical` | list of strings | the fields of the manifest that change what is safe and that the package uses, as `section.key` (`permissions.network`, `launch.env`) or `env`. Every key used in a critical section is listed; `pack` writes the list from a table of sections, so it cannot be forgotten. A Reader that does not know one refuses (`PANPAK-E0002`, "update panpak"): it would otherwise run the app with less confinement than the author declared. At most 256 entries of at most 64 characters of `a-z 0-9 _ .` |
+| `critical` | list of strings | the fields of the manifest that change what is safe and that the package uses, as `section.key` (`permissions.network`, `launch.env`) or `env`. Every key used in a critical section is listed, `runtime.stub_hash` among them. The list is **derived**: whoever signs a manifest makes it again from the manifest and the table of sections below (`pack`, `convert`, `build`, and every tool that edits a manifest and signs it again), and nobody writes it by hand; a list that was there before is replaced. A Reader that does not know one of the paths refuses (`PANPAK-E0002`, "update panpak"): it would otherwise run the app with less confinement than the author declared. A Reader also checks that the list is **complete** for the fields it knows: a manifest that uses a field of a critical section that the list does not name is malformed and is refused (`PANPAK-E0012`), so a restricting field added after `pack` and signed with the old list cannot hide from an older Reader. At most 256 entries of at most 64 characters of `a-z 0-9 _ .` |
 | `compression` | `"zstd"` | how the chunks and the index are compressed. Critical by definition: a Reader that does not know the value refuses |
 | `chunking` | text | how the files were cut (`fastcdc:<min>:<avg>:<max>`). Informative and signed. A Reader accepts any cut within the caps; the value is for the tools of the author (to cut the next version alike so that the delta stays small, to make the same bytes again) |
 | `packed_by` | text | the tool that made the package. Informative |
@@ -1587,7 +1587,7 @@ production). Verified by both the independent verifier
 (`conformance/verify.py`) and the Rust side (`panpak doctor`): both
 MUST accept it and report the same values.
 
-- total size: 679 bytes
+- total size: 698 bytes
 - stub `[0, 21)`: `50414e50414b544553542d564543544f522d763100`
   (`PANPAKTEST-VECTOR-v1\0`)
 - chunk 0 `[21, 37)`, zstd level 3 of `hi\n`:
@@ -1600,17 +1600,17 @@ MUST accept it and report the same values.
   n_entries=2: dir `bin`, file `bin/hi` mode 0755 size 3 chunk [0])
 - root_hash = `BLAKE3(raw index)` =
   `ad7a506ac9fbaf289065933e9217f2a552593b0ff77fd458ad16d0695f9853f5`
-- manifest TOML `[140, 527)` (387 bytes):
-  `[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n[format]\nmin_panpak = 1\ncritical = []\ncompression = "zstd"\nchunking = "fastcdc:16384:65536:262144"\npacked_by = "conformance generator"\n[runtime]\nstub_hash = "503da793bbca6afccdd883c02e32c139ef3a589894325916eddc2bf67b87520c"\n[update]\nkey = "ed25519:783e43d53f1193914442b4346eed8e69d537a4786ee74af8c878230faa875c72"\n`
-  (the key is the public half of the fixed test key of `conformance/gen.py`)
-- signature block `[527, 599)` (72 bytes: one entry, type 1, critical, 64 bytes of
+- manifest TOML `[140, 546)` (406 bytes):
+  `[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n[format]\nmin_panpak = 1\ncritical = ["runtime.stub_hash"]\ncompression = "zstd"\nchunking = "fastcdc:16384:65536:262144"\npacked_by = "conformance generator"\n[runtime]\nstub_hash = "503da793bbca6afccdd883c02e32c139ef3a589894325916eddc2bf67b87520c"\n[update]\nkey = "ed25519:783e43d53f1193914442b4346eed8e69d537a4786ee74af8c878230faa875c72"\n`
+  (the key is the public half of the fixed test key of `conformance/gen.py`; `critical` names `runtime.stub_hash` because `[runtime]` is a critical section, §3.1.9)
+- signature block `[546, 618)` (72 bytes: one entry, type 1, critical, 64 bytes of
   Ed25519 over the labeled message of §3.0, that is
   `"panpak/package/v1\0" || 01000000 || 00000000 || root_hash || manifest_toml`):
-  `0100010040000000480bdae5db63cf2e75ea762d06cc1c847afb88558af60782a767acb425fd7adf647c2a5537b2135212e6001b7b0b3047ba7ed78c7b93e6145351352101f1ac00`
-- footer `[599, 679)` (80 bytes):
-  `50414e50000100000100000000000000250000000000000067000000000000008c000000000000008301000000000000ad7a506ac9fbaf289065933e9217f2a552593b0ff77fd458ad16d0695f9853f5`
+  `010001004000000059dee564e4e171edfe1aadf02b293e727138abde7f4f1bebcfd0fbc5522f8b2fc74bf226cad1c48be66b542cf8f44d435fb4f6334a68d0504a701a28d8ff4605`
+- footer `[618, 698)` (80 bytes):
+  `50414e50000100000100000000000000250000000000000067000000000000008c000000000000009601000000000000ad7a506ac9fbaf289065933e9217f2a552593b0ff77fd458ad16d0695f9853f5`
   (magic `PANP\0\1\0\0`, version=1, flags=0, index_off=37, index_len=103,
-  manifest_off=140, manifest_len=387, root_hash=see above)
+  manifest_off=140, manifest_len=406, root_hash=see above)
 
 Invalid vectors: the conformance suite (`conformance/fixtures/`,
 wrong magic/version/flags, incoherent layout, tampered

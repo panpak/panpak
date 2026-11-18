@@ -47,7 +47,7 @@ def prepare(source, work):
                 man = man.replace('[permissions]', '[permissions]\nx11 = true')
             else:
                 man += '\n[permissions]\nx11 = true\n'
-        man = man.encode()
+        man = sigfmt.with_critical(man.encode())
         pkg = packages / f'{app}.panpak'
         pkg.write_bytes(data[:moff] + man + sigfmt.block(KEY.sign(sigfmt.message(ver, flags, root, man)))
                         + struct.pack('<8sIIQQQQ32s', magic, ver, flags, off, size, moff, len(man), root))

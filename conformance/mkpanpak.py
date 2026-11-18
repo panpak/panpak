@@ -27,6 +27,30 @@ def sign_ed25519(sk32: bytes, msg: bytes) -> bytes:
     return Ed25519PrivateKey.from_private_bytes(sk32).sign(msg)
 
 
+# The sections of a manifest whose keys change what is safe, and the keys of each that a reader of this level knows
+# (PANPAK-FORMAT.md section 3.1.9). The independent verifier keeps its own copy of this table.
+CRITICAL_SECTIONS = {
+    "abi": {"glibc_min", "needs", "prefer_host", "allow_missing"},
+    "permissions": {"x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs",
+                    "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"},
+    "launch": {"args", "env"},
+    "runtime": {"min_runtime", "stub_hash"},
+}
+
+
+def critical_paths(manifest_toml: bytes) -> list:
+    """The `[format].critical` list of a manifest: every known key used in a critical section, and `env`; sorted."""
+    import tomllib
+
+    man = tomllib.loads(manifest_toml.decode())
+    out = []
+    for sect, keys in CRITICAL_SECTIONS.items():
+        out += [f"{sect}.{k}" for k in man.get(sect, {}) if k in keys]
+    if "env" in man:
+        out.append("env")
+    return sorted(out)
+
+
 LABEL_PACKAGE = b"panpak/package/v1\0"
 
 

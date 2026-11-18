@@ -353,6 +353,14 @@ def check_format(man):
         if (c == "env") or (sect in KNOWN_CRITICAL and key in KNOWN_CRITICAL[sect]):
             continue
         raise Fail(f"critical field {c!r} is not known to this reader: update panpak")
+    # The list is complete for the fields this reader knows: a manifest that was changed after `pack` and signed with the old list
+    # would otherwise hide a field that restricts the app from an older reader.
+    used = [f"{sect}.{k}" for sect, keys in KNOWN_CRITICAL.items() for k in man.get(sect, {}) if k in keys]
+    if "env" in man:
+        used.append("env")
+    left_out = sorted(set(used) - set(crit))
+    if left_out:
+        raise Fail(f"[format].critical does not list {left_out}: the manifest was signed without making the list again")
     for k in ("chunking", "packed_by"):
         if not text_ok(f[k], 128):
             raise Fail(f"invalid manifest field format.{k}")

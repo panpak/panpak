@@ -530,6 +530,21 @@ pub fn critical_paths(man: &Manifest) -> Vec<String> {
     out
 }
 
+/// The text of a manifest with its `[format].critical` list made again from what the manifest uses. Every function that signs a
+/// manifest goes through this (or builds the list with `critical_paths`): the list is derived, nobody writes it by hand, and a manifest
+/// that is changed after `pack` and signed again gets the list it now needs. A text with no `[format]` is returned as it is. Unknown keys
+/// of the text are kept (the text is edited, not written again).
+pub fn with_recomputed_critical(text: &str) -> Result<String> {
+    let man: Manifest = toml::from_str(text).context("manifest to sign is not valid")?;
+    if man.format.is_none() {
+        return Ok(text.to_string());
+    }
+    let list = critical_paths(&man).iter().map(|p| format!("{p:?}")).collect::<Vec<_>>().join(", ");
+    let at = text.find("\ncritical = [").context("[format] without a critical list")? + 1;
+    let end = at + text[at..].find(']').context("[format].critical is not closed")? + 1;
+    Ok(format!("{}critical = [{list}]{}", &text[..at], &text[end..]))
+}
+
 /// Does this panpak know the critical path and act on it?
 fn known_critical(path: &str) -> bool {
     match path.split_once('.') {
@@ -570,6 +585,16 @@ pub fn check_format(man: &Manifest) -> Result<()> {
     if let Some(c) = f.critical.iter().find(|c| !known_critical(c)) {
         return Err(newer(format!("this package uses `{c}`, which changes what is safe and which this panpak does not know")));
     }
+    // The list must be complete for the fields that this panpak knows: a manifest that was changed after `pack` and signed again with the
+    // old list would otherwise hide a field that restricts the app from an older panpak. The fields that this panpak does not know are
+    // the author's tool to name; they cannot be judged here.
+    let missing: Vec<String> = critical_paths(man).into_iter().filter(|p| !f.critical.contains(p)).collect();
+    crate::ensure_code!(
+        missing.is_empty(),
+        ErrorCode::E0012,
+        "the package is malformed: [format].critical does not list {} that the manifest uses (it was signed without making the list again; make the package again with the current panpak)",
+        missing.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(", ")
+    );
     for (field, v) in [("format.chunking", &f.chunking), ("format.packed_by", &f.packed_by)] {
         crate::validate::display_text(field, v, 128)?;
     }
@@ -1592,6 +1617,37 @@ mod tests {
         let mut m = with_format("");
         m.format.as_mut().unwrap().critical = vec!["Permissions.X".into()];
         assert_eq!(code_in(&check_format(&m).unwrap_err()), ErrorCode::E0003);
+    }
+
+    #[test]
+    fn a_critical_list_that_leaves_out_a_field_the_manifest_uses_is_malformed() {
+        // permissions.x11 is used, the list is empty: the package was signed again without the list being made again.
+        let m = with_format("[permissions]\nx11 = true\nnetwork = true\n");
+        let e = check_format(&m).unwrap_err();
+        assert_eq!(code_in(&e), ErrorCode::E0012);
+        let t = format!("{e:#}");
+        assert!(t.contains("`permissions.x11`") && t.contains("`permissions.network`") && t.contains("make the package again"), "{t}");
+        // With the list complete it is accepted; a longer list (a field this panpak knows that is not used) is too.
+        let mut ok = m.clone();
+        ok.format.as_mut().unwrap().critical = vec!["permissions.network".into(), "permissions.x11".into(), "launch.args".into()];
+        assert!(check_format(&ok).is_ok());
+        // A field of a section that is not critical is not asked for.
+        assert!(check_format(&with_format("[desktop]\nwm_class = \"X\"\n")).is_ok());
+    }
+
+    #[test]
+    fn the_critical_list_is_made_again_in_the_text_and_the_rest_of_the_text_is_kept() {
+        let text = format!("{MIN_MAN}[format]\nmin_panpak = 1\ncritical = []\ncompression = \"zstd\"\nchunking = \"c\"\npacked_by = \"t\"\n[permissions]\nx11 = true\n[future]\nthing = 1\n");
+        let out = with_recomputed_critical(&text).unwrap();
+        assert!(out.contains("\ncritical = [\"permissions.x11\"]\ncompression"), "{out}");
+        assert!(out.contains("[future]\nthing = 1\n") && out.contains("packed_by = \"t\""));
+        // Made again over an old, wrong list, and idempotent.
+        let wrong = text.replace("critical = []", "critical = [\"launch.args\", \"permissions.x11\", \"permissions.deny_udp\"]");
+        assert_eq!(with_recomputed_critical(&wrong).unwrap(), out);
+        assert_eq!(with_recomputed_critical(&out).unwrap(), out);
+        assert!(check_format(&toml::from_str(&out).unwrap()).is_ok());
+        // No [format]: nothing to make.
+        assert_eq!(with_recomputed_critical(MIN_MAN).unwrap(), MIN_MAN);
     }
 
     #[test]

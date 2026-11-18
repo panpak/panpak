@@ -1219,15 +1219,6 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
         }
     }
 
-    // What a reader needs to read the package: written from what the manifest uses, so that it cannot be forgotten or wrong.
-    man.format = Some(panpak_core::Format {
-        min_panpak: panpak_core::FORMAT_LEVEL,
-        critical: panpak_core::critical_paths(&man),
-        compression: "zstd".to_string(),
-        chunking: format!("fastcdc:{CDC_MIN}:{CDC_AVG}:{CDC_MAX}"),
-        packed_by: format!("panpak {} zstd {}", env!("CARGO_PKG_VERSION"), zstd::zstd_safe::version_string()),
-    });
-    panpak_core::check_format(&man)?;
     // The manifest is complete here (the libraries found in the files are in `abi.needs`): check it with
     // the rules `install` applies, before anything is written or signed. A package that install refuses
     // must not exist.
@@ -1304,6 +1295,16 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
     fout.write_all(&comp_index)?;
     let man_off = index_off + comp_index.len() as u64;
 
+    // What a reader needs to read the package: written here, at the point of signing, from what the manifest uses at this moment (the
+    // stub hash is in it now), so that it cannot be forgotten or stale.
+    man.format = Some(panpak_core::Format {
+        min_panpak: panpak_core::FORMAT_LEVEL,
+        critical: panpak_core::critical_paths(&man),
+        compression: "zstd".to_string(),
+        chunking: format!("fastcdc:{CDC_MIN}:{CDC_AVG}:{CDC_MAX}"),
+        packed_by: format!("panpak {} zstd {}", env!("CARGO_PKG_VERSION"), zstd::zstd_safe::version_string()),
+    });
+    panpak_core::check_format(&man)?;
     let toml_b = toml::to_string(&man)?.into_bytes();
     let msg = panpak_core::package_message(panpak_core::FORMAT_VERSION, panpak_core::FORMAT_FLAGS, &root, &toml_b);
     use ed25519_dalek::Signer;

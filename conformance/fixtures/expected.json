@@ -153,7 +153,19 @@
   ],
   "ok": false
  },
+ "invalid-format-critical-incomplete.panpak": {
+  "err": [
+   "critical"
+  ],
+  "ok": false
+ },
  "invalid-format-critical-malformed.panpak": {
+  "err": [
+   "critical"
+  ],
+  "ok": false
+ },
+ "invalid-format-critical-stale.panpak": {
   "err": [
    "critical"
   ],
@@ -575,6 +587,10 @@
   "ok": true
  },
  "valid-empty-tree.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-format-critical-complete.panpak": {
   "err": [],
   "ok": true
  },

@@ -2,6 +2,7 @@
 """Unit tests of the app harness: the list of apps, the cache key, the signing, the readers of window lists. No network, no display, no panpak binary.
 Run: python3 -m unittest discover -s tests/apps -p 'test_*.py'"""
 import json
+import re
 import struct
 import sys
 import tempfile
@@ -88,6 +89,32 @@ class Config(unittest.TestCase):
         import getpass
         for word in ("/home/", "/Users/", str(Path.home()), getpass.getuser()):
             self.assertNotIn(word, text, "no personal path or user name in the example")
+
+
+class CriticalList(unittest.TestCase):
+    """The list `[format].critical` is made again by every tool that signs a manifest (sigfmt.with_critical); the table it uses is a copy of
+    the one of `panpak-core`, and a test reads the Rust source so that the two cannot drift apart."""
+
+    MAN = ('[app]\nid = "a.b"\n[format]\nmin_panpak = 1\ncritical = ["permissions.old"]\ncompression = "zstd"\n'
+           'chunking = "c"\npacked_by = "p"\n[permissions]\nx11 = true\naudio = true\n[launch]\nargs = ["a"]\n[env]\nA = "b"\n[desktop]\nwm_class = "X"\n')
+
+    def test_the_list_is_made_again_from_what_the_manifest_uses(self):
+        out = sigfmt.with_critical(self.MAN)
+        self.assertIn('critical = ["env", "launch.args", "permissions.audio", "permissions.x11"]', out)
+        self.assertNotIn("permissions.old", out)
+        self.assertEqual(sigfmt.with_critical(out), out)
+        self.assertEqual(sigfmt.with_critical(self.MAN.encode()), out.encode())
+        self.assertEqual(sigfmt.with_critical('[app]\nid = "a.b"\n[permissions]\nx11 = true\n'), '[app]\nid = "a.b"\n[permissions]\nx11 = true\n')
+
+    def test_the_table_is_the_one_of_the_rust_code(self):
+        src = (HERE.parents[1] / "panpak-core/src/lib.rs").read_text()
+        for sect, const in (("abi", "ABI_KEYS"), ("permissions", "PERM_KEYS"), ("launch", "LAUNCH_KEYS"), ("runtime", "RUNTIME_KEYS")):
+            m = re.search(r"const %s: &\[&str\] = &\[([^\]]*)\];" % const, src)
+            self.assertIsNotNone(m, const)
+            self.assertEqual(set(re.findall(r'"([a-z_0-9]+)"', m.group(1))), sigfmt.CRITICAL_SECTIONS[sect], sect)
+        m = re.search(r"pub const SECTIONS: &\[\(&str, bool\)\] = &\[(.*?)\n\];", src, re.S)
+        critical = {s for s, c in re.findall(r'\("([a-z]+)", (true|false)\)', m.group(1)) if c == "true"}
+        self.assertEqual(critical, set(sigfmt.CRITICAL_SECTIONS) | {"env"})
 
 
 class Signing(unittest.TestCase):

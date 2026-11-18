@@ -20,7 +20,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from b3 import blake3
-from mkpanpak import build, encode_index, sig_block, sig_entry, sig_message, sign_ed25519, zstd_enc
+from mkpanpak import critical_paths, build, encode_index, sig_block, sig_entry, sig_message, sign_ed25519, zstd_enc
 
 FIX = os.path.join(HERE, "fixtures")
 os.makedirs(FIX, exist_ok=True)
@@ -41,21 +41,30 @@ def tstr(s):
     return json.dumps(s)
 
 
-FORMAT = (
-    '[format]\nmin_panpak = 1\ncritical = []\ncompression = "zstd"\n'
-    'chunking = "fastcdc:16384:65536:262144"\npacked_by = "conformance generator"\n'
-)
-
-
-def manifest(key=PUBHEX, extra="", version="1.0", entry="bin/hello", iid="org.example.conf", name="Conf", fmt=FORMAT):
-    stub_hash = blake3(STUB).hex()
+def format_table(critical):
+    lst = ", ".join(json.dumps(c) for c in critical)
     return (
+        f'[format]\nmin_panpak = 1\ncritical = [{lst}]\ncompression = "zstd"\n'
+        'chunking = "fastcdc:16384:65536:262144"\npacked_by = "conformance generator"\n'
+    )
+
+
+FORMAT = format_table([])
+
+
+def manifest(key=PUBHEX, extra="", version="1.0", entry="bin/hello", iid="org.example.conf", name="Conf", fmt=None):
+    """A manifest as `panpak pack` writes it. `fmt` is the `[format]` text; by default it is made from what the manifest uses (the list
+    of critical fields is derived, never written by hand), and a test of a refusal gives its own."""
+    stub_hash = blake3(STUB).hex()
+    parts = (
         f'[app]\nid = {tstr(iid)}\nname = {tstr(name)}\nversion = {tstr(version)}\nentry = {tstr(entry)}\n'
-        f"{extra}"
-        f"{fmt}"
+        f"{extra}",
         f'[runtime]\nstub_hash = "{stub_hash}"\n'
-        f'[update]\nkey = "{key}"\n'
-    ).encode()
+        f'[update]\nkey = "{key}"\n',
+    )
+    if fmt is None:
+        fmt = format_table(critical_paths("".join(parts).encode()))
+    return (parts[0] + fmt + parts[1]).encode()
 
 
 def std_index(data: bytes = b"conformance-content"):
@@ -130,7 +139,7 @@ def main():
 
     # The package of Appendix A of the specification: built here from its inputs, and its signature block and footer must be
     # the ones the specification prints (a check that the text and the code do not drift apart).
-    APPENDIX_A_SIZE = 679  # the total size that PANPAK-FORMAT.md prints for it
+    APPENDIX_A_SIZE = 698  # the total size that PANPAK-FORMAT.md prints for it
     _stub = b"PANPAKTEST-VECTOR-v1\0"
     _hi = b"hi\n"
     _hic = zstd_enc(_hi)
@@ -138,7 +147,7 @@ def main():
         {"path": "bin", "mode": 0o755, "kind": "dir"},
         {"path": "bin/hi", "mode": 0o755, "kind": "file", "size": 3, "chunks": [0]}])
     _vman = (f'[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n'
-             '[format]\nmin_panpak = 1\ncritical = []\ncompression = "zstd"\nchunking = "fastcdc:16384:65536:262144"\npacked_by = "conformance generator"\n'
+             + format_table(["runtime.stub_hash"]) +
              f'[runtime]\nstub_hash = "{blake3(_stub).hex()}"\n'
              f'[update]\nkey = "{PUBHEX}"\n').encode()
     _vec = assemble(_stub, _vidx, _vman, blobs=[_hic])
@@ -275,10 +284,15 @@ def main():
     bad_format("invalid-format-compression.panpak", manifest(fmt=fmt(compression="brotli")), "update panpak")
     bad_format("invalid-format-critical-unknown.panpak", manifest(fmt=fmt(critical='["permissions.deny_udp"]')), "update panpak")
     bad_format("invalid-format-critical-unknown-section.panpak", manifest(fmt=fmt(critical='["sandbox"]')), "update panpak")
+    # The manifest was changed after pack and signed with the old list: a field that restricts the app that the list does not name.
+    stale = '[permissions]\nnetwork = true\nx11 = true\n'
+    bad_format("invalid-format-critical-stale.panpak", manifest(extra=stale, fmt=fmt(critical='["runtime.stub_hash"]')), "critical")
+    bad_format("invalid-format-critical-incomplete.panpak", manifest(extra=stale, fmt=fmt(critical='["permissions.network", "runtime.stub_hash"]')), "critical")
+    put("valid-format-critical-complete.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=stale), blobs=std_index()[2]), True)
     bad_format("invalid-format-unknown-key.panpak", manifest(fmt=fmt(extra='future = 1\n')), "format")
     bad_format("invalid-format-critical-malformed.panpak", manifest(fmt=fmt(critical='["Permissions.X"]')), "critical")
     put("valid-format-critical-known.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(
-        extra='[permissions]\nnetwork = true\n', fmt=fmt(critical='["permissions.network"]')), blobs=std_index()[2]), True)
+        extra='[permissions]\nnetwork = true\n', fmt=fmt(critical='["permissions.network", "runtime.stub_hash"]')), blobs=std_index()[2]), True)
     # An unknown key outside [format] that is not named in `critical` is read as before (it is ignored, with a warning).
     put("valid-unknown-key-not-critical.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(
         extra='[desktop]\nfuture_thing = 1\n'), blobs=std_index()[2]), True)

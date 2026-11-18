@@ -118,7 +118,7 @@ def add_permissions(src, dst, extra, seed):
         keep = [ln for ln in m.group(1).splitlines() if ln.split("=")[0].strip() not in extra]
         extra = extra.replace("[permissions]\n", "[permissions]\n" + "".join(ln + "\n" for ln in keep), 1)
         man = man[:m.start()] + man[m.end():]
-    newman = (man + "\n" + extra).encode()
+    newman = sigfmt.with_critical((man + "\n" + extra).encode())
     out = d[:moff] + newman + sigfmt.block(ed25519.sign(seed, sigfmt.message(ver, flags, root, newman))) + struct.pack("<8sIIQQQQ32s", magic, ver, flags, ioff, ilen, moff, len(newman), root)
     Path(dst).write_bytes(out)
     Path(dst).chmod(0o755)
