@@ -144,7 +144,7 @@ fn a_floor_above_the_installed_version_shows_in_list_and_doctor_and_the_internet
     assert!(!ok(&o) && !appdir.join("protected-net").exists(), "{}", text(&o));
     // With --yes: the risk is told first, the choice is kept, and list says so.
     let o = cli(&l.home, &["allow-internet", "--yes", ID]);
-    assert!(ok(&o) && text(&o).contains("can be used against you") && text(&o).contains("from its next start"), "{}", text(&o));
+    assert!(ok(&o) && text(&o).contains("can be used against you") && text(&o).contains("Close and reopen"), "{}", text(&o));
     assert!(!text(&o).contains("panpak "), "no command in the text: {}", text(&o));
     assert!(fs::read_to_string(&entry).unwrap().contains("Name=Turn the internet off again"));
     assert!(appdir.join("protected-net").is_file());
@@ -159,7 +159,7 @@ fn a_floor_above_the_installed_version_shows_in_list_and_doctor_and_the_internet
     assert!(ok(&cli(&l.home, &["allow-internet", "--yes", ID])));
     let fixed = l.pack_ok("3", "c", "[release]\nrevision = 2\nfloor = 2\n", Some(&v1));
     let o = l.install(&fixed, &[]);
-    assert!(ok(&o) && text(&o).contains("Protected mode is over"), "{}", text(&o));
+    assert!(ok(&o) && text(&o).contains("The problem is fixed and the internet works again"), "{}", text(&o));
     assert!(!appdir.join("protected-net").exists() && !appdir.join("protected").exists());
     assert!(!fs::read_to_string(&entry).unwrap().contains("allow-internet"), "the action goes with the mode");
     assert!(!text(&cli(&l.home, &["list"])).contains("protected mode"));

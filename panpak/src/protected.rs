@@ -90,12 +90,23 @@ impl Status {
         fill(&tr(m::PROTECTED_TITLE), &[("name", self.name.clone())])
     }
 
+    /// The text of the notification: without an update ready it also says that Panpak will fetch the fixed version and that the mode ends by itself.
     fn body(&self) -> String {
-        fill(&tr(m::PROTECTED_BODY), &[("name", self.name.clone())])
+        let body = fill(&tr(m::PROTECTED_BODY), &[("name", self.name.clone())]);
+        if self.update.is_some() {
+            body
+        } else {
+            format!("{body} {}", tr(m::PROTECTED_WAITS))
+        }
     }
 
     fn line(&self) -> String {
-        fill(&tr(m::PROTECTED_LINE), &[("name", self.name.clone())])
+        fill(&tr(if self.internet_back_on { m::PROTECTED_LINE_NET } else { m::PROTECTED_LINE }), &[("name", self.name.clone())])
+    }
+
+    /// What the terminal questions were asked about: the floor and the update that is ready. Asked once for each; a new version asks again.
+    fn question_token(&self) -> String {
+        format!("{}:{}", self.floor, self.update.as_ref().map_or("", |u| u.version.as_str()))
     }
 
     /// The state as JSON, with the texts in the language of the person (the same messages for every front end).
@@ -235,6 +246,7 @@ pub fn mode_ended(appdir: &Path, new: &Manifest, old_revision: u64) {
         return;
     }
     let _ = release::set_internet_back_on(appdir, false);
+    let _ = std::fs::remove_file(appdir.join(ASKED));
     let _ = release::sync_protected(appdir, revision_of(new));
     let name = clean_name(new);
     let (title, body) = (fill(&tr(m::ENDED_TITLE), &[("name", name.clone())]), fill(&tr(m::ENDED_BODY), &[("name", name)]));
@@ -282,8 +294,16 @@ fn ask_key(question: &str, default: bool) -> Option<bool> {
     Some(answer)
 }
 
-/// The two questions of a program of the terminal, asked where the person is.
-fn ask_in_terminal(st: &Status) {
+/// The file of an app (`apps/<id>/protected-asked`) that remembers what the questions of the terminal were asked about.
+const ASKED: &str = "protected-asked";
+
+fn already_asked(appdir: &Path, st: &Status) -> bool {
+    std::fs::read_to_string(appdir.join(ASKED)).is_ok_and(|t| t.trim() == st.question_token())
+}
+
+/// The two questions of a program of the terminal, asked where the person is. `true` when the person answered (so they are not asked again).
+fn ask_in_terminal(st: &Status) -> bool {
+    let mut answered = false;
     eprintln!("panpak: {}\n{}", st.title(), st.body());
     if let Some(u) = &st.update {
         let with_permissions = !u.new_permissions.is_empty();
@@ -295,27 +315,34 @@ fn ask_in_terminal(st: &Status) {
             eprintln!("{}", tr("If you do not accept, you stay on the current version."));
         }
         let question = fill(&tr(if with_permissions { m::ASK_UPDATE_NEW } else { m::ASK_UPDATE }), &[("name", st.name.clone())]);
-        if ask_key(&question, !with_permissions) == Some(true) {
+        let answer = ask_key(&question, !with_permissions);
+        answered |= answer.is_some();
+        if answer == Some(true) {
             match act_update(&st.app_id, true) {
                 Outcome::Done | Outcome::NothingReady | Outcome::NeedsAccept => {}
                 Outcome::Waits => eprintln!("{}", fill(&tr(m::UPDATE_WAITS), &[("name", st.name.clone())])),
                 Outcome::Failed(why) => eprintln!("{}", fill(&tr(m::UPDATE_FAILED), &[("name", st.name.clone()), ("why", why)])),
             }
-            return;
+            return answered;
         }
     }
     if st.internet_back_on {
-        if ask_key(&fill(&tr(m::ASK_INTERNET_OFF), &[("name", st.name.clone())]), false) == Some(true) {
+        let answer = ask_key(&fill(&tr(m::ASK_INTERNET_OFF), &[("name", st.name.clone())]), false);
+        answered |= answer.is_some();
+        if answer == Some(true) {
             let _ = set_internet(&st.app_id, false);
             eprintln!("{}", fill(&tr(m::INTERNET_OFF_DONE), &[("name", st.name.clone())]));
         }
     } else {
         eprintln!("{}", fill(&tr(m::INTERNET_RISK), &[("name", st.name.clone())]));
-        if ask_key(&fill(&tr(m::ASK_INTERNET), &[("name", st.name.clone())]), false) == Some(true) {
+        let answer = ask_key(&fill(&tr(m::ASK_INTERNET), &[("name", st.name.clone())]), false);
+        answered |= answer.is_some();
+        if answer == Some(true) {
             let _ = set_internet(&st.app_id, true);
             eprintln!("{}", fill(&tr(m::INTERNET_ON_NOW), &[("name", st.name.clone())]));
         }
     }
+    answered
 }
 
 /// `panpak protected-start <app-id>`: run by the stub at a start, before anything of the app is read, when the app is marked as in protected mode. It
@@ -337,7 +364,18 @@ pub fn cmd_start(app_id: &str) -> Result<()> {
             }
             spawn_notice(app_id);
         }
-        (Kind::Terminal, true) => ask_in_terminal(&st),
+        (Kind::Terminal, true) => {
+            // Asked once. After an answer, even a "no", the start has the short line only, until a new version is ready.
+            let appdir = appdir_of(app_id)?;
+            if already_asked(&appdir, &st) {
+                eprintln!("panpak: {}", st.line());
+            } else if ask_in_terminal(&st) {
+                // Taken again, because the answer may have changed the state (the internet back on, an update done).
+                if let Ok(Some(now)) = status_of(app_id) {
+                    let _ = std::fs::write(appdir.join(ASKED), now.question_token());
+                }
+            }
+        }
         (Kind::Terminal, false) => eprintln!("panpak: {}", st.line()),
     }
     Ok(())
@@ -415,7 +453,7 @@ fn update_with_windows(st: &Status) {
         match dialog::ask(&title, &text, &tr(m::UPDATE_DIALOG_OK), &tr(m::NOT_NOW)) {
             Answer::Yes => {}
             Answer::No => return,
-            Answer::NoTool => return tell(&st.title(), &fill(&tr(m::NO_DIALOG_FOR_PERMISSIONS), &[("name", st.name.clone())])),
+            Answer::NoTool => return tell(&st.title(), &fill(&tr(m::NO_DIALOG_FOR_PERMISSIONS), &[("name", st.name.clone()), ("id", st.app_id.clone())])),
         }
     }
     match act_update(&st.app_id, accept) {
@@ -484,7 +522,7 @@ pub fn cmd_allow_internet(app_id: &str, undo: bool, yes: bool, ask: bool) -> Res
                 tell(&fill(&tr(m::PROTECTED_TITLE), &vals()), &fill(&tr(if on_now { m::INTERNET_OFF_DONE } else { m::INTERNET_ON_DONE }), &vals()));
             }
             Answer::No => {}
-            Answer::NoTool => tell(&fill(&tr(m::PROTECTED_TITLE), &vals()), &tr(m::NEEDS_CONFIRMATION)),
+            Answer::NoTool => tell(&fill(&tr(m::PROTECTED_TITLE), &vals()), &fill(&tr(if on_now { m::NO_DIALOG_FOR_INTERNET_OFF } else { m::NO_DIALOG_FOR_INTERNET }), &[("name", name.clone()), ("id", app_id.to_string())])),
         }
         return Ok(());
     }

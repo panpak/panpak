@@ -286,9 +286,20 @@ def main():
         expect(rep, host='deny', loop='ok', written='deny', arrived=[])
         assert 'Turn the internet back on for Protected? [y/N]' in text and 'can be used against you' in text, text
         assert not (lab.appdir / 'protected-net').exists()
+        # Asked once: after a no, the next starts have the short line only (no question, no key waits).
+        rep, text = lab.start(stdin='tty', stderr='tty', keys=[])
+        expect(rep, host='deny', arrived=[])
+        assert '[y/N]' not in text and 'protected mode: no internet. Your files are safe.' in text and 'downloaded' not in text, text
+        # A new version asks again (here the record of the question is taken away, as a new floor or a new update would make it stale; protected_ui.py
+        # raises the floor).
+        (lab.appdir / 'protected-asked').unlink()
         rep, text = lab.start(stdin='tty', stderr='tty', keys=['y'])
         assert (lab.appdir / 'protected-net').is_file(), text
         expect(rep, host='ok', loop='ok', written='deny', arrived=everything, open='ok', opened=everything_opened)
+        # With the internet on, the short line says so, and asks nothing: it was asked.
+        rep, text = lab.start(stdin='tty', stderr='tty', keys=[])
+        assert '[y/N]' not in text and 'you turned the internet back on' in text, text
+        (lab.appdir / 'protected-asked').unlink()
         rep, text = lab.start(stdin='tty', stderr='tty', keys=['y'])
         assert 'Turn the internet off again for Protected? [y/N]' in text, text
         assert not (lab.appdir / 'protected-net').exists()
@@ -316,7 +327,7 @@ def main():
         # 5. The fixed version: the mode ends by itself, with a message, and the mark and the choice go.
         lab.cli('allow-internet', '--yes', ID)
         fixed = lab.cli('install', '--yes', '--runtime', lab.stub, lab.pack(2, 'floor = 2\n'))
-        assert 'Protected mode is over' in fixed.stdout + fixed.stderr, fixed.stdout + fixed.stderr
+        assert 'The problem is fixed and the internet works again' in fixed.stdout + fixed.stderr and 'Protected is updated' in fixed.stdout + fixed.stderr, fixed.stdout + fixed.stderr
         assert not (lab.appdir / 'protected-net').exists() and not (lab.appdir / 'protected').exists()
         rep, err = lab.start(stderr='tty')
         expect(rep, host='ok', loop='ok', written='ok', arrived=everything)

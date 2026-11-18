@@ -223,6 +223,31 @@ fn a_channel_is_fixed_at_install_and_changes_only_when_the_person_says_so() {
 }
 
 #[test]
+fn a_switch_of_channel_may_go_to_a_lower_revision_without_the_history_but_not_below_the_floor() {
+    let l = lab("switch_down");
+    // Stable runs at revision 7 (with a history); the beta line counts from its own 2.
+    let s1 = l.pack_ok("1", "a", "[release]\nrevision = 1\n", None);
+    let s7 = l.pack_ok("7", "b", "[release]\nrevision = 7\n", Some(&s1));
+    for p in [&s1, &s7] {
+        assert!(l.install(p, &[]).status.success());
+    }
+    let beta2 = l.pack_ok("b2", "c", "[release]\nrevision = 2\nchannel = \"beta\"\n", None);
+    // Without the option: the channel is refused. With it: no `--allow-downgrade` and no history are asked, the program of the other line is in.
+    assert!(code_of(&l.install(&beta2, &[]), "PANPAK-E4005"));
+    let o = l.install(&beta2, &["--switch-channel"]);
+    assert!(o.status.success(), "{}", text(&o));
+    // Back to stable: the beta line is installed now, stable revision 7 is above it and enters as a switch again.
+    let o = l.install(&s7, &["--switch-channel"]);
+    assert!(o.status.success(), "{}", text(&o));
+    // The floor is the only rule left: a beta below the floor that the author set is refused even with the option.
+    let s9 = l.pack_ok("9", "d", "[release]\nrevision = 9\nfloor = 9\n", Some(&s7));
+    assert!(l.install(&s9, &[]).status.success());
+    let beta3 = l.pack_ok("b3", "e", "[release]\nrevision = 3\nchannel = \"beta\"\n", None);
+    let o = l.install(&beta3, &["--switch-channel"]);
+    assert!(code_of(&o, "PANPAK-E4003"), "{}", text(&o));
+}
+
+#[test]
 fn a_package_that_does_not_continue_the_installed_version_is_refused_by_its_history() {
     let l = lab("history");
     let v1 = l.pack_ok("1", "a", "", None);

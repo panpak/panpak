@@ -106,6 +106,9 @@ pub enum Standing {
     Older,
     /// The very release that is installed (the same signed message): nothing to do.
     Same,
+    /// A package of another channel that a person chose (`--switch-channel`): it enters whatever its revision, the history of the old channel is not
+    /// asked of it (the counter of each channel is its own), and only the floor still holds.
+    Switch,
 }
 
 /// A candidate that enters over an installed release (an `install` of a file, an `update`, an `apply`): its revision, its channel and
@@ -125,6 +128,9 @@ pub fn check_entering(installed: &Installed, cand: &Release, candidate_signed: &
             ErrorCode::E4003,
             format!("revision {} is below the floor {} that the author set for this app: nothing below the floor is installed, updated to or rolled back to", cand.revision, installed.floor),
         ));
+    }
+    if cand.channel != installed.channel {
+        return Ok(Standing::Switch);
     }
     if cand.revision < installed.revision {
         if !allow.downgrade {
@@ -432,7 +438,23 @@ mod tests {
         let i = installed(5, None);
         let e = check_entering(&i, &rel(9, "beta"), &h(9), Allow::default()).unwrap_err();
         assert_eq!(code(e), ErrorCode::E4005);
-        assert!(check_entering(&i, &rel(9, "beta"), &h(9), Allow { switch_channel: true, ..Allow::default() }).is_ok());
+        let sw = Allow { switch_channel: true, ..Allow::default() };
+        assert_eq!(check_entering(&i, &rel(9, "beta"), &h(9), sw).unwrap(), Standing::Switch);
+    }
+
+    #[test]
+    fn a_switch_of_channel_may_go_down_and_skips_the_history_but_not_the_floor() {
+        let mut i = installed(8, None);
+        i.floor = 3;
+        let sw = Allow { switch_channel: true, ..Allow::default() };
+        // Beta (revision 8) to stable (revision 5): lower, and no downgrade option is needed.
+        assert_eq!(check_entering(&i, &rel(5, "beta2"), &h(5), sw).unwrap(), Standing::Switch);
+        // The same revision with other bytes is another channel's own release, not a replay.
+        assert_eq!(check_entering(&i, &rel(8, "beta2"), &h(99), sw).unwrap(), Standing::Switch);
+        // The floor still holds.
+        assert_eq!(code(check_entering(&i, &rel(2, "beta2"), &h(2), sw).unwrap_err()), ErrorCode::E4003);
+        // Without the option the channel is refused first.
+        assert_eq!(code(check_entering(&i, &rel(5, "beta2"), &h(5), Allow::default()).unwrap_err()), ErrorCode::E4005);
     }
 
     #[test]

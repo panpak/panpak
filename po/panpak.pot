@@ -31,6 +31,9 @@ msgstr ""
 msgid "Cancel"
 msgstr ""
 
+msgid "Close and reopen {name} to use the internet."
+msgstr ""
+
 msgid "Connect to the network on the ports {subject}"
 msgstr ""
 
@@ -121,6 +124,9 @@ msgstr ""
 msgid "Panpak could not take back the files that {name} was given ({why}). Nothing was removed; try again."
 msgstr ""
 
+msgid "Panpak will download the fixed version as soon as it can, and the mode will end by itself."
+msgstr ""
+
 msgid "Panpak: app removed"
 msgstr ""
 
@@ -190,19 +196,16 @@ msgstr ""
 msgid "The app and its launcher are removed."
 msgstr ""
 
-msgid "The author of {name} reported a serious problem in this version. Until you update, it runs without internet and does not run programs that it downloads. Your files are safe and stay open."
+msgid "The author of {name} reported a serious problem in this version. Until you update, it runs without internet. Your files are safe and stay open."
 msgstr ""
 
-msgid "The author of {name} reported a serious problem in this version. With the internet on, the problem can be used against you, for example to send your files out. This applies only to {name}, it ends when you update, and you can cancel it at any time."
+msgid "The author of {name} reported a serious problem in this version. With the internet on, the problem can be used against you, for example to send your files out. This applies only to {name}, it ends when you update, and you can cancel it at any time. Even then, it does not run programs that it downloads."
 msgstr ""
 
 msgid "The folder is the one of your user-dirs.dirs, not a copy."
 msgstr ""
 
 msgid "The folder is the one of your user-dirs.dirs. The app cannot change it."
-msgstr ""
-
-msgid "The internet is back on for {name} from its next start, until you update."
 msgstr ""
 
 msgid "The internet is back on for {name}, until you update."
@@ -212,6 +215,9 @@ msgid "The internet is off again for {name}."
 msgstr ""
 
 msgid "The links of this kind, in your browser or in other apps, are given to this app."
+msgstr ""
+
+msgid "The problem is fixed and the internet works again."
 msgstr ""
 
 msgid "The shell of your desktop and the media keys of your keyboard can play, pause and skip in it."
@@ -229,6 +235,9 @@ msgstr ""
 msgid "There is no dialog tool (zenity or kdialog) to ask you. To remove {name}, run in a terminal: {command}"
 msgstr ""
 
+msgid "There is no window to ask you. To turn the internet off again for {name}, open a terminal and type: panpak allow-internet --undo {id}"
+msgstr ""
+
 msgid "This package asks for more than the version you have:"
 msgstr ""
 
@@ -239,6 +248,9 @@ msgid "This place holds passwords, keys, browser data or files that run at login
 msgstr ""
 
 msgid "This update asks for more than the version you have:"
+msgstr ""
+
+msgid "To turn the internet back on for {name} you must confirm, but there is no window to ask you. Open a terminal and type: panpak allow-internet {id}"
 msgstr ""
 
 msgid "Turn the internet back on for {name}?"
@@ -325,13 +337,16 @@ msgstr ""
 msgid "{name} ({id}) is in protected mode: the author reported a serious problem in the installed version. It runs without internet and does not run programs that it downloads; your files are safe. The mode ends when the app is updated."
 msgstr ""
 
-msgid "{name} asks for new permissions, and nothing here can show them to you (a dialog tool such as zenity or kdialog is missing)."
+msgid "{name} asks for new permissions, but there is no window to show them to you. To update, open a terminal and type: panpak update {id}"
 msgstr ""
 
 msgid "{name} is in protected mode: links do not open until you update."
 msgstr ""
 
-msgid "{name} is in protected mode: no internet, no downloaded programs. Your files are safe."
+msgid "{name} is in protected mode: no internet. Your files are safe."
+msgstr ""
+
+msgid "{name} is in protected mode: you turned the internet back on. Your files are safe."
 msgstr ""
 
 msgid "{name} is not in protected mode: there is nothing to turn back on."
@@ -343,7 +358,7 @@ msgstr ""
 msgid "{name} is running in protected mode"
 msgstr ""
 
-msgid "{name} now runs a version that fixes the problem. Protected mode is over: the internet and downloaded programs work again."
+msgid "{name} is updated"
 msgstr ""
 
 msgid "{name} was not updated: {why}"
@@ -353,9 +368,6 @@ msgid "{name} was removed."
 msgstr ""
 
 msgid "{name} was removed. Your settings and data are kept."
-msgstr ""
-
-msgid "{name}: update done"
 msgstr ""
 
 msgid "{n} permission"

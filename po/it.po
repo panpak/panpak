@@ -271,11 +271,17 @@ msgstr[1] "{n} permessi"
 msgid "{name} is running in protected mode"
 msgstr "{name} è in modalità protetta"
 
-msgid "The author of {name} reported a serious problem in this version. Until you update, it runs without internet and does not run programs that it downloads. Your files are safe and stay open."
-msgstr "L'autore di {name} ha segnalato un problema grave in questa versione. Finché non aggiorni, l'app funziona senza internet e senza eseguire programmi che scarica. I tuoi file sono al sicuro e restano accessibili."
+msgid "The author of {name} reported a serious problem in this version. Until you update, it runs without internet. Your files are safe and stay open."
+msgstr "L'autore di {name} ha segnalato un problema grave in questa versione. Finché non aggiorni, l'app funziona senza internet. I tuoi file sono al sicuro e restano accessibili."
 
-msgid "{name} is in protected mode: no internet, no downloaded programs. Your files are safe."
-msgstr "{name} è in modalità protetta: senza internet e senza programmi scaricati. I tuoi file sono al sicuro."
+msgid "{name} is in protected mode: no internet. Your files are safe."
+msgstr "{name} è in modalità protetta: senza internet. I tuoi file sono al sicuro."
+
+msgid "{name} is in protected mode: you turned the internet back on. Your files are safe."
+msgstr "{name} è in modalità protetta: hai riattivato internet. I tuoi file sono al sicuro."
+
+msgid "Panpak will download the fixed version as soon as it can, and the mode will end by itself."
+msgstr "Panpak scaricherà la versione corretta appena possibile, e la modalità finirà da sola."
 
 msgid "Update now"
 msgstr "Aggiorna ora"
@@ -313,8 +319,8 @@ msgstr "Non ora"
 msgid "Turn the internet back on for {name}?"
 msgstr "Riattivare internet per {name}?"
 
-msgid "The author of {name} reported a serious problem in this version. With the internet on, the problem can be used against you, for example to send your files out. This applies only to {name}, it ends when you update, and you can cancel it at any time."
-msgstr "L'autore di {name} ha segnalato un problema grave in questa versione. Con internet attivo il problema può essere sfruttato contro di te, per esempio per inviare i tuoi file all'esterno. Vale solo per {name}, finisce quando aggiorni e puoi annullarlo in qualsiasi momento."
+msgid "The author of {name} reported a serious problem in this version. With the internet on, the problem can be used against you, for example to send your files out. This applies only to {name}, it ends when you update, and you can cancel it at any time. Even then, it does not run programs that it downloads."
+msgstr "L'autore di {name} ha segnalato un problema grave in questa versione. Con internet attivo il problema può essere sfruttato contro di te, per esempio per inviare i tuoi file all'esterno. Vale solo per {name}, finisce quando aggiorni e puoi annullarlo in qualsiasi momento. Anche così, non esegue programmi che scarica."
 
 msgid "Turn the internet on"
 msgstr "Riattiva internet"
@@ -325,8 +331,8 @@ msgstr "Disattivare di nuovo internet per {name}?"
 msgid "Turn the internet off"
 msgstr "Disattiva internet"
 
-msgid "The internet is back on for {name} from its next start, until you update."
-msgstr "Internet sarà di nuovo attivo per {name} dal prossimo avvio, fino all'aggiornamento."
+msgid "Close and reopen {name} to use the internet."
+msgstr "Chiudi e riapri {name} per usare internet."
 
 msgid "The internet is off again for {name}."
 msgstr "Internet è di nuovo disattivato per {name}."
@@ -334,11 +340,11 @@ msgstr "Internet è di nuovo disattivato per {name}."
 msgid "{name} is not in protected mode: there is nothing to turn back on."
 msgstr "{name} non è in modalità protetta: non c'è nulla da riattivare."
 
-msgid "{name}: update done"
-msgstr "{name}: aggiornamento completato"
+msgid "{name} is updated"
+msgstr "{name} è aggiornata"
 
-msgid "{name} now runs a version that fixes the problem. Protected mode is over: the internet and downloaded programs work again."
-msgstr "{name} ora usa una versione che risolve il problema. La modalità protetta è finita: internet e i programmi scaricati funzionano di nuovo."
+msgid "The problem is fixed and the internet works again."
+msgstr "Il problema è risolto e internet funziona di nuovo."
 
 msgid "The update of {name} is ready and applies the next time it starts. Close it and open it again."
 msgstr "L'aggiornamento di {name} è pronto e si applica al prossimo avvio. Chiudila e aprila di nuovo."
@@ -346,8 +352,14 @@ msgstr "L'aggiornamento di {name} è pronto e si applica al prossimo avvio. Chiu
 msgid "{name} was not updated: {why}"
 msgstr "{name} non è stata aggiornata: {why}"
 
-msgid "{name} asks for new permissions, and nothing here can show them to you (a dialog tool such as zenity or kdialog is missing)."
-msgstr "{name} chiede nuovi permessi, e qui non c'è nulla che possa mostrarteli (manca uno strumento di dialogo come zenity o kdialog)."
+msgid "{name} asks for new permissions, but there is no window to show them to you. To update, open a terminal and type: panpak update {id}"
+msgstr "{name} chiede nuovi permessi, ma non c'è una finestra per mostrarteli. Per aggiornare, apri un terminale e scrivi: panpak update {id}"
+
+msgid "To turn the internet back on for {name} you must confirm, but there is no window to ask you. Open a terminal and type: panpak allow-internet {id}"
+msgstr "Per riattivare internet per {name} serve una tua conferma, ma non c'è una finestra per chiederla. Apri un terminale e scrivi: panpak allow-internet {id}"
+
+msgid "There is no window to ask you. To turn the internet off again for {name}, open a terminal and type: panpak allow-internet --undo {id}"
+msgstr "Non c'è una finestra per chiedertelo. Per disattivare di nuovo internet per {name}, apri un terminale e scrivi: panpak allow-internet --undo {id}"
 
 msgid "Turn the internet back on…"
 msgstr "Riattiva internet…"

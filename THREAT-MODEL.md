@@ -583,7 +583,7 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   reaches through such a socket. The floor must have been seen by this machine (an update check, an install, an update that was refused): a machine that never
   saw it runs the version as usual. The person can turn the internet back on for one app; the programs it wrote stay refused. Nobody is told to type a
   command: the notification has a button (only when an update is ready), the windows of the system show the permissions and the risk, and a program of the
-  terminal asks where it is.
+  terminal asks where it is, once for each fixed version that is ready (after an answer, even a "no", the next starts have one short line until a new version is ready; the record is `apps/<id>/protected-asked`).
 - **Key succession**: supported and verified against the pin
   (`rotation_old` + `rotation_sig` over a message that names the app, spec §3.0 and §3.2); without a valid
   succession, key change = manual reinstall.

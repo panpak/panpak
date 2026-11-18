@@ -592,7 +592,7 @@ the numbers in `panpak.toml` (all optional there; `history` may not be given) an
 | `revision` | integer ≥ 1 | the number of the release in its channel. It grows with every release and it is **the only thing a client compares** to tell old from new: the version text is for people, a date depends on the clock, and a version has no order across apps. `pack --previous <package>` (and `convert` and `build`, from the installed version when it is of the same app and key) gives the revision after the earlier package; without an earlier package it is the number the input says, or 1 |
 | `floor` | integer, 0 to `revision` | a revision below which nothing enters: not an install, not an update, not a rollback. It only grows from one release to the next (`pack` keeps the highest of the input and the earlier package), and a client keeps the highest floor it has seen for the app (`apps/<id>/floor`) |
 | `security` | integer, 0 to `revision` | the number of the latest revision that fixed a vulnerability. A version whose `security` is above the installed revision fixes something that the installed one still has: a number and not a yes or no, so that a user who skipped a version does not lose it. It never skips the question about new permissions |
-| `channel` | `a-z 0-9 -`, 1 to 32 | the line of releases (`stable`, `beta`). Fixed at install: a package of another channel is refused over an installed app unless the person says so (`--switch-channel`). Revisions are per channel |
+| `channel` | `a-z 0-9 -`, 1 to 32 | the line of releases (`stable`, `beta`). Fixed at install: a package of another channel is refused over an installed app unless the person says so (`--switch-channel`), and then it may have a lower revision and no common history with the installed one: the floor is the only check that stays. Revisions are per channel |
 | `history` | 64 lowercase hex | the BLAKE3 hash of the file `.panpak/history` of the tree, when the package has one |
 
 **What a client does when a package enters over an installed version** (`install` of a file, `update`, `apply`; the staging and the apply
@@ -692,7 +692,9 @@ A client updating a package MUST:
   the key in the remote manifest: an attacker could self-sign);
 - tell old from new by `[release].revision` (§3.1.10), not by the version text: refuse a lower revision unless explicit `--allow-downgrade`, a
   revision below the floor in any case, another channel unless explicit `--switch-channel`, two different publications of one revision,
-  and a package whose history does not continue the installed one;
+  and a package whose history does not continue the installed one. A package of another channel that the person chose with `--switch-channel` is the exception: the counters of two
+  channels are separate, so it may carry a lower revision (no `--allow-downgrade`) or the same revision with other bytes, and the history of the old channel is not asked
+  of it; only the floor still holds (the history of the new channel is the one the new package carries);
 - fetch only the chunks that the installed version does not have (Range;
   the others are read from the files of its tree, and every blob that is
   reused is checked against the signed index, §6.3), make the new tree,

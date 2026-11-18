@@ -214,6 +214,9 @@ def main_inner(lab, tmp):
     wait_for(lambda: lab.nlog_daemon.exists(), 'the notification without a button')
     n = json.loads(lab.nlog_daemon.read_text().splitlines()[-1])
     assert n['actions'] == [] and n['summary'] == 'Prui is running in protected mode', n
+    # It says that the fixed version comes by itself, and nothing about downloaded programs.
+    assert 'Panpak will download the fixed version as soon as it can, and the mode will end by itself.' in n['body'], n
+    assert 'downloaded' not in n['body'] and 'programs' not in n['body'], n
     lab.nlog_daemon.unlink()
     # Staged: the update is ready, with its new permission.
     lab.stage(v2)
@@ -238,6 +241,7 @@ def main_inner(lab, tmp):
     n = last_notice()
     assert n['summary'] == 'Prui is running in protected mode' and 'Your files are safe' in n['body'] and n['actions'] == ['update', 'Update now'], n
     assert 'panpak update' not in n['body'] and 'allow-internet' not in n['body'], n
+    assert 'will download the fixed version' not in n['body'] and 'downloaded' not in n['body'], n
     # The window of the new permissions: No leaves everything as it is.
     lab.answer.write_text('1')
     click.write_text('')
@@ -255,7 +259,7 @@ def main_inner(lab, tmp):
     assert len(lab.zenity_calls()) == 1
     assert 'v2' in lab.current_version(), lab.current_version()
     assert not (lab.appdir / 'protected').exists() and lab.state()['protected'] is False
-    assert any('Prui: update done' in l and 'Protected mode is over' in l for l in lab.notices()), lab.notices()
+    assert any('Prui is updated' in l and 'The problem is fixed and the internet works again' in l for l in lab.notices()), lab.notices()
     print('  Yes in the window updates, ends the mode (the mark goes) and says so in a notification: ok')
 
     # 3. A copy of the app is running: accepted, it waits, and the next start applies it with no question.
@@ -296,13 +300,18 @@ def main_inner(lab, tmp):
     lab.answer.write_text('0')
     lab.cli('allow-internet', '--ask', ID)
     assert (lab.appdir / 'protected-net').is_file()
-    assert any('The internet is back on for Prui from its next start' in l for l in lab.notices()), lab.notices()
+    assert any('Close and reopen Prui to use the internet' in l for l in lab.notices()), lab.notices()
     lab.cli('allow-internet', '--ask', ID)
     assert 'Turn the internet off again for Prui?' in lab.zenity_calls()[-1] and not (lab.appdir / 'protected-net').exists()
     # No dialog tool: nothing is changed, and the person is told that there is nothing to answer with.
     lab.zenity.rename(lab.tools / 'zenity.away')
     lab.cli('allow-internet', '--ask', ID)
-    assert not (lab.appdir / 'protected-net').exists() and any('this needs your answer' in l for l in lab.notices()), lab.notices()
+    assert not (lab.appdir / 'protected-net').exists() and any(f'Open a terminal and type: panpak allow-internet {ID}' in l for l in lab.notices()), lab.notices()
+    # The same for the update that asks for permissions: no window to show them, so nothing is accepted and the way is told.
+    lab.stage(lab.pack('v3', '[release]\nrevision = 3\nfloor = 3\n', desktop=graphical, permissions='[permissions]\nnetwork = true\nnetwork_allow_tcp = [443]\n'))
+    lab.cli('protected-notice', '--pressed', ID)
+    assert any(f'asks for new permissions, but there is no window to show them to you. To update, open a terminal and type: panpak update {ID}' in l for l in lab.notices()), lab.notices()
+    assert 'v1' in lab.current_version(), 'nothing was accepted'
     lab.zenity.with_name('zenity.away').rename(lab.zenity)
     print('  the menu action: the window explains the risk, No changes nothing, Yes turns it on, the same action turns it off; no tool, no change: ok')
 
@@ -318,8 +327,14 @@ def main_inner(lab, tmp):
     assert 'Turn the internet back on for Prui? [y/N]' in text and 'can be used against you' in text, text
     assert 'panpak ' not in text.replace('panpak:', ''), f'an instruction to type: {text}'
     assert 't1' in lab.current_version() and not (lab.appdir / 'protected-net').exists()
+    # Asked once: the next start, with the same floor and the same update, has the short line and no question.
+    text = terminal(lab, ['protected-start', ID], [])
+    assert '[y/N]' not in text and '[Y/n]' not in text and 'protected mode: no internet. Your files are safe.' in text and 'downloaded' not in text, text
+    assert 't1' in lab.current_version()
+    # A new version is a new question: another fix is ready (revision 3), so it asks again.
+    lab.stage(lab.pack('t3', '[release]\nrevision = 3\n', permissions='[permissions]\nnetwork = true\nnetwork_allow_tcp = [443]\n'))
     text = terminal(lab, ['protected-start', ID], ['y'])
-    assert 't2' in lab.current_version() and not (lab.appdir / 'protected').exists(), lab.current_version()
+    assert 't3' in lab.current_version() and not (lab.appdir / 'protected').exists(), lab.current_version()
     print('  a program of the terminal is asked where the person is: the permissions, the update, then the internet; one key each: ok')
 
     # 6. The actions as JSON, for a front end of its own.

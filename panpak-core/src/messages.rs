@@ -20,8 +20,10 @@ pub const CANNOT_TAKE_BACK: &str = "Panpak could not take back the files that {n
 
 // Protected mode (an installed version below the floor of its author): see PANPAK-FORMAT.md 3.1.10.
 pub const PROTECTED_TITLE: &str = "{name} is running in protected mode";
-pub const PROTECTED_BODY: &str = "The author of {name} reported a serious problem in this version. Until you update, it runs without internet and does not run programs that it downloads. Your files are safe and stay open.";
-pub const PROTECTED_LINE: &str = "{name} is in protected mode: no internet, no downloaded programs. Your files are safe.";
+pub const PROTECTED_BODY: &str = "The author of {name} reported a serious problem in this version. Until you update, it runs without internet. Your files are safe and stay open.";
+pub const PROTECTED_LINE: &str = "{name} is in protected mode: no internet. Your files are safe.";
+pub const PROTECTED_LINE_NET: &str = "{name} is in protected mode: you turned the internet back on. Your files are safe.";
+pub const PROTECTED_WAITS: &str = "Panpak will download the fixed version as soon as it can, and the mode will end by itself.";
 pub const LINKS_BLOCKED: &str = "{name} is in protected mode: links do not open until you update.";
 pub const UPDATE_NOW: &str = "Update now";
 pub const PROTECTED_LIST: &str = "protected mode: no internet and no downloaded programs until updated";
@@ -35,19 +37,21 @@ pub const UPDATE_DIALOG_TITLE: &str = "Update {name}";
 pub const UPDATE_DIALOG_OK: &str = "Update";
 pub const NOT_NOW: &str = "Not now";
 pub const INTERNET_DIALOG_TITLE: &str = "Turn the internet back on for {name}?";
-pub const INTERNET_RISK: &str = "The author of {name} reported a serious problem in this version. With the internet on, the problem can be used against you, for example to send your files out. This applies only to {name}, it ends when you update, and you can cancel it at any time.";
+pub const INTERNET_RISK: &str = "The author of {name} reported a serious problem in this version. With the internet on, the problem can be used against you, for example to send your files out. This applies only to {name}, it ends when you update, and you can cancel it at any time. Even then, it does not run programs that it downloads.";
 pub const INTERNET_ON_LABEL: &str = "Turn the internet on";
 pub const INTERNET_OFF_DIALOG_TITLE: &str = "Turn the internet off again for {name}?";
 pub const INTERNET_OFF_LABEL: &str = "Turn the internet off";
-pub const INTERNET_ON_DONE: &str = "The internet is back on for {name} from its next start, until you update.";
+pub const INTERNET_ON_DONE: &str = "Close and reopen {name} to use the internet.";
 pub const INTERNET_ON_NOW: &str = "The internet is back on for {name}, until you update.";
 pub const INTERNET_OFF_DONE: &str = "The internet is off again for {name}.";
 pub const INTERNET_NOT_NEEDED: &str = "{name} is not in protected mode: there is nothing to turn back on.";
-pub const ENDED_TITLE: &str = "{name}: update done";
-pub const ENDED_BODY: &str = "{name} now runs a version that fixes the problem. Protected mode is over: the internet and downloaded programs work again.";
+pub const ENDED_TITLE: &str = "{name} is updated";
+pub const ENDED_BODY: &str = "The problem is fixed and the internet works again.";
 pub const UPDATE_WAITS: &str = "The update of {name} is ready and applies the next time it starts. Close it and open it again.";
 pub const UPDATE_FAILED: &str = "{name} was not updated: {why}";
-pub const NO_DIALOG_FOR_PERMISSIONS: &str = "{name} asks for new permissions, and nothing here can show them to you (a dialog tool such as zenity or kdialog is missing).";
+pub const NO_DIALOG_FOR_PERMISSIONS: &str = "{name} asks for new permissions, but there is no window to show them to you. To update, open a terminal and type: panpak update {id}";
+pub const NO_DIALOG_FOR_INTERNET: &str = "To turn the internet back on for {name} you must confirm, but there is no window to ask you. Open a terminal and type: panpak allow-internet {id}";
+pub const NO_DIALOG_FOR_INTERNET_OFF: &str = "There is no window to ask you. To turn the internet off again for {name}, open a terminal and type: panpak allow-internet --undo {id}";
 pub const MENU_INTERNET_ON: &str = "Turn the internet back on…";
 pub const MENU_INTERNET_OFF: &str = "Turn the internet off again…";
 pub const NEEDS_CONFIRMATION: &str = "Nothing was changed: this needs your answer, and there is no terminal and no dialog to ask it.";
@@ -72,6 +76,8 @@ pub const ALL: &[&str] = &[
     PROTECTED_TITLE,
     PROTECTED_BODY,
     PROTECTED_LINE,
+    PROTECTED_LINE_NET,
+    PROTECTED_WAITS,
     LINKS_BLOCKED,
     UPDATE_NOW,
     PROTECTED_LIST,
@@ -98,6 +104,8 @@ pub const ALL: &[&str] = &[
     UPDATE_WAITS,
     UPDATE_FAILED,
     NO_DIALOG_FOR_PERMISSIONS,
+    NO_DIALOG_FOR_INTERNET,
+    NO_DIALOG_FOR_INTERNET_OFF,
     MENU_INTERNET_ON,
     MENU_INTERNET_OFF,
     NEEDS_CONFIRMATION,
