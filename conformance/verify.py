@@ -320,6 +320,44 @@ def check_bus(man):
         raise Fail("invalid manifest field desktop.wm_class")
 
 
+FORMAT_LEVEL = 1
+# The keys of each critical section that a reader of this level knows (PANPAK-FORMAT.md section 3.1.9).
+KNOWN_CRITICAL = {
+    "permissions": {"x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs",
+                    "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"},
+    "launch": {"args", "env"},
+    "abi": {"glibc_min", "needs", "prefer_host", "allow_missing"},
+    "runtime": {"min_runtime", "stub_hash"},
+}
+
+
+def check_format(man):
+    """The [format] table (PANPAK-FORMAT.md section 3.1.9). Run on a manifest whose signature is verified."""
+    f = man.get("format")
+    if f is None:
+        raise Fail("no [format] table: a package of a test version of panpak, make it again")
+    if set(f) != {"min_panpak", "critical", "compression", "chunking", "packed_by"}:
+        raise Fail(f"unknown or missing key in [format]: {sorted(f)}")
+    lvl = f["min_panpak"]
+    if not isinstance(lvl, int) or isinstance(lvl, bool) or lvl < 1 or lvl > FORMAT_LEVEL:
+        raise Fail(f"min_panpak {lvl!r} is not a level this reader has: update panpak")
+    if f["compression"] != "zstd":
+        raise Fail(f"compression {f['compression']!r} is not known: update panpak")
+    crit = f["critical"]
+    if not isinstance(crit, list) or len(crit) > 256 or not all(
+        isinstance(c, str) and len(c) <= 64 and re.fullmatch(r"[a-z0-9_.]*", c) for c in crit
+    ):
+        raise Fail("[format].critical is malformed")
+    for c in crit:
+        sect, _, key = c.partition(".")
+        if (c == "env") or (sect in KNOWN_CRITICAL and key in KNOWN_CRITICAL[sect]):
+            continue
+        raise Fail(f"critical field {c!r} is not known to this reader: update panpak")
+    for k in ("chunking", "packed_by"):
+        if not text_ok(f[k], 128):
+            raise Fail(f"invalid manifest field format.{k}")
+
+
 def check_fields(man):
     """Field rules of PANPAK-FORMAT.md section 3.1.1 (applied even to signed manifests)."""
     app = man["app"]
@@ -519,8 +557,12 @@ def check(data: bytes):
         entry, app_id = app["entry"], app["id"]
     except KeyError as e:
         raise Fail(f"manifest: missing field {e}")
+    # Only to name a package made before [format] rightly; the full check follows the signature.
+    if "format" not in man:
+        raise Fail("no [format] table: a package of a test version of panpak, make it again")
     # The signature covers label, footer version and flags, the root (raw) and the manifest.
     ed25519_verify(key, LABEL_PACKAGE + foot[8:16] + root + toml_b, sig)
+    check_format(man)
     # Field rules: a valid signature does not make the fields safe (spec 3.1.1).
     check_fields(man)
     # stub_hash REQUIRED, verified over bytes [0:first chunk].

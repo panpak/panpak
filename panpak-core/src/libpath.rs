@@ -145,6 +145,12 @@ pub fn missing_error(missing: &[(PathBuf, String)]) -> anyhow::Error {
     coded(ErrorCode::E0009, text)
 }
 
+/// A package whose program has no link in the root of the tree: it was not made by a current `panpak pack` (those have no absolute
+/// library list to fall back on any more).
+pub fn no_links_error() -> anyhow::Error {
+    coded(ErrorCode::E0009, "this package has a program and none of the links that give it its library path (PANPAK-FORMAT.md section 7.1): it was made with a test version of panpak; make it again with the current panpak")
+}
+
 /// Make the links of `required_links` for the tree at `root` through `create(path, target)`, which the caller supplies so
 /// that a tree under a confined writer is written the way it writes everything else. A link that is already right is left;
 /// anything else at that path is an error. Returns how many were made.

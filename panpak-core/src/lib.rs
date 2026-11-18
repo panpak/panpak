@@ -159,6 +159,8 @@ pub struct Entry {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Manifest {
     pub app: App,
+    /// What a reader needs to understand this package (PANPAK-FORMAT.md §3.3). Written by `panpak pack`; a package without it is refused.
+    pub format: Option<Format>,
     pub abi: Option<Abi>,
     pub permissions: Option<Permissions>,
     /// Extra start arguments and environment (PANPAK-FORMAT.md §3.1.2).
@@ -173,6 +175,27 @@ pub struct Manifest {
     pub env: Option<std::collections::BTreeMap<String, String>>,
     /// How a package built from source was made (written by `panpak build`, PANPAK-FORMAT.md §3.1.7).
     pub provenance: Option<Provenance>,
+}
+
+/// The level of the manifest that this panpak understands. It goes up only when the MEANING of something that exists changes (a new
+/// field that is critical does not need it: the field is named in `critical`).
+pub const FORMAT_LEVEL: u32 = 1;
+
+/// The `[format]` table: what a reader must know to read the package. Closed: a key that this panpak does not know refuses the package
+/// (a new key comes with a higher `min_panpak`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Format {
+    /// The level of the manifest that a reader needs (an integer, like `RUNTIME_ABI`).
+    pub min_panpak: u32,
+    /// The fields of the manifest that change what is safe, as `section.key` (or `env`): a reader that does not know one refuses.
+    pub critical: Vec<String>,
+    /// How the chunks and the index are compressed. Critical: a reader that does not know it cannot read the package.
+    pub compression: String,
+    /// How the files were cut into chunks (informative: a reader accepts any cut within the caps).
+    pub chunking: String,
+    /// The tool that made the package (informative, to make the same bytes again).
+    pub packed_by: String,
 }
 
 /// What `panpak build` records about the build, so that the user can see it at install.
@@ -468,30 +491,110 @@ fn unknown_key(place: &str, key: &str) -> anyhow::Error {
     )
 }
 
+/// Every section of a `panpak.toml` and whether it changes what is safe (and so is named in `[format].critical` when a key of it is used).
+/// A new section must be classified here: `every_section_is_classified` fails otherwise.
+pub const SECTIONS: &[(&str, bool)] = &[
+    ("app", false),
+    ("format", false),
+    ("abi", true),
+    ("permissions", true),
+    ("launch", true),
+    ("desktop", false),
+    ("runtime", true),
+    ("origin", false),
+    ("update", false),
+    ("env", true),
+    ("provenance", false),
+];
+const FORMAT_KEYS: &[&str] = &["min_panpak", "critical", "compression", "chunking", "packed_by"];
+const ABI_KEYS: &[&str] = &["glibc_min", "needs", "prefer_host", "allow_missing"];
+const PERM_KEYS: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"];
+const LAUNCH_KEYS: &[&str] = &["args", "env"];
+const RUNTIME_KEYS: &[&str] = &["min_runtime", "stub_hash"];
+
+/// The critical paths of a manifest that is about to be signed: every key used in a critical section (`permissions.network`), and `env`.
+pub fn critical_paths(man: &Manifest) -> Vec<String> {
+    let Ok(toml::Value::Table(t)) = toml::Value::try_from(man) else { return Vec::new() };
+    let mut out = Vec::new();
+    for (section, critical) in SECTIONS {
+        if !critical {
+            continue;
+        }
+        match t.get(*section) {
+            Some(toml::Value::Table(keys)) if *section != "env" => out.extend(keys.keys().map(|k| format!("{section}.{k}"))),
+            Some(_) => out.push((*section).to_string()),
+            None => {}
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Does this panpak know the critical path and act on it?
+fn known_critical(path: &str) -> bool {
+    match path.split_once('.') {
+        None => path == "env",
+        Some(("permissions", k)) => PERM_KEYS.contains(&k),
+        Some(("launch", k)) => LAUNCH_KEYS.contains(&k),
+        Some(("abi", k)) => ABI_KEYS.contains(&k),
+        Some(("runtime", k)) => RUNTIME_KEYS.contains(&k),
+        Some(_) => false,
+    }
+}
+
+/// The message for a package that has no `[format]` table: it was made before the table existed.
+const NO_FORMAT: &str = "this package has no [format] table: it was made with a test version of panpak; make it again with the current panpak";
+
+/// Is there a `[format]` table? Asked before the signature is checked, only to say the right thing about a package made before the table
+/// (it would otherwise be told that its signature is not valid).
+pub fn require_format(man: &Manifest) -> Result<()> {
+    crate::ensure_code!(man.format.is_some(), ErrorCode::E0011, "{NO_FORMAT}");
+    Ok(())
+}
+
+/// The whole `[format]` check, on a manifest whose signature is verified: the level, the compression and every critical path must be known
+/// to this panpak, or it refuses and says to update. The stub and the client both run it (it is part of `verify`).
+pub fn check_format(man: &Manifest) -> Result<()> {
+    require_format(man)?;
+    let f = man.format.as_ref().expect("checked");
+    let newer = |what: String| coded(ErrorCode::E0002, format!("{what}: update panpak to the latest version"));
+    if f.min_panpak == 0 || f.min_panpak > FORMAT_LEVEL {
+        return Err(newer(format!("this package needs panpak format level {}, and this panpak understands {FORMAT_LEVEL}", f.min_panpak)));
+    }
+    if f.compression != "zstd" {
+        return Err(newer(format!("this package uses the compression {:?}, which this panpak does not know", f.compression)));
+    }
+    if f.critical.len() > 256 || f.critical.iter().any(|c| c.len() > 64 || !c.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.')) {
+        return Err(coded(ErrorCode::E0003, "[format].critical is malformed (corrupt or tampered file: redownload it from a trusted source)"));
+    }
+    if let Some(c) = f.critical.iter().find(|c| !known_critical(c)) {
+        return Err(newer(format!("this package uses `{c}`, which changes what is safe and which this panpak does not know")));
+    }
+    for (field, v) in [("format.chunking", &f.chunking), ("format.packed_by", &f.packed_by)] {
+        crate::validate::display_text(field, v, 128)?;
+    }
+    Ok(())
+}
+
 /// Every key or section of a `panpak.toml` text that this panpak does not know, as `(place, key)`.
 fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
     let mut out: Vec<(String, String)> = Vec::new();
     let v: toml::Value = toml::from_str(input).context("panpak.toml is not TOML")?;
     let t = v.as_table().context("panpak.toml: table required")?;
-    const TOP: &[&str] = &["app", "abi", "permissions", "launch", "desktop", "runtime", "origin", "update", "env", "provenance"];
     const PROVENANCE: &[&str] = &["source", "image", "image_deps"];
     const IMAGE_DEP: &[&str] = &["name", "package", "version"];
     const DESKTOP: &[&str] = &["schemes", "mime_types", "wm_class", "icons"];
     const XDG_DIR: &[&str] = &["name", "access"];
-    const LAUNCH: &[&str] = &["args", "env"];
     const APP: &[&str] = &["id", "name", "version", "entry"];
-    const ABI: &[&str] = &["glibc_min", "needs", "prefer_host", "allow_missing"];
-    const PERM: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"];
     const HOME_PATH: &[&str] = &["path", "access"];
     const PORTAL: &[&str] = &["files", "camera"];
-    const RUNTIME: &[&str] = &["min_runtime", "stub_hash"];
     const ORIGIN: &[&str] = &["converted_from", "version", "sha256", "signed_by_upstream"];
     const UPDATE: &[&str] = &["url", "key", "rotation_old", "rotation_sig"];
     fn keys<'a>(v: &'a toml::Value, path: &str) -> Result<Vec<&'a str>> {
         Ok(v.as_table().with_context(|| format!("{path} must be a table"))?.keys().map(|s| s.as_str()).collect())
     }
     for k in t.keys() {
-        if !TOP.contains(&k.as_str()) {
+        if !SECTIONS.iter().any(|(s, _)| *s == k.as_str()) {
             out.push((String::new(), format!("[{k}]")));
         }
     }
@@ -517,9 +620,16 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
             }
         }
     }
+    if let Some(v) = get("format") {
+        for k in keys(v, "[format]")? {
+            if !FORMAT_KEYS.contains(&k) {
+                out.push(("[format]".to_string(), k.to_string()));
+            }
+        }
+    }
     if let Some(v) = get("abi") {
         for k in keys(v, "[abi]")? {
-            if !ABI.contains(&k) {
+            if !ABI_KEYS.contains(&k) {
                 out.push(("[abi]".to_string(), k.to_string()));
             }
         }
@@ -533,7 +643,7 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
     }
     if let Some(v) = get("permissions") {
         for k in keys(v, "[permissions]")? {
-            if !PERM.contains(&k) {
+            if !PERM_KEYS.contains(&k) {
                 out.push(("[permissions]".to_string(), k.to_string()));
             }
         }
@@ -561,14 +671,14 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
     }
     if let Some(v) = get("launch") {
         for k in keys(v, "[launch]")? {
-            if !LAUNCH.contains(&k) {
+            if !LAUNCH_KEYS.contains(&k) {
                 out.push(("[launch]".to_string(), k.to_string()));
             }
         }
     }
     if let Some(v) = get("runtime") {
         for k in keys(v, "[runtime]")? {
-            if !RUNTIME.contains(&k) {
+            if !RUNTIME_KEYS.contains(&k) {
                 out.push(("[runtime]".to_string(), k.to_string()));
             }
         }
@@ -595,6 +705,10 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
 /// ones (silent incompatibility). The manifest in .panpak files stays read-tolerant instead (unknown fields ignored);
 /// `install` and `update` only warn about them (`unknown_manifest_keys`).
 pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
+    // `[format]` is written by `panpak pack` from what the manifest uses; an author does not write it.
+    if toml::from_str::<toml::Value>(input).ok().and_then(|v| v.get("format").cloned()).is_some() {
+        return Err(coded(ErrorCode::E0008, "panpak.toml: [format] is written by `panpak pack`, remove it"));
+    }
     match unknown_keys_of(input)?.into_iter().next() {
         Some((place, key)) => Err(unknown_key(&place, &key)),
         None => Ok(()),
@@ -1379,6 +1493,8 @@ pub fn verify(f: &mut File, ft: &Footer) -> Result<(Manifest, Vec<u8>)> {
     let (toml_b, block) = blob.split_at(ft.man_len as usize);
     let man: Manifest =
         toml::from_str(std::str::from_utf8(toml_b).context("non-UTF-8 manifest")?)?;
+    // Only to say the right thing about a package made before `[format]`: it would otherwise be told that its signature is not valid.
+    require_format(&man)?;
     let vk = parse_pubkey(&man.update.as_ref().context("manifest without [update].key")?.key)?;
 
     let sig = ed25519_dalek::Signature::from_bytes(&parse_sig_block(block)?);
@@ -1386,6 +1502,8 @@ pub fn verify(f: &mut File, ft: &Footer) -> Result<(Manifest, Vec<u8>)> {
     vk.verify_strict(&msg, &sig).map_err(|_| {
         coded(ErrorCode::E1001, "invalid manifest signature: tampered or badly downloaded file; redownload it from a trusted source and verify the key")
     })?;
+    // The manifest is the author's now: what it needs from a reader is checked first, then the fields.
+    check_format(&man)?;
     // A valid signature does not make the fields safe to use as file names.
     validate_manifest(&man)?;
 
@@ -1415,6 +1533,111 @@ mod tests {
         // Pack secret: same rules, no prefix.
         assert!(parse_secret(&key[8..]).is_ok());
         assert!(parse_secret(&key).is_err());
+    }
+
+    // ---- [format] (PANPAK-FORMAT.md section 3.3) ----
+
+    const MIN_MAN: &str = "[app]\nid = \"a.b\"\nname = \"N\"\nversion = \"1\"\nentry = \"x\"\n";
+
+    fn with_format(extra: &str) -> Manifest {
+        toml::from_str(&format!(
+            "{MIN_MAN}[format]\nmin_panpak = 1\ncritical = []\ncompression = \"zstd\"\nchunking = \"fastcdc:16384:65536:262144\"\npacked_by = \"t\"\n{extra}"
+        ))
+        .unwrap()
+    }
+
+    fn code_in(e: &anyhow::Error) -> ErrorCode {
+        code_of(e, ErrorCode::E1000)
+    }
+
+    #[test]
+    fn a_manifest_without_format_is_a_package_of_a_test_version() {
+        let man: Manifest = toml::from_str(MIN_MAN).unwrap();
+        for e in [require_format(&man).unwrap_err(), check_format(&man).unwrap_err()] {
+            assert_eq!(code_in(&e), ErrorCode::E0011);
+            assert!(format!("{e:#}").contains("make it again"), "{e:#}");
+        }
+        assert!(check_format(&with_format("")).is_ok());
+    }
+
+    #[test]
+    fn a_format_that_needs_more_than_this_panpak_has_says_to_update() {
+        let newer = |m: &Manifest| format!("{:#}", check_format(m).unwrap_err());
+        let mut m = with_format("");
+        m.format.as_mut().unwrap().min_panpak = FORMAT_LEVEL + 1;
+        assert!(newer(&m).contains("update panpak"), "{}", newer(&m));
+        assert_eq!(code_in(&check_format(&m).unwrap_err()), ErrorCode::E0002);
+        let mut m = with_format("");
+        m.format.as_mut().unwrap().compression = "brotli".into();
+        assert!(newer(&m).contains("brotli") && newer(&m).contains("update panpak"));
+        let mut m = with_format("");
+        m.format.as_mut().unwrap().min_panpak = 0;
+        assert!(check_format(&m).is_err());
+    }
+
+    #[test]
+    fn a_critical_path_that_this_panpak_does_not_know_refuses_and_a_known_one_does_not() {
+        // Defect 42: a field that changes what is safe, in a package from a newer panpak, must not be skipped.
+        let mut m = with_format("");
+        m.format.as_mut().unwrap().critical = vec!["permissions.deny_udp".into()];
+        let e = check_format(&m).unwrap_err();
+        assert_eq!(code_in(&e), ErrorCode::E0002);
+        assert!(format!("{e:#}").contains("permissions.deny_udp") && format!("{e:#}").contains("update panpak"), "{e:#}");
+        for known in ["permissions.network", "permissions.exec_written", "launch.env", "abi.needs", "runtime.stub_hash", "env"] {
+            let mut m = with_format("");
+            m.format.as_mut().unwrap().critical = vec![known.into()];
+            assert!(check_format(&m).is_ok(), "{known}");
+        }
+        // A malformed list is a damaged file, not a newer panpak.
+        let mut m = with_format("");
+        m.format.as_mut().unwrap().critical = vec!["Permissions.X".into()];
+        assert_eq!(code_in(&check_format(&m).unwrap_err()), ErrorCode::E0003);
+    }
+
+    #[test]
+    fn a_key_of_format_that_this_panpak_does_not_know_refuses_the_manifest() {
+        let text = format!("{MIN_MAN}[format]\nmin_panpak = 1\ncritical = []\ncompression = \"zstd\"\nchunking = \"c\"\npacked_by = \"t\"\nfuture = 1\n");
+        let e = toml::from_str::<Manifest>(&text).unwrap_err();
+        assert!(e.to_string().contains("future"), "{e}");
+        // And the same text is flagged as an unknown key by the tolerant reader that only warns elsewhere.
+        assert!(unknown_keys_of(&text).unwrap().iter().any(|(p, k)| p == "[format]" && k == "future"));
+    }
+
+    #[test]
+    fn pack_writes_the_critical_list_from_what_the_manifest_uses() {
+        let m: Manifest = toml::from_str(&format!("{MIN_MAN}[permissions]\nnetwork = true\nx11 = true\n[launch]\nargs = [\"a\"]\n[desktop]\nwm_class = \"X\"\n[env]\nA = \"b\"\n")).unwrap();
+        // A critical section lists its keys, `env` stands for itself, a section that does not change what is safe is not listed.
+        assert_eq!(critical_paths(&m), ["env", "launch.args", "permissions.network", "permissions.x11"]);
+        assert!(critical_paths(&toml::from_str(MIN_MAN).unwrap()).is_empty());
+    }
+
+    #[test]
+    fn every_section_is_classified_and_every_key_of_a_critical_section_is_known() {
+        // A new section of the manifest has to be classified (critical or not) in SECTIONS before it can be read: its keys are checked by
+        // `unknown_keys_of`, which takes the names from there. And every key that the keys lists name is one that `known_critical` knows.
+        let names: Vec<&str> = SECTIONS.iter().map(|(s, _)| *s).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "a section twice in SECTIONS");
+        for s in ["app", "format", "abi", "permissions", "launch", "desktop", "runtime", "origin", "update", "env", "provenance"] {
+            assert!(names.contains(&s), "{s} is not classified");
+        }
+        assert!(SECTIONS.contains(&("permissions", true)) && SECTIONS.contains(&("launch", true)) && SECTIONS.contains(&("env", true)));
+        assert!(SECTIONS.contains(&("update", false)) && SECTIONS.contains(&("format", false)));
+        for (sect, keys) in [("permissions", PERM_KEYS), ("launch", LAUNCH_KEYS), ("abi", ABI_KEYS), ("runtime", RUNTIME_KEYS)] {
+            for k in keys {
+                assert!(known_critical(&format!("{sect}.{k}")), "{sect}.{k}");
+            }
+        }
+        assert!(!known_critical("permissions.deny_udp") && !known_critical("sandbox") && !known_critical("update.key"));
+    }
+
+    #[test]
+    fn the_input_of_pack_may_not_have_a_format_table() {
+        let e = check_panpak_toml_schema(&format!("{MIN_MAN}[format]\nmin_panpak = 1\n")).unwrap_err();
+        assert!(format!("{e:#}").contains("written by `panpak pack`"), "{e:#}");
+        assert!(check_panpak_toml_schema(MIN_MAN).is_ok());
     }
 
     #[test]
@@ -1865,6 +2088,7 @@ mod tests {
         let good_hash = hex(blake3::hash(stub).as_bytes());
         let man_ok = Manifest {
             app: App { id: "a.b".into(), name: "N".into(), version: "1".into(), entry: "x".into() },
+            format: None,
             abi: None,
             permissions: None,
             launch: None,
@@ -3156,4 +3380,5 @@ pub mod abi {
         }
         bail!("bundled glibc but loader (ld-linux) not found in tree")
     }
+
 }

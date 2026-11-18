@@ -121,7 +121,7 @@ fn is_unsafe_char(c: char) -> bool {
 }
 
 /// Free text for display: not empty, bounded, no unsafe character.
-fn display_text(field: &str, s: &str, max: usize) -> Result<()> {
+pub(crate) fn display_text(field: &str, s: &str, max: usize) -> Result<()> {
     if s.is_empty() {
         return Err(bad_field(field, "empty"));
     }

@@ -226,6 +226,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     ensure!(total2 == total, "file changed during download ({total} vs {total2})");
     let man: panpak_core::Manifest =
         toml::from_str(std::str::from_utf8(&man_b).context("non-UTF-8 manifest")?)?;
+    panpak_core::require_format(&man)?;
     panpak_core::validate_manifest(&man)?;
     // The key MUST be the pin OR a succession signed by the pin.
     // The pin only changes when the version is applied (`cmd_apply` checks the succession again).
@@ -242,6 +243,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow_downgrade: bool, 
     let sig = ed25519_dalek::Signature::from_bytes(&panpak_core::parse_sig_block(&sig_b)?);
     panpak_core::parse_pubkey(&new_key)?.verify_strict(&signed, &sig)
         .map_err(|_| coded(ErrorCode::E1001, "invalid remote signature: update refused"))?;
+    panpak_core::check_format(&man)?;
     panpak_core::check_runtime(&man, panpak_core::RUNTIME_ABI)?;
     match cmp_versions(&man.app.version, &old_man.app.version) {
         std::cmp::Ordering::Less => {
@@ -1217,6 +1219,15 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
         }
     }
 
+    // What a reader needs to read the package: written from what the manifest uses, so that it cannot be forgotten or wrong.
+    man.format = Some(panpak_core::Format {
+        min_panpak: panpak_core::FORMAT_LEVEL,
+        critical: panpak_core::critical_paths(&man),
+        compression: "zstd".to_string(),
+        chunking: format!("fastcdc:{CDC_MIN}:{CDC_AVG}:{CDC_MAX}"),
+        packed_by: format!("panpak {} zstd {}", env!("CARGO_PKG_VERSION"), zstd::zstd_safe::version_string()),
+    });
+    panpak_core::check_format(&man)?;
     // The manifest is complete here (the libraries found in the files are in `abi.needs`): check it with
     // the rules `install` applies, before anything is written or signed. A package that install refuses
     // must not exist.

@@ -41,11 +41,18 @@ def tstr(s):
     return json.dumps(s)
 
 
-def manifest(key=PUBHEX, extra="", version="1.0", entry="bin/hello", iid="org.example.conf", name="Conf"):
+FORMAT = (
+    '[format]\nmin_panpak = 1\ncritical = []\ncompression = "zstd"\n'
+    'chunking = "fastcdc:16384:65536:262144"\npacked_by = "conformance generator"\n'
+)
+
+
+def manifest(key=PUBHEX, extra="", version="1.0", entry="bin/hello", iid="org.example.conf", name="Conf", fmt=FORMAT):
     stub_hash = blake3(STUB).hex()
     return (
         f'[app]\nid = {tstr(iid)}\nname = {tstr(name)}\nversion = {tstr(version)}\nentry = {tstr(entry)}\n'
         f"{extra}"
+        f"{fmt}"
         f'[runtime]\nstub_hash = "{stub_hash}"\n'
         f'[update]\nkey = "{key}"\n'
     ).encode()
@@ -123,17 +130,20 @@ def main():
 
     # The package of Appendix A of the specification: built here from its inputs, and its signature block and footer must be
     # the ones the specification prints (a check that the text and the code do not drift apart).
+    APPENDIX_A_SIZE = 679  # the total size that PANPAK-FORMAT.md prints for it
     _stub = b"PANPAKTEST-VECTOR-v1\0"
     _hi = b"hi\n"
     _hic = zstd_enc(_hi)
     _vidx = encode_index([(blake3(_hi), len(_stub), len(_hic), len(_hi))], [
         {"path": "bin", "mode": 0o755, "kind": "dir"},
         {"path": "bin/hi", "mode": 0o755, "kind": "file", "size": 3, "chunks": [0]}])
-    _vman = (f'[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n[runtime]\nstub_hash = "{blake3(_stub).hex()}"\n'
+    _vman = (f'[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n'
+             '[format]\nmin_panpak = 1\ncritical = []\ncompression = "zstd"\nchunking = "fastcdc:16384:65536:262144"\npacked_by = "conformance generator"\n'
+             f'[runtime]\nstub_hash = "{blake3(_stub).hex()}"\n'
              f'[update]\nkey = "{PUBHEX}"\n').encode()
     _vec = assemble(_stub, _vidx, _vman, blobs=[_hic])
     _spec = open(os.path.join(HERE, "..", "PANPAK-FORMAT.md")).read()
-    assert len(_vec) == 544 and _vec[-80:].hex() in _spec and _vec[len(_vec) - 80 - 72 : len(_vec) - 80].hex() in _spec, "Appendix A of PANPAK-FORMAT.md does not match the code"
+    assert APPENDIX_A_SIZE == len(_vec) and _vec[-80:].hex() in _spec and _vec[len(_vec) - 80 - 72 : len(_vec) - 80].hex() in _spec, "Appendix A of PANPAK-FORMAT.md does not match the code"
     put("valid-appendix-a.panpak", _vec, True)
 
     # ---- invalid: mechanical mutations of valid-min ----
@@ -248,8 +258,30 @@ def main():
     put("invalid-sig-bare-64-bytes.panpak", assemble(STUB, idx, man, blobs=blobs, block=lambda s: s), False, ["not adjacent"])
 
     # manifest without [runtime].stub_hash (previous format), regularly signed
-    man_old = b'[app]\nid = "org.example.conf"\nname = "Conf"\nversion = "1.0"\nentry = "bin/hello"\n[update]\nkey = "' + PUBHEX.encode() + b'"\n'
+    man_old = b'[app]\nid = "org.example.conf"\nname = "Conf"\nversion = "1.0"\nentry = "bin/hello"\n' + FORMAT.encode() + b'[update]\nkey = "' + PUBHEX.encode() + b'"\n'
     put("invalid-no-stubhash.panpak", assemble(STUB, encode_index(*std_index()[:2]), man_old), False, ["stub_hash", "previous format"])
+
+    # ---- [format] (PANPAK-FORMAT.md section 3.1.9): correctly signed, refused for what they say ----
+    def fmt(min_panpak=1, critical="[]", compression="zstd", extra=""):
+        return (f'[format]\nmin_panpak = {min_panpak}\ncritical = {critical}\ncompression = "{compression}"\n'
+                f'chunking = "fastcdc:16384:65536:262144"\npacked_by = "conformance generator"\n{extra}')
+
+    def bad_format(name, man, *errs):
+        put(name, assemble(STUB, encode_index(*std_index()[:2]), man, blobs=std_index()[2]), False, list(errs))
+
+    bad_format("invalid-no-format.panpak", manifest(fmt=""), "format")
+    bad_format("invalid-format-newer-level.panpak", manifest(fmt=fmt(min_panpak=2)), "update panpak")
+    bad_format("invalid-format-level-zero.panpak", manifest(fmt=fmt(min_panpak=0)), "update panpak")
+    bad_format("invalid-format-compression.panpak", manifest(fmt=fmt(compression="brotli")), "update panpak")
+    bad_format("invalid-format-critical-unknown.panpak", manifest(fmt=fmt(critical='["permissions.deny_udp"]')), "update panpak")
+    bad_format("invalid-format-critical-unknown-section.panpak", manifest(fmt=fmt(critical='["sandbox"]')), "update panpak")
+    bad_format("invalid-format-unknown-key.panpak", manifest(fmt=fmt(extra='future = 1\n')), "format")
+    bad_format("invalid-format-critical-malformed.panpak", manifest(fmt=fmt(critical='["Permissions.X"]')), "critical")
+    put("valid-format-critical-known.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(
+        extra='[permissions]\nnetwork = true\n', fmt=fmt(critical='["permissions.network"]')), blobs=std_index()[2]), True)
+    # An unknown key outside [format] that is not named in `critical` is read as before (it is ignored, with a warning).
+    put("valid-unknown-key-not-critical.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(
+        extra='[desktop]\nfuture_thing = 1\n'), blobs=std_index()[2]), True)
 
     # manifest_len that does not add up (footer man_len +1)
     good = bytearray(open(os.path.join(FIX, "valid-min.panpak"), "rb").read())

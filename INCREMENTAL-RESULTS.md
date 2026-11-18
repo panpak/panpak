@@ -1,5 +1,14 @@
 # Incremental updates — 2026-10-26
 
+**Update, 2026-11-18 (step 9, PR 1 and 2).** The package has changed in two places that an update downloads: the signature is now a
+signature block of 72 bytes (a 64-byte signature in one entry of 8 bytes of header: **+8 bytes**), and the manifest carries the `[format]`
+table (**+187 bytes** for QOwnNotes, where `critical` lists `abi.allow_missing`, `abi.glibc_min` and `abi.needs`; measured on a package made by
+the current `panpak convert`). The same two payloads therefore take 5,280,528 + 8 + 187 = **5,280,723 bytes** to update (the full package,
+67,613,228 + 195 = **67,613,423**), the saving stays 92.19 percent, and the analytic formula of `tests/incremental.py` is now
+`80 + manifest + 72 + index + missing chunks`. These two numbers are computed from the table above and the sizes just given; they are **not
+re-measured**: the QOwnNotes 26.10.8 payload is not kept, so the run below cannot be repeated on it. The test `tests/incremental.py` (in CI)
+still asserts that the bytes the server sent equal the analytic number, on a synthetic pair. The table below is the measurement of 2026-10-26, as it was.
+
 Reproducible command (rebuild musl release first):
 
 ```

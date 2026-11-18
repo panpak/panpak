@@ -147,6 +147,48 @@
   ],
   "ok": false
  },
+ "invalid-format-compression.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-format-critical-malformed.panpak": {
+  "err": [
+   "critical"
+  ],
+  "ok": false
+ },
+ "invalid-format-critical-unknown-section.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-format-critical-unknown.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-format-level-zero.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-format-newer-level.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-format-unknown-key.panpak": {
+  "err": [
+   "format"
+  ],
+  "ok": false
+ },
  "invalid-home-path-autostart.panpak": {
   "code": "PANPAK-E0007",
   "err": [
@@ -296,6 +338,12 @@
   "code": "PANPAK-E0007",
   "err": [
    "app.name"
+  ],
+  "ok": false
+ },
+ "invalid-no-format.panpak": {
+  "err": [
+   "format"
   ],
   "ok": false
  },
@@ -530,6 +578,10 @@
   "err": [],
   "ok": true
  },
+ "valid-format-critical-known.panpak": {
+  "err": [],
+  "ok": true
+ },
  "valid-id-underscore.panpak": {
   "err": [],
   "ok": true
@@ -547,6 +599,10 @@
   "ok": true
  },
  "valid-sig-block-unknown-noncritical.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-unknown-key-not-critical.panpak": {
   "err": [],
   "ok": true
  },

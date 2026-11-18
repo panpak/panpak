@@ -2023,9 +2023,9 @@ fn real_main() -> Result<()> {
     let ld_path =
         std::env::join_paths(plan.ld_path.iter()).context("non-UTF-8 LD_LIBRARY_PATH")?;
     // The value of `LD_LIBRARY_PATH` of the app: relative to the program that is run, so that a program of the host that
-    // the app starts does not use it (PANPAK-FORMAT.md section 7.1). A package without the links (made before, or with no
-    // program) keeps the absolute list.
-    let ld_env = library_path_env(&store, &tree, &ft.root, &man, &plan)?.unwrap_or_else(|| ld_path.clone());
+    // the app starts does not use it (PANPAK-FORMAT.md section 7.1). There is no absolute list: a package with a program and
+    // without the links is refused, and one with no program has no value to give.
+    let ld_env = library_path_env_or_refuse(&store, &tree, &ft.root, &man, &plan)?;
 
     stage("libraries resolved");
     // Private folders (0700), created before the sandbox closes the rest of the disk.
@@ -2151,8 +2151,11 @@ fn real_main() -> Result<()> {
     cmd.args(&launch_args)
         .args(&app_args)
         .env("PANPAK_APP_ID", &man.app.id)
-        .env("LD_LIBRARY_PATH", &ld_env)
         .env_remove("PANPAK_SOCKET_PROBE");
+    match &ld_env {
+        Some(v) => cmd.env("LD_LIBRARY_PATH", v),
+        None => cmd.env_remove("LD_LIBRARY_PATH"),
+    };
     let open_arg = open_file.as_ref().map(|(p, w)| (p.as_path(), *w));
     #[cfg(target_arch = "x86_64")]
     if let Some(log) = probe_log {
@@ -2223,7 +2226,7 @@ struct ViewStart<'a> {
 /// Start the app in the isolated view: build the job for the inner stub and replace this
 /// process with `bwrap`. Returns only on error.
 /// The relative `LD_LIBRARY_PATH` of an app whose package has the links of `panpak_core::libpath` (the one in the root of the
-/// tree is the mark), or `None` for a package without them. Before it is used the farm link of the tree is checked: with a
+/// tree is the mark), or `None` for a package without them (one with no program: `pack` makes the links for every folder with a program). Before it is used the farm link of the tree is checked: with a
 /// farm that cannot be reached the loader would skip the entry and the app would start with other libraries than the ones
 /// chosen, with no message.
 fn library_path_env(store: &Path, tree: &Path, root: &[u8; 32], man: &panpak_core::Manifest, plan: &panpak_core::abi::Plan) -> Result<Option<std::ffi::OsString>> {
@@ -2235,6 +2238,16 @@ fn library_path_env(store: &Path, tree: &Path, root: &[u8; 32], man: &panpak_cor
     let farm = store.join("farms").join(hex(root));
     check_farm(tree, &farm, &hex(root))?;
     Ok(Some(libpath::env_value(&man.app.id, tree, &farm, &plan.ld_path)?))
+}
+
+/// `library_path_env`, and the refusal of a program without the links: with no mark and an entry that is an ELF program there is no
+/// library path to give (the absolute list of earlier versions is gone), so the package is refused and told to be made again.
+fn library_path_env_or_refuse(store: &Path, tree: &Path, root: &[u8; 32], man: &panpak_core::Manifest, plan: &panpak_core::abi::Plan) -> Result<Option<std::ffi::OsString>> {
+    let v = library_path_env(store, tree, root, man, plan)?;
+    if v.is_none() && is_elf(&tree.join(&man.app.entry))? {
+        return Err(panpak_core::libpath::no_links_error());
+    }
+    Ok(v)
 }
 
 /// The farm of a tree is `<store>/farms/<root>`, reached through `<tree>/.farm`. Anything else (the link gone or changed, the
@@ -2648,7 +2661,7 @@ mod tests {
     fn fake_toml(key: &str, manifest_extra: &str) -> Vec<u8> {
         let stub_hash = hex(blake3::hash(b"FAKE-STUB").as_bytes());
         format!(
-            "[app]\nid = \"org.example.hello\"\nname = \"Hello\"\nversion = \"0.1.0\"\nentry = \"bin/hello\"\n{manifest_extra}[runtime]\nstub_hash = \"{stub_hash}\"\n[update]\nkey = \"{key}\"\n"
+            "[app]\nid = \"org.example.hello\"\nname = \"Hello\"\nversion = \"0.1.0\"\nentry = \"bin/hello\"\n{manifest_extra}[format]\nmin_panpak = 1\ncritical = []\ncompression = \"zstd\"\nchunking = \"fastcdc:16384:65536:262144\"\npacked_by = \"test\"\n[runtime]\nstub_hash = \"{stub_hash}\"\n[update]\nkey = \"{key}\"\n"
         )
         .into_bytes()
     }
@@ -3589,7 +3602,7 @@ mod tests {
     }
 
     #[test]
-    fn the_library_path_is_relative_only_for_a_package_with_the_links() {
+    fn the_library_path_is_relative_and_there_is_no_absolute_list() {
         let dir = tmpdir("ld-env");
         let man: panpak_core::Manifest = toml::from_str("[app]\nid = \"org.example.app\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n").unwrap();
         let (path, root, chunks, entries) = fake_panpak_with_file(&dir, b"x");
@@ -3600,7 +3613,7 @@ mod tests {
         let farm = store.join("farms").join(&rh);
         fs::create_dir_all(&farm).unwrap();
         let plan = panpak_core::abi::Plan { loader: None, ld_path: vec![farm.clone(), tree.join("lib")] };
-        // No mark in the root of the tree: the absolute list stays (a package made before).
+        // No mark in the root of the tree: no value at all (there is no absolute list any more).
         assert!(library_path_env(&store, &tree, &root, &man, &plan).unwrap().is_none());
         // With the mark (a link in the root named for the id) the value is relative to the program.
         let mut p = fs::symlink_metadata(&tree).unwrap().permissions();
@@ -3610,6 +3623,16 @@ mod tests {
         std::os::unix::fs::symlink(".", tree.join(&name)).unwrap();
         let v = library_path_env(&store, &tree, &root, &man, &plan).unwrap().unwrap();
         assert_eq!(v.to_str().unwrap(), format!("/$ORIGIN/{name}/.farm:/$ORIGIN/{name}/lib"));
+        // A program (an ELF entry) with no mark is refused: no absolute list to fall back on.
+        let plan0 = panpak_core::abi::Plan { loader: None, ld_path: vec![farm.clone()] };
+        let man_elf: panpak_core::Manifest = toml::from_str("[app]\nid = \"org.example.elf\"\nname = \"A\"\nversion = \"1\"\nentry = \"prog\"\n").unwrap();
+        fs::write(tree.join("prog"), b"\x7fELF....").unwrap();
+        let err = library_path_env_or_refuse(&store, &tree, &root, &man_elf, &plan0).unwrap_err();
+        assert_eq!(panpak_core::code_of(&err, ErrorCode::E2000), ErrorCode::E0009);
+        assert!(format!("{err:#}").contains("make it again"), "{err:#}");
+        // A script with no mark has no value, and is not refused.
+        let man_script: panpak_core::Manifest = toml::from_str("[app]\nid = \"org.example.script\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/hello\"\n").unwrap();
+        assert!(library_path_env_or_refuse(&store, &tree, &root, &man_script, &plan0).unwrap().is_none());
         // And a damaged farm link stops the start instead of giving a value that leads nowhere.
         fs::remove_file(tree.join(".farm")).unwrap();
         let err = library_path_env(&store, &tree, &root, &man, &plan).unwrap_err();
