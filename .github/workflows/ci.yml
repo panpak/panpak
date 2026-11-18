@@ -136,18 +136,34 @@ jobs:
           key: build-test-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             build-test-${{ env.RUST_TOOLCHAIN }}-
+      - name: Cache the Rust toolchain (the key holds the version and the components)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.rustup/toolchains/${{ env.RUST_TOOLCHAIN }}-x86_64-unknown-linux-gnu
+            ~/.rustup/update-hashes/${{ env.RUST_TOOLCHAIN }}-x86_64-unknown-linux-gnu
+          key: rustup-${{ env.RUST_TOOLCHAIN }}-minimal-rustfmt-musl
       - name: Pinned Rust toolchain
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+      - name: Cache the Zig wheel (the key holds the version and the hashes of tools/requirements-zig.txt)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/zig-wheel
+          key: zig-wheel-${{ hashFiles('tools/requirements-zig.txt') }}
       - name: Zig (pinned PyPI wheel, hash-checked)
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
-          # A read timeout of the download (files.pythonhosted.org) failed a run of main: three tries, 60 s each, the hash check stays.
+          # The wheel is downloaded once (three tries, 60 s each: a read timeout failed a run of main) into the cached folder and installed
+          # from it; `--require-hashes` checks the file on every install, from the cache or not.
+          wheels="$HOME/.cache/zig-wheel"
+          mkdir -p "$wheels"
           ok=0
           for try in 1 2 3; do
-            if "$RUNNER_TEMP/zig/bin/pip" install --timeout 60 --require-hashes -r tools/requirements-zig.txt; then ok=1; break; fi
+            if "$RUNNER_TEMP/zig/bin/pip" download --timeout 60 --require-hashes --no-deps -r tools/requirements-zig.txt -d "$wheels" \
+               && "$RUNNER_TEMP/zig/bin/pip" install --no-index --find-links "$wheels" --require-hashes -r tools/requirements-zig.txt; then ok=1; break; fi
             sleep 5
           done
           [ "$ok" = 1 ]
@@ -253,13 +269,6 @@ jobs:
         run: python3 tests/stale_lock_exit.py
       - name: Update with icons (changed, removed, new sizes, none)
         run: python3 tests/update_icons.py
-      - name: Wayland security context against Sway (headless, advisory)
-        # Sway 1.9 on this image has the protocol. The test prints SKIP and succeeds when Sway cannot start here.
-        # Advisory until it has run on the runners a few times.
-        continue-on-error: true
-        run: |
-          sudo apt-get install -y -qq sway
-          python3 tests/wayland_sway.py
       - name: Startup budget (advisory)
         # Reports the fixed cost of a start against running the program directly. Advisory until a week of
         # numbers from these runners shows how steady they are; then it moves into the gate.
@@ -270,6 +279,52 @@ jobs:
         with:
           name: panpak-stub-musl
           path: target/x86_64-unknown-linux-musl/release/panpak-stub
+
+  # The Wayland security context against a real compositor. Advisory, and off the path that the gate waits for: it is not in `needs` of `gate`, it makes its own
+  # release build, and `continue-on-error` keeps a failure here from turning the run red. It used to be a step of build-test (7 to 284 s there, most of it `apt`).
+  sway:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.heavy == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache the Rust build (registry and target)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: sway-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            sway-${{ env.RUST_TOOLCHAIN }}-
+            build-test-${{ env.RUST_TOOLCHAIN }}-
+      - name: Pinned Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
+          echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+      - name: Zig (pinned PyPI wheel, hash-checked)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/zig"
+          ok=0
+          for try in 1 2 3; do
+            if "$RUNNER_TEMP/zig/bin/pip" install --timeout 60 --require-hashes -r tools/requirements-zig.txt; then ok=1; break; fi
+            sleep 5
+          done
+          [ "$ok" = 1 ]
+          "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
+      - name: Bubblewrap, Sway and user namespaces
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap sway
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Release build
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
+      - name: Wayland security context against Sway (headless)
+        # Sway 1.9 on this image has the protocol. The test prints SKIP and succeeds when Sway cannot start here.
+        run: python3 tests/wayland_sway.py
 
   private-bus:
     # The private bus of each app against a real user session: a router, two proxies, the portal of the runner with the fake backend of the lab. The

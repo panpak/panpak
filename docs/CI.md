@@ -42,6 +42,11 @@ level (label) 225 s.
 The wall time was already under ten minutes: the jobs run in parallel. What changes is the cost of a run (a quarter of it for the fast level), and that main now
 fills the caches.
 
+## The advisory job and the caches of the fixed downloads
+
+- `sway` (the Wayland security context against a real Sway) is a job of its own, advisory (`continue-on-error`, not in `needs` of `gate`), with its own release build, so it runs beside the others and nothing waits for it. It was a step of `build-test`, where it took 7 to 284 s, most of it `apt`.
+- In `build-test` the Rust toolchain and the Zig wheel are cached with keys that hold what they are: `rustup-<toolchain>-minimal-rustfmt-musl` and `zig-wheel-<hash of tools/requirements-zig.txt>` (the file holds the version and the hashes of the wheel, so a new pin is a new key). A cache is never trusted for what it holds: the toolchain step still runs `rustup toolchain install` (a no-op when the cache is right) and the wheel is installed with `--require-hashes` from the cached folder, so a wrong file in the cache fails the install.
+
 ## Every test runs in a level
 
 Every file of `tests/` runs in at least one level of the CI, or is listed in `tests/ci-coverage.txt` with its kind (`helper`: not a test; `manual`: needs a VM, a desktop session or a real app) and the reason. `tests/ci-workflow-test.py` fails for a file that is in neither place, and for a listed file that is also in a workflow.
