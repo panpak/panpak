@@ -124,8 +124,22 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
+    /// The store lock is an `flock`, which belongs to the open file description, not to the descriptor: a thread of this test
+    /// binary that forks (any test that starts a program) holds a copy of every open description from the `fork` to its
+    /// `exec`, so a lock that was just dropped stays taken for that moment and `store_exclusive_try` finds it busy. The
+    /// body therefore runs alone in a process of its own, where no other thread forks.
     #[test]
     fn the_store_lock_is_shared_for_work_and_exclusive_for_a_collection() {
+        const NAME: &str = "applock::tests::the_store_lock_is_shared_for_work_and_exclusive_for_a_collection";
+        if std::env::var_os("PANPAK_APPLOCK_ALONE").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", NAME, "--test-threads=1", "--nocapture"])
+                .env("PANPAK_APPLOCK_ALONE", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            return;
+        }
         let d = std::env::temp_dir().join(format!("panpak-storelock-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         let a = store_shared(&d, Duration::from_millis(100)).unwrap();
