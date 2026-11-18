@@ -748,27 +748,72 @@ mod tests {
         }
     }
 
-    /// Every socket file below the folders given (default `/`) of a view, one per line. Python 3 from the host's /usr.
-    const SCAN: &str = "import os, stat, sys\n\
-        def scan(d):\n\
-        \ttry: it = os.scandir(d)\n\
-        \texcept OSError: return\n\
-        \twith it:\n\
-        \t\tfor e in it:\n\
-        \t\t\ttry:\n\
-        \t\t\t\tif e.is_symlink(): continue\n\
-        \t\t\t\tif e.is_dir(follow_symlinks=False):\n\
-        \t\t\t\t\tif e.path != '/proc': scan(e.path)\n\
-        \t\t\t\telif stat.S_ISSOCK(e.stat(follow_symlinks=False).st_mode): print(e.path)\n\
-        \t\t\texcept OSError: pass\n\
-        for r in sys.argv[1:] or ['/']: scan(r)\n";
+    /// Every socket file in a view, one per line, found only where the host can be: the scan reads the mounts of the view and looks (`find -xdev -type s`,
+    /// which reads the type of each entry from the folder and does not `stat` it) at each mount that comes from the host, that is, whose device number is one of
+    /// the host's. The mounts that bubblewrap makes new (the tmpfs of the root, `/tmp`, `/run`, `/var`, `/dev`) have numbers of their own, and `proc`, `sysfs`,
+    /// `devpts` and the like hold no file a host service listens on. The script gets the device numbers of the host as its first argument and, after that,
+    /// the folders to look in (default: all). Python 3 and `find` from the host's /usr.
+    const SCAN: &str = "import subprocess, sys\n\
+        host = set(sys.argv[1].split(','))\n\
+        roots = sys.argv[2:]\n\
+        skip = {'proc', 'sysfs', 'devpts', 'mqueue', 'cgroup', 'cgroup2', 'securityfs', 'debugfs', 'tracefs', 'configfs', 'fusectl', 'pstore', 'bpf', 'autofs', 'binfmt_misc', 'hugetlbfs'}\n\
+        points = []\n\
+        for line in open('/proc/self/mountinfo'):\n\
+        \tleft, right = line.rstrip('\\n').split(' - ', 1)\n\
+        \tf = left.split(' ')\n\
+        \tdev, mp, fstype = f[2], f[4].replace('\\\\040', ' '), right.split(' ')[0]\n\
+        \tinside = not roots or any(mp == r or mp.startswith(r.rstrip('/') + '/') for r in roots)\n\
+        \tif dev in host and fstype not in skip and inside: points.append(mp)\n\
+        for mp in points:\n\
+        \tout = subprocess.run(['/usr/bin/find', mp, '-xdev', '-type', 's'], capture_output=True, text=True).stdout\n\
+        \tprint(out, end='')\n";
+
+    /// The device numbers (`major:minor`) of the mounts of this process, which is the host for the view that a test makes.
+    fn host_devices() -> String {
+        let text = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
+        let mut devs: Vec<&str> = text.lines().filter_map(|l| l.split(' ').nth(2)).collect();
+        devs.sort();
+        devs.dedup();
+        devs.join(",")
+    }
 
     fn sockets_in(bwrap_args: Vec<OsString>, roots: &[&str]) -> Vec<String> {
-        let out = Command::new(panpak_core::BWRAP).args(bwrap_args).args(["--", "/usr/bin/python3", "-I", "-c", SCAN]).args(roots).output().unwrap();
+        let out = Command::new(panpak_core::BWRAP).args(bwrap_args).args(["--", "/usr/bin/python3", "-I", "-c", SCAN, &host_devices()]).args(roots).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let mut v: Vec<String> = String::from_utf8(out.stdout).unwrap().lines().map(str::to_string).collect();
         v.sort();
+        v.dedup();
         v
+    }
+
+    /// The counter-proof of the scan: a folder of the host with a socket in it, bound into the view, is found. Without this the empty result
+    /// of the test below would mean nothing (a scan that looks nowhere finds nothing).
+    #[test]
+    fn the_scan_finds_a_socket_in_a_folder_of_the_host_that_is_bound_into_the_view() {
+        if !view_usable_or_skip() {
+            return;
+        }
+        let host = fake_host("scan-bind");
+        for d in ["usr", "etc", "sys"] {
+            let _ = std::fs::remove_dir_all(host.join(d));
+            std::os::unix::fs::symlink(Path::new("/").join(d), host.join(d)).unwrap();
+        }
+        let shared = host.join("shared-by-mistake");
+        std::fs::create_dir_all(&shared).unwrap();
+        let _l = std::os::unix::net::UnixListener::bind(shared.join("daemon.sock")).unwrap();
+        let mut p = plan();
+        p.root = root_layout(&host);
+        p.home = None;
+        p.runtime_dir = None;
+        p.sockets = vec![];
+        p.ro_run_dirs = vec![];
+        p.binds = vec![Bind { path: shared.clone(), rw: false }];
+        let after = sockets_in(view_args(&p), &[]);
+        assert!(after.iter().any(|s| s.ends_with("daemon.sock")), "the scan does not see a socket in a folder of the host: {after:?}");
+        // The same view without that bind shows nothing, and a socket in a new tmpfs of the view is not looked for either.
+        p.binds = vec![];
+        assert!(sockets_in(view_args(&p), &[]).is_empty());
+        let _ = std::fs::remove_dir_all(&host);
     }
 
     /// The scan of the whole visible tree finds the sockets that the old view (the host root,
