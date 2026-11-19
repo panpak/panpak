@@ -93,8 +93,11 @@ def pack(tmp, env, version):
 def wait_for(cond, seconds=20):
     t = time.time()
     while time.time() - t < seconds:
-        if cond():
-            return True
+        try:
+            if cond():
+                return True
+        except FileNotFoundError:
+            pass  # a file that the work in the background is replacing right now: look again
         time.sleep(0.2)
     return False
 
