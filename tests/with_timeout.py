@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """Run a command with a time limit, and say which one went over it.
 
-Usage: with_timeout.py <seconds> <command> [args...]
+Usage: with_timeout.py <seconds> <command|script.py> [args...]
 
 A test that hangs (on a bus, a pipe, a socket that nobody answers) would hold a CI job until the limit of the job, 30 or 40 minutes, and the
 log would only say that the job was cancelled. Here the whole process group is stopped after <seconds> and the message names the command.
@@ -22,6 +22,9 @@ def main(argv):
         return 2
     limit = int(argv[0])
     cmd = argv[1:]
+    if cmd[0].endswith('.py'):
+        # A script of tests/ is run by the interpreter that runs this one (the files are not executable).
+        cmd = [sys.executable, *cmd]
     p = subprocess.Popen(cmd, start_new_session=True)
     try:
         return p.wait(timeout=limit)

@@ -116,6 +116,16 @@ for f in sorted(list((root / 'tests').rglob('*.py')) + list((root / 'tests').rgl
 for rel in listed:
     if not (root / rel).exists():
         bad.append(f'tests/ci-coverage.txt names {rel}, which does not exist')
+# A script that a step wraps in with_timeout.py must exist (the wrapper runs it by the interpreter), and every step has its own limit.
+for m in re.finditer(r'with_timeout\.py (\d+) (tests/[\w/.-]+\.py)', workflows):
+    if not (root / m.group(2)).is_file():
+        bad.append(f'a step runs {m.group(2)} through with_timeout.py, which does not exist')
+    if int(m.group(1)) < 60:
+        bad.append(f'{m.group(2)}: a limit of {m.group(1)} s is too short')
+steps = re.findall(r'^      - (?:name|uses): .*(?:\n(?!      - ).*)*', jobs_text, re.M)
+for st in steps:
+    if 'timeout-minutes:' not in st:
+        bad.append(f'a step has no timeout-minutes: {st.splitlines()[0].strip()}')
 if not any('ci-coverage' in b or 'runs in no workflow' in b for b in bad):
     print(f'ok   every test runs in a level of the CI or is listed with a reason ({len(listed)} listed)')
 for b in bad:
