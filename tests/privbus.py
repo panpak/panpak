@@ -173,6 +173,36 @@ elif mode == "dialog":
             os.rename(local + ".moved", local)
         except OSError as e:
             res["rename_error"] = str(e)[:60]
+elif mode == "docedit":
+    # What an editor does with a document it was given: read it, save over it the way GLib does (a temporary file in the folder of the document, then a rename over the
+    # document), and look at the files next to it. argv: the address of the document, the new text, the name of a sibling, the path of that sibling on the host.
+    local, text, sibling, host_sibling = sys.argv[4], sys.argv[5], sys.argv[6], sys.argv[7][2:]  # "h:" keeps the stub from taking it for a file to share
+    if local.startswith("h:"):
+        local = local[2:]
+    here = os.path.dirname(local)
+    def attempt(f):
+        try:
+            return "ok:" + f()
+        except OSError as e:
+            return "error:" + (e.strerror or str(e))[:60]
+    def read(p):
+        with open(p) as f:
+            return f.read()[:200]
+    res["before"] = attempt(lambda: read(local))
+    def replace():
+        tmp = os.path.join(here, ".goutputstream-probe")
+        with open(tmp, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp, local)
+        return "replaced"
+    res["replace"] = attempt(replace)
+    res["after"] = attempt(lambda: read(local))
+    res["sibling_in_folder"] = attempt(lambda: read(os.path.join(here, sibling)))
+    res["sibling_on_host"] = attempt(lambda: read(host_sibling))
+    res["listing"] = attempt(lambda: ",".join(sorted(os.listdir(here))))
+    res["create_next_to_it"] = attempt(lambda: open(os.path.join(here, "other-new.txt"), "w").write("x") and "created")
 elif mode == "args":
     # Files given at the start: the stub shares them with the portal and puts the document paths in their place.
     args = sys.argv[4:]
@@ -690,6 +720,67 @@ def scenario_dialog(lab):
     print('D   the file dialog: open, close, save and a refused link, through the real portal and the document folder (a link to an ordinary file is followed, one to a hidden place is refused); remove takes the grants back: ok')
 
 
+def scenario_editor(lab):
+    """T: a text editor with no folder permission, through the document portal: open, change, save, save as, close and open it again from its recent files; the
+    second document in the same folder stays out of reach."""
+    rt = Path(lab.sess.rt)
+    lab.sess.call('org.freedesktop.DBus', '/org/freedesktop/DBus', 'org.freedesktop.DBus.StartServiceByName', 'org.freedesktop.portal.Documents', '0')
+    for _ in range(100):
+        if (rt / 'doc/by-app').is_dir():
+            break
+        time.sleep(0.1)
+    if not (rt / 'doc/by-app').is_dir():
+        return print('T   the document portal has no FUSE folder here: skipped')
+    app = 'org.panpaktest.Editor'
+    lab.install(app)  # no xdg_dirs, no home_paths: the dialog is the only way to a file
+    docs = lab.home / 'EditorDocs'
+    docs.mkdir(exist_ok=True)
+    (docs / 'a.txt').write_text('first document\n')
+    (docs / 'b.txt').write_text('second document, not chosen\n')
+    answer = Path(str(lab.sess.log) + '.chooser')
+    uri = lambda p: 'file://' + str(p)
+    unreachable = lambda v: str(v).startswith('error:')
+    def edit(path, text):
+        # The host path goes with a prefix: an argument that is an existing file would be shared by the stub (files given at the start).
+        return lab.run(app, 'docedit', '-', 0, path, text, 'b.txt', 'h:' + str(docs / 'b.txt'))
+    # Open a.txt with the dialog.
+    answer.write_text(uri(docs / 'a.txt') + '\n')
+    r = lab.run(app, 'dialog', 'OpenFile', 0, 'h:' + str(docs / 'a.txt'), '')
+    need(r['answers'] and r['answers'][0][0] == 0 and r.get('in_doc_folder') and r.get('content') == 'first document\n', f'T: open: {r}; {lab.last_out[-300:]}')
+    a_doc = r['uri'][len('file://'):]
+    # Change and save over it (a temporary file and a rename in the folder of the document, as GLib does).
+    r = edit(a_doc, 'first document, edited\n')
+    need(r['before'] == 'ok:first document\n' and r['replace'] == 'ok:replaced' and r['after'] == 'ok:first document, edited\n', f'T: save over the document: {r}')
+    need((docs / 'a.txt').read_text() == 'first document, edited\n', 'T: the file on the host after the save')
+    # The second document in the same folder is out of reach: by the address of the document, by its path on the host, in the listing, and nothing can be made next to it.
+    need(unreachable(r['sibling_in_folder']) and unreachable(r['sibling_on_host']), f'T: the second document is reachable: {r}')
+    need(r['listing'] == 'ok:a.txt', f'T: the folder of the document lists more than the document: {r["listing"]}')
+    need(unreachable(r['create_next_to_it']) or not (docs / 'other-new.txt').exists(), f'T: a file was made next to the document: {r["create_next_to_it"]}')
+    need((docs / 'b.txt').read_text() == 'second document, not chosen\n' and not (docs / 'other-new.txt').exists(), 'T: the second document was touched')
+    # Save as: a new name, chosen in the dialog, in the same folder.
+    answer.write_text(uri(docs / 'c.txt') + '\n')
+    r = lab.run(app, 'dialog', 'SaveFile', 0, 'h:' + str(docs / 'c.txt'), 'saved as\n')
+    need(r.get('wrote') and (docs / 'c.txt').read_text() == 'saved as\n' and r.get('in_doc_folder'), f'T: save as: {r}; {lab.last_out[-300:]}')
+    c_doc = r['uri'][len('file://'):]
+    r = edit(c_doc, 'saved as, edited\n')
+    need(r['replace'] == 'ok:replaced' and (docs / 'c.txt').read_text() == 'saved as, edited\n', f'T: save over the new file: {r}')
+    need(unreachable(r['sibling_in_folder']) and unreachable(r['sibling_on_host']) and r['listing'] == 'ok:c.txt', f'T: next to the new file: {r}')
+    # Close and open again from the recent files of the app (a new process with no dialog): the addresses it kept still work, and still only for these files.
+    for doc, host, before, after in ((a_doc, 'a.txt', 'first document, edited\n', 'first document, edited again\n'), (c_doc, 'c.txt', 'saved as, edited\n', 'saved as, edited again\n')):
+        r = edit(doc, after)
+        need(r['before'] == 'ok:' + before, f'T: reopened {host} from its recent files: {r}; the runtime said: {lab.last_out[-300:]}')
+        need(r['replace'] == 'ok:replaced' and (docs / host).read_text() == after, f'T: save after the reopen of {host}: {r}')
+        need(unreachable(r['sibling_in_folder']) and unreachable(r['sibling_on_host']), f'T: the second document after the reopen of {host}: {r}')
+    # The control that shows the test can tell: an app that was given the folder (what the old recipe did with `xdg_dirs = documents`) reads the second document and makes files.
+    app2 = 'org.panpaktest.Editor2'
+    lab.install(app2, '[[permissions.home_paths]]\npath = "EditorDocs"\naccess = "rw"\n')
+    r = lab.run(app2, 'docedit', '-', 0, 'h:' + str(docs / 'a.txt'), 'control\n', 'b.txt', 'h:' + str(docs / 'b.txt'))
+    need(r['sibling_in_folder'] == 'ok:second document, not chosen\n' and r['sibling_on_host'].startswith('ok:'), f'T: the control (an app that has the folder) does not reach the second document: {r}')
+    (docs / 'a.txt').write_text('first document, edited again\n')
+    (docs / 'other-new.txt').unlink(missing_ok=True)
+    print('T   an editor with no folder permission: open, change and save over, save as, and open again from its recent files, through the document portal; the second document in the folder stays out of reach: ok')
+
+
 def scenario_mpris(lab):
     mid = 'org.panpaktest.Player'
     lab.install(mid, '[permissions]\nmpris = true\n')
@@ -767,7 +858,7 @@ def main():
             print(p.communicate(timeout=60)[0][-3000:])
             return skip(f'the app got no bus here (no systemd user session for its scope, or no xdg-dbus-proxy): {smoke}')
         for key, fn in (('A', scenario_a), ('B', scenario_b), ('C', scenario_c), ('F', scenario_f22_f23_f11), ('S', scenario_single_instance),
-                        ('R', scenario_lifecycle), ('E', scenario_end_race), ('I', scenario_identity), ('L', scenario_links), ('P', scenario_protected_links), ('D', scenario_dialog), ('M', scenario_mpris)):
+                        ('R', scenario_lifecycle), ('E', scenario_end_race), ('I', scenario_identity), ('L', scenario_links), ('P', scenario_protected_links), ('D', scenario_dialog), ('T', scenario_editor), ('M', scenario_mpris)):
             if want(key):
                 fn(lab)
     finally:

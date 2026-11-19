@@ -1,5 +1,7 @@
 # Contributing to `Panpak`
 
+Read the [guiding principles](docs/PRINCIPLES.md) first: they are what a change is judged by.
+
 ## Principles (non negotiable)
 
 - **No weakened checks**: every change must keep or strengthen the

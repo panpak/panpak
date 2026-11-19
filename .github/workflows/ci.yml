@@ -508,14 +508,14 @@ jobs:
           ls -la "/run/user/$(id -u)/" || true
           XDG_RUNTIME_DIR="/run/user/$(id -u)" systemctl --user is-system-running || true
           xdg-desktop-portal --version || /usr/libexec/xdg-desktop-portal --version || true
-      - name: Private bus, required scenarios (A, B, C, F11, F22, F23)
+      - name: Private bus, required scenarios (A, B, C, F11, F22, F23, L, P, D, T)
         timeout-minutes: 3
         env:
           PANPAK_REQUIRE_LAB: "1"
           PANPAK_LAB_LOG: ${{ runner.temp }}/lab.log
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          python3 tests/with_timeout.py 120 tests/privbus.py --only A,B,C,F,L,P,D || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
+          python3 tests/with_timeout.py 120 tests/privbus.py --only A,B,C,F,L,P,D,T || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
       - name: A real GTK 4 program against the answers of the file chooser (a refused dialog must not crash the app)
         timeout-minutes: 4
         run: python3 tests/with_timeout.py 150 tests/gtk_filechooser.py

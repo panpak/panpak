@@ -1,18 +1,17 @@
-# date_utc: 2026-11-09T06:39:29Z
+# date_utc: 2026-11-19T21:22:04Z
 # cpu: AMD Ryzen 7 7735HS with Radeon Graphics
 # threads: 16
 # ram_mib: 14652
-# kernel: 7.0.0-42-generic
+# kernel: 7.0.0-43-generic
 # os: Ubuntu 26.04.1 LTS
 # filesystem_of_work_dir: ext4
-# landlock: OK   kernel 7.0.0-42-generic, Landlock V8 (fs + network + ioctl + signal/abstract-socket scope (+Unix paths if V9 supported))
+# landlock: OK   kernel 7.0.0-43-generic, Landlock V8 (fs + network + ioctl + signal/abstract-socket scope (+Unix paths if V9 supported))
 # bubblewrap: bubblewrap 0.11.1
 # python: 3.14.4
 # rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
-# panpak_commit: cdfc28f-dirty
-# panpak_sha256: 89c7217d93d09894
-# stub_sha256: fc21c51040201f2c
+# panpak_commit: 08b0ea3-dirty
+# panpak_sha256: 638fee33f7899265
+# stub_sha256: 848baffeba72289c
 app,old_version,new_version,appimage_new_bytes,panpak_new_bytes,downloaded_bytes,client_counted_bytes,downloaded_percent,requests,new_chunks,total_chunks,update_seconds
-ail,2.2.0,3.0.0-beta-3,36542968,44585107,39504718,39504718,88.6052,40,1293,1372,0.9032
-qownnotes,26.10.8,26.10.9,62347768,68977143,5280308,5280308,7.6552,6,151,3201,0.3702
-simplenote,2.27.0,2.27.1,147197267,157216344,1732034,1732034,1.1017,12,78,5424,0.9777
+ail,2.2.0,3.0.0-beta-3,36542968,45216114,39505213,39505213,87.3698,40,1293,1372,3.6752
+qownnotes,26.10.8,26.10.9,62347768,69607998,5280651,5280651,7.5863,6,151,3201,1.8536

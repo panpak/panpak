@@ -2,9 +2,11 @@
 
 **A package format for Linux apps, desktop and command line: one signed file, a layered sandbox, no runtime to download, no root.**
 
+What we want and how we judge our work: [guiding principles](docs/PRINCIPLES.md).
+
 A `.panpak` file carries an application, a signed manifest of what it may do, and a signed index of
 every byte. The signature is checked at every start, and every piece when the app is first unpacked. Then it starts in a sandbox
-built from kernel features, with its own private D-Bus bus; starting an app through all of that adds about 29 ms.
+built from kernel features, with its own private D-Bus bus; starting an app through all of that adds about 27 ms (measured on 2026-11-19, [method](docs/BENCHMARKS.md#fixed-cost-of-a-start)).
 
 > **Status: pre-beta.** The format is not stable yet and there are no releases.
 > Please do not publish packages made with this code: there is no registry, no key policy and no review process yet.
@@ -19,8 +21,9 @@ built from kernel features, with its own private D-Bus bus; starting an app thro
 - **Nothing is made or run before it is verified.** Ed25519 signature over the manifest and the index, BLAKE3 hash
   of every chunk, key pinned at install (trust on first use). The signature and the pinned key are checked at every
   start, and a changed key is refused; key rotation is signed. Every chunk is checked when the app's tree is made,
-  at the first start, and the tree is then read-only. It is not rehashed at every start, so a process of your own
-  user outside the sandbox could still change it ([KL-18](THREAT-MODEL.md#5-known-limitations)).
+  when the app is made ready (at install), and the tree is then read-only. It is not rehashed at every start, so a process of your own
+  user outside the sandbox could still change it ([KL-18](THREAT-MODEL.md#5-known-limitations)); `panpak verify <app>` reads every file of an installed
+  app against the signed index when you ask, which finds a damaged disk or a change made on this machine after the fact (it is a diagnosis, not a guarantee up to the moment the app runs).
 - **A sandbox in layers, each one doing one job:**
   - an isolated view (bubblewrap) with only what the app needs: system folders, its own read-only tree,
     its own data folders, an empty home;
@@ -34,8 +37,14 @@ built from kernel features, with its own private D-Bus bus; starting an app thro
     accessibility reach the desktop through a filter. The router that serves the bus has no
     privileges of its own, and the code that reads the app's messages is fuzzed.
 - **Links and files go through narrow channels.** Links open outside the sandbox only for `http`,
-  `https` and `mailto`, and the app is told when it fails. An app sees the folders its manifest asks for, and
-  a single file only when you open it with `panpak open` or from the file manager.
+  `https` and `mailto`, and the app is told when it fails. Where the desktop has the document portal, the app opens and saves files
+  through the file window of your desktop: it gets the files you pick (and the files you open it with), and nothing else of their folders; a text editor
+  needs no folder permission at all (tested end to end with a second file in the same folder that stays out of reach). Without the portal it sees
+  the folders its manifest asks for, and the install says which ones it can read and change before you confirm.
+- **The author controls the order of versions, and can stop a bad one.** Every release has a revision number that only grows; an update never goes
+  back unless you say so, and the author can set a floor that nothing below is installed or updated to. A version already installed below the
+  floor is not blocked, which would cut you from the app and its data: it starts in *protected mode*, without network and without opening
+  addresses, with a message that says what happened and a button to update ([THREAT-MODEL.md](THREAT-MODEL.md)).
 - **Reproducible.** The same recipe and lock give the same package, byte for byte, in a pinned build image
   (checked by building twice, see [Measured numbers](#measured-numbers)); the release binaries of Panpak itself
   are checked the same way ([REPRODUCIBLE-HASHES.md](REPRODUCIBLE-HASHES.md)).
@@ -44,10 +53,11 @@ built from kernel features, with its own private D-Bus bus; starting an app thro
 
 | What | Measured |
 |---|---|
-| Fixed cost of a start, sandbox and private bus included, launched from the desktop | about 29 ms (26 ms with no bus) |
-| qBittorrent built from source, time to its window | 0.16 s |
-| Update of QOwnNotes 26.10.8 → 26.10.9 | 5.3 MB downloaded, 7.7% of the package |
-| Two GTK 4 apps built in the same image | 61–67% of their stored bytes shared: 32% less to store (a shared store is not built yet) |
+| Fixed cost of a start, sandbox and private bus included, launched from the desktop | about 27 ms (25 ms with no bus), 2026-11-19 |
+| After `install`, the first start of an app | 6 to 29 ms slower than a later start (`install` takes 3.6 to 6.3 s and does the work), 2026-11-19 |
+| qBittorrent built from source, time to its window | 0.16 s, 2026-11-09 |
+| Update of QOwnNotes 26.10.8 → 26.10.9 | 5.3 MB downloaded, 7.6% of the package, 2026-11-19 |
+| Two versions of QOwnNotes running at the same time | 90.8 MiB in all: 24% below two unpacked copies and 39% below two AppImages (PSS), 2026-11-16 |
 
 Every number has a command to redo it, below in [Measured numbers](#measured-numbers).
 
@@ -87,7 +97,7 @@ icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"
 wm_class = "org.gnome.TextEditor"
 
 [permissions]
-xdg_dirs = [{ name = "documents", access = "rw" }]
+dbus_own = ["org.gnome.TextEditor"]
 
 [license]
 spdx = "GPL-3.0-or-later"
@@ -145,8 +155,8 @@ flowchart LR
 When an installed app starts:
 
 1. The launcher runs the installed runtime, never code from the package.
-2. The runtime checks the signature, the pinned key and the index; the first start builds the app's
-   tree from chunks that are each checked, and the tree is then read-only.
+2. The runtime checks the signature, the pinned key and the index. The app's tree was made when you installed it, from chunks that are each
+   checked, so the app is ready when `install` ends and the tree is read-only.
 3. It resolves the libraries: those in the package first, the C library and the graphics stack from the
    system. A missing or incoherent set is an error, never a guess.
 4. It starts the app in its isolated view, applies Landlock and seccomp, and connects it to its private
@@ -158,8 +168,9 @@ limit and its consequence, in [THREAT-MODEL.md](THREAT-MODEL.md).
 ## What an app can ask for
 
 `install` and `update` show what a package asks for before anything is installed, in the language of the user (English and Italian for now), and `panpak inspect <package or app id>` shows it
-again with a sentence on what each permission means. Every permission has a level, always written in words and with a mark (`[ ]` Normal, `[!]` Attention, `[!!]` High risk). The summary says
-"Full isolation" when nothing is High risk, and "Partial isolation" with the reason when something is. The list also says what the app cannot do. Only what the sandbox keeps is listed; the table
+again with a sentence on what each permission means. Every permission has a level, always written in words and with a mark (`[ ]` Normal, `[!]` Attention, `[!!]` High risk). The first line of the summary
+says "Full isolation" only when the app has no folder of yours at all; when it can change files in one it says "The app can read and change the files in <folder>", when it can only read them
+"The app can read the files in <folder>", and when something is High risk it says "Partial isolation" with the reason and then the folders. The list also says what the app cannot do. Only what the sandbox keeps is listed; the table
 below is printed by `panpak permissions --markdown`, and a test fails when it is out of date.
 
 <!-- permissions:start -->
@@ -194,6 +205,9 @@ A new language is a file `po/<language>.po`: no code changes. A sentence without
 
 ## Panpak and the others
 
+Flatpak, Snap and AppImage solved hard problems, and Panpak learns from them and works with the standards they helped to build (portals, for example); the
+principles say how we compare ([docs/PRINCIPLES.md](docs/PRINCIPLES.md)). Where another format does better, the numbers below say so.
+
 |  | Panpak | AppImage | Flatpak | Snap |
 |---|---|---|---|---|
 | One file you can copy | yes | yes (needs FUSE 2, or extraction) | a bundle exists, without its dependencies | a `.snap` file; needs snapd and its base snap |
@@ -209,9 +223,10 @@ Snap on the same apps are planned before the beta; the one with AppImage is in [
 
 ## Status and limits
 
-Panpak is pre-beta. What works today: verified install and start, the layered sandbox, the private
-D-Bus bus per app, desktop integration (menu entry, icon, uninstall action), delta updates, source
-builds for the example recipes. Main limits now (all listed in
+Panpak is pre-beta. What works today: verified install and start (the app is ready when `install` ends), the layered sandbox, the private
+D-Bus bus per app, the file window of the desktop through the document portal, desktop integration (menu entry, icon, uninstall action),
+delta updates that are downloaded in the background and applied when the app is closed, one copy of each file in the store, the release table
+(revision, floor, channel, history) with protected mode, and source builds for the example recipes. Main limits now (all listed in
 [THREAT-MODEL.md](THREAT-MODEL.md#5-known-limitations)):
 
 - GNOME's compositor does not offer a Wayland security context yet; there the app has the normal
@@ -234,14 +249,17 @@ or later for packages built with the current image. `panpak doctor` checks a sys
 
 ## Roadmap
 
-Before the beta, in this order:
+Before the beta, in this order. State on 2026-11-19.
 
-1. **File chooser through the portal**: the app receives only the files the user picks, so most apps
-   need no folder permission at all.
-2. **Shared store and instant start**: pieces shared between apps, apps ready at install, updates
-   prepared in the background.
-3. **Trust and repository**: certified CI keys, revocation, a signed index, a list of the libraries in
-   each package.
+1. **File chooser through the portal.** *Done.* The app receives only the files the user picks, so most apps need no folder permission: the
+   Text Editor recipe has none, and the install summary names any folder an app can change. Tested through the real portals
+   (`tests/privbus.py`, scenarios D and T).
+2. **Shared store and instant start.** *Done.* One copy of each file in the store, the app ready when `install` ends, updates prepared in the
+   background and applied when the app is closed, a rotating daily check of the files, collection of what nothing reaches any more.
+3. **Trust and repository.** *In progress (step 9).* Done: a signed message with a signature block, a signed `[format]` table that older readers
+   refuse to guess about, the release table (revision, floor, channel, history), protected mode for a withdrawn version. To do: publisher keys
+   (a mother key, a recovery key, a chain of succession tied to the app), the ELF and library names in the signed index, what an app needs from the
+   host, the list of devices, a software bill of materials, and the confirmation of the publisher's domain at the first install.
 4. **App metadata and a Panpak app** to install and manage apps with a few clicks.
 5. **Browsers and Electron** in the sandbox, with a broker of our own.
 6. **Developer tools**: `panpak init` that understands a project, `panpak run --dev`, a CI template,
@@ -259,21 +277,22 @@ One machine (Ryzen 7 7735HS, Ubuntu 26.04), medians of several runs. Method, raw
 
 | Measure | Result | Redo it |
 |---|---|---|
-| Fixed cost of a start (desktop / terminal) | 29 ms / 41 ms (no bus: 26 ms) | `python3 tests/startup_budget.py --runs 40 --dbus` from a terminal; for the desktop case run it inside `systemd-run --user --scope --unit app-panpak.org.example.budget-<n>.scope` ([how](docs/BENCHMARKS.md#fixed-cost-of-a-start)) |
-| Update size, three apps | 1.1% to 88.6% of the package | `python3 bench/inputs.py fetch && python3 bench/public_bench.py delta` |
-| First start after install; later start | 0.3–0.7 s; 38–81 ms | `python3 bench/public_bench.py start` |
-| Time to window, apps built from source | Text Editor 0.37 s, qBittorrent 0.16 s, Ghostty 0.27 s | `python3 tests/apps/run.py --apps tests/apps/apps.example.toml --full --group source` |
-| Start of a command-line program (later) | Neovim `--version`: 32 ms | [how](docs/BENCHMARKS.md#start-of-a-command-line-program) |
-| Memory of two versions of an app running at once (QOwnNotes) | 90.8 MiB, against 118.8 for two unpacked copies and 148.5 for two AppImages (PSS) | `python3 bench/shared_memory.py --apps qownnotes` ([how](docs/BENCHMARKS.md#memory-of-two-apps-that-run-at-the-same-time)) |
-| Chunks shared by two GTK 4 apps | 67% and 61% of the stored bytes; 32% less to store | `python3 bench/shared_chunks.py <text-editor.panpak> <ghostty.panpak>` |
+| Fixed cost of a start (desktop / terminal), 2026-11-19 | 27 ms / 41 ms (no bus: 25 ms) | `python3 tests/startup_budget.py --runs 40 --dbus` from a terminal; for the desktop case run it inside `systemd-run --user --scope --unit app-panpak.org.example.budget-<n>.scope` ([how](docs/BENCHMARKS.md#fixed-cost-of-a-start)) |
+| Update size, two apps (a third, Simplenote, is from 2026-10-31 and cannot be installed on the measuring machine now), 2026-11-19 | 7.6% and 87.4% of the package | `python3 bench/inputs.py fetch && python3 bench/public_bench.py delta` |
+| `install`; first start; later start, 2026-11-19 | 3.6–6.3 s; 52–110 ms; 38–81 ms (the first start was 0.3–0.7 s before step 8) | `python3 bench/public_bench.py start` |
+| Time to window, apps built from source, 2026-11-09 (not measured again since steps 8 and 9) | Text Editor 0.37 s, qBittorrent 0.16 s, Ghostty 0.27 s | `python3 tests/apps/run.py --apps tests/apps/apps.example.toml --full --group source` |
+| Start of a command-line program (later), 2026-11-09 | Neovim `--version`: 32 ms | [how](docs/BENCHMARKS.md#start-of-a-command-line-program) |
+| Memory of two versions of an app running at once (QOwnNotes), 2026-11-16 | 90.8 MiB, against 118.8 for two unpacked copies and 148.5 for two AppImages: 24% and 39% below them (PSS, medians of 5; idle apps, headless) | `python3 bench/shared_memory.py --apps qownnotes` ([how](docs/BENCHMARKS.md#memory-of-two-apps-that-run-at-the-same-time)) |
+| Chunks in common between two GTK 4 apps, 2026-11-09 (a count, the potential; the disk use of two apps in one store was not measured) | 67% and 61% of the stored bytes; 32% less if each chunk were stored once | `python3 bench/shared_chunks.py <text-editor.panpak> <ghostty.panpak>` |
 | Same recipe, same package | identical bytes in two builds | `panpak build . -o a.panpak && panpak build . -o b.panpak && cmp a.panpak b.panpak` |
 
 Where Panpak does worse today:
 
-- The first start unpacks the app: 8 to 13 times a later start.
-- A tiny command-line program starts slower than its AppImage (38 ms against 20 ms).
-- An update can save little when most of an app changes (88.6% for one pair).
-- The private bus and its two proxies add about 3 to 4 ms to a start from the menu and 15 to 16 ms from a terminal, and a call to a portal
+- `install` takes seconds (3.6 to 6.3 s here) because it makes the app ready; an AppImage has nothing to do at install.
+- A tiny command-line program starts slower than its AppImage (38 ms against 19 ms).
+- An update can save little when most of an app changes (87.4% for one pair).
+- The packages are 7% to 24% larger than the AppImage they come from (three apps).
+- The private bus and its two proxies add about 3 to 4 ms to a start from the menu and 15 to 16 ms from a terminal (measured at step 13p, 2026-11-09), and a call to a portal
   takes 150 to 200 µs longer ([docs/PRIVATE-BUS.md](docs/PRIVATE-BUS.md)).
 
 ## Quick start

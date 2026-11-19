@@ -174,7 +174,7 @@ those interfaces. This differs from the first sentence of the brief ("reopen Pro
 
 | App | Without `xdg_dirs` | Comment |
 |---|---|---|
-| Text Editor | yes, for documents, desktop and downloads | files are chosen, saved or restored from `recent` through documents; **[to test]** the restore of the open files after a restart; opening a file from the command line or from the file manager is covered by 3.9 |
+| Text Editor | yes, for documents, desktop and downloads | files are chosen, saved or restored from `recent` through documents; **tested end to end** (`tests/privbus.py`, scenario T: open, change and save over with a temporary file and a rename as GLib does, save as, close and open again from the address the app kept; the second document of the same folder stays out of reach; a control with the folder given shows the test can tell); the recipe has no `xdg_dirs`; opening a file from the command line or from the file manager is covered by 3.9 |
 | qBittorrent | the `.torrent` yes; the download folder only after the user picks it once | the default `~/Downloads` is gone from the view, so the first start asks; or keep `xdg_dirs = download` |
 | Ghostty | not applicable | a terminal needs the shell's view of the home, not the dialog |
 

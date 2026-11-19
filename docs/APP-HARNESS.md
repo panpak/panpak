@@ -82,8 +82,8 @@ the user sees at install (level Attention) and it opens no device file.
   `min_window` says: LMMS asks for its working directory in a dialog of 500x114). It
   includes the whole start: the outer stub, the check of the package, the
   sandbox, the app itself. In `--full` mode it is the median of five starts after
-  a first one; the first start is left out because it unpacks the package into the
-  store. In fast mode it is that single first start, so it is larger and noisy:
+  a first one; the first start is left out because it still fills the caches of the app
+  (`install` already made the tree). In fast mode it is that single first start, so it is larger and noisy:
   use it to see that an app starts, not to compare.
 - **package** is the time to make the package (`cached` when it was kept). For a
   recipe this is the whole `panpak build`; below the table the log gives its phases, one line each:

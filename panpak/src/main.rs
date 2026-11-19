@@ -35,7 +35,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -623,6 +623,86 @@ fn verify_tree(tree: &Path, chunks: &[panpak_core::Chunk], entries: &[panpak_cor
         }
     }
     (bad, good)
+}
+
+/// What is in a tree and not in the signed index: a file or a folder that nobody signed. The marks of the store at the top (`.complete`, the `.farm` link, `.panpak-*`) are the
+/// store's own and are left out. The tree is read, never changed, and a link is not followed.
+fn extras_in_tree(tree: &Path, entries: &[panpak_core::Entry]) -> Vec<PathBuf> {
+    let known: std::collections::HashSet<&Path> = entries.iter().map(|e| e.path.as_path()).collect();
+    let mut extra = Vec::new();
+    let mut stack = vec![PathBuf::new()];
+    while let Some(rel) = stack.pop() {
+        let Ok(rd) = fs::read_dir(tree.join(&rel)) else { continue };
+        for e in rd.flatten() {
+            let r = rel.join(e.file_name());
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if rel.as_os_str().is_empty() && (name == ".complete" || name == panpak_core::libpath::FARM_LINK || name.starts_with(".panpak-")) {
+                continue;
+            }
+            if !known.contains(r.as_path()) {
+                extra.push(r);
+            } else if e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(r);
+            }
+        }
+    }
+    extra.sort();
+    extra
+}
+
+/// `panpak verify [--json] <app-id>`: read every file of the installed version of an app against the signed index, now, and say what differs (a file that is missing,
+/// changed or of another kind, and a file that nobody signed). It changes nothing. It is a diagnosis of a damaged disk or of a change made on this machine, after the
+/// fact; it is not a guarantee up to the moment the app runs (the files are not read again at a start, KL-18 of THREAT-MODEL.md). `repair` makes the files right again.
+fn cmd_verify(app_id: &str, json: bool) -> Result<()> {
+    panpak_core::validate_app_id(app_id)?;
+    let store = store_dir()?;
+    let _store_lock = panpak_core::applock::store_shared(&store, panpak_core::applock::WAIT)?;
+    let _app_lock = panpak_core::applock::lock(&store, app_id)?;
+    let appdir = store.join("apps").join(app_id);
+    let rec_path = panpak_core::durable::resolve_link(&appdir.join("current")).with_context(|| format!("{app_id} is not installed (see `panpak list`)"))?;
+    let rec = panpak_core::record::open_verified(&rec_path).context("the record of the installed version does not verify (its signature or its index)")?;
+    ensure!(rec.is_record, "the installed version is not kept as a record: reinstall the app");
+    let (chunks, entries) = panpak_core::parse_index(&rec.raw_index)?;
+    let tree = store.join("trees").join(panpak_core::hex(&rec.footer.root));
+    ensure_code!(tree.join(".complete").exists(), ErrorCode::E2007, "the files of the app are missing from the store: run `panpak repair {app_id}`");
+    let (bad, _) = verify_tree(&tree, &chunks, &entries);
+    let extra = extras_in_tree(&tree, &entries);
+    let files = entries.iter().filter(|e| matches!(e.kind, panpak_core::Kind::File { .. })).count();
+    let bytes: u64 = chunks.iter().map(|c| c.raw as u64).sum();
+    let names = |v: &[PathBuf]| v.iter().map(|p| p.display().to_string()).collect::<Vec<_>>();
+    if json {
+        let j = remove::json_str;
+        let list = |v: &[PathBuf]| names(v).iter().map(|n| j(n)).collect::<Vec<_>>().join(",");
+        println!(
+            "{{\"id\":{},\"version\":{},\"root\":{},\"files\":{files},\"bytes\":{bytes},\"ok\":{},\"modified\":[{}],\"extra\":[{}]}}",
+            j(app_id),
+            j(&rec.manifest.app.version),
+            j(&panpak_core::hex(&rec.footer.root)),
+            bad.is_empty() && extra.is_empty(),
+            list(&bad),
+            list(&extra)
+        );
+    } else if bad.is_empty() && extra.is_empty() {
+        println!(
+            "{app_id} {}: the signature of the record is good and all {files} files ({bytes} bytes) match the signed index (root {}).\nThis is a check of the files in the store now: it does not prove that they stay as they are until the app runs.",
+            rec.manifest.app.version,
+            &panpak_core::hex(&rec.footer.root)[..16]
+        );
+    } else {
+        for (what, v) in [("missing, changed or of another kind", &bad), ("not in the signed index", &extra)] {
+            if !v.is_empty() {
+                println!("{app_id}: {} file(s) {what}, for example {}", v.len(), names(v).iter().take(5).cloned().collect::<Vec<_>>().join(", "));
+            }
+        }
+    }
+    ensure_code!(
+        bad.is_empty() && extra.is_empty(),
+        ErrorCode::E2007,
+        "{} file(s) of {app_id} do not match the signed index: a damaged disk or a change made on this machine; run `panpak repair {app_id}` to make them right",
+        bad.len() + extra.len()
+    );
+    Ok(())
 }
 
 /// Remove a tree of the store: its folders are not writable, so they are made writable first.
@@ -3511,7 +3591,7 @@ fn generic_code(sub: Option<&str>) -> ErrorCode {
         Some("pack" | "convert" | "dump-index" | "dump-manifest" | "dbus-rules") => ErrorCode::E0000,
         Some("keygen" | "release" | "install-runtime") => ErrorCode::E1000,
         Some("init" | "build") => ErrorCode::E6000,
-        Some("install" | "rollback" | "repair" | "apply" | "gc" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove" | "inspect" | "permissions") => ErrorCode::E2000,
+        Some("install" | "rollback" | "repair" | "verify" | "apply" | "gc" | "open" | "doctor" | "desktop-integration" | "data" | "list" | "remove" | "inspect" | "permissions") => ErrorCode::E2000,
         Some("update") => ErrorCode::E4000,
         _ => ErrorCode::E5000,
     }
@@ -3539,7 +3619,7 @@ fn real_main() -> Result<()> {
     // The commands that open the store bring the launchers and entries of a copied store to it. Not the end-of-run jobs, nor the start-time apply.
     let opens_store = matches!(
         args.get(1).map(String::as_str),
-        Some("list" | "doctor" | "update" | "rollback" | "repair" | "remove" | "open" | "permissions" | "data" | "gc" | "config" | "install" | "inspect")
+        Some("list" | "doctor" | "update" | "rollback" | "repair" | "verify" | "remove" | "open" | "permissions" | "data" | "gc" | "config" | "install" | "inspect")
     ) || (args.get(1).map(String::as_str) == Some("apply") && !args.iter().any(|a| a == "--at-start"));
     if opens_store {
         reconcile_integration();
@@ -3668,6 +3748,18 @@ fn real_main() -> Result<()> {
             }
             let id = id.ok_or_else(|| coded(ErrorCode::E5002, "repair [--from <package>] <app-id>"))?;
             cmd_repair(&id, from.as_deref(), insecure, timeout)
+        }
+        Some("verify") => {
+            let (mut json, mut id) = (false, None);
+            for a in &args[2..] {
+                match a.as_str() {
+                    "--json" => json = true,
+                    x if x.starts_with("--") => bail_code!(ErrorCode::E5001, "unknown option {x}"),
+                    x => id = Some(x.to_string()),
+                }
+            }
+            let id = id.ok_or_else(|| coded(ErrorCode::E5002, "verify [--json] <app-id>"))?;
+            cmd_verify(&id, json)
         }
         Some("rollback") => {
             let id = args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "rollback <app-id>"))?;

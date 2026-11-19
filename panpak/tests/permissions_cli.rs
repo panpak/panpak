@@ -95,12 +95,32 @@ fn it(msgid: &str) -> String {
 
 const RICH: &str = "[permissions]\nx11 = true\nnetwork = true\nnetwork_allow_tcp = [443]\nnotifications = true\n[[permissions.home_paths]]\npath = \"Notes\"\naccess = \"ro\"\n";
 
+const NOTES_RW: &str = "[permissions]\n[[permissions.home_paths]]\npath = \"Notes\"\naccess = \"rw\"\n[[permissions.xdg_dirs]]\nname = \"documents\"\naccess = \"rw\"\n";
+
+#[test]
+fn an_app_that_can_change_a_folder_of_yours_is_never_full_isolation_and_the_first_line_names_the_folders() {
+    let l = Lab::new("folders");
+    let pkg = l.package("notes", NOTES_RW);
+    for t in [text(&l.cli("C", &["inspect", pkg.to_str().unwrap()])), text(&l.cli("C", &["install", "--yes", pkg.to_str().unwrap()]))] {
+        let first = t.lines().find(|l| l.contains("isolation") || l.starts_with("The app can")).unwrap_or("");
+        assert!(!t.contains("Full isolation"), "{t}");
+        assert!(first.starts_with("The app can read and change the files in ") && first.contains("Notes") && first.contains("documents"), "{first:?} in {t}");
+        // The same two folders are in the list, before anything is asked.
+        assert!(t.contains("Read, change and delete Notes in your home folder") && t.contains("in your documents folder"), "{t}");
+    }
+    let it_out = text(&l.cli("it_IT.UTF-8", &["inspect", pkg.to_str().unwrap()]));
+    let (msgid, full) = ("The app can read and change the files in {folders}.", self::it("Full isolation"));
+    let translated = self::it(msgid);
+    let start = translated.split("{folders}").next().unwrap();
+    assert!(translated != msgid && it_out.contains(start) && !it_out.contains(&full), "{it_out}");
+}
+
 #[test]
 fn install_shows_the_summary_the_levels_in_words_and_what_it_cannot_do() {
     let l = Lab::new("install");
     let pkg = l.package("rich", RICH);
     let t = text(&l.cli("C", &["install", "--yes", pkg.to_str().unwrap()]));
-    assert!(t.contains("Partial isolation: it can watch other apps (X11)\n"), "{t}");
+    assert!(t.contains("Partial isolation: it can watch other apps (X11). The app can read the files in Notes.\n"), "{t}");
     assert!(t.contains("[!!] High risk") && t.contains("[!] Attention") && t.contains("[ ] Normal"), "{t}");
     assert!(!t.contains("It cannot use the internet"), "an app with the network must not say that it cannot use it: {t}");
     // No color and no Unicode symbols when the output is not a terminal and the locale is not UTF-8.

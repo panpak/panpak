@@ -49,7 +49,7 @@ executable links the system one by `pkg-config`, with `RUNPATH` to the system fo
 
 | App | Build | Start | Wayland, no X11 | Use tests | Problems |
 |---|---|---|---|---|---|
-| Text Editor 48.3 (GTK 4, libadwaita) | ok, 7 s | window in 0.52 s (median of 5, first excluded) | yes: no `x11` permission, no `DISPLAY`, window in Sway | light and dark follow the portal live (mean brightness 0.97 light, 0.13 dark, dark again after switching back); opens a file given on the command line; saves with the GTK file dialog into the granted `documents` folder; settings persist (keyfile backend, F15); symbolic icons render (SVG pixbuf loader collected) | F11 (D-Bus name), F12 (a11y bus), F15 (GSettings), F28 (no `glibc_min`). Only a close button was seen: the GNOME default layout, and the headless run has no GSettings to say otherwise; minimize and maximize were not tested |
+| Text Editor 48.3 (GTK 4, libadwaita) | ok, 7 s | window in 0.52 s (median of 5, first excluded) | yes: no `x11` permission, no `DISPLAY`, window in Sway | light and dark follow the portal live (mean brightness 0.97 light, 0.13 dark, dark again after switching back); opens a file given on the command line; saves with the GTK file dialog into the `documents` folder (measured with an earlier recipe that granted the folder; it has no folder grant now and the dialog alone is tested: `docs/FILE-CHOOSER.md` 3.8); settings persist (keyfile backend, F15); symbolic icons render (SVG pixbuf loader collected) | F11 (D-Bus name), F12 (a11y bus), F15 (GSettings), F28 (no `glibc_min`). Only a close button was seen: the GNOME default layout, and the headless run has no GSettings to say otherwise; minimize and maximize were not tested |
 | qBittorrent 5.2.4 (Qt 6, CMake) | ok, 225 s (`-j4`) | window in 0.31 s | yes (platform plugin `wayland`, no `xcb` plugin collected) | window and menus; legal notice pre-accepted as in the AppImage tests; tray: the app calls `RegisterStatusNotifierItem` on the watcher through the filtered bus (seen with `dbus-monitor`; a fake watcher cannot draw it); notifications: the `Notify` rules are granted but no notification was triggered; dark at start follows the portal | F25 (SVG plugins), F26 (platform theme plugin), F27 (no live switch). The "listen on local socket failed, Name error" line is old: the AppImage logs of step 7 have it too |
 | Ghostty 1.3.1 (GTK 4, Zig) | ok, 187 s (`-j3`, with the package download) | window in 0.41 s, OpenGL 4.5 | yes | Phase 1: window, rendering, no shell (F21). **After the correction of F21 and F19**: a shell with colors (`TERM=xterm-ghostty`, 256 colors, red, green and blue text rendered), paste from the clipboard (`Ctrl+Shift+V`), select all and copy (`Ctrl+Shift+A`, `Ctrl+Shift+C`; the clipboard held the terminal text), no `prefer_host` needed for OpenGL 4.5. **Custom shader** (`custom-shader` with a GLSL file that tints the output red): the shader is loaded and applied (mean color of the window 187/23/29 against 41/46/55 without it), so rendering is right with a custom shader and not only a window that opens. Opening a link: **not verified** (the injected Ctrl+click did not reach Ghostty; no `xdg-open` call and no portal call were seen, F29). Single instance with a native Ghostty: F22 and F23 | F16 to F24, F29 |
 
@@ -304,10 +304,6 @@ icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"
 
 [permissions]
 dbus_own = ["org.gnome.TextEditor"]
-
-[[permissions.xdg_dirs]]
-name = "documents"
-access = "rw"
 
 [license]
 spdx = "GPL-3.0-or-later"

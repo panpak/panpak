@@ -128,6 +128,12 @@ msgstr "Panpak: l'app non è stata rimossa"
 msgid "Partial isolation:"
 msgstr "Isolamento parziale:"
 
+msgid "The app can read and change the files in {folders}."
+msgstr "L'app può leggere e modificare i file in {folders}."
+
+msgid "The app can read the files in {folders}."
+msgstr "L'app può leggere i file in {folders}."
+
 msgid "Play sound and use the microphone"
 msgstr "Riprodurre l'audio e usare il microfono"
 

@@ -166,7 +166,9 @@ class Lab:
         isolation.require_isolated_home(self.home, WORK)
         self.runtime = isolation.owned_mkdtemp('pb-rt-')
         self.env = {'PATH': os.environ['PATH'], 'HOME': str(self.home), 'XDG_DATA_HOME': str(self.home / '.local/share'),
-                    'XDG_RUNTIME_DIR': self.runtime, 'LANG': os.environ.get('LANG', 'C.UTF-8')}
+                    'XDG_RUNTIME_DIR': self.runtime, 'LANG': os.environ.get('LANG', 'C.UTF-8'),
+                    # The daily background job (check and verification, started 20 s after a start) is not part of what is measured, and it would write into the home while it is removed.
+                    'PANPAK_NO_BACKGROUND': '1'}
 
     def panpak(self, *args, env=None, timeout=300):
         return timed([BIN / 'panpak', *args], dict(self.env, **(env or {})), timeout)
@@ -241,7 +243,14 @@ def measure_delta(out_dir, meta):
         _, old_chunks = incremental.index(old)
         have = {(h, comp, raw) for h, _, comp, raw in old_chunks}
         missing = [c for c in chunks if (c[0], c[2], c[3]) not in have]
-        lab.install(work / 'old.panpak')
+        try:
+            lab.install(work / 'old.panpak')
+        except SystemExit as e:
+            # Since step 8 `install` makes the app ready, which needs its libraries on the host: an app whose libraries this machine lacks is not installed, and has no update to measure.
+            print(f'{name}: not installed here, no update measured: {str(e).splitlines()[-1][:160]}', flush=True)
+            lab.close()
+            rmtree(work)
+            continue
         log = work / 'ranges.jsonl'
         server = subprocess.Popen([sys.executable, ROOT / 'tests/range_server.py', work, str(port), 'normal'],
                                   env=dict(os.environ, PANPAK_RANGE_LOG=str(log)),
@@ -255,8 +264,10 @@ def measure_delta(out_dir, meta):
             server.wait(timeout=5)
         reqs = [json.loads(l) for l in log.read_text().splitlines()]
         got = sum(r['bytes'] for r in reqs)
-        current = lab.home / '.local/share/panpak/apps/org.example.incremental/current'
-        assert current.resolve().read_bytes() == new, 'the updated package differs from the remote one'
+        # The store keeps a record and a tree, not the package file (step 8): what is installed is the new version, and every file of it matches the signed index.
+        lab.panpak('list', '--json')
+        assert '"version":"1.1"' in LAST.stdout, f'the new version is not the installed one: {LAST.stdout[:300]}'
+        lab.panpak('verify', 'org.example.incremental')
         rows.append(dict(app=name, old_version=inputs.BY_KEY[app['old']]['version'], new_version=inputs.BY_KEY[app['new']]['version'],
                          appimage_new_bytes=inputs.BY_KEY[app['new']]['size'], panpak_new_bytes=len(new), downloaded_bytes=got,
                          client_counted_bytes=client,

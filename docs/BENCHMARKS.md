@@ -18,9 +18,10 @@ comparison with Flatpak or Snap, which have not been measured.
 | Landlock | ABI V8 |
 | Bubblewrap | 0.11.1 |
 | Build | release, `x86_64-unknown-linux-musl`, rustc 1.99.1 |
-| Date of the run | 2026-10-31 |
+| Date of the run | 2026-10-31 for the cost of the view and the resolution; 2026-11-19 for the update size, the start time and the fixed cost of a start (main at 08b0ea3, the machine as above, kernel 7.0.0-43) |
 
-The CSV files also hold the commit and the first hex digits of the SHA-256 of the two binaries.
+The CSV files also hold the commit and the first hex digits of the SHA-256 of the two binaries. Each section says on which date it was measured; a number that is not dated there is
+from the run of 2026-10-31. The runs of 2026-11-19 were made with the bench script of this change (the daily background job is off during them: `PANPAK_NO_BACKGROUND=1`), so the CSV says `-dirty` next to the commit.
 
 ## Inputs
 
@@ -53,16 +54,21 @@ to the local server; the content is not changed. One run per app: the number of 
 
 | App | Old to new | New AppImage | New package | Fetched by `update` | Share of the package | Chunks new / total | Requests |
 |---|---|---:|---:|---:|---:|---:|---:|
-| AppImageLauncher Lite | 2.2.0 to 3.0.0-beta-3 | 36,542,968 | 44,585,107 | 39,504,718 | 88.6% | 1,293 / 1,372 | 40 |
-| QOwnNotes | 26.10.8 to 26.10.9 | 62,347,768 | 68,977,143 | 5,280,308 | 7.7% | 151 / 3,201 | 6 |
-| Simplenote | 2.27.0 to 2.27.1 | 147,197,267 | 157,216,344 | 1,732,034 | 1.1% | 78 / 5,424 | 12 |
+| AppImageLauncher Lite | 2.2.0 to 3.0.0-beta-3 | 36,542,968 | 45,216,114 | 39,505,213 | 87.4% | 1,293 / 1,372 | 40 |
+| QOwnNotes | 26.10.8 to 26.10.9 | 62,347,768 | 69,607,998 | 5,280,651 | 7.6% | 151 / 3,201 | 6 |
+| Simplenote (measured on 2026-10-31, not again) | 2.27.0 to 2.27.1 | 147,197,267 | 157,216,344 | 1,732,034 | 1.1% | 78 / 5,424 | 12 |
+
+AppImageLauncher Lite and QOwnNotes were measured on 2026-11-19 (main at 08b0ea3); the packages are 0.6 MB larger than on 2026-10-31 because they now carry the signed `[format]`
+and `[release]` tables and the signature block. Simplenote is the row of 2026-10-31: since step 8 `install` makes the app ready, which needs its libraries on the host, and this machine lacks
+`libdbus-glib-1.so.2`, `libdbusmenu-gtk.so.4` and `libgtk-x11-2.0.so.0`, so it cannot be installed here and was not measured again (the bench says so and goes on). The chart has the two
+apps of the day; the check of the bench after an update is now `panpak list --json` and `panpak verify` (the store keeps a record and a tree, not the package file).
 
 Where Panpak does worse:
 
 - When most of the app changes, an update saves almost nothing: AppImageLauncher between these two
-  versions fetches 88.6% of the package.
-- The package is larger than the AppImage it comes from: 22% for AppImageLauncher, 10.6% for QOwnNotes,
-  6.8% for Simplenote. For AppImageLauncher the update (39.5 MB) is larger than the new AppImage
+  versions fetches 87.4% of the package.
+- The package is larger than the AppImage it comes from: 24% for AppImageLauncher, 11.6% for QOwnNotes,
+  6.8% for Simplenote (2026-10-31). For AppImageLauncher the update (39.5 MB) is larger than the new AppImage
   (36.5 MB). An AppImage user who updates with a delta tool such as zsync was not measured.
 
 ## Start time
@@ -72,8 +78,8 @@ Method: the command is one that exits, the same on both sides, and the run must 
 Times are measured around `subprocess.run` with a monotonic clock. The commands do not open a window:
 the time of the first window is a different measure (see below).
 
-- *First start*: a new isolated HOME, `panpak install`, then the first run, which builds the tree from
-  the package, resolves the libraries and fills the cache. Five repetitions, each in a new HOME.
+- *Install* and *first start*: a new isolated HOME, `panpak install`, then the first run. Since step 8 `install` makes the tree, resolves the libraries and fills the cache, so the
+  first run has nothing left to build (before it, on 2026-10-31, `install` took about 0.1 s and the first start 0.3 to 0.7 s). Five repetitions, each in a new HOME.
 - *Later start, warm*: two runs discarded, then ten.
 - *Later start, cold*: the files of the package, the tree and the runtime are dropped from the page cache
   (`POSIX_FADV_DONTNEED`) before each of ten runs. Host libraries stay cached.
@@ -85,23 +91,24 @@ the time of the first window is a different measure (see below).
   <img alt="Start time" src="bench-data/start.svg">
 </picture>
 
-Medians in milliseconds (minimum to maximum in brackets):
+Measured on 2026-11-19 (main at 08b0ea3). Medians in milliseconds (minimum to maximum in brackets):
 
-| App | `install` | Panpak, first start | Panpak, later, warm | Panpak, later, cold | AppImage, warm | AppImage, cold |
+| App | Panpak, `install` | Panpak, first start | Panpak, later, warm | Panpak, later, cold | AppImage, warm | AppImage, cold |
 |---|---:|---:|---:|---:|---:|---:|
-| AppImageLauncher Lite | 103 | 309 (305-314) | 38 (36-42) | 217 (37-225) | 20 (19-25) | 20 (18-25) |
-| QOwnNotes | 93 | 595 (578-606) | 47 (43-60) | 234 (56-250) | 213 (204-236) | 293 (279-297) |
-| PrusaSlicer | 102 | 706 (690-830) | 81 (76-85) | 180 (82-188) | 314 (302-319) | 437 (379-458) |
+| AppImageLauncher Lite | 3,641 (3,051-3,981) | 52 (40-58) | 38 (36-44) | 241 (233-286) | 19 (17-20) | 61 (59-64) |
+| QOwnNotes | 5,081 (3,517-5,627) | 66 (59-70) | 60 (45-71) | 261 (258-283) | 205 (192-215) | 284 (262-297) |
+| PrusaSlicer | 6,319 (5,672-7,083) | 110 (80-157) | 81 (75-109) | 195 (191-203) | 303 (292-307) | 423 (387-451) |
+
+The whole measurement was run twice on the same day, and the second run is the one in the table and in the CSV. The first run gave later warm starts of 52 ms for AppImageLauncher
+and 44 ms for QOwnNotes (38 and 60 ms in the table): between two runs the small numbers move by about 15 ms, so a difference smaller than that between two rows is not a result.
 
 What the numbers show:
 
-- **The first start extracts the app.** It takes 0.3 to 0.7 s here, 8 to 13 times a later warm start.
-  An AppImage has no such step. The time depends on the size of the app and on the disk.
-- **A later warm start is fast.** For QOwnNotes and PrusaSlicer it is 4.5 and 3.9 times faster than the
-  AppImage, which mounts its image through FUSE at every start.
-- **For a very small program Panpak is slower**: `ail-cli --help` takes 38 ms against 20 ms.
-- **A cold later start is slow and uneven.** The medians are 180 to 234 ms and the ranges are wide (for
-  AppImageLauncher 37 to 225 ms). The spread was not investigated.
+- **The work of the first start moved to `install`.** `install` takes 3.6 to 6.3 s here and makes the app ready: its tree, its libraries and its cache. The first start is then close to a later one
+  (52 against 38 ms, 66 against 60, 110 against 81: 6 to 29 ms more), where it took 0.3 to 0.7 s on 2026-10-31. An AppImage has no such step; the time is spent once, at install, and depends on the size of the app and the disk.
+- **A later warm start is fast for apps that are not tiny.** For QOwnNotes and PrusaSlicer it is 3.4 and 3.7 times faster than the AppImage, which mounts its image through FUSE at every start.
+- **For a very small program Panpak is slower**: `ail-cli --help` takes 38 ms against 19 ms.
+- **A cold later start is slow and uneven.** The medians are 195 to 261 ms. The AppImage is also slower cold (61 to 423 ms). The spread was not investigated.
 
 The time to the first window of real GUI apps, with a first start and later starts, is in
 [COMPATIBILITY.md](COMPATIBILITY.md) (one first start and the median of five later starts, measured by a
@@ -151,6 +158,13 @@ gives and a bare test runner does not. The rows are in [`bench-data/startup-budg
 | main after step 13p (cdfc28f) | no | 1.0 ms | 26.6 ms | 25.6 ms |
 | main after step 13p (cdfc28f) | yes, the stub makes its own scope (terminal) | 1.0 ms | 42.3 ms | 41.4 ms |
 | main after step 13p (cdfc28f) | yes, started in the app's scope (menu) | 1.0 ms | 30.1 ms | 29.1 ms |
+| main 08b0ea3, 2026-11-19 (steps 8 and 9 in) | no | 1.0 ms | 26.0 ms | 25.1 ms |
+| main 08b0ea3, 2026-11-19 | yes, the stub makes its own scope (terminal) | 0.9 ms | 41.5 ms | 40.6 ms |
+| main 08b0ea3, 2026-11-19 | yes, started in the app's scope (menu) | 1.0 ms | 27.8 ms | 26.9 ms |
+
+The last three rows are the current state (2026-11-19, 40 runs each, the commands below, from the same machine as the rows above; the 90th percentiles are in the CSV). The step 9 work (the
+release table, protected mode) is inside them: a start that is not in protected mode looks for one file, and `tests/startup_budget.py --protected` measures a protected start.
+Older rows are kept with their labels: they show what each step cost at the time, not what a start costs now.
 
 Rows for step 13p (the private bus: a router process for each app and two proxies) were measured on another day than the rows above, and the
 machine was slower that day: in the same series (`main` before and after the step, alternating, two rounds) the step adds 0.3 to 0.8 ms
@@ -218,8 +232,9 @@ checked at every start whether or not the cache is used (see `STARTUP-CACHE.md`)
 
 Method: `tests/apps/run.py --full` with the list of `tests/apps/apps.example.toml` (headless Sway, an isolated HOME for each app, the package built by
 `panpak build` in the pinned image): the first start, then five starts, and the median of the five is the time from the start of the launcher to the first
-window of the app. Measured on the final build of step 13p: Text Editor 0.37 s, qBittorrent 0.16 s, Ghostty 0.27 s. The recipe of the README (Text Editor
-with `xdg_dirs`) gave 0.42 s with the same method.
+window of the app. Measured on 2026-11-09 (the final build of step 13p, before the store of step 8 and the release table of step 9; not measured again since): Text Editor 0.37 s,
+qBittorrent 0.16 s, Ghostty 0.27 s. The recipe of the README at that date (Text Editor with a `documents` folder) gave 0.42 s with the same method; the recipe has no folder
+permission now and was not timed again.
 
 ```sh
 python3 tests/apps/run.py --apps tests/apps/apps.example.toml --full --group source
@@ -227,17 +242,18 @@ python3 tests/apps/run.py --apps tests/apps/apps.example.toml --full --group sou
 
 ## Start of a command-line program
 
-Neovim 0.12 converted from its AppImage, `--version`, later start (the tree is built), `HOME` isolated, 40 runs after 5 discarded: median 31.6 ms, 90th percentile
+Measured on 2026-11-09 (not measured again since). Neovim 0.12 converted from its AppImage, `--version`, later start (the tree is built), `HOME` isolated, 40 runs after 5 discarded: median 31.6 ms, 90th percentile
 37.0 ms. The harness gives the same package (`python3 tests/apps/run.py --apps LIST.toml --full neovim`, 32 ms to the first output); the 40 runs are
 `subprocess.run([launcher, "--version"])` around a monotonic clock, as in the start-time table above.
 
 ## Chunks shared by two apps built in the same image
 
 Method: `bench/shared_chunks.py` reads the chunk table of two packages (`panpak dump-index`) and compares the chunks by hash. The packages are the ones
-`tests/apps/run.py` builds from `tests/apps/apps.example.toml` on the final build of step 13p. Text Editor (49.2 MB stored) and Ghostty (53.3 MB), both
+`tests/apps/run.py` builds from `tests/apps/apps.example.toml` on the final build of step 13p (2026-11-09). Text Editor (49.2 MB stored) and Ghostty (53.3 MB), both
 GTK 4: 2,755 chunks in common, 32.7 MB, which is 67% of Text Editor and 61% of Ghostty by stored bytes; each chunk stored once, the two take 69.8 MB
-instead of 102.5 MB (32% less). The gain exists because both were built in one pinned image; an AppImage conversion would rarely share. Nothing in the
-runtime stores chunks once yet: this is what a shared store (on the roadmap) could save.
+instead of 102.5 MB (32% less). The gain exists because both were built in one pinned image; an AppImage conversion would rarely share. This is the **potential**, counted in
+chunks. The store of step 8 keeps one copy of each identical file, which is measured for two versions of one app (next section, in memory); the disk use of two different apps
+in one store was **not** measured, and a file that differs in one byte of a chunk is stored whole, so the real saving is lower than this count.
 
 ```sh
 python3 tests/apps/run.py --apps tests/apps/apps.example.toml --group source   # builds the packages in target/apps-harness/pkg
@@ -245,6 +261,8 @@ python3 bench/shared_chunks.py target/apps-harness/pkg/text-editor-*.panpak targ
 ```
 
 ## Memory of two apps that run at the same time
+
+Measured on 2026-11-16 (commit 3038cdc, Ryzen 7 7735HS, Ubuntu 26.04, kernel 7.0.0-43, ext4, no virtual machine on; the files of the arm were dropped from the page cache before each run).
 
 Question: when two versions of an app are installed and both run, how much memory do they take, with the files of the store shared, with two unpacked copies, and with two AppImages?
 

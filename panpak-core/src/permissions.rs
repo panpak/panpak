@@ -310,7 +310,20 @@ pub fn top_level(items: &[Item]) -> Option<Level> {
     items.iter().map(|i| i.level).max()
 }
 
-/// The first line of the summary: full isolation, or partial isolation and why. It comes from the table.
+/// The folders that the items give the app, by the ids of the rows: the subjects of every item with one of these ids, each once.
+fn folders_of(items: &[Item], ids: &[&str]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for s in items.iter().filter(|i| ids.contains(&i.id)).flat_map(|i| i.subjects.iter()) {
+        if !out.contains(s) {
+            out.push(s.clone());
+        }
+    }
+    out
+}
+
+/// The first line of the summary. It never says "Full isolation" for an app that has a personal folder: the folders that it can change come first
+/// ("The app can read and change the files in <folders>."), then the ones it can only read. With a reason of the High level it is "Partial isolation: ..." and
+/// the folders follow. It comes from the table.
 pub fn summary(lang: Option<&Catalog>, items: &[Item]) -> String {
     let mut why: Vec<Cow<'static, str>> = Vec::new();
     for i in items.iter().filter(|i| i.level == Level::High) {
@@ -319,11 +332,27 @@ pub fn summary(lang: Option<&Catalog>, items: &[Item]) -> String {
             why.push(r);
         }
     }
-    if why.is_empty() {
-        tr_in(lang, "Full isolation").into_owned()
-    } else {
-        format!("{} {}", tr_in(lang, "Partial isolation:"), why.join("; "))
+    let writes = folders_of(items, &["folder-write", "home-path-write"]);
+    let reads: Vec<String> = folders_of(items, &["folder-read", "home-path-read"]).into_iter().filter(|r| !writes.contains(r)).collect();
+    let mut folders = Vec::new();
+    if !writes.is_empty() {
+        folders.push(fill(&tr_in(lang, "The app can read and change the files in {folders}."), &[("folders", writes.join(", "))]));
     }
+    if !reads.is_empty() {
+        folders.push(fill(&tr_in(lang, "The app can read the files in {folders}."), &[("folders", reads.join(", "))]));
+    }
+    if why.is_empty() {
+        if folders.is_empty() {
+            return tr_in(lang, "Full isolation").into_owned();
+        }
+        return folders.join(" ");
+    }
+    let mut line = format!("{} {}", tr_in(lang, "Partial isolation:"), why.join("; "));
+    if !folders.is_empty() {
+        line.push_str(". ");
+        line.push_str(&folders.join(" "));
+    }
+    line
 }
 
 /// What the sandbox of this system enforces: the isolated view (bubblewrap) and the Landlock version. A sentence about what an app cannot do is shown only
@@ -507,6 +536,8 @@ pub fn msgids() -> Vec<&'static str> {
         "High risk",
         "Full isolation",
         "Partial isolation:",
+        "The app can read and change the files in {folders}.",
+        "The app can read the files in {folders}.",
         "It asks for nothing beyond its own private folders.",
         "What it can do:",
         "What it cannot do:",
@@ -594,7 +625,8 @@ mod tests {
         }
         // A secret place is a reason for partial isolation; a plain folder is not.
         let plain = items_in(None, &man("[permissions]\n[[permissions.home_paths]]\npath=\"Notes\"\naccess=\"rw\"\n"));
-        assert_eq!(summary(None, &plain), "Full isolation");
+        // A folder of the person that the app can change is never "Full isolation": the folder is named in the first line.
+        assert_eq!(summary(None, &plain), "The app can read and change the files in Notes.");
         let secret = items_in(None, &man("[permissions]\n[[permissions.home_paths]]\npath=\".ssh\"\naccess=\"ro\"\n"));
         assert_eq!(summary(None, &secret), "Partial isolation: it reaches passwords, keys or startup files");
     }
@@ -617,6 +649,31 @@ mod tests {
         assert_eq!(summary(None, &ok), "Full isolation");
         let bad = items_in(None, &man("[permissions]\nx11=true\n[[permissions.home_paths]]\npath=\".\"\naccess=\"rw\"\n[[permissions.home_paths]]\npath=\".ssh\"\naccess=\"ro\"\n"));
         assert_eq!(summary(None, &bad), "Partial isolation: it can watch other apps (X11); it reaches your whole home folder; it reaches passwords, keys or startup files");
+    }
+
+    #[test]
+    fn a_personal_folder_is_never_full_isolation_and_every_one_that_can_be_changed_is_in_the_first_line() {
+        let folder = |access: &str, name: &str| format!("[[permissions.home_paths]]\npath=\"{name}\"\naccess=\"{access}\"\n");
+        let xdg = |access: &str, name: &str| format!("[[permissions.xdg_dirs]]\nname=\"{name}\"\naccess=\"{access}\"\n");
+        let line = |extra: String| summary(None, &items_in(None, &man(&format!("[permissions]\n{extra}"))));
+        // A folder of the home that it can change, a folder of the user-dirs that it can change, and both.
+        assert_eq!(line(folder("rw", "Notes")), "The app can read and change the files in Notes.");
+        assert_eq!(line(xdg("rw", "documents")), "The app can read and change the files in documents.");
+        assert_eq!(line(folder("rw", "Notes") + &xdg("rw", "music")), "The app can read and change the files in music, Notes.");
+        // One it can only read is not "Full isolation" either, and says so; a folder that is both is named once.
+        assert_eq!(line(folder("ro", "Notes")), "The app can read the files in Notes.");
+        assert_eq!(line(folder("rw", "Notes") + &folder("ro", "Papers")), "The app can read and change the files in Notes. The app can read the files in Papers.");
+        // With a reason of the High level the folders follow it.
+        assert_eq!(
+            line(folder("rw", "Notes") + &folder("ro", ".ssh")),
+            "Partial isolation: it reaches passwords, keys or startup files. The app can read and change the files in Notes."
+        );
+        // Nothing of the person: still full isolation (the dialog and the files given at the start are not a folder).
+        assert_eq!(line("network=true\nnetwork_allow_tcp=[443]\n".into()), "Full isolation");
+        // Every change of a personal folder is in the block that comes before the question, in the first line and in the list.
+        let block = render_block(None, Style { color: false, unicode: false }, &man(&format!("[permissions]\n{}", folder("rw", "Notes"))), Enforced { view: true, abi: None }, true);
+        assert_eq!(block[0], "The app can read and change the files in Notes.");
+        assert!(block.iter().any(|l| l.contains("Read, change and delete Notes in your home folder")), "{block:?}");
     }
 
     #[test]

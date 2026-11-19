@@ -196,6 +196,12 @@ msgstr ""
 msgid "The app and its launcher are removed."
 msgstr ""
 
+msgid "The app can read and change the files in {folders}."
+msgstr ""
+
+msgid "The app can read the files in {folders}."
+msgstr ""
+
 msgid "The author of {name} reported a serious problem in this version. Until you update, it runs without internet. Your files are safe and stay open."
 msgstr ""
 
