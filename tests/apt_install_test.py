@@ -10,13 +10,13 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "apt-install.sh"
 
 
-def run(tmp, mirror, apt_body, limit=2):
+def run(tmp, mirror, apt_body, limit=2, last=60):
     sources = tmp / "ubuntu.sources"
     sources.write_text(f"URIs: http://{mirror}/ubuntu/\n")
     fake = tmp / "apt-get"
     fake.write_text(f"#!/bin/sh\necho \"$@\" >> '{tmp}/calls'\n{apt_body.replace('SRC', str(sources))}\n")
     fake.chmod(0o755)
-    env = dict(os.environ, APT_GET=str(fake), APT_SOURCES=str(sources), APT_SUDO="", APT_LIMIT=str(limit))
+    env = dict(os.environ, APT_GET=str(fake), APT_SOURCES=str(sources), APT_SUDO="", APT_LIMIT=str(limit), APT_LAST_LIMIT=str(last))
     start = time.time()
     r = subprocess.run([str(SCRIPT), "pkg-a", "pkg-b"], env=env, capture_output=True, text=True, timeout=60)
     return r, time.time() - start, sources.read_text()
@@ -38,9 +38,14 @@ def main():
         r, _, text = run(tmp, "azure.archive.ubuntu.com", "exit 0")
         assert r.returncode == 0 and "trying" not in r.stderr and "azure" in text, (r.stderr, text)
     with tempfile.TemporaryDirectory() as t:
+        # A slow mirror that works must not become a failure: both limited attempts hang, the last one (a longer limit) finishes.
+        slow = 'n=$(grep -c "^update" CALLS); if [ "$1" = update ] && [ "$n" -le 2 ]; then sleep 300; fi; exit 0'.replace('CALLS', str(Path(t) / 'calls'))
+        r, took, _ = run(Path(t), "azure.archive.ubuntu.com", slow)
+        assert r.returncode == 0 and "one more, with 60 s" in r.stderr and took < 40, (r.stderr, took)
+    with tempfile.TemporaryDirectory() as t:
         # Both fail: it says so and fails.
         r, _, _ = run(Path(t), "azure.archive.ubuntu.com", "exit 100")
-        assert r.returncode == 1 and "could not be installed" in r.stderr, r
+        assert r.returncode == 1 and "could not be installed" in r.stderr and "status 100" in r.stderr, r
     print("apt_install PASS")
 
 

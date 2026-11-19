@@ -173,10 +173,10 @@ jobs:
           # would hide the system Python that the conformance scripts need.
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Test dependencies
-        timeout-minutes: 8
+        timeout-minutes: 24
         run: ./scripts/apt-install.sh zstd python3 python3-cryptography squashfs-tools
       - name: Bubblewrap and user namespaces (for the isolated view)
-        timeout-minutes: 8
+        timeout-minutes: 24
         # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
         # tests after it run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
         run: |
@@ -214,7 +214,7 @@ jobs:
           ./scripts/check-no-failpoints.sh --expect target/failpoints/x86_64-unknown-linux-musl/release/panpak target/failpoints/x86_64-unknown-linux-musl/release/panpak-stub
           python3 tests/with_timeout.py 600 tests/failpoints.py
       - name: A blob is visible only when it is on disk (a kill between writing and naming)
-        timeout-minutes: 3
+        timeout-minutes: 24
         run: |
           ./scripts/apt-install.sh --no-update strace
           python3 tests/with_timeout.py 120 tests/blob_visibility.py
@@ -273,10 +273,10 @@ jobs:
           # would hide the system Python that the conformance scripts need.
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Test dependencies
-        timeout-minutes: 8
+        timeout-minutes: 24
         run: ./scripts/apt-install.sh zstd python3 python3-cryptography squashfs-tools
       - name: Bubblewrap and user namespaces (for the isolated view)
-        timeout-minutes: 8
+        timeout-minutes: 24
         # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
         # tests after it run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
         run: |
@@ -442,7 +442,7 @@ jobs:
           [ "$ok" = 1 ]
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Bubblewrap, Sway and user namespaces
-        timeout-minutes: 8
+        timeout-minutes: 18
         run: |
           ./scripts/apt-install.sh bubblewrap sway
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -497,7 +497,7 @@ jobs:
         timeout-minutes: 4
         run: cargo build --locked --release --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
       - name: Packages, bubblewrap, and a systemd user manager for the runner user
-        timeout-minutes: 10
+        timeout-minutes: 24
         run: |
           ./scripts/apt-install.sh bubblewrap dbus-daemon dbus-user-session xdg-dbus-proxy xdg-desktop-portal python3-gi gir1.2-glib-2.0 gir1.2-gtk-4.0 sway libglib2.0-bin at-spi2-core
           # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile (see the build-test job).
