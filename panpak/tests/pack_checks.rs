@@ -127,7 +127,7 @@ fn pack_writes_the_glibc_the_files_need_and_install_checks_it() {
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(glibc_min_of(&l.manifest(&pkg)).as_deref(), Some(want.as_str()));
     // This system has at least that glibc (the program runs here), so the install is not refused for it.
-    let o = cli(&l.home, &["install", "--yes", pkg.to_str().unwrap()]);
+    let o = cli(&l.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]);
     assert!(!text(&o).contains("PANPAK-E2005"), "{}", text(&o));
 
     // A script needs no glibc: no field.
@@ -139,7 +139,7 @@ fn pack_writes_the_glibc_the_files_need_and_install_checks_it() {
     let (o, pkg) = l.pack("raised", &[("bin/app", b"#!/bin/sh\necho hi\n".to_vec())], "[abi]\nglibc_min = \"99.1\"\n");
     assert!(o.status.success(), "{}", text(&o));
     assert_eq!(glibc_min_of(&l.manifest(&pkg)).as_deref(), Some("99.1"));
-    let o = cli(&l.home, &["install", "--yes", pkg.to_str().unwrap()]);
+    let o = cli(&l.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]);
     let t = text(&o);
     assert!(!o.status.success() && t.contains("PANPAK-E2005") && t.contains("needs glibc 99.1 or newer") && t.contains("this system has glibc"), "{t}");
     // Nothing was installed.

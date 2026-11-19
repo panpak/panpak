@@ -87,7 +87,7 @@ def pkg_root(pkg):
 
 def install(home, pkg):
     env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(home / '.local/share'))
-    p = subprocess.run([BIN / 'panpak', 'install', '--yes', '--runtime',
+    p = subprocess.run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime',
                         BIN / 'panpak-stub', pkg], env=env, capture_output=True,
                        text=True, timeout=180)
     assert p.returncode == 0, p.stderr

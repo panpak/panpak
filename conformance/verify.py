@@ -329,7 +329,54 @@ KNOWN_CRITICAL = {
     "launch": {"args", "env"},
     "abi": {"glibc_min", "needs", "prefer_host", "allow_missing"},
     "runtime": {"min_runtime", "stub_hash"},
+    "trust": {"root", "threshold", "recovery", "domain", "chain"},
 }
+
+
+def domain_fits_id(domain, app_id):
+    """The domain, read backwards, is the beginning of the app id, and has at least two labels (PANPAK-FORMAT.md section 3.2)."""
+    labels = domain.split(".")
+    if len(domain) > 253 or len(labels) < 2 or not all(re.fullmatch(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?", l) for l in labels):
+        return False
+    ident = app_id.split(".")
+    return len(ident) >= len(labels) and list(reversed(labels)) == ident[: len(labels)]
+
+
+def check_trust(man):
+    """The [trust] table (PANPAK-FORMAT.md section 3.2). Run on a manifest whose signature is verified. The chain is checked for its form here; it is followed
+    by a client that has a pin, which is not a property of a package."""
+    t = man.get("trust")
+    if t is None:
+        raise Fail("no [trust] table: a package of a test version of panpak, make it again")
+    if set(t) - {"root", "threshold", "recovery", "domain", "chain"}:
+        raise Fail(f"unknown key in [trust]: {sorted(t)}")
+    key_ok = lambda k: isinstance(k, str) and re.fullmatch(r"ed25519:[0-9a-f]{64}", k) is not None
+    commit_ok = lambda c: isinstance(c, str) and re.fullmatch(r"blake3:[0-9a-f]{64}", c) is not None
+    root = t.get("root")
+    if not isinstance(root, list) or len(root) == 0:
+        raise Fail("[trust].root is not a list of keys")
+    if len(root) != 1:
+        raise Fail("more than one root key is reserved: update panpak")
+    if t.get("threshold") != 1 or isinstance(t.get("threshold"), bool):
+        raise Fail("a threshold other than 1 is reserved: update panpak")
+    if not key_ok(root[0]):
+        raise Fail("[trust].root is not a key")
+    if not commit_ok(t.get("recovery")):
+        raise Fail("[trust].recovery is not a commitment")
+    if "domain" in t and not (isinstance(t["domain"], str) and domain_fits_id(t["domain"], man["app"]["id"])):
+        raise Fail("[trust].domain does not fit the app id")
+    chain = t.get("chain", [])
+    if not isinstance(chain, list) or len(chain) > 8:
+        raise Fail("[trust].chain is longer than 8 steps")
+    for s in chain:
+        if not isinstance(s, dict) or set(s) != {"by", "from", "to", "recovery", "sig"}:
+            raise Fail("a step of [trust].chain has unknown or missing keys")
+        if s["by"] not in ("root", "recovery"):
+            raise Fail("a succession is signed by something this reader does not know: update panpak")
+        if not (key_ok(s["from"]) and key_ok(s["to"]) and commit_ok(s["recovery"]) and isinstance(s["sig"], str) and re.fullmatch(r"[0-9a-f]{128}", s["sig"])):
+            raise Fail("a step of [trust].chain is malformed")
+    if "key" in man.get("update", {}):
+        raise Fail("[update].key is not part of a package: its key is [trust].root")
 
 
 def check_format(man):
@@ -427,7 +474,7 @@ def check_fields(man):
             raise Fail("invalid manifest field origin.version")
         if not (isinstance(o.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", o["sha256"])):
             raise Fail("invalid manifest field origin.sha256")
-    url = man["update"].get("url")
+    url = man.get("update", {}).get("url")
     if url is not None and not (isinstance(url, str) and len(url.encode()) <= 2048 and all(0x20 < b != 0x7F for b in url.encode())):
         raise Fail("invalid manifest field update.url")
 
@@ -583,7 +630,7 @@ def check(data: bytes):
     except Exception as e:
         raise Fail(f"manifest not TOML/UTF-8: {e}")
     try:
-        key = man["update"]["key"]
+        key = man["trust"]["root"][0]
         app = man["app"]
         entry, app_id = app["entry"], app["id"]
     except KeyError as e:
@@ -594,6 +641,7 @@ def check(data: bytes):
     # The signature covers label, footer version and flags, the root (raw) and the manifest.
     ed25519_verify(key, LABEL_PACKAGE + foot[8:16] + root + toml_b, sig)
     check_format(man)
+    check_trust(man)
     check_release(man)
     # Field rules: a valid signature does not make the fields safe (spec 3.1.1).
     check_fields(man)

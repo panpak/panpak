@@ -16,7 +16,7 @@ For each app of a list:
    for itself in its work folder. The package is kept and made again only when
    the AppImage, the recipe, `panpak`, `panpak-stub` or the options of the app
    change.
-2. **Install** in the isolated `HOME` (`panpak install --yes`), then check that
+2. **Install** in the isolated `HOME` (`panpak install --yes --trust-first-key`), then check that
    the icon and the menu entry exist.
 3. **Start** on a display made by the harness (Xvfb for an X11 app, a headless
    Sway for a Wayland app), wait for the first window of a useful size, end the

@@ -79,7 +79,7 @@ def main():
     p = run(REL / 'panpak', 'pack', tree, '--stub', REL / 'panpak-stub', '--secret-file', key, '-o', pkg)
     need(p.returncode == 0, p.stderr)
     need('shell script' not in p.stderr, 'a program as the entry must not be called a script: ' + p.stderr)
-    p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
+    p = run(REL / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', REL / 'panpak-stub', pkg)
     need(p.returncode == 0, p.stdout + p.stderr)
     # The user's own LD_PRELOAD in the environment is not something the table can set or the app gets from it.
     p = run(home / '.local/bin' / ID, e={**env, 'LD_PRELOAD': ''})

@@ -111,7 +111,7 @@ impl Env {
 
     fn install(&self, id: &str, version: &str, body: &str) -> String {
         let pkg = self.pack(id, version, body);
-        let o = cli(&self.home, &["install", "--yes", pkg.to_str().unwrap()]);
+        let o = cli(&self.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]);
         assert!(o.status.success(), "{}", text(&o));
         root_of(&pkg)
     }
@@ -327,7 +327,7 @@ fn incomplete_and_hand_cleaned_installs_are_finished_without_errors() {
     let e = env("incomplete");
     // Only the key pin is left: no current link, no launcher, no entry, no package.
     fs::create_dir_all(e.store().join("apps").join(A)).unwrap();
-    fs::write(e.store().join("apps").join(A).join("pinned-key"), "ed25519:x\n").unwrap();
+    fs::write(e.store().join("apps").join(A).join("trust"), "root=ed25519:x\n").unwrap();
     let t = text(&cli(&e.home, &["list"]));
     assert!(t.contains(A) && t.contains("incomplete"), "{t}");
     let o = e.remove(&[A]);
@@ -579,7 +579,7 @@ fn control_characters_in_a_name_do_not_reach_the_terminal() {
     let pkg = e.pack(A, "1", "a");
     // A name with an escape sequence cannot be packed; the list cleans what it prints anyway (unit test),
     // so here only check that the plain output has no escape byte.
-    let o = cli(&e.home, &["install", "--yes", pkg.to_str().unwrap()]);
+    let o = cli(&e.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]);
     assert!(o.status.success());
     assert!(!cli(&e.home, &["list"]).stdout.contains(&0x1b));
 }

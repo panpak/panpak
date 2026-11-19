@@ -52,7 +52,7 @@ def prepare(source, work):
         pkg.write_bytes(data[:moff] + man + sigfmt.block(KEY.sign(sigfmt.message(ver, flags, root, man)))
                         + struct.pack('<8sIIQQQQ32s', magic, ver, flags, off, size, moff, len(man), root))
         env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(home / '.local/share'))
-        p = subprocess.run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', pkg],
+        p = subprocess.run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', pkg],
                            env=env, capture_output=True, text=True, timeout=120)
         assert p.returncode == 0, p.stderr
     return home

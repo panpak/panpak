@@ -95,7 +95,7 @@ def main():
             '3': pack('3', []),                      # no icons at all
             '4': pack('4', [(48, 4), (256, 4)]),     # icons again, other sizes
         }
-        run(BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', v['1'])
+        run(BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', v['1'])
         need(icon_file(16).read_bytes() == png(16, 1) and icon_file(48).read_bytes() == png(48, 1), 'install: icons are not there')
         need(entry_icon() == f'Icon=panpak.{ID}', entry_icon())
 

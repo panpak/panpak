@@ -110,7 +110,7 @@ impl Env {
         self.home.join(".local/share/applications").join(format!("panpak.{ID}.desktop"))
     }
     fn install(&self) -> Output {
-        cli(&self.home, &["install", "--yes", self.pkg.to_str().unwrap()])
+        cli(&self.home, &["install", "--yes", "--trust-first-key", self.pkg.to_str().unwrap()])
     }
 }
 
@@ -128,7 +128,7 @@ fn hostile_manifest_fields_write_nothing() {
     ] {
         let home = work(name);
         let pkg = fixture(&format!("{name}.panpak"));
-        for args in [vec!["install", "--yes", pkg.to_str().unwrap()], vec!["doctor", pkg.to_str().unwrap()]] {
+        for args in [vec!["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()], vec!["doctor", pkg.to_str().unwrap()]] {
             let o = cli(&home, &args);
             let t = text(&o);
             assert!(!o.status.success() || t.contains("INVALID package"), "{name} {args:?}: {t}");
@@ -204,7 +204,7 @@ fn symlink_in_place_of_the_launcher_is_refused() {
     fs::remove_file(env.launcher()).unwrap();
     symlink(&victim, env.launcher()).unwrap();
     let before = tree(&env.home);
-    for args in [vec!["install", "--yes", env.pkg.to_str().unwrap()], vec!["update", ID]] {
+    for args in [vec!["install", "--yes", "--trust-first-key", env.pkg.to_str().unwrap()], vec!["update", ID]] {
         let o = cli(&env.home, &args);
         assert!(!o.status.success() && text(&o).contains("PANPAK-E2001"), "{args:?}: {}", text(&o));
     }

@@ -68,6 +68,8 @@ def _inside(path, root):
 def require_isolated_home(home, work):
     # A test that does not exercise the daily background job keeps the stub from starting it (the job would outlive the test folder).
     os.environ.setdefault('PANPAK_NO_BACKGROUND', '1')
+    # The tests sign with keys they write by hand, which have no file `<key>.recovery` beside them (`panpak key new` makes it): the commitment comes from here.
+    os.environ.setdefault('PANPAK_RECOVERY', 'blake3:' + '5a' * 32)
     if os.environ.get(OVERRIDE) == '1':
         print(f'warning: {OVERRIDE}=1: HOME isolation check skipped for {home}', file=sys.stderr)
         return
@@ -181,3 +183,19 @@ def stop_group(pgid, proc=None, grace=15.0):
             pass
     if proc is not None:
         proc.wait(timeout=10)
+
+
+def set_floor(appdir, floor):
+    """Put a floor in the trust record of an installed app (`floor=` of `apps/<id>/trust`), as if a release with that floor had been seen."""
+    path = Path(appdir) / 'trust'
+    lines = path.read_text().splitlines() if path.exists() else []
+    lines = [l for l in lines if not l.startswith('floor=')] + [f'floor={floor}']
+    path.write_text('\n'.join(lines) + '\n')
+
+
+def read_floor(appdir):
+    """The floor in the trust record of an app, as a number."""
+    for l in (Path(appdir) / 'trust').read_text().splitlines():
+        if l.startswith('floor='):
+            return int(l[6:])
+    return 0

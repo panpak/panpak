@@ -100,7 +100,7 @@ def main():
         serve.mkdir()
         (serve / 'remote.panpak').write_bytes(v2)
         store = tmp / 'data/panpak'
-        install = [BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak']
+        install = [BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak']
         # How long an install takes when nothing stops it: the sweep goes over that.
         t = time.time()
         run(install, env)

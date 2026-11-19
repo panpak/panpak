@@ -51,7 +51,7 @@ n=0
 while :; do
   n=$((n+1))
   echo "round $n" >> "$HOME/../workload.log"
-  "$B/panpak" install --yes --runtime "$B/panpak-stub" "$HOME/../v1.panpak" >> "$HOME/../workload.log" 2>&1
+  "$B/panpak" install --yes --trust-first-key --runtime "$B/panpak-stub" "$HOME/../v1.panpak" >> "$HOME/../workload.log" 2>&1
   cp "$HOME/../v2.panpak" "$HOME/../serve/remote.panpak"
   "$B/panpak" update --allow-insecure-http --timeout 20 org.example.incremental >> "$HOME/../workload.log" 2>&1
   "$B/panpak" rollback org.example.incremental >> "$HOME/../workload.log" 2>&1

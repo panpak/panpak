@@ -138,6 +138,9 @@ struct Facts {
     has_icon: bool,
     /// Protected mode (the installed version is below the floor its author set): `Some(true)` when the person turned the internet back on.
     protected: Option<bool>,
+    /// Where updates come from: the host of `[update].url` (`None` when the app has none) and who named the place (`author`).
+    updates_host: Option<String>,
+    updates_source: String,
     /// An update that is staged: its version, and whether it waits for the user (it asks for permissions that the installed version does not have).
     pending: Option<(String, bool)>,
     /// When the background verification last came to the end of the files of the installed version.
@@ -216,6 +219,8 @@ impl Ctx {
             has_desktop: false,
             has_icon: false,
             protected: None,
+            updates_host: None,
+            updates_source: panpak_core::trust::SOURCE_AUTHOR.to_string(),
         };
         let appdir = self.apps.as_ref().and_then(|a| match a.lstat(OsStr::new(id)) {
             Ok(Some(st)) => Some((a, st)),
@@ -229,7 +234,12 @@ impl Ctx {
             if st.kind != Kind::Dir {
                 f.problems.push("its store folder is a link or a file".into());
             } else if let Ok(d) = apps.open_dir(OsStr::new(id)) {
-                floor_seen = read_text(&d, OsStr::new("floor")).and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+                let state = read_text(&d, OsStr::new(panpak_core::trust::FILE)).map(|t| panpak_core::trust::State::parse(&t));
+                floor_seen = state.as_ref().map_or(0, |s| s.floor);
+                if let Some(s) = &state {
+                    f.updates_source = s.source.clone();
+                }
+                f.updates_host = read_text(&d, OsStr::new("update.url")).and_then(|u| crate::update_host(u.trim()));
                 internet_back_on = matches!(d.lstat(OsStr::new(panpak_core::release::INTERNET_BACK_ON)), Ok(Some(st)) if st.kind == Kind::File);
                 let bg = read_text(&d, OsStr::new(panpak_core::bgstate::FILE)).map(|t| panpak_core::bgstate::parse(&t)).unwrap_or_default();
                 if bg.damaged > 0 {
@@ -254,7 +264,7 @@ impl Ctx {
                     Ok(Some(_)) => f.problems.push("`current` is not a link".into()),
                     _ => f.problems.push("no `current` link".into()),
                 }
-                if !matches!(d.lstat(OsStr::new("pinned-key")), Ok(Some(_))) {
+                if !matches!(d.lstat(OsStr::new(panpak_core::trust::FILE)), Ok(Some(_))) {
                     f.problems.push("no key pin".into());
                 }
             } else {
@@ -327,6 +337,11 @@ impl Ctx {
 }
 
 /// `panpak list [--json]`.
+/// `{"source":"author","host":"example.org"}`: where the updates of an app come from.
+fn updates_json(source: &str, host: Option<&str>) -> String {
+    format!("{{\"source\":{},\"host\":{}}}", json_str(source), host.map_or("null".into(), json_str))
+}
+
 pub fn cmd_list(json: bool) -> Result<()> {
     let ctx = Ctx::open()?;
     recover_removals(&ctx);
@@ -341,7 +356,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
             let opt = |v: Option<u64>| v.map_or("null".to_string(), |n| n.to_string());
             let strs = |v: &[String]| format!("[{}]", v.iter().map(|s| json_str(s)).collect::<Vec<_>>().join(","));
             out.push_str(&format!(
-                "\n  {{\"id\":{},\"name\":{},\"version\":{},\"status\":{},\"problems\":{},\"package_bytes\":{},\"tree_bytes\":{},\"data_bytes\":{},\"cache_bytes\":{},\"permissions\":{},\"protected\":{},\"pending\":{},\"verified_round\":{},\"packages\":{}}}",
+                "\n  {{\"id\":{},\"name\":{},\"version\":{},\"status\":{},\"problems\":{},\"package_bytes\":{},\"tree_bytes\":{},\"data_bytes\":{},\"cache_bytes\":{},\"permissions\":{},\"protected\":{},\"updates\":{},\"pending\":{},\"verified_round\":{},\"packages\":{}}}",
                 json_str(&f.id),
                 f.name.as_deref().map_or("null".into(), json_str),
                 f.version.as_deref().map_or("null".into(), json_str),
@@ -353,6 +368,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
                 opt(f.cache_bytes),
                 f.perms.as_deref().map_or("null".to_string(), panpak_core::permissions::items_json),
                 f.protected.map_or("null".to_string(), |b| format!("{{\"internet_back_on\":{b}}}")),
+                updates_json(&f.updates_source, f.updates_host.as_deref()),
                 f.pending.as_ref().map_or("null".to_string(), |(v, w)| format!("{{\"version\":{},\"waits_for_you\":{}}}", json_str(v), w)),
                 f.last_round.map_or("null".to_string(), |n| n.to_string()),
                 strs(&f.packages),
@@ -366,7 +382,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
         println!("no apps installed. Install one with `panpak install <file.panpak>`.");
         return Ok(());
     }
-    let rows: Vec<[String; 7]> = facts
+    let rows: Vec<[String; 8]> = facts
         .iter()
         .map(|f| {
             let mut status = if f.problems.is_empty() { f.status().to_string() } else { format!("{}: {}", f.status(), f.problems.join(", ")) };
@@ -388,11 +404,12 @@ pub fn cmd_list(json: bool) -> Result<()> {
                 if f.in_apps || !f.packages.is_empty() { human(f.package_bytes + f.tree_bytes) } else { "-".into() },
                 if f.data_bytes.is_some() || f.cache_bytes.is_some() { human(data) } else { "-".into() },
                 f.perms.as_deref().map_or("-".to_string(), |p| panpak_core::permissions::short_summary(panpak_core::i18n::current(), p)),
+                f.updates_host.as_deref().map_or("none".to_string(), |h| format!("{} ({})", clean(h), clean(&f.updates_source))),
                 clean(&status),
             ]
         })
         .collect();
-    let head = ["ID", "NAME", "VERSION", "APP", "DATA", "PERMISSIONS", "STATUS"];
+    let head = ["ID", "NAME", "VERSION", "APP", "DATA", "PERMISSIONS", "UPDATES", "STATUS"];
     let mut w = head.map(str::len);
     for r in &rows {
         for (i, c) in r.iter().enumerate() {
@@ -400,7 +417,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
         }
     }
     let line = |r: &[String]| {
-        let cells: Vec<String> = r.iter().enumerate().map(|(i, c)| if i == 6 { c.clone() } else { format!("{c:<width$}", width = w[i]) }).collect();
+        let cells: Vec<String> = r.iter().enumerate().map(|(i, c)| if i == 7 { c.clone() } else { format!("{c:<width$}", width = w[i]) }).collect();
         println!("{}", cells.join("  "));
     };
     line(&head.map(String::from));
@@ -408,7 +425,7 @@ pub fn cmd_list(json: bool) -> Result<()> {
         line(r);
     }
     println!();
-    println!("APP is the packages and the unpacked trees on disk (a tree shared by two apps is counted in both); DATA is the settings, data and cache of the app.");
+    println!("APP is the packages and the unpacked trees on disk (a tree shared by two apps is counted in both); DATA is the settings, data and cache of the app; UPDATES is where the app gets new versions (the host that its author named), or `none`.");
     Ok(())
 }
 

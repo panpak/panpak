@@ -513,7 +513,7 @@ def main():
             print('no network: no interface but lo, no datagram or connection reached the host, no name resolution')
 
         # 2. The same app where bubblewrap cannot be used: as before the view existed.
-        p = masked(lab, BIN_PANPAK(), 'install', '--yes', '--accept-new-permissions',
+        p = masked(lab, BIN_PANPAK(), 'install', '--yes', '--trust-first-key', '--accept-new-permissions',
                    '--runtime', lab.stub, lab.pack(''))
         assert p.returncode == 0, p.stdout + p.stderr
         installed = p.stdout

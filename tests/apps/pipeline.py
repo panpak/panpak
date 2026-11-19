@@ -250,7 +250,7 @@ class Run:
         return e
 
     def install(self, pkg, disp):
-        r = sh([self.ctx.panpak, "install", "--yes", "--accept-new-permissions", "--runtime", self.ctx.stub, pkg], env=self.env(disp), timeout=900)
+        r = sh([self.ctx.panpak, "install", "--yes", "--trust-first-key", "--accept-new-permissions", "--runtime", self.ctx.stub, pkg], env=self.env(disp), timeout=900)
         if r.returncode != 0:
             raise StepError("panpak install failed: " + (r.stdout + r.stderr).strip()[-400:])
 

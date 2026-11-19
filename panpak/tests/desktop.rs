@@ -111,7 +111,7 @@ impl Env {
         let t = self.tree(version, extra_toml, files);
         let (o, pkg) = self.pack(&t, &format!("{version}.panpak"));
         assert!(o.status.success(), "{}", text(&o));
-        cli(&self.home, &["install", "--yes", pkg.to_str().unwrap()])
+        cli(&self.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()])
     }
     fn icon(&self, side: u32) -> PathBuf {
         self.home.join(format!(".local/share/icons/hicolor/{side}x{side}/apps/panpak.{ID}.png"))
@@ -135,7 +135,7 @@ fn launcher_and_entry_name_only_the_store_whatever_ran_install() {
     let t = e.tree("1", "", &[]);
     let (o, pkg) = e.pack(&t, "1.panpak");
     assert!(o.status.success(), "{}", text(&o));
-    let o = cmd_with(&copy, &e.home, &["install", "--yes", pkg.to_str().unwrap()]).output().unwrap();
+    let o = cmd_with(&copy, &e.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]).output().unwrap();
     assert!(o.status.success(), "{}", text(&o));
     let (launcher, entry) = (e.launcher(), e.entry());
     for t in [&launcher, &entry] {
@@ -393,7 +393,7 @@ fn pack_cleans_an_icon_and_says_which_chunks_it_removed() {
     assert!(o2.status.success() && String::from_utf8_lossy(&o2.stderr).contains("icon b.png: removed the chunks iCCP"), "{}", text(&o2));
     // The file in the tree is not changed; the package holds the cleaned icon and install writes it.
     assert_eq!(fs::read(t.join("a.png")).unwrap(), text_png);
-    let o = cli(&e.home, &["install", "--yes", pkg.to_str().unwrap()]);
+    let o = cli(&e.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]);
     assert!(o.status.success(), "{}", text(&o));
     let a = fs::read(e.icon(32)).unwrap();
     assert_ne!(a, text_png);
@@ -457,7 +457,7 @@ fn a_manifest_changed_after_pack_and_signed_again_without_the_list_is_refused() 
     let add = |m: String| format!("{m}\n[permissions]\nx11 = true\naudio = true\n");
     let stale = e.home.join("stale.panpak");
     resign_with(&pkg, &e.key, add, &stale, false);
-    let o = cli(&e.home, &["install", "--yes", stale.to_str().unwrap()]);
+    let o = cli(&e.home, &["install", "--yes", "--trust-first-key", stale.to_str().unwrap()]);
     let err = text(&o);
     assert!(!o.status.success() && err.contains("PANPAK-E0012") && err.contains("permissions.x11") && err.contains("permissions.audio"), "{err}");
     let o = cli(&e.home, &["doctor", stale.to_str().unwrap()]);
@@ -470,7 +470,7 @@ fn a_manifest_changed_after_pack_and_signed_again_without_the_list_is_refused() 
     assert!(o.status.success(), "{}", text(&o));
     let m = fs::read_to_string(m).unwrap();
     assert!(m.contains("\"permissions.audio\", \"permissions.x11\", \"release.channel\""), "{m}");
-    let o = cli(&e.home, &["install", "--yes", good.to_str().unwrap()]);
+    let o = cli(&e.home, &["install", "--yes", "--trust-first-key", good.to_str().unwrap()]);
     assert!(o.status.success(), "{}", text(&o));
 }
 
@@ -483,7 +483,7 @@ fn install_warns_about_fields_this_panpak_does_not_know_and_goes_on() {
     // A package of a newer format: an unknown key in a known section and an unknown section.
     let newer = e.home.join("newer.panpak");
     resign(&pkg, &e.key, |m| format!("{m}\n[future]\nthing = 1\n").replace("[app]\n", "[app]\nsurprise = \"x\"\n"), &newer);
-    let o = cli(&e.home, &["install", "--yes", newer.to_str().unwrap()]);
+    let o = cli(&e.home, &["install", "--yes", "--trust-first-key", newer.to_str().unwrap()]);
     assert!(o.status.success(), "{}", text(&o));
     let err = String::from_utf8_lossy(&o.stderr);
     assert!(err.contains("WARNING: this package uses fields that this version of panpak does not know (") && err.contains("app.surprise") && err.contains("future") && err.contains("panpak install-runtime"), "{err}");
@@ -491,7 +491,7 @@ fn install_warns_about_fields_this_panpak_does_not_know_and_goes_on() {
     // revision, which an install over the other would refuse).
     let o = cli(&e.home, &["remove", "--yes", ID]);
     assert!(o.status.success(), "{}", text(&o));
-    let o = cli(&e.home, &["install", "--yes", pkg.to_str().unwrap()]);
+    let o = cli(&e.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]);
     assert!(o.status.success() && !text(&o).contains("fields that this version"), "{}", text(&o));
     // The refusal in `pack` stays, with its own code.
     let t = e.tree("2", "[desktop]\nfuture = 1\n", &[]);

@@ -93,7 +93,7 @@ def main():
         stub = store / 'bin/panpak-stub'
         panpak = BIN / 'panpak'
         envn = dict(env, PANPAK_NO_BACKGROUND='1')   # for the commands that must not start a job of their own
-        run([panpak, 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], envn)
+        run([panpak, 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], envn)
 
         # 1. the settings
         out = run([panpak, 'config'], env).stdout

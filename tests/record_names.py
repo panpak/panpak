@@ -62,11 +62,11 @@ def main():
         assert roots['victim'] == roots['attacker'], 'the two packages hold the same files, so they have one root'
         store = tmp / 'data/panpak'
         stub = store / 'bin/panpak-stub'
-        run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', packages['victim']], env)
+        run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', packages['victim']], env)
         assert run([stub, 'run', store / 'apps' / VICTIM[0] / 'current'], env).stdout.strip() == 'clean'
         victim_record = (store / 'apps' / VICTIM[0] / 'current').resolve()
         before = victim_record.read_bytes()
-        run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', packages['attacker']], env)
+        run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', packages['attacker']], env)
         attacker_record = (store / 'apps' / ATTACKER[0] / 'current').resolve()
         assert victim_record.read_bytes() == before, 'installing the other package did not change the record of the first app'
         assert victim_record != attacker_record, 'each app has a record of its own'

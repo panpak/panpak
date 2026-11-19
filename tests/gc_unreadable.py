@@ -51,7 +51,7 @@ def lab(tag):
     (tree / 'data.bin').write_bytes(bytes(range(256)) * 200)
     pkg = work / 'v1.panpak'
     run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', work / 'secret.key', '-o', pkg], env)
-    run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', pkg], env)
+    run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', pkg], env)
     return work, env, work / 'data/panpak'
 
 

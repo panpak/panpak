@@ -105,7 +105,7 @@ def main():
         try:
             time.sleep(0.6)
             store_a = home_a / 'data/panpak'
-            run([panpak, 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], env_a)
+            run([panpak, 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], env_a)
             (serve / 'remote.panpak').write_bytes(v['2'])
             run([panpak, 'update', '--allow-insecure-http', '--timeout', '5', ID], env_a)
             (serve / 'remote.panpak').write_bytes(v['3'])

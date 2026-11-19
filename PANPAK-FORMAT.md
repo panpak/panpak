@@ -144,14 +144,14 @@ u16 type | u16 flags | u32 length | data[length]       (little-endian)
   Rule of design: nothing relevant to security may depend on the presence
   of an entry unless a signed datum says it is required.
 
-A succession (`rotation_sig`, §3.2) covers a message of its own:
+A succession (a step of `[trust].chain`, §3.2) covers a message of its own:
 
 ```
-"panpak/succession/v1\0" || u16 len(app id) || app id || old public key || new public key
+"panpak/succession/v2\0" || u16 len(app id) || app id || u8 who || signing public key || new root public key || new recovery commitment
 ```
 
-(the keys are the 32 raw bytes). The signature belongs to one app and
-one step: the same bytes do not rotate another app.
+(the keys and the commitment are the 32 raw bytes; `who` is 0 when the root signs and 1 when the recovery key signs). The signature belongs to one app and
+one step: the same bytes do not rotate another app, and a step of the root cannot be read as a step of the recovery key.
 
 Mandatory layout consistency checks (reject on mismatch):
 
@@ -238,9 +238,18 @@ camera = "ask"
 
 [update]
 url = "https://example.org/editor/index.panpak"   # optional
-key = "ed25519:<64 lowercase hex>"              # REQUIRED
-rotation_old = "ed25519:<...>"                  # optional: old key authorizing the new one
-rotation_sig = "<128 hex>"                      # optional: old-key signature over the succession message (§3.0): app id, old key, new key
+
+[trust]                            # written by `panpak pack` from the signing key (the author gives only `domain`); critical (§3.1.9)
+root = ["ed25519:<64 lowercase hex>"]             # REQUIRED: the key that signs the package; a list, exactly one for now
+threshold = 1                                     # REQUIRED: 1; a larger number is reserved
+recovery = "blake3:<64 hex>"                      # REQUIRED: the commitment to the recovery key, from the first package on
+domain = "example.org"                            # optional: the domain of the author; read backwards, the beginning of the app id (two labels at least)
+[[trust.chain]]                                   # optional: the successions from an older root to `root[0]`, oldest first, at most 8
+by = "root"                                       # "root" (signed by the root that was) or "recovery" (signed by the recovery key, revealed in `from`)
+from = "ed25519:<...>"                            # the key that signs: the old root, or the public key of the recovery key
+to = "ed25519:<...>"                              # the new root
+recovery = "blake3:<...>"                         # the commitment after this step
+sig = "<128 hex>"                                 # signature of `from` over the succession message (§3.0)
 
 [runtime]                          # minimum runtime version (stub)
 min_runtime = 1                    # optional, default 1
@@ -576,7 +585,7 @@ higher `min_panpak`. A package without it was made before the table existed (a t
 | `chunking` | text | how the files were cut (`fastcdc:<min>:<avg>:<max>`). Informative and signed. A Reader accepts any cut within the caps; the value is for the tools of the author (to cut the next version alike so that the delta stays small, to make the same bytes again) |
 | `packed_by` | text | the tool that made the package. Informative |
 
-The critical sections are `abi`, `release`, `permissions`, `launch`, `runtime` and `env`; `app`, `format`, `desktop`, `origin`, `update` and
+The critical sections are `abi`, `release`, `trust`, `permissions`, `launch`, `runtime` and `env`; `app`, `format`, `desktop`, `origin`, `update` and
 `provenance` are not. A new section MUST be classified before a Reader can read it. Both the client (`install`, `update`, `doctor`) and
 the runtime that starts the app (`panpak-stub`) apply this check, so an old runtime used by a launcher does not skip a restricting field that
 only a newer client understands.
@@ -659,27 +668,37 @@ entered, or was refused, or was staged) is not blocked: the person keeps the app
 A catalog or a distribution MAY in the future put an app in protected mode (never block it) with a required `reason` field (one sentence and a
 link); only the name is reserved here.
 
-### 3.2 Public key and TOFU [NORMATIVE]
+### 3.2 Keys, trust on first use, and successions [NORMATIVE]
 
-Strict parsing of `[update].key`: exact prefix `ed25519:`
+Strict parsing of a key (`[trust].root`, a succession): exact prefix `ed25519:`
 (lowercase), then exactly 64 characters of `0-9a-f` only — no
 uppercase, spaces, or `0x`, so every key has a single representation.
 At parse time use `VerifyingKey::from_bytes` and for the signature
-`verify_strict`, which rejects malleable keys and signatures.
+`verify_strict`, which rejects malleable keys and signatures. A commitment is
+`blake3:` and 64 lowercase hex characters: the BLAKE3 hash of the 32 bytes of a public key.
 
-Security note: the key lives in the self-signed manifest and alone
-proves nothing about the author's identity. The TOFU rule applies:
+**Three keys.** The **root** (the "mother key") signs the packages; it is `[trust].root[0]`. The **recovery key** is made with it (`panpak key new`) and never
+appears in a package: the package carries only its commitment, from the first release on. It is shown once as 24 words, to be kept on paper away from the
+machine. A reader MUST refuse a package without `[trust]`, with more than one root, with a threshold other than 1, or with a step whose `by` it does not know
+("update panpak": these are reserved), and MUST refuse a `domain` that does not fit the app id (the domain, read backwards, is the beginning of the id, with
+at least two labels: `example.org` for `org.example.app`). `[update].key` is not part of a package: a package that has it is refused.
 
-1. At the first installation the client MUST show the key fingerprint
-   (first 16 hex characters) and obtain explicit confirmation from the user.
-2. The client saves the confirmed key to `apps/<id>/pinned-key`.
-3. Updates MUST use the same key or a signed succession: the new manifest
-   includes `rotation_old` (equal to the pin) and `rotation_sig` (old-key
-   signature over the succession message of §3.0: the app id, the old key
-   and the new key).
-4. The client verifies the succession against the pin and only then updates
-   the pin, atomically with the verified install. Without a valid
-   succession, a key change means manual reinstall.
+**Trust on first use.** The key lives in the self-signed manifest and alone proves nothing about the author's identity:
+
+1. At the first installation the client MUST show the key (the full key and its fingerprint, the first 16 hex characters) and MUST NOT go on unless the person
+   has said whom to trust: the key they were told (`--expect-key`; a package of another key is refused and nothing is pinned or made ready, whatever else was
+   said), or that they trust the first key they see (`--trust-first-key`), or an answer at a terminal. A bare `--yes` is not that.
+2. The client keeps the confirmed root and the recovery commitment in `apps/<id>/trust` (§6), with where updates come from (`source`, `author`: the
+   `[update].url` the author named; other values are reserved for a catalog or a distribution) and the floor and the highest revision seen.
+3. Updates MUST have the pinned root and the pinned commitment, or a chain that leads to them (rule 4). The client shows where updates come from
+   (the host of `[update].url`, or that the app does not update itself) when it installs, and in `list` and `doctor`.
+4. **The chain.** A package signed by a new root carries `[trust].chain`. The client takes the steps that start from its pin (the ones before are history and are
+   ignored) and checks each: a step `by = "root"` starts from the root that was, is signed by it, and keeps the commitment (**a succession signed by the root
+   cannot change the recovery commitment**); a step `by = "recovery"` reveals in `from` a key whose BLAKE3 hash is the commitment that was, is signed by it, and sets
+   the next commitment. A recovery step is valid from any pin that has that commitment, so it wins over a succession of the root that a thief made. The chain MUST end at the root and the
+   commitment that the package names. No delay: a valid succession is accepted at once, and the client says so in one line. The pin changes atomically with the
+   verified update (the record holds two `root` lines for the moment between the two links, and a start accepts either).
+5. Without a valid chain a key change means that the person removes the app and installs it again.
 
 How the confirmation is requested (prompt text, accepted answers,
 non-interactive mode) is a client interface matter, not part of the format;
@@ -804,7 +823,7 @@ Reference-implementation layout (paths under
   apps/<id>/previous -> ...   # a record again, for rollback
   apps/<id>/pending -> ...    # a staged update (§6.6), with apps/<id>/pending-state
   apps/<id>/update-state      # the background job's schedule and findings (§6.7)
-  apps/<id>/pinned-key      # TOFU pin of the update key
+  apps/<id>/trust           # `key=value` lines: root (two while a key is replaced), recovery, source, floor, seen_revision, switch_note, and reserved hold, confirmed (§3.2)
   apps/<id>/update.url      # update URL (if declared)
   apps/<id>/xdg-dirs        # user folders fixed at install (§3.1.4)
   removing/<id>.<n>/        # a removal in progress or interrupted (§9.6)
@@ -919,7 +938,7 @@ not changed, so a running copy and a start see the installed version until the s
 `panpak apply <app id>` (and the update that `panpak update` makes when the user is there) moves `current` to the staged version, in this order, under the lock of the app (6.4):
 
 1. the staged record is opened and verified again (signature, root of the index); its tree must be complete; if it is the installed version, or its files are gone, the link is taken away and nothing else is done;
-2. the key of the staged version is the pin or a succession that the pin signed (checked again here, not trusted from the staging); a key that replaces the pin is written to `pinned-key` as two lines (the old key, the new) so that a stop between the next steps leaves a start that works (the stub accepts either line);
+2. the key of the staged version is the pin or a chain that leads from the pin to it (§3.2, checked again here, not trusted from the staging); a key that replaces the pin is written to `trust` as two `root` lines (the old key, the new) so that a stop between the next steps leaves a start that works (the stub accepts either line);
 3. **new permissions**: when the staged version asks for permissions that the installed one does not have, it is applied only when the user accepts them (`--accept-new-permissions`, or an answer at a terminal); the stub never applies such a version;
 4. the exclusive lock of the copies of the app is tried: **no copy of the app may be running** (two versions of one app never run at once); if one is, the update stays staged;
 5. `previous` is made to name the installed record, then `current` the staged one (each link written as a temporary link and renamed, then synced), the pin is written with the new key alone, `pending` and its state are removed, then the launcher, the entry, the icons and the pinned user folders of the new version are written.
@@ -1675,7 +1694,7 @@ production). Verified by both the independent verifier
 (`conformance/verify.py`) and the Rust side (`panpak doctor`): both
 MUST accept it and report the same values.
 
-- total size: 839 bytes
+- total size: 991 bytes
 - stub `[0, 21)`: `50414e50414b544553542d564543544f522d763100`
   (`PANPAKTEST-VECTOR-v1\0`)
 - chunk 0 `[21, 37)`, zstd level 3 of `hi\n`:
@@ -1688,17 +1707,17 @@ MUST accept it and report the same values.
   n_entries=2: dir `bin`, file `bin/hi` mode 0755 size 3 chunk [0])
 - root_hash = `BLAKE3(raw index)` =
   `ad7a506ac9fbaf289065933e9217f2a552593b0ff77fd458ad16d0695f9853f5`
-- manifest TOML `[140, 687)` (547 bytes):
-  `[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n[format]\nmin_panpak = 1\ncritical = ["release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash"]\ncompression = "zstd"\nchunking = "fastcdc:16384:65536:262144"\npacked_by = "conformance generator"\n[release]\nrevision = 1\nfloor = 0\nsecurity = 0\nchannel = "stable"\n[runtime]\nstub_hash = "503da793bbca6afccdd883c02e32c139ef3a589894325916eddc2bf67b87520c"\n[update]\nkey = "ed25519:783e43d53f1193914442b4346eed8e69d537a4786ee74af8c878230faa875c72"\n`
-  (the key is the public half of the fixed test key of `conformance/gen.py`; `critical` names `runtime.stub_hash` and the keys of `[release]` that the manifest uses, because `[runtime]` and `[release]` are critical sections, §3.1.9)
-- signature block `[687, 759)` (72 bytes: one entry, type 1, critical, 64 bytes of
+- manifest TOML `[140, 839)` (699 bytes):
+  `[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n[format]\nmin_panpak = 1\ncritical = ["release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash", "trust.recovery", "trust.root", "trust.threshold"]\ncompression = "zstd"\nchunking = "fastcdc:16384:65536:262144"\npacked_by = "conformance generator"\n[release]\nrevision = 1\nfloor = 0\nsecurity = 0\nchannel = "stable"\n[runtime]\nstub_hash = "503da793bbca6afccdd883c02e32c139ef3a589894325916eddc2bf67b87520c"\n[trust]\nroot = ["ed25519:783e43d53f1193914442b4346eed8e69d537a4786ee74af8c878230faa875c72"]\nthreshold = 1\nrecovery = "blake3:a6595f111fb45d19c482a93774d53e0d33464174135b8d3f62c70a0b295ee465"\n`
+  (the key is the public half of the fixed test key of `conformance/gen.py`; `critical` names `runtime.stub_hash` and the keys of `[release]` and `[trust]` that the manifest uses, because `[runtime]`, `[release]` and `[trust]` are critical sections, §3.1.9; the recovery commitment is the BLAKE3 hash of the public key of a second fixed test key)
+- signature block `[839, 911)` (72 bytes: one entry, type 1, critical, 64 bytes of
   Ed25519 over the labeled message of §3.0, that is
   `"panpak/package/v1\0" || 01000000 || 00000000 || root_hash || manifest_toml`):
-  `010001004000000098d7444a33e535e0b1eb609ee8dc4b83639a85138ce094c7b905dfdf35bbf56d06d261e03f198a23125613f06a7175fddbe777d8bf46677df03dcafe70c38405`
-- footer `[759, 839)` (80 bytes):
-  `50414e50000100000100000000000000250000000000000067000000000000008c000000000000002302000000000000ad7a506ac9fbaf289065933e9217f2a552593b0ff77fd458ad16d0695f9853f5`
+  `0100010040000000eb6a375c136168cb9712d7b3fb5ff88173a4057225014ddee1d23b251ad80907cf264325cc08bbec0b57f8b0c092b2cddc927823e764c016c98e016a33a6da0d`
+- footer `[911, 991)` (80 bytes):
+  `50414e50000100000100000000000000250000000000000067000000000000008c00000000000000bb02000000000000ad7a506ac9fbaf289065933e9217f2a552593b0ff77fd458ad16d0695f9853f5`
   (magic `PANP\0\1\0\0`, version=1, flags=0, index_off=37, index_len=103,
-  manifest_off=140, manifest_len=547, root_hash=see above)
+  manifest_off=140, manifest_len=699, root_hash=see above)
 
 Invalid vectors: the conformance suite (`conformance/fixtures/`,
 wrong magic/version/flags, incoherent layout, tampered

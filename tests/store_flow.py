@@ -77,7 +77,7 @@ def main():
         stub = store / 'bin/panpak-stub'
 
         # 1. install: ready, one copy.
-        p = run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], env)
+        p = run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], env)
         records = sorted((store / 'packages').iterdir())
         assert len(records) == 1 and records[0].name.endswith('.rec'), records
         assert not list((store / 'packages').glob('*.panpak')), 'the store keeps no copy of the package'
@@ -93,7 +93,7 @@ def main():
         print('install: record, tree, farm, cache; the first start is a hit PASS')
 
         # 2. the record is never a package.
-        e = run([BIN / 'panpak', 'install', '--yes', records[0]], env, ok=False)
+        e = run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', records[0]], env, ok=False)
         assert 'PANPAK-E0010' in e.stderr and 'install the .panpak package' in e.stderr, e.stderr
         elsewhere = tmp / 'copy.rec'
         shutil.copy(records[0], elsewhere)

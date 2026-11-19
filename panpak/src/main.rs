@@ -33,9 +33,9 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak keygen -o <secret-file>\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>; file mode 0600; `build` and `convert` use ~/.config/panpak/secret.key, made the first time)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
+    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--runtime <stub>] <package>\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the key the author published, or the key of the file; --yes alone does not)\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -217,10 +217,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
     // Refuse before downloading if the launcher cannot be replaced.
     let launcher = dirs::home_dir().context("no home dir")?.join(".local/bin").join(app_id);
     check_replaceable(&launcher, "launcher", &|s| launcher_is_ours(s, app_id))?;
-    let pin =
-        fs::read_to_string(appdir.join("pinned-key")).context("app not installed (missing pin)")?;
-    // The first line (a second one only exists for a moment while a key is being replaced).
-    let pin = pin.lines().next().unwrap_or_default().trim().to_string();
+    let pin = pinned(&appdir)?;
     let current_link = appdir.join("current");
     let current_pkg = panpak_core::durable::resolve_link(&current_link).context("missing current: reinstall")?;
     // The installed version is its record (the signed index and manifest) and its tree.
@@ -246,12 +243,9 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
     panpak_core::validate_manifest(&man)?;
     // The key MUST be the pin OR a succession signed by the pin.
     // The pin only changes when the version is applied (`cmd_apply` checks the succession again).
-    let new_key = man.update.as_ref().context("manifest without [update].key")?.key.trim().to_string();
-    if new_key != pin {
-        let u = man.update.as_ref().unwrap();
-        panpak_core::verify_rotation(app_id, &pin, &new_key, u.rotation_old.as_deref(), u.rotation_sig.as_deref())
-            .context("key differs from the pin and succession invalid")?;
-    }
+    let new_trust = panpak_core::trust::require(&man)?;
+    let new_key = new_trust.root.first().context("[trust] has no root")?.trim().to_string();
+    panpak_core::trust::follow(app_id, &pin, new_trust)?;
     ensure!(man.app.id == app_id, "remote id differs from the installed app");
     let (sig_b, sig_total) = http_range(&agent, &url, ft.man_off + ft.man_len, total - panpak_core::FOOTER_LEN - 1)?;
     ensure!(sig_total == total, "file changed during download");
@@ -260,10 +254,11 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
     panpak_core::parse_pubkey(&new_key)?.verify_strict(&signed, &sig)
         .map_err(|_| coded(ErrorCode::E1001, "invalid remote signature: update refused"))?;
     panpak_core::check_format(&man)?;
+    panpak_core::trust::check(&man)?;
     panpak_core::check_runtime(&man, panpak_core::RUNTIME_ABI)?;
     // Old and new are told by the revision, never by the version text. The floor is kept even when the update goes no further.
     let rel = man.release.as_ref().context("the remote manifest has no [release]")?;
-    panpak_core::release::note_floor(&appdir, rel.floor)?;
+    panpak_core::release::note_release(&appdir, rel.floor, rel.revision)?;
     // The floor may have put the installed version in protected mode (or taken it out): the mark and the menu follow.
     if panpak_core::release::sync_protected(&appdir, old_man.release.as_ref().map_or(0, |r| r.revision))? {
         refresh_menu_entry(app_id);
@@ -458,21 +453,18 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
     let old_man = &old.manifest;
     let man = &new.manifest;
     // The key of the staged version is the pin or a succession that the pin signed: checked again here, not trusted from the staging.
-    let pin_text = fs::read_to_string(appdir.join("pinned-key")).context("app not installed (missing pin)")?;
-    let pin = pin_text.lines().next().unwrap_or_default().trim().to_string();
-    let new_key = man.update.as_ref().context("manifest without [update].key")?.key.trim().to_string();
-    let mut rotated_to: Option<String> = None;
-    if new_key != pin {
-        let u = man.update.as_ref().unwrap();
-        panpak_core::verify_rotation(app_id, &pin, &new_key, u.rotation_old.as_deref(), u.rotation_sig.as_deref()).context("key differs from the pin and succession invalid")?;
-        rotated_to = Some(new_key.clone());
-    }
+    let pin = pinned(&appdir)?;
+    let new_trust = panpak_core::trust::require(man)?;
+    let followed = panpak_core::trust::follow(app_id, &pin, new_trust)?;
+    // Set when the keys change: the root and the recovery commitment that the app pins from now on.
+    let rotated_to: Option<(String, String)> = (followed > 0).then(|| (new_trust.root[0].trim().to_string(), new_trust.recovery.clone()));
     // The staged version enters over the installed one by the same rules as when it was staged (the floor may have risen since): a refusal takes
     // the staging away, so that it is not tried again at every start.
+    let mut switch_note: Option<String> = None;
     {
         let rel = man.release.as_ref().context("the staged record has no [release]")?;
-        let checked = (|| -> Result<()> {
-            panpak_core::release::note_floor(&appdir, rel.floor)?;
+        let checked = (|| -> Result<panpak_core::release::Standing> {
+            panpak_core::release::note_release(&appdir, rel.floor, rel.revision)?;
             if panpak_core::release::sync_protected(&appdir, old_man.release.as_ref().map_or(0, |r| r.revision))? {
                 refresh_menu_entry(app_id);
             }
@@ -482,13 +474,19 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
                 let h = panpak_core::release::read_tree_history(&store.join("trees").join(&new_root), rel)?;
                 panpak_core::release::check_continuity(&installed, rel.revision, h.as_deref())?;
             }
-            Ok(())
+            Ok(standing)
         })();
-        if let Err(e) = checked {
-            if matches!(panpak_core::code_of(&e, ErrorCode::E2000), ErrorCode::E4001 | ErrorCode::E4003 | ErrorCode::E4004 | ErrorCode::E4005 | ErrorCode::E4006) {
-                panpak_core::pending::clear(&appdir)?;
+        match checked {
+            Ok(panpak_core::release::Standing::Switch { same_revision: true }) => {
+                switch_note = Some(format!("{} to {} at revision {}", old_man.release.as_ref().map_or("?", |r| r.channel.as_str()), rel.channel, rel.revision));
             }
-            return Err(e);
+            Ok(_) => {}
+            Err(e) => {
+                if matches!(panpak_core::code_of(&e, ErrorCode::E2000), ErrorCode::E4001 | ErrorCode::E4003 | ErrorCode::E4004 | ErrorCode::E4005 | ErrorCode::E4006) {
+                    panpak_core::pending::clear(&appdir)?;
+                }
+                return Err(e);
+            }
         }
     }
     let added = panpak_core::permissions::added(old_man, man);
@@ -524,18 +522,25 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
 
     // A key that is being replaced is in the pin file with the old one for the time between the two links, so that a stop at any point leaves a start that
     // works (the stub accepts either line).
-    let pin_file = appdir.join("pinned-key");
-    if let Some(k) = &rotated_to {
-        panpak_core::durable::write_file(&pin_file, format!("{pin}\n{k}\n").as_bytes(), 0o644)?;
+    if let Some((k, _)) = &rotated_to {
+        panpak_core::trust::modify(&appdir, |st| st.roots = vec![pin.root.clone(), k.clone()])?;
         panpak_core::failpoint!("apply.pin_both");
     }
     panpak_core::durable::replace_symlink(&current_rec, &appdir.join("previous"))?;
     panpak_core::failpoint!("apply.previous_linked");
     panpak_core::durable::replace_symlink(&staged, &current_link)?;
     panpak_core::failpoint!("apply.current_linked");
-    if let Some(k) = &rotated_to {
-        panpak_core::durable::write_file(&pin_file, format!("{k}\n").as_bytes(), 0o644)?;
-        eprintln!("panpak: key rotation accepted for {app_id}: pin updated to {k}");
+    if rotated_to.is_none() {
+        panpak_core::trust::modify(&appdir, |st| st.switch_note = switch_note.clone())?;
+    }
+    if let Some((k, rec)) = &rotated_to {
+        panpak_core::trust::modify(&appdir, |st| {
+            st.roots = vec![k.clone()];
+            st.recovery = Some(rec.clone());
+            st.switch_note = switch_note.clone();
+        })?;
+        let msg = if *rec != pin.recovery { panpak_core::messages::KEY_RECOVERED } else { panpak_core::messages::KEY_CHANGED };
+        eprintln!("panpak: {}", panpak_core::i18n::fill(&panpak_core::i18n::tr(msg), &[("name", man.app.name.clone()), ("key", k.clone())]));
     }
     panpak_core::pending::clear(&appdir)?;
     panpak_core::failpoint!("apply.pending_removed");
@@ -943,11 +948,37 @@ fn cmd_licenses(pkg: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_keygen(out: &Path) -> Result<()> {
+/// `panpak key new [-o <secret-file>]` (and `panpak keygen -o <f>`, the same): the signing key (the root, the "mother key") and the recovery key. The signing key is
+/// written to the file (mode 0600, never overwritten) and the recovery commitment beside it (`<file>.recovery`, a public text). The recovery key itself is shown once, as
+/// 24 words to print and keep somewhere else, and is not kept on this machine: it is what gets the app back from a thief of the signing key.
+fn cmd_key_new(out: &Path) -> Result<()> {
+    use std::io::Read;
     let (vk, _) = create_secret_file(out)?;
+    let mut rec = [0u8; 32];
+    File::open("/dev/urandom")?.read_exact(&mut rec)?;
+    let rec_vk = ed25519_dalek::SigningKey::from_bytes(&rec).verifying_key();
+    let commitment = panpak_core::trust::commitment_of(&rec_vk);
+    let mut cf = out.as_os_str().to_owned();
+    cf.push(".recovery");
+    let cf = PathBuf::from(cf);
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o644).open(&cf).with_context(|| format!("create {} (it must not exist)", cf.display()))?;
+        writeln!(f, "{commitment}")?;
+        f.sync_all()?;
+    }
     println!("secret key written to: {}", out.display());
     println!("key:    ed25519:{}", panpak_core::hex(vk.as_bytes()));
     println!("fingerprint (TOFU, first 16 hex): {}", panpak_core::fingerprint(&vk));
+    println!("recovery commitment written to: {} ({commitment})", cf.display());
+    println!();
+    println!("RECOVERY PHRASE: write these 24 words on paper and keep them away from this computer. They are shown once and are not kept.");
+    println!("They are what takes your apps back if the signing key is ever stolen or lost; anyone who has them can do that, so they are as secret as the key.");
+    println!();
+    for line in panpak_core::trust::phrase_of(&rec).chunks(6) {
+        println!("    {}", line.join(" "));
+    }
+    println!();
     Ok(())
 }
 
@@ -977,20 +1008,47 @@ fn default_secret_path() -> Result<PathBuf> {
     Ok(dirs::config_dir().context("no config folder (set XDG_CONFIG_HOME or HOME)")?.join("panpak").join("secret.key"))
 }
 
-/// Like `load_secret`, but without a key given the personal key is used, and made the first time (one line says so, with the fingerprint).
-fn load_or_make_secret(flag: Option<&str>) -> Result<String> {
-    if flag.is_some() || std::env::var_os("PANPAK_SECRET_FILE").is_some_and(|v| !v.is_empty()) {
-        return load_secret(flag);
-    }
-    let path = default_secret_path()?;
-    if !path.exists() {
-        let dir = path.parent().context("key folder")?;
-        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-        let (_, fp) = create_secret_file(&path)?;
-        eprintln!("panpak: made your key {} (fingerprint {fp}); it signs the packages you build: keep it, and back it up. --secret-file uses another key", path.display());
-    }
-    panpak_core::read_secret_file(&path)
+/// The key that signs: `--secret-file`, `PANPAK_SECRET_FILE`, or the personal key of this account. A key is never made here: without one, the error names the command that makes it.
+fn load_personal_secret(flag: Option<&str>) -> Result<(String, PathBuf)> {
+    let explicit = flag.map(PathBuf::from).or_else(|| std::env::var_os("PANPAK_SECRET_FILE").filter(|v| !v.is_empty()).map(PathBuf::from));
+    let path = match explicit {
+        Some(p) => p,
+        None => {
+            let p = default_secret_path()?;
+            ensure_code!(p.exists(), ErrorCode::E1000, "there is no signing key: make yours with `panpak key new` (it makes the key, the recovery commitment and the 24 words that take the app back if the key is lost), or give another with --secret-file; a key is never made by itself");
+            p
+        }
+    };
+    Ok((panpak_core::read_secret_file(&path)?, path))
+}
+
+/// What the package says about trust, for the key in `secret_path`: the recovery commitment (from `--recovery` or the file `<key>.recovery` that `key new` made), and the
+/// succession to carry, if one is asked for.
+fn trust_args(secret_path: &Path, recovery: Option<&str>, rotate_from: Option<&str>, recover_with: Option<&str>) -> Result<TrustArgs> {
+    // The commitment: `--recovery`, else `PANPAK_RECOVERY` (like `PANPAK_SECRET_FILE`: for a script or a CI that signs with a key it holds), else the file that `key new` wrote.
+    let from_env = std::env::var("PANPAK_RECOVERY").ok().filter(|v| !v.trim().is_empty());
+    let recovery = match recovery.map(str::to_string).or(from_env) {
+        Some(r) => r.trim().to_string(),
+        None => {
+            let mut f = secret_path.as_os_str().to_owned();
+            f.push(".recovery");
+            let f = PathBuf::from(f);
+            fs::read_to_string(&f).map(|t| t.trim().to_string()).map_err(|_| {
+                coded(ErrorCode::E1000, format!("{} has no recovery commitment ({} is missing): make your keys with `panpak key new`, or give --recovery blake3:<hash of your recovery key>", secret_path.display(), f.display()))
+            })?
+        }
+    };
+    panpak_core::trust::parse_commitment(&recovery).map_err(|e| coded(ErrorCode::E1000, format!("the recovery commitment: {e}")))?;
+    ensure_code!(rotate_from.is_none() || recover_with.is_none(), ErrorCode::E5002, "--rotate-from-file and --recover-with are two ways to make a succession: give one");
+    let rotation = match (rotate_from, recover_with) {
+        (Some(f), _) => Some(Rotation::Root(panpak_core::read_secret_file(Path::new(f))?)),
+        (_, Some(f)) => {
+            let text = fs::read_to_string(f).with_context(|| format!("read {f}"))?;
+            Some(Rotation::Recovery(panpak_core::hex(&panpak_core::trust::secret_of(&text)?)))
+        }
+        _ => None,
+    };
+    Ok(TrustArgs { recovery, rotation, command: None })
 }
 
 /// Secret from `--secret-file` or, if absent, `PANPAK_SECRET_FILE` (a path,
@@ -1197,7 +1255,7 @@ fn previous_from_installed(app_id: &str, key: &str) -> Option<Prev> {
     let store = store_dir().ok()?;
     let rec = panpak_core::durable::resolve_link(&store.join("apps").join(app_id).join("current")).ok()?;
     let o = panpak_core::record::open_verified(&rec).ok()?;
-    if o.manifest.app.id != app_id || o.manifest.update.as_ref()?.key.trim() != key.trim() {
+    if o.manifest.app.id != app_id || o.manifest.trust.as_ref()?.root.first()?.trim() != key.trim() {
         return None;
     }
     let rel = o.manifest.release.as_ref()?;
@@ -1212,7 +1270,29 @@ fn previous_from_installed(app_id: &str, key: &str) -> Option<Prev> {
     })
 }
 
-fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, out: Option<&Path>, extra_icons: Vec<IconInput>, previous: Previous<'_>) -> Result<PathBuf> {
+/// The root and the recovery commitment that an installed app pins, from its trust record.
+fn pinned(appdir: &Path) -> Result<panpak_core::trust::Pin> {
+    let st = panpak_core::trust::read(appdir).context("app not installed (missing trust record)")?;
+    st.pin().context("the trust record of the app has no key or no recovery commitment: reinstall it")
+}
+
+/// What a package says about trust beside the signing key: the recovery commitment (from the first package on), a succession to carry, and an external signer.
+pub struct TrustArgs {
+    /// `blake3:<hash of the recovery public key>`.
+    pub recovery: String,
+    /// A succession that leads from an older key to this one, to carry in the package.
+    pub rotation: Option<Rotation>,
+    /// `--sign-command`: a command that gets the bytes to sign on its standard input and writes the 64 bytes of the signature; the key it signs with.
+    pub command: Option<(String, String)>,
+}
+
+/// Who authorizes the new root in a succession: the old root (its secret, hex) or the recovery key (its secret, hex: the phrase, decoded).
+pub enum Rotation {
+    Root(String),
+    Recovery(String),
+}
+
+fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Option<&Path>, extra_icons: Vec<IconInput>, previous: Previous<'_>) -> Result<PathBuf> {
     let input_toml = fs::read_to_string(dir.join("panpak.toml")).context("read <folder>/panpak.toml")?;
     // Strict schema in pack: future keys must not silently disappear.
     panpak_core::check_panpak_toml_schema(&input_toml)?;
@@ -1239,23 +1319,47 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
             );
         }
     }
-    // The key must already be valid here: fail in pack, not at runtime.
-    let sk = parse_secret(secret)?;
-    let derived = format!("ed25519:{}", panpak_core::hex(sk.verifying_key().as_bytes()));
-    ensure!(
-        man.update.as_ref().is_some_and(|u| u.key == derived),
-        "update.key must match the signing secret"
-    );
-    // Rotation: prove that the OLD key authorizes the new one (OB3).
-    if let Some(old_hex) = rotate_from {
-        use ed25519_dalek::Signer;
-        let old_sk = parse_secret(old_hex)?;
-        let old_pub = format!("ed25519:{}", panpak_core::hex(old_sk.verifying_key().as_bytes()));
-        let sig = old_sk.sign(&panpak_core::succession_message(&man.app.id, &old_sk.verifying_key(), &sk.verifying_key())).to_bytes();
-        let upd = man.update.as_mut().context("manifest without [update]")?;
-        upd.rotation_old = Some(old_pub);
-        upd.rotation_sig = Some(panpak_core::hex(&sig));
+    // The key must already be valid here: fail in pack, not at runtime. It is the signing secret, or the public key of an external signer.
+    let (sk, derived) = match &trust.command {
+        Some((_, public)) => {
+            panpak_core::parse_pubkey(public).context("--public-key")?;
+            (None, public.clone())
+        }
+        None => {
+            let sk = parse_secret(secret)?;
+            let d = format!("ed25519:{}", panpak_core::hex(sk.verifying_key().as_bytes()));
+            (Some(sk), d)
+        }
+    };
+    // The key of a package is `[trust].root`: an `[update].key` in the input is accepted (older inputs have it) when it is the signing key, and is not written.
+    if let Some(u) = man.update.as_mut() {
+        if let Some(k) = u.key.take() {
+            ensure!(k == derived, "update.key must match the signing secret");
+        }
     }
+    // The author gives the domain; the rest of [trust] is made here.
+    let domain = man.trust.take().and_then(|t| t.domain);
+    let mut chain = Vec::new();
+    if let Some(rot) = &trust.rotation {
+        use ed25519_dalek::Signer;
+        let new_vk = panpak_core::parse_pubkey(&derived)?;
+        let new_rec = panpak_core::trust::parse_commitment(&trust.recovery)?;
+        let (by_recovery, signer) = match rot {
+            Rotation::Root(h) => (false, parse_secret(h)?),
+            Rotation::Recovery(h) => (true, parse_secret(h)?),
+        };
+        let msg = panpak_core::trust::succession_message(&man.app.id, by_recovery, &signer.verifying_key(), &new_vk, &new_rec);
+        chain.push(panpak_core::trust::Step {
+            by: if by_recovery { "recovery" } else { "root" }.to_string(),
+            from: format!("ed25519:{}", panpak_core::hex(signer.verifying_key().as_bytes())),
+            to: derived.clone(),
+            recovery: trust.recovery.clone(),
+            sig: panpak_core::hex(&signer.sign(&msg).to_bytes()),
+        });
+    }
+    man.trust = Some(panpak_core::trust::Trust { root: vec![derived.clone()], threshold: 1, recovery: trust.recovery.clone(), domain, chain });
+    // The table is checked as a reader checks it (the domain fits the id, the forms are right): a package that install refuses must not exist.
+    panpak_core::trust::check(&man).context("[trust] of the package")?;
 
     let mut payload = walk_tree(dir)?;
     check_library_path_links(&man.app.id, &payload)?;
@@ -1264,7 +1368,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
     // The history is a file of the tree, so it is made here, before the index is.
     let release = {
         let input = man.release.take();
-        let derived_key = format!("ed25519:{}", panpak_core::hex(parse_secret(secret)?.verifying_key().as_bytes()));
+        let derived_key = derived.clone();
         let channel = input.as_ref().map(|r| r.channel.clone()).unwrap_or_else(|| panpak_core::DEFAULT_CHANNEL.to_string());
         let prev = match previous {
             Previous::None => None,
@@ -1556,8 +1660,14 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
     panpak_core::check_format(&man)?;
     let toml_b = toml::to_string(&man)?.into_bytes();
     let msg = panpak_core::package_message(panpak_core::FORMAT_VERSION, panpak_core::FORMAT_FLAGS, &root, &toml_b);
-    use ed25519_dalek::Signer;
-    let sig = sk.sign(&msg).to_bytes();
+    let sig = match (&sk, &trust.command) {
+        (Some(sk), _) => {
+            use ed25519_dalek::Signer;
+            sk.sign(&msg).to_bytes()
+        }
+        (None, Some((cmd, public))) => sign_with_command(cmd, &msg, public)?,
+        (None, None) => bail!("no signing key"),
+    };
     fout.write_all(&toml_b)?;
     fout.write_all(&panpak_core::encode_sig_block(&sig))?;
 
@@ -1586,6 +1696,35 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, rotate_from: Option<&str>, ou
         panpak_core::hex(&root)
     );
     Ok(out_path)
+}
+
+/// Sign with an external command (a token, ssh-agent, an HSM): it gets the bytes on its standard input and writes the 64 bytes of the signature on its standard output.
+/// The signature is checked against the public key before it is used, so a command that answers wrong is an error here and not a package nobody can install.
+fn sign_with_command(cmd: &str, msg: &[u8], public: &str) -> Result<[u8; 64]> {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .with_context(|| format!("--sign-command: cannot run {cmd:?}"))?;
+    let mut stdin = child.stdin.take().context("--sign-command: no standard input")?;
+    let data = msg.to_vec();
+    let writer = std::thread::spawn(move || {
+        let _ = stdin.write_all(&data);
+    });
+    let out = child.wait_with_output().context("--sign-command: wait")?;
+    let _ = writer.join();
+    ensure_code!(out.status.success(), ErrorCode::E1000, "--sign-command {cmd:?} failed ({})", out.status);
+    ensure_code!(out.stdout.len() == 64, ErrorCode::E1000, "--sign-command {cmd:?} wrote {} bytes on its standard output, not the 64 of an ed25519 signature", out.stdout.len());
+    let mut sig = [0u8; 64];
+    sig.copy_from_slice(&out.stdout);
+    panpak_core::parse_pubkey(public)?
+        .verify_strict(msg, &ed25519_dalek::Signature::from_bytes(&sig))
+        .map_err(|_| coded(ErrorCode::E1001, format!("--sign-command {cmd:?} signed with another key than {public}: the signature does not verify")))?;
+    Ok(sig)
 }
 
 fn store_dir() -> Result<PathBuf> {
@@ -1883,6 +2022,7 @@ struct ConvertArgs<'a> {
     id: &'a str,
     stub: &'a Path,
     secret: &'a str,
+    trust: &'a TrustArgs,
     name_ov: Option<&'a str>,
     version_ov: Option<&'a str>,
     entry_ov: Option<&'a str>,
@@ -1906,7 +2046,7 @@ fn valid_squashfs_sb(b: &[u8]) -> bool {
 
 fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     use std::io::Read;
-    let ConvertArgs { src, id, stub, secret, name_ov, version_ov, entry_ov, allow_missing, icon_ov, out } = a;
+    let ConvertArgs { src, id, stub, secret, trust, name_ov, version_ov, entry_ov, allow_missing, icon_ov, out } = a;
     panpak_core::validate_app_id(id)?;
     let mut f = File::open(src)?;
     // Look for the squashfs v4 magic ("hsqs") in the first 64 MiB, validating the
@@ -2170,7 +2310,7 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     tw.replace_file(Path::new("panpak.toml"), toml.as_bytes(), 0o644)?;
     // The links that make the library path of the app valid for its own programs only (PANPAK-FORMAT.md section 7.1).
     panpak_core::libpath::make_links(&tree, id, &mut |p, t| tw.symlink(p, Path::new(t)))?;
-    cmd_pack(&tree, stub, secret, None, out, icons, Previous::Installed)
+    cmd_pack(&tree, stub, secret, trust, out, icons, Previous::Installed)
 }
 
 /// An icon handed to `pack` as bytes: where it came from (for the messages) and the file.
@@ -2895,7 +3035,7 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
     ensure_code!(path.exists(), ErrorCode::E5001, "{arg}: not a package file and not an installed app (see `panpak list`)");
     let opened = panpak_core::record::open_verified(&path)?;
     let man = opened.manifest.clone();
-    let key = man.update.as_ref().map(|u| u.key.clone()).unwrap_or_default();
+    let key = man.trust.as_ref().and_then(|t| t.root.first().cloned()).unwrap_or_default();
     let fp = panpak_core::parse_pubkey(&key).map(|vk| panpak_core::fingerprint(&vk)).unwrap_or_else(|_| "?".into());
     let (lang, style) = (panpak_core::i18n::current(), perm_style());
     let items = perms::items_with(lang, &man, perms::documents_available());
@@ -2991,7 +3131,28 @@ fn cmd_data(action: &str, app_id: &str, yes: bool) -> Result<()> {
     }
 }
 
-fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Path>, allow: panpak_core::release::Allow) -> Result<PathBuf> {
+/// What the person says about the key of a first install: the key they were told (`--expect-key`), or that they trust the one of this file (`--trust-first-key`).
+#[derive(Default, Clone, Copy)]
+pub struct FirstKey<'a> {
+    pub expect: Option<&'a str>,
+    pub trust_first: bool,
+}
+
+/// The host that updates come from, as the author wrote it in `[update].url`.
+pub(crate) fn update_host(url: &str) -> Option<String> {
+    url.parse::<http::Uri>().ok()?.host().map(str::to_string)
+}
+
+/// The line that says where the updates of an app come from (English and Italian): the host of `[update].url` and who named it, or that there are none.
+fn updates_line(url: Option<&str>) -> String {
+    use panpak_core::i18n::{fill, tr};
+    match url.and_then(update_host) {
+        Some(host) => fill(&tr(panpak_core::messages::UPDATES_FROM), &[("host", host)]),
+        None => tr(panpak_core::messages::UPDATES_NONE).into_owned(),
+    }
+}
+
+fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Path>, allow: panpak_core::release::Allow, first: FirstKey<'_>) -> Result<PathBuf> {
     let t0 = std::time::Instant::now();
     let mark = |what: &str| {
         if panpak_core::debug_enabled() {
@@ -3034,8 +3195,19 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     // The icons are read and checked now, before the store is touched.
     let new_icons = icons::read_from_package(&mut f, &raw_index, &man)?;
     icons::check_destinations(&man.app.id, &new_icons)?;
-    let key = &man.update.as_ref().context("manifest without [update].key")?.key;
+    let new_trust = panpak_core::trust::require(&man)?;
+    let key = new_trust.root.first().context("[trust] has no root")?;
     let fp = panpak_core::fingerprint(&panpak_core::parse_pubkey(key)?);
+    // The key that the person was told is checked before anything else is done with the package, for a new app and for an installed one: a package of another key is
+    // not installed, no key is pinned and the app is not made ready, whatever else was said (`--yes` included).
+    if let Some(expect) = first.expect {
+        ensure_code!(
+            expect.trim() == key.trim(),
+            ErrorCode::E1004,
+            "the key of this package is {key}, not the expected {}: nothing was installed and no key was pinned",
+            expect.trim()
+        );
+    }
 
     let (best_abi, _) = best_runtime(&store)?;
     let need = man.runtime.as_ref().and_then(|r| r.min_runtime).unwrap_or(1);
@@ -3051,18 +3223,18 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     let revision_before = installed_manifest(&appdir).map(|o| o.release.as_ref().map_or(0, |r| r.revision));
     // The user folders the manifest asks for, found now in the real user-dirs.dirs.
     let (xdg_found, xdg_problems) = resolve_xdg_dirs(&man);
-    let pin = appdir.join("pinned-key");
     let mut new_pin = false;
-    if pin.exists() {
-        let old = fs::read_to_string(&pin)?;
-        ensure_code!(old.lines().any(|l| l.trim() == key.trim()), ErrorCode::E1004, "key DIFFERS from TOFU pin: possible attack or changed author; manual reinstall required");
+    let mut switch_note: Option<String> = None;
+    if let Some(have) = panpak_core::trust::read(&appdir).filter(|s| s.pin().is_some()) {
+        ensure_code!(have.roots.iter().any(|r| r.trim() == key.trim()), ErrorCode::E1004, "key DIFFERS from the pinned key: possible attack or changed author; to change the key the author makes a succession (an update), or you remove the app and install it again");
+        ensure_code!(have.recovery.as_deref() == Some(new_trust.recovery.as_str()), ErrorCode::E1004, "the recovery commitment of this package differs from the one this app pinned: only a succession signed by the recovery key changes it");
         print_isolation(&man);
         print_xdg_dirs(&xdg_found, &xdg_problems);
         // Installing over an installed app is an update: it is told by the revision (an older package, a fork, a package below the floor or of
         // another channel is refused), and new permissions need a yes.
         if let Some(old) = installed_manifest(&appdir) {
             let rel = man.release.as_ref().context("the package has no [release]")?;
-            panpak_core::release::note_floor(&appdir, rel.floor)?;
+            panpak_core::release::note_release(&appdir, rel.floor, rel.revision)?;
             if panpak_core::release::sync_protected(&appdir, old.release.as_ref().map_or(0, |r| r.revision))? {
                 refresh_menu_entry(&man.app.id);
             }
@@ -3070,9 +3242,13 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
             let installed = installed_release(&store, &appdir, &current, &old, &panpak_core::record::open_verified(&current)?.footer.root, true)?;
             let manifest_bytes = panpak_core::read_at(&mut f, ft.man_off, ft.man_len)?;
             let signed = panpak_core::release::signed_hash(ft.version, ft.flags, &ft.root, &manifest_bytes);
-            if panpak_core::release::check_entering(&installed, rel, &signed, allow)? == panpak_core::release::Standing::Newer {
+            let standing = panpak_core::release::check_entering(&installed, rel, &signed, allow)?;
+            if standing == panpak_core::release::Standing::Newer {
                 let h = panpak_core::release::read_package_history(&mut f, &raw_index, rel)?;
                 panpak_core::release::check_continuity(&installed, rel.revision, h.as_deref())?;
+            }
+            if let panpak_core::release::Standing::Switch { same_revision: true } = standing {
+                switch_note = Some(format!("{} to {} at revision {}", old.release.as_ref().map_or("?", |r| r.channel.as_str()), rel.channel, rel.revision));
             }
             accept_new_permissions(&panpak_core::permissions::added(&old, &man), yes, accept_new, "package")?;
         }
@@ -3080,7 +3256,9 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         println!("app: {} {} ({})", man.app.id, man.app.name, man.app.version);
         print_permissions(&man);
         print_xdg_dirs(&xdg_found, &xdg_problems);
+        println!("key: {key}");
         println!("key fingerprint (TOFU, first 16 hex): {fp}");
+        println!("{}", updates_line(man.update.as_ref().and_then(|u| u.url.as_deref())));
         if let Some(o) = man.origin.as_ref() {
             println!("WARNING: THIRD-PARTY CONVERTED package, not verified by the upstream author:");
             println!("  from: {} (version {})", o.converted_from, o.version);
@@ -3095,12 +3273,19 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
                 }
             }
         }
-        println!("pin: {}", pin.display());
-        if !yes {
+        println!("pin: {}", appdir.join(panpak_core::trust::FILE).display());
+        // Whom to trust is said by the person: the key they were told (checked above), or the key of this file. `--yes` is not that.
+        let said = first.expect.is_some() || first.trust_first;
+        if !said {
+            ensure_code!(
+                !yes,
+                ErrorCode::E1003,
+                "the first install of an app has to say whom it trusts: give --expect-key {key} if this is the key the author published, or --trust-first-key if you trust the key of this file; --yes alone is not enough"
+            );
             ensure_code!(
                 std::io::IsTerminal::is_terminal(&std::io::stdin()),
                 ErrorCode::E5004,
-                "non-interactive stdin: pass --yes after verifying the fingerprint"
+                "non-interactive stdin: pass --expect-key <key> (the key the author published) or --trust-first-key"
             );
             print!("Install and trust this key? [y/N] ");
             use std::io::Write;
@@ -3119,7 +3304,16 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     mark("prepared");
     panpak_core::failpoint!("install.prepared");
     if new_pin {
-        panpak_core::durable::write_file(&pin, format!("{key}\n").as_bytes(), 0o644)?;
+        let rel = man.release.as_ref().context("the package has no [release]")?;
+        panpak_core::trust::modify(&appdir, |st| {
+            st.roots = vec![key.trim().to_string()];
+            st.recovery = Some(new_trust.recovery.clone());
+            st.source = panpak_core::trust::SOURCE_AUTHOR.to_string();
+            st.floor = st.floor.max(rel.floor);
+            st.seen_revision = st.seen_revision.max(rel.revision);
+        })?;
+    } else {
+        panpak_core::trust::modify(&appdir, |st| st.switch_note = switch_note.clone())?;
     }
     panpak_core::failpoint!("install.pin_written");
     write_xdg_pin(&appdir, &xdg_found)?;
@@ -3308,6 +3502,10 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
     }
     // The apps that are in protected mode (a floor above the installed version): a fixed state, said at every `doctor`, with the way out.
     for l in protected::doctor_lines() {
+        println!("NOTE {l}");
+    }
+    // Where each app gets its updates (and who named the place), and a change of channel that took a release with the same number and other bytes.
+    for l in protected::trust_lines() {
         println!("NOTE {l}");
     }
     // Package: COMPLETE verification (including every chunk: a doctor that
@@ -3637,14 +3835,26 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Some("keygen") => match (args.get(2).map(|s| s.as_str()), args.get(3), args.len()) {
-            (Some("-o"), Some(f), 4) => cmd_keygen(Path::new(f)),
-            _ => bail_code!(ErrorCode::E5002, "keygen -o <secret-file> (the secret is never printed)\n{usage}", usage = usage()),
+            (Some("-o"), Some(f), 4) => cmd_key_new(Path::new(f)),
+            _ => bail_code!(ErrorCode::E5002, "keygen -o <secret-file> (the same as `key new -o <secret-file>`; the secret is never printed)\n{usage}", usage = usage()),
+        },
+        Some("key") => match (args.get(2).map(|s| s.as_str()), args.get(3).map(|s| s.as_str()), args.get(4), args.len()) {
+            (Some("new"), None, _, 3) => {
+                let path = default_secret_path()?;
+                let dir = path.parent().context("key folder")?;
+                fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+                fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+                cmd_key_new(&path)
+            }
+            (Some("new"), Some("-o"), Some(f), 5) => cmd_key_new(Path::new(f)),
+            _ => bail_code!(ErrorCode::E5002, "key new [-o <secret-file>] (without -o: ~/.config/panpak/secret.key)\n{usage}", usage = usage()),
         },
         Some("pack") => {
             let dir = args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "pack <folder>"))?;
             let mut stub = None;
             let mut secret_file = None;
             let mut rotate_from = None;
+            let (mut recover_with, mut recovery, mut sign_command, mut public_key) = (None::<String>, None::<String>, None::<String>, None::<String>);
             let mut previous: Option<String> = None;
             let mut out = None;
             let mut i = 3;
@@ -3662,6 +3872,22 @@ fn real_main() -> Result<()> {
                         rotate_from = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--rotate-from-file <f>"))?.clone());
                         i += 2;
                     }
+                    "--recover-with" => {
+                        recover_with = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--recover-with <file with the 24 words>"))?.clone());
+                        i += 2;
+                    }
+                    "--recovery" => {
+                        recovery = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--recovery blake3:<hash>"))?.clone());
+                        i += 2;
+                    }
+                    "--sign-command" => {
+                        sign_command = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--sign-command <command>"))?.clone());
+                        i += 2;
+                    }
+                    "--public-key" => {
+                        public_key = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--public-key ed25519:<hex>"))?.clone());
+                        i += 2;
+                    }
                     "--previous" => {
                         previous = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--previous <package>"))?.clone());
                         i += 2;
@@ -3673,10 +3899,23 @@ fn real_main() -> Result<()> {
                     x => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
                 }
             }
-            let secret = load_secret(secret_file.as_deref())?;
             let out_p = out.map(PathBuf::from);
-            let rotate_secret = rotate_from.as_deref().map(|f| panpak_core::read_secret_file(Path::new(f))).transpose()?;
-            cmd_pack(Path::new(dir), Path::new(stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?), &secret, rotate_secret.as_deref(), out_p.as_deref(), Vec::new(), previous.as_deref().map_or(Previous::None, |p| Previous::File(Path::new(p))))?;
+            let (secret, trust) = match sign_command {
+                Some(cmd) => {
+                    ensure_code!(secret_file.is_none() && rotate_from.is_none() && recover_with.is_none(), ErrorCode::E5002, "--sign-command signs with the key of the command: no --secret-file, --rotate-from-file or --recover-with with it\n{usage}", usage = usage());
+                    let public = public_key.clone().ok_or_else(|| coded(ErrorCode::E5002, "--sign-command needs --public-key ed25519:<the key the command signs with>"))?;
+                    let recovery = recovery.clone().ok_or_else(|| coded(ErrorCode::E5002, "--sign-command needs --recovery blake3:<the commitment of your recovery key> (it is in the file `<secret key>.recovery` that `panpak key new` made)"))?;
+                    panpak_core::trust::parse_commitment(&recovery).map_err(|e| coded(ErrorCode::E5002, format!("--recovery: {e}")))?;
+                    (String::new(), TrustArgs { recovery, rotation: None, command: Some((cmd, public)) })
+                }
+                None => {
+                    ensure_code!(public_key.is_none(), ErrorCode::E5002, "--public-key is for --sign-command\n{usage}", usage = usage());
+                    let (secret, path) = load_personal_secret(secret_file.as_deref())?;
+                    let trust = trust_args(&path, recovery.as_deref(), rotate_from.as_deref(), recover_with.as_deref())?;
+                    (secret, trust)
+                }
+            };
+            cmd_pack(Path::new(dir), Path::new(stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?), &secret, &trust, out_p.as_deref(), Vec::new(), previous.as_deref().map_or(Previous::None, |p| Previous::File(Path::new(p))))?;
             Ok(())
         }
         Some("install-runtime") => {
@@ -3818,7 +4057,8 @@ fn real_main() -> Result<()> {
             let dir = dir.unwrap_or_else(|| PathBuf::from("."));
             // The arguments are checked before the personal key is made: a key is made when a package is about to be signed.
             ensure_code!(dir.is_dir(), ErrorCode::E5002, "build: {} is not a folder", dir.display());
-            let secret = load_or_make_secret(secret_file.as_deref())?;
+            let (secret, secret_path) = load_personal_secret(secret_file.as_deref())?;
+            let trust = trust_args(&secret_path, None, None, None)?;
             // The stub to embed: the one given, or the runtime of the store (the one that comes with this program, installed if it is missing).
             let stub = match stub {
                 Some(s) => s,
@@ -3829,7 +4069,7 @@ fn real_main() -> Result<()> {
                     l
                 }
             };
-            source::build::cmd_build(source::build::BuildArgs { dir: &dir, secret: &secret, stub: &stub, out: out.as_deref(), update_lock })?;
+            source::build::cmd_build(source::build::BuildArgs { dir: &dir, secret: &secret, trust: &trust, stub: &stub, out: out.as_deref(), update_lock })?;
             Ok(())
         }
         Some("convert") => {
@@ -3864,12 +4104,14 @@ fn real_main() -> Result<()> {
             panpak_core::validate_app_id(id)?;
             ensure_code!(Path::new(src).is_file(), ErrorCode::E5002, "convert: {src} is not a file");
             ensure_code!(Path::new(stub).is_file(), ErrorCode::E5002, "convert: the stub {stub} is not a file");
-            let secret = load_or_make_secret(secret_file.as_deref())?;
+            let (secret, secret_path) = load_personal_secret(secret_file.as_deref())?;
+            let trust = trust_args(&secret_path, None, None, None)?;
             cmd_convert(ConvertArgs {
                 src: Path::new(src),
                 id,
                 stub: Path::new(stub),
                 secret: &secret,
+                trust: &trust,
                 name_ov: name,
                 version_ov: version,
                 entry_ov: entry,
@@ -4181,6 +4423,8 @@ fn real_main() -> Result<()> {
             let mut accept_new = false;
             let mut allow_down = false;
             let mut switch_channel = false;
+            let mut expect_key: Option<&str> = None;
+            let mut trust_first = false;
             let mut runtime = None;
             let mut pkg = None;
             let mut i = 2;
@@ -4188,6 +4432,14 @@ fn real_main() -> Result<()> {
                 match args[i].as_str() {
                     "--yes" => {
                         yes = true;
+                        i += 1;
+                    }
+                    "--expect-key" => {
+                        expect_key = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--expect-key ed25519:<the key the author published>"))?.as_str());
+                        i += 2;
+                    }
+                    "--trust-first-key" => {
+                        trust_first = true;
                         i += 1;
                     }
                     "--accept-new-permissions" => {
@@ -4219,6 +4471,7 @@ fn real_main() -> Result<()> {
                 accept_new,
                 runtime.map(Path::new),
                 panpak_core::release::Allow { downgrade: allow_down, switch_channel },
+                FirstKey { expect: expect_key, trust_first },
             )?;
             Ok(())
         }
@@ -4452,7 +4705,7 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None }, Some(&out), Vec::new(), Previous::None).unwrap();
         let mut f = File::open(&out).unwrap();
         let ft = panpak_core::read_footer(&mut f).unwrap();
         let (_man, raw) = panpak_core::verify(&mut f, &ft).unwrap();
@@ -4465,12 +4718,12 @@ mod tests {
         }
         // Same input -> same package (licenses do not break determinism).
         let out2 = dir.join("b.panpak");
-        cmd_pack(&tree, &stub, &secret, None, Some(&out2), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None }, Some(&out2), Vec::new(), Previous::None).unwrap();
         assert_eq!(fs::read(&out).unwrap(), fs::read(&out2).unwrap());
         // The reserved top level cannot come from the user's tree.
         fs::create_dir_all(tree.join(".panpak")).unwrap();
         fs::write(tree.join(".panpak/x"), "x").unwrap();
-        let e = cmd_pack(&tree, &stub, &secret, None, Some(&dir.join("c.panpak")), Vec::new(), Previous::None).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None }, Some(&dir.join("c.panpak")), Vec::new(), Previous::None).unwrap_err();
         assert!(panpak_core::err_text(&e).contains("reserved"), "{e:?}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -4498,14 +4751,14 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        let e = cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new(), Previous::None).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None }, Some(&out), Vec::new(), Previous::None).unwrap_err();
         let text = panpak_core::render(&e, ErrorCode::E0000);
         assert!(text.contains("invalid") && text.contains("abi.needs") && text.contains("nothing was written"), "{text}");
         assert!(!out.exists(), "a file was written for an invalid manifest");
         // The same tree with a valid name is packed.
         elf[241..250].copy_from_slice(b"libc.so.6");
         fs::write(tree.join("bin/app"), &elf).unwrap();
-        cmd_pack(&tree, &stub, &secret, None, Some(&out), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None }, Some(&out), Vec::new(), Previous::None).unwrap();
         assert!(out.exists());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -4537,39 +4790,6 @@ mod tests {
         assert_eq!(humansize(0), "0.0 B");
         assert_eq!(humansize(1536), "1.5 KiB");
         assert_eq!(humansize(5 * 1024 * 1024), "5.0 MiB");
-    }
-
-    #[test]
-    fn rotation_valid_broken_and_replay() {        use ed25519_dalek::Signer;
-        let old_sk = ed25519_dalek::SigningKey::from_bytes(&[11u8; 32]);
-        let new_sk = ed25519_dalek::SigningKey::from_bytes(&[22u8; 32]);
-        let evil_sk = ed25519_dalek::SigningKey::from_bytes(&[33u8; 32]);
-        let old_pub = format!("ed25519:{}", panpak_core::hex(old_sk.verifying_key().as_bytes()));
-        let new_pub = format!("ed25519:{}", panpak_core::hex(new_sk.verifying_key().as_bytes()));
-        let sign = |sk: &ed25519_dalek::SigningKey, app: &str| {
-            panpak_core::hex(&sk.sign(&panpak_core::succession_message(app, &old_sk.verifying_key(), &new_sk.verifying_key())).to_bytes())
-        };
-        let good_sig = sign(&old_sk, "a.b");
-        // Valid chain.
-        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&old_pub), Some(&good_sig)).is_ok());
-        // The signature belongs to one app: the same succession for another app is refused.
-        assert!(panpak_core::verify_rotation("a.c", &old_pub, &new_pub, Some(&old_pub), Some(&good_sig)).is_err());
-        // The old form, a bare signature of the 32 bytes of the new key, is not a succession any more.
-        let bare = panpak_core::hex(&old_sk.sign(new_sk.verifying_key().as_bytes()).to_bytes());
-        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&old_pub), Some(&bare)).is_err());
-        // Signed by the wrong key.
-        let bad_sig = sign(&evil_sk, "a.b");
-        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&old_pub), Some(&bad_sig)).is_err());
-        // rotation_old different from the pin (someone else's rotation replay).
-        let evil_pub = format!("ed25519:{}", panpak_core::hex(evil_sk.verifying_key().as_bytes()));
-        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&evil_pub), Some(&good_sig)).is_err());
-        // Tampered signature.
-        let mut tampered = good_sig.clone();
-        tampered.replace_range(0..2, if &tampered[0..2] == "00" { "ff" } else { "00" });
-        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&old_pub), Some(&tampered)).is_err());
-        // Missing fields.
-        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, None, Some(&good_sig)).is_err());
-        assert!(panpak_core::verify_rotation("a.b", &old_pub, &new_pub, Some(&old_pub), None).is_err());
     }
 
     #[test]

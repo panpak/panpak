@@ -99,7 +99,7 @@ impl Lab {
     }
 
     fn install(&self, pkg: &Path, flags: &[&str]) -> Output {
-        cli(&self.home, &[&["install", "--yes"], flags, &[pkg.to_str().unwrap()]].concat())
+        cli(&self.home, &[&["install", "--yes", "--trust-first-key"], flags, &[pkg.to_str().unwrap()]].concat())
     }
 }
 
@@ -109,6 +109,18 @@ fn code_of(o: &Output, code: &str) -> bool {
 
 fn ok(o: &Output) -> bool {
     o.status.success()
+}
+
+/// The floor that the trust record of an app holds (`floor=` in `apps/<id>/trust`).
+fn floor_of(appdir: &Path) -> String {
+    fs::read_to_string(appdir.join("trust")).unwrap().lines().find_map(|l| l.strip_prefix("floor=")).unwrap_or("").trim().to_string()
+}
+
+/// Put a floor into the trust record of an app.
+fn set_floor(appdir: &Path, floor: u64) {
+    let t = fs::read_to_string(appdir.join("trust")).unwrap();
+    let out: Vec<String> = t.lines().map(|l| if l.starts_with("floor=") { format!("floor={floor}") } else { l.to_string() }).collect();
+    fs::write(appdir.join("trust"), out.join("\n") + "\n").unwrap();
 }
 
 #[test]
@@ -124,7 +136,7 @@ fn a_floor_above_the_installed_version_shows_in_list_and_doctor_and_the_internet
     // A package of another channel with floor 2 is refused, and its floor is seen.
     let beta = l.pack_ok("2", "b", "[release]\nchannel = \"beta\"\nfloor = 2\nrevision = 2\n", None);
     assert!(code_of(&l.install(&beta, &[]), "PANPAK-E4005"));
-    assert_eq!(fs::read_to_string(appdir.join("floor")).unwrap().trim(), "2");
+    assert_eq!(floor_of(&appdir), "2");
     let list = text(&cli(&l.home, &["list"]));
     assert!(list.contains("protected mode: no internet and no downloaded programs until updated"), "{list}");
     let json = text(&cli(&l.home, &["list", "--json"]));
@@ -165,7 +177,7 @@ fn a_floor_above_the_installed_version_shows_in_list_and_doctor_and_the_internet
     assert!(!text(&cli(&l.home, &["list"])).contains("protected mode"));
     assert!(!text(&cli(&l.home, &["doctor"])).contains("is in protected mode"));
     // The same status in another language, with the catalog of the program (the words are checked in `po/it.po` by the tests of the core).
-    fs::write(appdir.join("floor"), "9\n").unwrap();
+    set_floor(&appdir, 9);
     let it = Command::new(env!("CARGO_BIN_EXE_panpak")).args(["list"]).current_dir(&l.home).env("HOME", &l.home).env("XDG_DATA_HOME", l.home.join(".local/share")).env("XDG_CACHE_HOME", l.home.join(".cache")).env("XDG_CONFIG_HOME", l.home.join(".config")).env("LC_ALL", "it_IT.UTF-8").output().unwrap();
     assert!(!text(&it).contains("protected mode") && text(&it).contains(ID), "the status is not in English: {}", text(&it));
 }

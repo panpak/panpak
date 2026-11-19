@@ -59,7 +59,7 @@ def main():
         (tmp / 'secret.key').chmod(0o600)
         pkg = tmp / 'r.panpak'
         run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', tmp / 'secret.key', '-o', pkg], env)
-        run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', pkg], env)
+        run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', pkg], env)
 
         # The same checks with bubblewrap made unusable (the app then runs with Landlock alone, and the folder is open as the rule says).
         mask = ['/usr/bin/bwrap', '--unshare-user', '--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc', '--ro-bind', '/dev/null', '/usr/bin/bwrap', '--']

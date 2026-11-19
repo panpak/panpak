@@ -19,6 +19,7 @@ pub mod failpoint;
 pub mod libpath;
 pub mod record;
 pub mod release;
+pub mod trust;
 pub mod messages;
 pub mod startfiles;
 pub mod permissions;
@@ -172,6 +173,8 @@ pub struct Manifest {
     pub desktop: Option<Desktop>,
     pub runtime: Option<Runtime>,
     pub origin: Option<Origin>,
+    /// Who may sign the app and how the root changes (PANPAK-FORMAT.md §3.2). Written by `panpak pack`; a package without it is refused.
+    pub trust: Option<trust::Trust>,
     pub update: Option<Update>,
     /// Environment variables that point the app at files of its own tree (PANPAK-FORMAT.md §3.1.6): values relative to
     /// `${PANPAK_ROOT}`, from a fixed list of names, checked by `pack` and by `install`.
@@ -423,11 +426,9 @@ pub fn check_runtime(man: &Manifest, noi: u32) -> Result<()> {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Update {
     pub url: Option<String>,
-    pub key: String,
-    /// Signed succession (rotation): old key authorizing the new one.
-    pub rotation_old: Option<String>,
-    /// Signature of `rotation_old` over the 32 raw bytes of the new public key (hex).
-    pub rotation_sig: Option<String>,
+    /// Only in the `panpak.toml` that an author gives to `pack`, which checks it against the signing key and does not write it: the key of a package is `[trust].root`.
+    #[serde(default, skip_serializing)]
+    pub key: Option<String>,
 }
 
 pub fn hex(b: &[u8]) -> String {
@@ -486,28 +487,6 @@ pub fn check_range_parts(req_start: u64, req_end: u64, header: &str, body_len: u
     Ok(total)
 }
 
-/// Verify a signed succession: `rotation_sig` must be a signature of the PINNED (old) key over the labeled message of
-/// `succession_message` (the app id, the old key and the new key), and `rotation_old` must match the pin. Used when the manifest key
-/// does not match the pin (rotation).
-pub fn verify_rotation(app_id: &str, pinned: &str, new_key: &str, rot_old: Option<&str>, rot_sig: Option<&str>) -> Result<()> {
-    let ro = rot_old.ok_or_else(|| coded(ErrorCode::E1005, "key changed and no rotation in manifest"))?;
-    crate::ensure_code!(ro.trim() == pinned.trim(), ErrorCode::E1005, "rotation from a non-pin key: refused");
-    let rs = rot_sig.ok_or_else(|| coded(ErrorCode::E1005, "rotation without signature: rotation_sig signed by the old key required"))?;
-    let old_vk = parse_pubkey(ro.trim())?;
-    let new_vk = parse_pubkey(new_key.trim())?;
-    let rs = rs.trim();
-    crate::ensure_code!(rs.len() == 128 && rs.bytes().all(|b| b.is_ascii_hexdigit()), ErrorCode::E1005, "rotation_sig must be 128 hex characters");
-    let mut raw = [0u8; 64];
-    for (i, d) in raw.iter_mut().enumerate() {
-        *d = u8::from_str_radix(&rs[2 * i..2 * i + 2], 16).map_err(|_| coded(ErrorCode::E1005, "rotation_sig not hex"))?;
-    }
-    let sig = ed25519_dalek::Signature::from_bytes(&raw);
-    old_vk
-        .verify_strict(&succession_message(app_id, &old_vk, &new_vk), &sig)
-        .map_err(|_| coded(ErrorCode::E1005, "invalid succession: bad old-key signature"))?;
-    Ok(())
-}
-
 /// A key or section that this panpak does not know (`PANPAK-E0008`). It is a misspelling, or the file was written for a
 /// newer panpak; the message says both and how to get a newer one.
 fn unknown_key(place: &str, key: &str) -> anyhow::Error {
@@ -534,10 +513,12 @@ pub const SECTIONS: &[(&str, bool)] = &[
     ("desktop", false),
     ("runtime", true),
     ("origin", false),
+    ("trust", true),
     ("update", false),
     ("env", true),
     ("provenance", false),
 ];
+pub(crate) const TRUST_PATHS: &[&str] = &["root", "threshold", "recovery", "domain", "chain"];
 const RELEASE_KEYS: &[&str] = &["revision", "floor", "security", "channel", "history"];
 const FORMAT_KEYS: &[&str] = &["min_panpak", "critical", "compression", "chunking", "packed_by"];
 const ABI_KEYS: &[&str] = &["glibc_min", "needs", "prefer_host", "allow_missing"];
@@ -609,6 +590,7 @@ fn known_critical(path: &str) -> bool {
         Some(("launch", k)) => LAUNCH_KEYS.contains(&k),
         Some(("abi", k)) => ABI_KEYS.contains(&k),
         Some(("release", k)) => RELEASE_KEYS.contains(&k),
+        Some(("trust", k)) => TRUST_PATHS.contains(&k),
         Some(("runtime", k)) => RUNTIME_KEYS.contains(&k),
         Some(_) => false,
     }
@@ -671,7 +653,7 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
     const HOME_PATH: &[&str] = &["path", "access"];
     const PORTAL: &[&str] = &["files", "camera"];
     const ORIGIN: &[&str] = &["converted_from", "version", "sha256", "signed_by_upstream"];
-    const UPDATE: &[&str] = &["url", "key", "rotation_old", "rotation_sig"];
+    const UPDATE: &[&str] = &["url", "key"];
     fn keys<'a>(v: &'a toml::Value, path: &str) -> Result<Vec<&'a str>> {
         Ok(v.as_table().with_context(|| format!("{path} must be a table"))?.keys().map(|s| s.as_str()).collect())
     }
@@ -706,6 +688,20 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
         for k in keys(v, "[format]")? {
             if !FORMAT_KEYS.contains(&k) {
                 out.push(("[format]".to_string(), k.to_string()));
+            }
+        }
+    }
+    if let Some(v) = get("trust") {
+        for k in keys(v, "[trust]")? {
+            if !trust::TRUST_KEYS.contains(&k) {
+                out.push(("[trust]".to_string(), k.to_string()));
+            }
+        }
+        for st in v.get("chain").and_then(|c| c.as_array()).into_iter().flatten() {
+            for k in keys(st, "[[trust.chain]]")? {
+                if !trust::STEP_KEYS.contains(&k) {
+                    out.push(("[[trust.chain]]".to_string(), k.to_string()));
+                }
             }
         }
     }
@@ -800,6 +796,12 @@ pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
     }
     if toml::from_str::<toml::Value>(input).ok().and_then(|v| v.get("release")?.get("history").cloned()).is_some() {
         return Err(coded(ErrorCode::E0008, "panpak.toml: release.history is written by `panpak pack` (give the earlier package with --previous), remove it"));
+    }
+    // `[trust]` is written by `panpak pack` from the signing key: an author gives the domain, nothing else.
+    if let Some(t) = toml::from_str::<toml::Value>(input).ok().and_then(|v| v.get("trust").cloned()) {
+        if let Some(k) = t.as_table().into_iter().flat_map(|t| t.keys()).find(|k| k.as_str() != "domain") {
+            return Err(coded(ErrorCode::E0008, format!("panpak.toml: trust.{k} is written by `panpak pack` from the signing key (give only trust.domain), remove it")));
+        }
     }
     match unknown_keys_of(input)?.into_iter().next() {
         Some((place, key)) => Err(unknown_key(&place, &key)),
@@ -1500,7 +1502,6 @@ pub fn parse_secret(s: &str) -> Result<ed25519_dalek::SigningKey> {
 /// Label of the message that the package signature covers. Every signed object has its own label, so a signature made for one kind of
 /// object can never be read as another (the same key signs packages and successions).
 pub const LABEL_PACKAGE: &[u8] = b"panpak/package/v1\0";
-pub const LABEL_SUCCESSION: &[u8] = b"panpak/succession/v1\0";
 
 /// The bytes the package signature covers: label, footer `version` and `flags`, the hash of the index, then the manifest. The fixed-length
 /// root comes before the manifest, so the message cannot be read two ways.
@@ -1511,18 +1512,6 @@ pub fn package_message(version: u32, flags: u32, root: &[u8; 32], manifest: &[u8
     m.extend_from_slice(&flags.to_le_bytes());
     m.extend_from_slice(root);
     m.extend_from_slice(manifest);
-    m
-}
-
-/// The bytes a succession signature covers: label, the app id (length first), the old key and the new key. The signature belongs to one
-/// app and one step.
-pub fn succession_message(app_id: &str, old: &ed25519_dalek::VerifyingKey, new: &ed25519_dalek::VerifyingKey) -> Vec<u8> {
-    let mut m = Vec::with_capacity(LABEL_SUCCESSION.len() + 2 + app_id.len() + 64);
-    m.extend_from_slice(LABEL_SUCCESSION);
-    m.extend_from_slice(&(app_id.len() as u16).to_le_bytes());
-    m.extend_from_slice(app_id.as_bytes());
-    m.extend_from_slice(old.as_bytes());
-    m.extend_from_slice(new.as_bytes());
     m
 }
 
@@ -1587,7 +1576,7 @@ pub fn verify(f: &mut File, ft: &Footer) -> Result<(Manifest, Vec<u8>)> {
         toml::from_str(std::str::from_utf8(toml_b).context("non-UTF-8 manifest")?)?;
     // Only to say the right thing about a package made before `[format]`: it would otherwise be told that its signature is not valid.
     require_format(&man)?;
-    let vk = parse_pubkey(&man.update.as_ref().context("manifest without [update].key")?.key)?;
+    let vk = parse_pubkey(trust::require(&man)?.root.first().context("[trust] without a root")?)?;
 
     let sig = ed25519_dalek::Signature::from_bytes(&parse_sig_block(block)?);
     let msg = package_message(ft.version, ft.flags, &ft.root, toml_b);
@@ -1596,6 +1585,8 @@ pub fn verify(f: &mut File, ft: &Footer) -> Result<(Manifest, Vec<u8>)> {
     })?;
     // The manifest is the author's now: what it needs from a reader is checked first, then the fields.
     check_format(&man)?;
+    trust::check(&man)?;
+    crate::ensure_code!(man.update.as_ref().is_none_or(|u| u.key.is_none()), ErrorCode::E0003, "[update].key is not part of a package: its key is [trust].root (corrupt or tampered file: redownload it from a trusted source)");
     check_release(&man)?;
     // A valid signature does not make the fields safe to use as file names.
     validate_manifest(&man)?;
@@ -2060,7 +2051,9 @@ mod tests {
         let zero = "ed25519:0000000000000000000000000000000000000000000000000000000000000000";
         let one = "ed25519:1111111111111111111111111111111111111111111111111111111111111111";
         let two = "ed25519:2222222222222222222222222222222222222222222222222222222222222222";
-        let e = verify_rotation("a.b", zero, one, Some(two), None).unwrap_err();
+        let _ = (zero, two);
+        let tr = trust::Trust { root: vec![one.into()], threshold: 1, recovery: format!("blake3:{}", "0".repeat(64)), domain: None, chain: vec![] };
+        let e = trust::follow("a.b", &trust::Pin { root: zero.into(), recovery: tr.recovery.clone() }, &tr).unwrap_err();
         assert_eq!(code_of(&e, ErrorCode::E1000), ErrorCode::E1005, "rotation");
         let m = render(&e, ErrorCode::E1000);
         assert!(m.starts_with("PANPAK-E1005: "), "{m}");
@@ -2220,6 +2213,7 @@ mod tests {
             desktop: None,
             runtime: Some(Runtime { min_runtime: None, stub_hash: Some(good_hash.clone()) }),
             origin: None,
+            trust: None,
             update: None,
             env: None,
             provenance: None,

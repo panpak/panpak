@@ -361,6 +361,9 @@ jobs:
       - name: The release table over HTTP (revision, floor, channel, history, the security number)
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/release_update.py
+      - name: Who may sign an app (key new, the first install, the succession of the key, the recovery key, a thief, a change of channel)
+        timeout-minutes: 5
+        run: python3 tests/with_timeout.py 120 tests/trust_update.py
       - name: Protected mode (below the floor, no host network and no written programs; the internet back on; the end of the mode)
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/protected_mode.py

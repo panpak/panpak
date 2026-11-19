@@ -113,11 +113,11 @@ def report(case, step, got):
 def main():
     cleanup()
     run(BIN / 'panpak', 'install-runtime', BIN / 'panpak-stub', '--allow-unsigned')
-    p = run(BIN / 'panpak', 'install', '--yes', pack('1', False))
+    p = run(BIN / 'panpak', 'install', '--yes', '--trust-first-key', pack('1', False))
     assert p.returncode == 0, p.stdout + p.stderr
     for case in ('neither', 'favourite'):
         cleanup()
-        run(BIN / 'panpak', 'install', '--yes', pack('1', False))
+        run(BIN / 'panpak', 'install', '--yes', '--trust-first-key', pack('1', False))
         set_favorites(case == 'favourite')
         # 1. An entry of the first version, as the Shell finds it.
         put(old_entry())
@@ -135,7 +135,7 @@ def main():
             run('update-desktop-database', APPS)
             report(case, '2c ... then update-desktop-database', wait_for(lambda s: s['actions'] == ['Uninstall'], ''))
         # 3. A new version with icons: install writes the icon files, then the entry.
-        run(BIN / 'panpak', 'install', '--yes', pack('2', True))
+        run(BIN / 'panpak', 'install', '--yes', '--trust-first-key', pack('2', True))
         report(case, '3 install with icons: Icon= changes', wait_for(lambda s: s['icon'] and 'panpak.' + ID in s['icon'], ''))
     cleanup()
     print('summary:', 'all seen' if all(r[2] for r in results) else 'some changes were NOT seen: ' + '; '.join(f'{c}/{s}' for c, s, ok in results if not ok))

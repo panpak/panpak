@@ -254,7 +254,7 @@ def measure(name, app, sway, reps):
     isolation.require_isolated_home(home_p, WORK)
     env_p = base_env(home_p, sway, app['env'])
     for which, app_id in zip(('old', 'new'), app['ids']):
-        p = subprocess.run([str(BIN / 'panpak'), 'install', '--yes', '--accept-new-permissions', '--runtime', str(BIN / 'panpak-stub'), str(pkgs[which])], env=env_p,
+        p = subprocess.run([str(BIN / 'panpak'), 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', str(BIN / 'panpak-stub'), str(pkgs[which])], env=env_p,
                            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=600)
         if p.returncode:
             raise SystemExit(f'install {which}: {p.stdout}{p.stderr}')

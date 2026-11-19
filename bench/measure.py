@@ -63,7 +63,7 @@ def app_files_panpak(app_id):
 def install_panpak(pkg, keyflag="--runtime"):
     # keyflag: use local runtime (development)
     t0 = time.perf_counter()
-    r = subprocess.run([NE, "install", "--yes", keyflag, SB, pkg],
+    r = subprocess.run([NE, "install", "--yes", "--trust-first-key", keyflag, SB, pkg],
                        capture_output=True, text=True, timeout=600)
     dt = time.perf_counter() - t0
     assert r.returncode == 0, r.stderr[-500:]

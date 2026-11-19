@@ -91,7 +91,7 @@ def main():
         srv = subprocess.Popen([sys.executable, str(ROOT / 'tests/range_server.py'), str(serve), str(port), 'normal'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             time.sleep(0.6)
-            run([panpak, 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], env)
+            run([panpak, 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], env)
             for n in ('2', '3'):
                 (serve / 'remote.panpak').write_bytes(v[n])
                 run([panpak, 'update', '--allow-insecure-http', '--timeout', '5', ID], env)
@@ -149,7 +149,7 @@ def main():
             print('a command at work holds the store lock: the collection says it was left for the next time and changes nothing; the next one collects PASS')
 
             # 2. a second app that shares files: what is shared stays when it is removed
-            run([panpak, 'install', '--yes', tmp / 'other.panpak'], env)
+            run([panpak, 'install', '--yes', '--trust-first-key', tmp / 'other.panpak'], env)
             shared_before = len(names(store / 'blobs'))
             run([panpak, 'remove', '--yes', OTHER], env)
             run([panpak, 'gc'], env)

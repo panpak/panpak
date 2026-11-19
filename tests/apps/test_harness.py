@@ -131,7 +131,7 @@ class CriticalList(unittest.TestCase):
 
     def test_the_table_is_the_one_of_the_rust_code(self):
         src = (HERE.parents[1] / "panpak-core/src/lib.rs").read_text()
-        for sect, const in (("release", "RELEASE_KEYS"), ("abi", "ABI_KEYS"), ("permissions", "PERM_KEYS"), ("launch", "LAUNCH_KEYS"), ("runtime", "RUNTIME_KEYS")):
+        for sect, const in (("release", "RELEASE_KEYS"), ("abi", "ABI_KEYS"), ("permissions", "PERM_KEYS"), ("launch", "LAUNCH_KEYS"), ("runtime", "RUNTIME_KEYS"), ("trust", "TRUST_PATHS")):
             m = re.search(r"const %s: &\[&str\] = &\[([^\]]*)\];" % const, src)
             self.assertIsNotNone(m, const)
             self.assertEqual(set(re.findall(r'"([a-z_0-9]+)"', m.group(1))), sigfmt.CRITICAL_SECTIONS[sect], sect)

@@ -114,7 +114,7 @@ def main():
         out = tmp / 'v1.panpak'
         run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', tmp / 'secret.key', '-o', out], env)
         out.write_bytes(resign(out.read_bytes(), '1.0', port))
-        run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', out], env)
+        run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', out], env)
         httpd = http.server.ThreadingHTTPServer(('127.0.0.1', port), Hostile)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         failures = []

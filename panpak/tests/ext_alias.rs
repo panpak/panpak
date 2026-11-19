@@ -114,7 +114,7 @@ fn install_and_doctor_accept_panpak_pan_and_no_extension() {
         let o = pack(&env, Some(&name));
         assert!(o.status.success(), "{ext}: {}", text(&o));
         assert_verified(&cli(&env, &["doctor", &name]));
-        let i = cli(&env, &["install", "--yes", &name]);
+        let i = cli(&env, &["install", "--yes", "--trust-first-key", &name]);
         assert!(i.status.success(), "install {name}: {}", text(&i));
     }
 }
@@ -130,7 +130,7 @@ fn pan_file_with_wrong_magic_is_rejected_with_e0001() {
         fs::write(env.dir.join(name), &bytes).unwrap();
         let d = cli(&env, &["doctor", name]);
         assert!(!d.status.success() && text(&d).contains("INVALID package: PANPAK-E0001: wrong magic"), "doctor {name}: {}", text(&d));
-        let i = cli(&env, &["install", "--yes", name]);
+        let i = cli(&env, &["install", "--yes", "--trust-first-key", name]);
         assert!(!i.status.success(), "install accepted a wrong magic: {name}");
         assert!(text(&i).contains("PANPAK-E0001"), "install {name}: {}", text(&i));
     }
@@ -142,7 +142,7 @@ fn correct_magic_with_other_extension_is_accepted() {
     assert!(pack(&env, Some("good.panpak")).status.success());
     fs::rename(env.dir.join("good.panpak"), env.dir.join("whatever.bin")).unwrap();
     assert_verified(&cli(&env, &["doctor", "whatever.bin"]));
-    let i = cli(&env, &["install", "--yes", "whatever.bin"]);
+    let i = cli(&env, &["install", "--yes", "--trust-first-key", "whatever.bin"]);
     assert!(i.status.success(), "{}", text(&i));
 }
 
@@ -150,7 +150,7 @@ fn correct_magic_with_other_extension_is_accepted() {
 fn installed_desktop_entry_does_not_claim_the_package_type() {
     let env = setup("desktop");
     assert!(pack(&env, Some("a.panpak")).status.success());
-    let i = cli(&env, &["install", "--yes", "a.panpak"]);
+    let i = cli(&env, &["install", "--yes", "--trust-first-key", "a.panpak"]);
     assert!(i.status.success(), "{}", text(&i));
     let entry = fs::read_to_string(env.dir.join("data/applications/panpak.org.example.ext.desktop")).unwrap();
     assert!(entry.contains("Name=Ext"), "{entry}");

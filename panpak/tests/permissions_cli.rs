@@ -101,7 +101,7 @@ const NOTES_RW: &str = "[permissions]\n[[permissions.home_paths]]\npath = \"Note
 fn an_app_that_can_change_a_folder_of_yours_is_never_full_isolation_and_the_first_line_names_the_folders() {
     let l = Lab::new("folders");
     let pkg = l.package("notes", NOTES_RW);
-    for t in [text(&l.cli("C", &["inspect", pkg.to_str().unwrap()])), text(&l.cli("C", &["install", "--yes", pkg.to_str().unwrap()]))] {
+    for t in [text(&l.cli("C", &["inspect", pkg.to_str().unwrap()])), text(&l.cli("C", &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]))] {
         let first = t.lines().find(|l| l.contains("isolation") || l.starts_with("The app can")).unwrap_or("");
         assert!(!t.contains("Full isolation"), "{t}");
         assert!(first.starts_with("The app can read and change the files in ") && first.contains("Notes") && first.contains("documents"), "{first:?} in {t}");
@@ -119,7 +119,7 @@ fn an_app_that_can_change_a_folder_of_yours_is_never_full_isolation_and_the_firs
 fn install_shows_the_summary_the_levels_in_words_and_what_it_cannot_do() {
     let l = Lab::new("install");
     let pkg = l.package("rich", RICH);
-    let t = text(&l.cli("C", &["install", "--yes", pkg.to_str().unwrap()]));
+    let t = text(&l.cli("C", &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]));
     assert!(t.contains("Partial isolation: it can watch other apps (X11). The app can read the files in Notes.\n"), "{t}");
     assert!(t.contains("[!!] High risk") && t.contains("[!] Attention") && t.contains("[ ] Normal"), "{t}");
     assert!(!t.contains("It cannot use the internet"), "an app with the network must not say that it cannot use it: {t}");
@@ -153,7 +153,7 @@ fn the_language_comes_from_the_environment_and_english_is_the_fallback() {
 fn list_and_inspect_give_ids_and_levels_in_json() {
     let l = Lab::new("json");
     let pkg = l.package("rich", RICH);
-    assert!(l.cli("C", &["install", "--yes", pkg.to_str().unwrap()]).status.success());
+    assert!(l.cli("C", &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]).status.success());
     let j = text(&l.cli("it_IT.UTF-8", &["inspect", "--json", "org.example.perm"]));
     assert!(j.contains("\"isolation\":\"partial\"") && j.contains("{\"id\":\"x11\",\"level\":\"high\",\"subjects\":[]}"), "{j}");
     assert!(j.contains("{\"id\":\"network-connect\",\"level\":\"attention\",\"subjects\":[\"443\"]}"), "{j}");
@@ -167,16 +167,16 @@ fn list_and_inspect_give_ids_and_levels_in_json() {
 fn an_update_lists_only_what_is_new_and_says_the_current_version_stays() {
     let l = Lab::new("update");
     let first = l.package("v1", "[permissions]\nnetwork = true\nnetwork_allow_tcp = [443]\nnotifications = true\n");
-    assert!(l.cli("C", &["install", "--yes", first.to_str().unwrap()]).status.success());
+    assert!(l.cli("C", &["install", "--yes", "--trust-first-key", first.to_str().unwrap()]).status.success());
     let second = l.package("v2", "[permissions]\nnetwork = true\nnetwork_allow_tcp = [443, 8080]\nnotifications = true\naudio = true\n");
-    let o = l.cli("C", &["install", "--yes", second.to_str().unwrap()]);
+    let o = l.cli("C", &["install", "--yes", "--trust-first-key", second.to_str().unwrap()]);
     let t = text(&o);
     assert!(!o.status.success() && t.contains("PANPAK-E5004"), "{t}");
     assert!(t.contains("This package asks for more than the version you have:"), "{t}");
     assert!(t.contains("Play sound and use the microphone") && t.contains("ports 8080"), "{t}");
     assert!(!t.contains("ports 443") && !t.contains("Show notifications"), "only what is new is listed: {t}");
     assert!(t.contains("If you do not accept, you stay on the current version."), "{t}");
-    let it_out = text(&l.cli("it_IT.UTF-8", &["install", "--yes", second.to_str().unwrap()]));
+    let it_out = text(&l.cli("it_IT.UTF-8", &["install", "--yes", "--trust-first-key", second.to_str().unwrap()]));
     assert!(it_out.contains(&self::it("If you do not accept, you stay on the current version.")), "{it_out}");
 }
 

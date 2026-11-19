@@ -563,7 +563,7 @@ pub fn cmd_protected(json: bool, app_id: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn installed_ids() -> Vec<String> {
+pub(crate) fn installed_ids() -> Vec<String> {
     let Ok(store) = store_dir() else { return Vec::new() };
     let Ok(rd) = std::fs::read_dir(store.join("apps")) else { return Vec::new() };
     let mut ids: Vec<String> = rd.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| panpak_core::validate_app_id(n).is_ok()).collect();
@@ -584,6 +584,22 @@ pub fn doctor_lines() -> Vec<String> {
             line
         })
         .collect()
+}
+
+/// The lines that `doctor` prints about the trust of each installed app: where its updates come from (and who said so), and the note of a change of channel that
+/// took a release of the same revision with other bytes (an error of the author).
+pub fn trust_lines() -> Vec<String> {
+    let mut out = Vec::new();
+    for id in installed_ids() {
+        let Ok(appdir) = appdir_of(&id) else { continue };
+        let name = installed_manifest(&appdir).map(|m| clean_name(&m)).unwrap_or_else(|| id.clone());
+        let url = std::fs::read_to_string(appdir.join("update.url")).ok().map(|u| u.trim().to_string());
+        out.push(format!("{name} ({id}): {}", super::updates_line(url.as_deref())));
+        if let Some(note) = panpak_core::trust::read(&appdir).and_then(|s| s.switch_note) {
+            out.push(fill(&tr(m::DOCTOR_SWITCH), &[("name", name), ("id", id), ("note", note)]));
+        }
+    }
+    out
 }
 
 #[cfg(test)]

@@ -2023,18 +2023,16 @@ fn real_main() -> Result<()> {
     }
     // TOFU (spec §3.2): if the app is installed (pinned key), the signature
     // must match the pin; on direct run show the fingerprint.
-    let key = &man.update.as_ref().context("manifest without [update].key")?.key;
+    let key = man.trust.as_ref().and_then(|t| t.root.first()).context("manifest without [trust].root")?;
     let fp = panpak_core::fingerprint(&panpak_core::parse_pubkey(key)?);
-    let pin_path = store.join("apps").join(&man.app.id).join("pinned-key");
+    let app_dir = store.join("apps").join(&man.app.id);
     if installed_mode {
-        let pinned = fs::read_to_string(&pin_path).context(
-            "app not installed (no TOFU pin): use `panpak install`",
-        )?;
+        let pinned = panpak_core::trust::read(&app_dir).context("app not installed (no trust record): use `panpak install`")?;
         // One key, or two for the moment in which an update replaces the key (`panpak apply`): either is the pin.
         ensure_code!(
-            pinned.lines().any(|l| l.trim() == key.trim()),
+            pinned.roots.iter().any(|l| l.trim() == key.trim()),
             ErrorCode::E1004,
-            "key differs from TOFU pin: unauthorized update, reinstall"
+            "key differs from the pinned key: unauthorized update, reinstall"
         );
     } else {
         eprintln!("panpak: {} {} — key fingerprint: {fp}", man.app.id, man.app.version);
@@ -2704,13 +2702,14 @@ mod tests {
     /// TOML of test panpaks, with [runtime].stub_hash matching the fake stub.
     fn fake_toml(key: &str, manifest_extra: &str) -> Vec<u8> {
         let stub_hash = hex(blake3::hash(b"FAKE-STUB").as_bytes());
+        let rec = "5a".repeat(32);
         // The `[format]` table is made as `pack` makes it: the list of critical fields comes from what the manifest uses.
         let plain = format!(
-            "[app]\nid = \"org.example.hello\"\nname = \"Hello\"\nversion = \"0.1.0\"\nentry = \"bin/hello\"\n[release]\nrevision = 1\n{manifest_extra}[runtime]\nstub_hash = \"{stub_hash}\"\n[update]\nkey = \"{key}\"\n"
+            "[app]\nid = \"org.example.hello\"\nname = \"Hello\"\nversion = \"0.1.0\"\nentry = \"bin/hello\"\n[release]\nrevision = 1\n{manifest_extra}[runtime]\nstub_hash = \"{stub_hash}\"\n[trust]\nroot = [\"{key}\"]\nthreshold = 1\nrecovery = \"blake3:{rec}\"\n"
         );
         let critical = panpak_core::critical_paths(&toml::from_str(&plain).unwrap()).iter().map(|c| format!("{c:?}")).collect::<Vec<_>>().join(", ");
         format!(
-            "[app]\nid = \"org.example.hello\"\nname = \"Hello\"\nversion = \"0.1.0\"\nentry = \"bin/hello\"\n[release]\nrevision = 1\n{manifest_extra}[format]\nmin_panpak = 1\ncritical = [{critical}]\ncompression = \"zstd\"\nchunking = \"fastcdc:16384:65536:262144\"\npacked_by = \"test\"\n[runtime]\nstub_hash = \"{stub_hash}\"\n[update]\nkey = \"{key}\"\n"
+            "[app]\nid = \"org.example.hello\"\nname = \"Hello\"\nversion = \"0.1.0\"\nentry = \"bin/hello\"\n[release]\nrevision = 1\n{manifest_extra}[format]\nmin_panpak = 1\ncritical = [{critical}]\ncompression = \"zstd\"\nchunking = \"fastcdc:16384:65536:262144\"\npacked_by = \"test\"\n[runtime]\nstub_hash = \"{stub_hash}\"\n[trust]\nroot = [\"{key}\"]\nthreshold = 1\nrecovery = \"blake3:{rec}\"\n"
         )
         .into_bytes()
     }

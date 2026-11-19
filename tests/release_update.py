@@ -90,7 +90,7 @@ def main():
             assert not (appdir / 'pending').exists() and not (appdir / 'pending-state').exists(), 'nothing is staged after a refusal'
             assert (appdir / 'current').resolve() == before, 'current did not move'
 
-        run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', r1], env)
+        run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', r1], env)
         server = subprocess.Popen([sys.executable, ROOT / 'tests/range_server.py', serve, str(port), 'normal'], env=env,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
@@ -148,7 +148,7 @@ def main():
             # 7. A floor: the next release sets it at 4. After it nothing below comes back, by update or by rollback.
             serving(r4)
             update()
-            assert (appdir / 'floor').read_text().strip() == '4'
+            assert isolation.read_floor(appdir) == 4
             r = run([BIN / 'panpak', 'rollback', ID], env, ok=False)
             assert 'PANPAK-E4003' in r.stderr and 'floor 4' in r.stderr, r.stderr
             installed = (appdir / 'current').resolve()

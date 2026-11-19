@@ -55,7 +55,7 @@ def main():
             run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', keys[who][0], '-o', out], env)
             return out
 
-        install = lambda pkg: run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', pkg], env)
+        install = lambda pkg: run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', pkg], env)
         install(package(A, '1', 'a', 'a1'))
         install(package(B, '1', 'b', 'b1'))
         store = tmp / 'data/panpak'

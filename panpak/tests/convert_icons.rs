@@ -123,7 +123,7 @@ impl Lab {
         fs::read_to_string(m).unwrap()
     }
     fn install(&self, pkg: &Path) -> Output {
-        cli(&self.home, &["install", "--yes", pkg.to_str().unwrap()])
+        cli(&self.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()])
     }
     fn icon(&self, side: u32) -> PathBuf {
         self.home.join(format!(".local/share/icons/hicolor/{side}x{side}/apps/panpak.{ID}.png"))
@@ -392,14 +392,15 @@ fn elf_needing(name: &str) -> Vec<u8> {
 }
 
 #[test]
-fn convert_without_a_key_makes_a_personal_one_once_and_says_so() {
+fn convert_without_a_key_makes_none_and_says_which_command_makes_one() {
     let l = lab("own-key");
     let src = l.home.join("app.AppImage");
     fs::write(&src, appimage(real_layout())).unwrap();
     let out = l.home.join("converted.panpak");
-    let run = || {
-        let o = Command::new(env!("CARGO_BIN_EXE_panpak"))
+    let run = |extra: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_panpak"))
             .args(["convert", src.to_str().unwrap(), "--id", ID, "--stub", l.stub.to_str().unwrap(), "-o", out.to_str().unwrap()])
+            .args(extra)
             .current_dir(&l.home)
             .env("HOME", &l.home)
             .env("PANPAK_TEST_LINK_STORE", "1")
@@ -409,22 +410,30 @@ fn convert_without_a_key_makes_a_personal_one_once_and_says_so() {
             .env_remove("PANPAK_SECRET_FILE")
             .stdin(std::process::Stdio::null())
             .output()
-            .unwrap();
-        let _ = fs::remove_file(&out);
-        o
+            .unwrap()
     };
     let key = l.home.join(".config/panpak/secret.key");
-    assert!(!key.exists());
-    let o = run();
+    // No key: an error that names the command. A key is never made by itself, and nothing is written.
+    let o = run(&[]);
     let t = text(&o);
-    assert!(o.status.success(), "{t}");
-    assert!(t.contains("made your key") && t.contains("secret.key") && t.contains("fingerprint"), "{t}");
+    assert!(!o.status.success() && t.contains("PANPAK-E1000") && t.contains("panpak key new"), "{t}");
+    assert!(!key.exists() && !l.home.join(".config/panpak").exists() && !out.exists(), "a key or a package was made without being asked for");
+    // `key new` makes the key, the recovery commitment beside it and the words of the recovery key (shown once).
+    let o = Command::new(env!("CARGO_BIN_EXE_panpak")).args(["key", "new"]).env("HOME", &l.home).env("XDG_CONFIG_HOME", l.home.join(".config")).stdin(std::process::Stdio::null()).output().unwrap();
+    let t = text(&o);
+    assert!(o.status.success() && t.contains("RECOVERY PHRASE") && t.contains("key:    ed25519:"), "{t}");
     assert_eq!(fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(fs::metadata(key.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    assert!(fs::read_to_string(l.home.join(".config/panpak/secret.key.recovery")).unwrap().starts_with("blake3:"));
+    // The words are not kept anywhere on the machine, and a second `key new` does not overwrite.
+    let words: Vec<&str> = t.lines().skip_while(|l| !l.contains("RECOVERY PHRASE")).filter(|l| l.starts_with("    ")).flat_map(|l| l.split_whitespace()).collect();
+    assert_eq!(words.len(), 24, "{t}");
+    assert!(!fs::read_to_string(&key).unwrap().contains(words[0]));
+    let again = Command::new(env!("CARGO_BIN_EXE_panpak")).args(["key", "new"]).env("HOME", &l.home).env("XDG_CONFIG_HOME", l.home.join(".config")).stdin(std::process::Stdio::null()).output().unwrap();
+    assert!(!again.status.success() && text(&again).contains("must not exist"), "{}", text(&again));
+    // With the key, convert works, and says nothing about a key.
     let first = fs::read_to_string(&key).unwrap();
-    // The second time the same key is used, in silence.
-    let o = run();
-    let t = text(&o);
-    assert!(o.status.success() && !t.contains("made your key"), "{t}");
+    let o = run(&[]);
+    assert!(o.status.success() && !text(&o).contains("made your key"), "{}", text(&o));
     assert_eq!(fs::read_to_string(&key).unwrap(), first);
 }

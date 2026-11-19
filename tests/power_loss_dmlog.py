@@ -104,7 +104,7 @@ def record(a):
         time.sleep(1.0)
         steps = []
         for r in range(a.rounds):
-            steps += [('install', f'{a.bin}/panpak install --yes --runtime {a.bin}/panpak-stub {packages}/v1.panpak'),
+            steps += [('install', f'{a.bin}/panpak install --yes --trust-first-key --runtime {a.bin}/panpak-stub {packages}/v1.panpak'),
                       ('stage', f'{a.bin}/panpak update --stage --allow-insecure-http {ID}'),
                       ('apply', f'{a.bin}/panpak apply --yes {ID}'),
                       ('rollback', f'{a.bin}/panpak rollback {ID}'),

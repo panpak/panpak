@@ -112,7 +112,7 @@ def main():
         analytical = 80 + ft[4] + ft[6] + 72 + sum(end - start for start, end in missing)
         store = tmp / 'data/panpak'
         current = store / 'apps/org.example.incremental/current'
-        run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'old.panpak'], env)
+        run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', tmp / 'old.panpak'], env)
         before = current.readlink()
         for mode in ['norange', 'badrange', 'loop', 'drip', 'huge',
                      f'corrupt={ft[5] + ft[6]}', f'corrupt={ft[3]}',

@@ -36,6 +36,7 @@ CRITICAL_SECTIONS = {
                     "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"},
     "launch": {"args", "env"},
     "runtime": {"min_runtime", "stub_hash"},
+    "trust": {"root", "threshold", "recovery", "domain", "chain"},
 }
 
 

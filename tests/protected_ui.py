@@ -203,10 +203,10 @@ def main_inner(lab, tmp):
     v1 = lab.pack('v1', '[release]\nrevision = 1\n', desktop=graphical)
     # The fixed version asks for a permission the first one did not have, and its floor is its own revision.
     v2 = lab.pack('v2', '[release]\nrevision = 2\nfloor = 2\n', desktop=graphical, permissions='[permissions]\nnetwork = true\nnetwork_allow_tcp = [443]\n')
-    lab.cli('install', '--yes', '--runtime', BIN / 'panpak-stub', v1)
+    lab.cli('install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', v1)
 
     # 1. A floor that this machine saw, with nothing staged: protected, with no update and no `update` action.
-    (lab.appdir / 'floor').write_text('2\n')
+    isolation.set_floor(lab.appdir, 2)
     state = lab.state()
     assert state['protected'] and state['update'] is None and state['actions'] == ['internet_on'], state
     # With no update ready the notification is the text and nothing else: no button.
@@ -268,7 +268,7 @@ def main_inner(lab, tmp):
     lab.zlog.unlink(missing_ok=True)
     long_running = lab.pack('w1', '[release]\nrevision = 1\n', desktop=graphical, body='sleep 6')
     w2 = lab.pack('w2', '[release]\nrevision = 2\nfloor = 2\n', desktop=graphical, permissions='[permissions]\nnetwork = true\nnetwork_allow_tcp = [443]\n', body='exit 0')
-    lab.cli('install', '--yes', '--runtime', BIN / 'panpak-stub', long_running)
+    lab.cli('install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', long_running)
     (lab.serve / 'remote.panpak').write_bytes(Path(w2).read_bytes())
     lab.cli('update', '--stage', '--allow-insecure-http', '--timeout', '5', ID)
     launcher = lab.tmp / '.local/bin' / ID
@@ -287,8 +287,8 @@ def main_inner(lab, tmp):
     lab.cli('remove', '--yes', ID, ok=None)
     lab.zlog.unlink(missing_ok=True)
     lab.nlog.unlink(missing_ok=True)
-    lab.cli('install', '--yes', '--runtime', BIN / 'panpak-stub', v1)
-    (lab.appdir / 'floor').write_text('3\n')
+    lab.cli('install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', v1)
+    isolation.set_floor(lab.appdir, 3)
     run([BIN / 'panpak', 'update', '--stage', '--allow-insecure-http', '--timeout', '5', ID], lab.env, ok=None)
     lab.cli('protected', ID)
     assert lab.state()['protected']
@@ -319,7 +319,7 @@ def main_inner(lab, tmp):
     lab.cli('remove', '--yes', ID, ok=None)
     t1 = lab.pack('t1', '[release]\nrevision = 1\n')
     t2 = lab.pack('t2', '[release]\nrevision = 2\nfloor = 2\n', permissions='[permissions]\nnetwork = true\nnetwork_allow_tcp = [443]\n')
-    lab.cli('install', '--yes', '--runtime', BIN / 'panpak-stub', t1)
+    lab.cli('install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', t1)
     lab.stage(t2)
     assert lab.state()['kind'] == 'terminal'
     text = terminal(lab, ['protected-start', ID], ['n', 'n'])
@@ -338,12 +338,12 @@ def main_inner(lab, tmp):
     print('  a program of the terminal is asked where the person is: the permissions, the update, then the internet; one key each: ok')
 
     # 6. The actions as JSON, for a front end of its own.
-    (lab.appdir / 'floor').write_text('9\n')
+    isolation.set_floor(lab.appdir, 9)
     r = json.loads(lab.cli('protected-action', 'internet-on', ID).stdout)
     assert r == {'result': 'done', 'why': None} and (lab.appdir / 'protected-net').is_file(), r
     r = json.loads(lab.cli('protected-action', 'internet-off', ID).stdout)
     assert r['result'] == 'done' and not (lab.appdir / 'protected-net').exists()
-    (lab.appdir / 'floor').write_text('9\n')
+    isolation.set_floor(lab.appdir, 9)
     r = json.loads(lab.cli('protected-action', 'update', ID).stdout)
     assert r['result'] == 'nothing_ready', r
     print('  the actions answer in JSON: ok')
@@ -352,12 +352,12 @@ def main_inner(lab, tmp):
     lab.cli('remove', '--yes', ID, ok=None)
     lab.opened.unlink(missing_ok=True)
     x1 = lab.pack('x1', '[release]\nrevision = 1\n', desktop=graphical, body='xdg-open "https://example.org/?data=secret" || true')
-    lab.cli('install', '--yes', '--runtime', BIN / 'panpak-stub', x1)
+    lab.cli('install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', x1)
     run([launcher], lab.env_bus)
     assert lab.opened.exists(), 'outside protected mode the address is opened'
     lab.opened.unlink(missing_ok=True)
     lab.nlog_daemon.unlink(missing_ok=True)
-    (lab.appdir / 'floor').write_text('2\n')
+    isolation.set_floor(lab.appdir, 2)
     (lab.appdir / 'protected').write_text('2\n')
     run([launcher], lab.env_bus)
     wait_for(lambda: lab.nlog_daemon.exists() and 'links do not open until you update' in lab.nlog_daemon.read_text(), 'the notification about the refused link')

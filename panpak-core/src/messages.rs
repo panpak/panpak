@@ -52,6 +52,11 @@ pub const UPDATE_FAILED: &str = "{name} was not updated: {why}";
 pub const NO_DIALOG_FOR_PERMISSIONS: &str = "{name} asks for new permissions, but there is no window to show them to you. To update, open a terminal and type: panpak update {id}";
 pub const NO_DIALOG_FOR_INTERNET: &str = "To turn the internet back on for {name} you must confirm, but there is no window to ask you. Open a terminal and type: panpak allow-internet {id}";
 pub const NO_DIALOG_FOR_INTERNET_OFF: &str = "There is no window to ask you. To turn the internet off again for {name}, open a terminal and type: panpak allow-internet --undo {id}";
+pub const UPDATES_FROM: &str = "Updates: from {host}, named by the author.";
+pub const UPDATES_NONE: &str = "This app does not update itself: for a new version, download the file again from the author.";
+pub const DOCTOR_SWITCH: &str = "{name} ({id}): the channel was changed to a release with the same revision as the installed one and other bytes ({note}). With one counter for every channel this should not happen: it is an error of the author; tell them.";
+pub const KEY_CHANGED: &str = "{name}: the author changed the signing key, with a signature of the key that was trusted. The new key is {key}.";
+pub const KEY_RECOVERED: &str = "{name}: the author took the app back with the recovery key: the old signing key is no longer trusted. The new key is {key}.";
 pub const MENU_INTERNET_ON: &str = "Turn the internet back on…";
 pub const MENU_INTERNET_OFF: &str = "Turn the internet off again…";
 pub const NEEDS_CONFIRMATION: &str = "Nothing was changed: this needs your answer, and there is no terminal and no dialog to ask it.";
@@ -106,6 +111,11 @@ pub const ALL: &[&str] = &[
     NO_DIALOG_FOR_PERMISSIONS,
     NO_DIALOG_FOR_INTERNET,
     NO_DIALOG_FOR_INTERNET_OFF,
+    UPDATES_FROM,
+    UPDATES_NONE,
+    DOCTOR_SWITCH,
+    KEY_CHANGED,
+    KEY_RECOVERED,
     MENU_INTERNET_ON,
     MENU_INTERNET_OFF,
     NEEDS_CONFIRMATION,

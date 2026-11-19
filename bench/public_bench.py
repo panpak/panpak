@@ -174,7 +174,7 @@ class Lab:
         return timed([BIN / 'panpak', *args], dict(self.env, **(env or {})), timeout)
 
     def install(self, pkg):
-        return self.panpak('install', '--yes', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', pkg)
+        return self.panpak('install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', pkg)
 
     def launcher(self, app_id):
         return self.home / '.local/bin' / app_id

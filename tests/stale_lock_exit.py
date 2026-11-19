@@ -80,7 +80,7 @@ def main():
     pkg = work / 'app.panpak'
     p = run(REL / 'panpak', 'pack', tree, '--stub', REL / 'panpak-stub', '--secret-file', key, '-o', pkg)
     need(p.returncode == 0, p.stderr)
-    p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
+    p = run(REL / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', REL / 'panpak-stub', pkg)
     need(p.returncode == 0, p.stdout + p.stderr)
     if 'isolated view: not available' in run(REL / 'panpak', 'doctor').stdout or 'NOTE isolated view' in run(REL / 'panpak', 'doctor').stdout:
         print('SKIP: no isolated view here (bubblewrap cannot run), so the runtime does not stay to see the app end')

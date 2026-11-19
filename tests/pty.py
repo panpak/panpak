@@ -139,7 +139,7 @@ def main():
     pkg = work / 'pty.panpak'
     p = run(REL / 'panpak', 'pack', tree, '--stub', REL / 'panpak-stub', '--secret-file', key, '-o', pkg)
     need(p.returncode == 0, p.stderr)
-    p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
+    p = run(REL / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', REL / 'panpak-stub', pkg)
     need(p.returncode == 0, p.stdout + p.stderr)
     p = run(home / '.local/bin' / ID)
     need(p.returncode == 0, f'the app failed ({p.returncode}): {p.stdout}{p.stderr}')

@@ -30,7 +30,7 @@ def main():
         (tmp / 'secret.key').write_text((bytes([41]) * 32).hex() + '\n')
         (tmp / 'secret.key').chmod(0o600)
         run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', tmp / 'secret.key', '-o', pkg], env)
-        run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', pkg], env)
+        run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', pkg], env)
         # A fake `ldconfig`, to see when the stub asks the system for the inventory: on a miss only.
         inventory = subprocess.run(['ldconfig', '-p'], capture_output=True, check=True).stdout
         (tmp / 'inventory').write_bytes(inventory)
@@ -58,8 +58,8 @@ def main():
         assert 'cache hit' not in p.stderr and 'verified-app' not in p.stdout
         pkg.write_bytes(data)
         assert 'cache hit' in run(command, env).stderr
-        pin = tmp / 'data/panpak/apps/org.example.cache/pinned-key'
-        pin.write_text('different-key')
+        pin = tmp / 'data/panpak/apps/org.example.cache/trust'
+        pin.write_text('root=different-key\n')
         p = run(command, env, ok=False)
         assert 'cache hit' not in p.stderr and 'verified-app' not in p.stdout
         print('ABI cache: miss/hit/signature/stub/pin PASS')

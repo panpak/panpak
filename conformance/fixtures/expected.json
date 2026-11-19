@@ -372,6 +372,12 @@
   ],
   "ok": false
  },
+ "invalid-no-trust.panpak": {
+  "err": [
+   "trust"
+  ],
+  "ok": false
+ },
  "invalid-notifications-type.panpak": {
   "err": [
    "notifications"
@@ -558,6 +564,72 @@
   ],
   "ok": false
  },
+ "invalid-trust-bad-recovery.panpak": {
+  "err": [
+   "recovery"
+  ],
+  "ok": false
+ },
+ "invalid-trust-bad-root.panpak": {
+  "err": [
+   "key"
+  ],
+  "ok": false
+ },
+ "invalid-trust-chain-bad-step.panpak": {
+  "err": [
+   "malformed"
+  ],
+  "ok": false
+ },
+ "invalid-trust-chain-too-long.panpak": {
+  "err": [
+   "longer than 8"
+  ],
+  "ok": false
+ },
+ "invalid-trust-chain-unknown-by.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-trust-domain-mismatch.panpak": {
+  "err": [
+   "domain"
+  ],
+  "ok": false
+ },
+ "invalid-trust-domain-one-label.panpak": {
+  "err": [
+   "domain"
+  ],
+  "ok": false
+ },
+ "invalid-trust-threshold-two.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-trust-two-roots.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-trust-unknown-key.panpak": {
+  "err": [
+   "trust"
+  ],
+  "ok": false
+ },
+ "invalid-trust-update-key.panpak": {
+  "err": [
+   "update"
+  ],
+  "ok": false
+ },
  "invalid-version-path.panpak": {
   "code": "PANPAK-E0007",
   "err": [
@@ -667,6 +739,14 @@
   "ok": true
  },
  "valid-sig-block-unknown-noncritical.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-trust-chain.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-trust-domain.panpak": {
   "err": [],
   "ok": true
  },

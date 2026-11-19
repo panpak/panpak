@@ -98,7 +98,7 @@ impl Lab {
         pkg
     }
     fn install(&self, pkg: &Path) -> String {
-        text(&self.cli(&["install", "--yes", pkg.to_str().unwrap()]))
+        text(&self.cli(&["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]))
     }
     fn stored_note(&self, abi: u32) -> String {
         fs::read_to_string(self.home.join(format!(".local/share/panpak/runtimes/{abi}/panpak-stub"))).unwrap_or_default()

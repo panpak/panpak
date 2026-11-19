@@ -336,7 +336,7 @@ class Lab:
         (tree / 'panpak.toml').write_text(f'[app]\nid = "{app_id}"\nname = "Probe"\nversion = "1"\nentry = "bin/probe"\n{perms}\n[update]\nkey = "{self.pub}"\n')
         pkg = self.work / f'{app_id}.panpak'
         self.cli('pack', tree, '--stub', self.stub, '--secret-file', self.key, '-o', pkg)
-        r = self.cli('install', '--yes', '--accept-new-permissions', '--runtime', self.stub, pkg, check=False)
+        r = self.cli('install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', self.stub, pkg, check=False)
         need(r.returncode == 0, f'install {app_id}: {r.stdout}{r.stderr}')
         self.installed.add(app_id)
 
@@ -582,7 +582,7 @@ def scenario_protected_links(lab):
     address the system could not open), and the person is told in one line (a program of the terminal: the standard error)."""
     app = 'org.panpaktest.ProtLinks'
     lab.install(app, '[permissions]\nnotifications = true\n')
-    (lab.home / '.local/share/panpak/apps' / app / 'floor').write_text('2\n')
+    isolation.set_floor(lab.home / '.local/share/panpak/apps' / app, 2)
     lab.opened.unlink(missing_ok=True)
     r = lab.run(app, 'link', '-')
     for uri in ('https://example.org/a', 'mailto:a@b.org', 'https://example.org/fail'):

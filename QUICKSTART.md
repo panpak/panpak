@@ -16,16 +16,25 @@ chmod +x hello/bin/hello
 Any Linux tree works (binaries, `.so` in `lib/`, symlinks);
 `panpak pack` refuses setuid/setgid.
 
-## 2. Generate the key
+## 2. Generate the keys
 
 ```sh
-panpak keygen -o hello.key
+panpak key new -o hello.key        # without -o: ~/.config/panpak/secret.key, the key that `pack`, `build` and `convert` use
 # secret key written to: hello.key
 # key:    ed25519:<64 hex>
 # fingerprint (TOFU, first 16 hex): <...>
+# recovery commitment written to: hello.key.recovery (blake3:<...>)
+# RECOVERY PHRASE: 24 words, shown once
 ```
 
-The secret key is written only to the file, created with mode 0600; `keygen`
+A key is never made by itself: `pack`, `build` and `convert` without one stop and name this command. `key new` makes two keys. The **signing key** is in the file
+(mode 0600). The **recovery key** is shown once as 24 words: write them on paper and keep them away from the computer; the file `hello.key.recovery` holds only its
+commitment (a hash), which every package you make carries from the first one. If the signing key is ever stolen or lost, the 24 words (`pack --recover-with`) take
+your apps back; nobody can do that without them. To change the signing key on purpose, make the new package with `--rotate-from-file <old key> --recovery <the same
+commitment>`; to sign with a token or an agent, `pack --sign-command <cmd> --public-key <key> --recovery <commitment>` (the command gets the bytes on its standard
+input and writes the 64 bytes of the signature). `keygen -o` is the same command, for scripts.
+
+The secret key is written only to the file, created with mode 0600; it
 never overwrites an existing file and never prints the secret. Signing
 commands read it with `--secret-file <file>` or the `PANPAK_SECRET_FILE`
 environment variable (a path, never the key itself). The file must be a
@@ -88,7 +97,8 @@ release) stay for the other cases: a runtime verified as a release is not replac
 ```sh
 panpak install hello.panpak               # puts the runtime that comes with panpak in your home if it is missing or older (one line);
                                           # TOFU: confirm with y/yes to pin the key
-# panpak install --yes hello.panpak       # explicit non-interactive confirmation
+# panpak install --expect-key ed25519:<the key the author published> hello.panpak   # no question; another key is refused and nothing is pinned
+# panpak install --trust-first-key hello.panpak     # no question; you trust the key of this file (a script: add --yes for the other questions)
 ~/.local/bin/org.example.hello       # launcher on the installed runtime
 ```
 
@@ -116,8 +126,9 @@ hex characters) and asks `Install and trust this key? [y/N]`. Only `y` or
 `yes` (case-insensitive) accepts; any other input, including an empty line,
 rejects (`PANPAK-E1003`). Verify the fingerprint out of band before answering.
 With no terminal on stdin the command refuses to continue
-(`PANPAK-E5004`) unless you pass `--yes`, the explicit non-interactive
-confirmation; use it only after checking the fingerprint. The rule itself
+(`PANPAK-E5004`) unless you say whom to trust: `--expect-key <key>` (the key the author published: a package of
+another key is refused, `PANPAK-E1004`, and nothing is pinned) or `--trust-first-key` (you trust the key of this file). `--yes` alone is not enough for a first install
+(`PANPAK-E1003`). The line "Updates: from <host>, named by the author" says where the new versions will come from. The rule itself
 (pin, rotation, atomic update) is specified in `PANPAK-FORMAT.md` §3.2.
 
 ## Open files (double click and `panpak open`)
@@ -160,7 +171,7 @@ limits), `distro-matrix.md` (multi-distro tests).
 
 ```sh
 panpak convert Etcher.AppImage --id io.example.app -o app.panpak
-# the key is the personal one of ~/.config/panpak/secret.key, made the first time (--secret-file uses another)
+# the key is the personal one of ~/.config/panpak/secret.key, made before with `panpak key new` (--secret-file uses another)
 ```
 
 The manifest declares `[origin]` (file, version, SHA-256, never signed

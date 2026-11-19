@@ -242,7 +242,7 @@ def main():
     try:
         everything = sorted(n for n, s in lab.udp.items() if s)
         # 1. Not in protected mode: everything the package asked for works, and every datagram arrives.
-        lab.cli('install', '--yes', '--runtime', lab.stub, lab.pack(1))
+        lab.cli('install', '--yes', '--trust-first-key', '--runtime', lab.stub, lab.pack(1))
         rep, err = lab.start()
         everything_opened = ['https://example.org/?data=secret']
         expect(rep, host='ok', loop='ok', written='ok', arrived=everything, opened=everything_opened)
@@ -256,9 +256,9 @@ def main():
         print('  not in protected mode: network, UDP, DNS, addresses, loopback and written programs work: ok')
 
         # 2. A package of another channel with floor 2: refused, but the floor is seen, and the app is marked.
-        refused = lab.cli('install', '--yes', '--runtime', lab.stub, lab.pack(2, 'floor = 2\nchannel = "beta"\n'), check=False)
+        refused = lab.cli('install', '--yes', '--trust-first-key', '--runtime', lab.stub, lab.pack(2, 'floor = 2\nchannel = "beta"\n'), check=False)
         assert refused.returncode != 0 and 'PANPAK-E4005' in refused.stdout + refused.stderr, refused.stdout + refused.stderr
-        assert (lab.appdir / 'floor').read_text().strip() == '2' and (lab.appdir / 'protected').is_file()
+        assert isolation.read_floor(lab.appdir) == 2 and (lab.appdir / 'protected').is_file()
         rep, err = lab.start()
         expect(rep, host='deny', loop='ok', written='deny', arrived=[], opened=[], open='deny')
         assert 'protected mode' in err and 'Your files are safe' in err, err
@@ -326,7 +326,7 @@ def main():
 
         # 5. The fixed version: the mode ends by itself, with a message, and the mark and the choice go.
         lab.cli('allow-internet', '--yes', ID)
-        fixed = lab.cli('install', '--yes', '--runtime', lab.stub, lab.pack(2, 'floor = 2\n'))
+        fixed = lab.cli('install', '--yes', '--trust-first-key', '--runtime', lab.stub, lab.pack(2, 'floor = 2\n'))
         assert 'The problem is fixed and the internet works again' in fixed.stdout + fixed.stderr and 'Protected is updated' in fixed.stdout + fixed.stderr, fixed.stdout + fixed.stderr
         assert not (lab.appdir / 'protected-net').exists() and not (lab.appdir / 'protected').exists()
         rep, err = lab.start(stderr='tty')
@@ -337,8 +337,8 @@ def main():
 
         # 6. A graphical app (a window class in its package) is not asked in the terminal, even from an interactive one: one line, and the notification.
         lab.graphical = True
-        lab.cli('install', '--yes', '--runtime', lab.stub, lab.pack(3))
-        refused = lab.cli('install', '--yes', '--runtime', lab.stub, lab.pack(4, 'floor = 4\nchannel = "beta"\n'), check=False)
+        lab.cli('install', '--yes', '--trust-first-key', '--runtime', lab.stub, lab.pack(3))
+        refused = lab.cli('install', '--yes', '--trust-first-key', '--runtime', lab.stub, lab.pack(4, 'floor = 4\nchannel = "beta"\n'), check=False)
         assert 'PANPAK-E4005' in refused.stdout + refused.stderr
         assert json.loads(lab.cli('protected', '--json', ID).stdout)['kind'] == 'graphical'
         rep, text = lab.start(stdin='tty', stderr='tty', keys=[])

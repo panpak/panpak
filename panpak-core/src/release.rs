@@ -107,8 +107,9 @@ pub enum Standing {
     /// The very release that is installed (the same signed message): nothing to do.
     Same,
     /// A package of another channel that a person chose (`--switch-channel`): it enters whatever its revision, the history of the old channel is not
-    /// asked of it (the counter of each channel is its own), and only the floor still holds.
-    Switch,
+    /// asked of it (the counter of each channel is its own), and only the floor still holds. `same_revision` is set when it has the revision of the installed
+    /// release and other bytes: with one counter for every channel that should not happen, and it is an error of the author, which `doctor` says.
+    Switch { same_revision: bool },
 }
 
 /// A candidate that enters over an installed release (an `install` of a file, an `update`, an `apply`): its revision, its channel and
@@ -130,7 +131,7 @@ pub fn check_entering(installed: &Installed, cand: &Release, candidate_signed: &
         ));
     }
     if cand.channel != installed.channel {
-        return Ok(Standing::Switch);
+        return Ok(Standing::Switch { same_revision: cand.revision == installed.revision && *candidate_signed != installed.signed });
     }
     if cand.revision < installed.revision {
         if !allow.downgrade {
@@ -215,16 +216,25 @@ fn check_history_hash(bytes: &[u8], want: &str) -> Result<()> {
     Ok(())
 }
 
-/// The highest floor seen for an app, kept in `<app folder>/floor`. A floor only grows: it is the highest `[release].floor` of any release of
-/// the app whose signature was verified here (an install, an update that was refused too, an apply).
+/// The highest floor seen for an app, kept in its trust record (`<app folder>/trust`, the line `floor=`). A floor only grows: it is the highest `[release].floor` of
+/// any release of the app whose signature was verified here (an install, an update that was refused too, an apply).
 pub fn seen_floor(appdir: &std::path::Path) -> u64 {
-    std::fs::read_to_string(appdir.join("floor")).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0)
+    crate::trust::read(appdir).map_or(0, |s| s.floor)
 }
 
 /// Remember a floor if it is higher than the one kept.
 pub fn note_floor(appdir: &std::path::Path, floor: u64) -> Result<()> {
-    if floor > seen_floor(appdir) {
-        crate::durable::write_file(&appdir.join("floor"), format!("{floor}\n").as_bytes(), 0o644)?;
+    note_release(appdir, floor, 0)
+}
+
+/// Remember the floor and the revision of a release whose signature was verified here: both only grow.
+pub fn note_release(appdir: &std::path::Path, floor: u64, revision: u64) -> Result<()> {
+    let have = crate::trust::read(appdir);
+    if floor > have.as_ref().map_or(0, |s| s.floor) || revision > have.as_ref().map_or(0, |s| s.seen_revision) {
+        crate::trust::modify(appdir, |s| {
+            s.floor = s.floor.max(floor);
+            s.seen_revision = s.seen_revision.max(revision);
+        })?;
     }
     Ok(())
 }
@@ -439,7 +449,7 @@ mod tests {
         let e = check_entering(&i, &rel(9, "beta"), &h(9), Allow::default()).unwrap_err();
         assert_eq!(code(e), ErrorCode::E4005);
         let sw = Allow { switch_channel: true, ..Allow::default() };
-        assert_eq!(check_entering(&i, &rel(9, "beta"), &h(9), sw).unwrap(), Standing::Switch);
+        assert_eq!(check_entering(&i, &rel(9, "beta"), &h(9), sw).unwrap(), Standing::Switch { same_revision: false });
     }
 
     #[test]
@@ -448,9 +458,9 @@ mod tests {
         i.floor = 3;
         let sw = Allow { switch_channel: true, ..Allow::default() };
         // Beta (revision 8) to stable (revision 5): lower, and no downgrade option is needed.
-        assert_eq!(check_entering(&i, &rel(5, "beta2"), &h(5), sw).unwrap(), Standing::Switch);
+        assert_eq!(check_entering(&i, &rel(5, "beta2"), &h(5), sw).unwrap(), Standing::Switch { same_revision: false });
         // The same revision with other bytes is another channel's own release, not a replay.
-        assert_eq!(check_entering(&i, &rel(8, "beta2"), &h(99), sw).unwrap(), Standing::Switch);
+        assert_eq!(check_entering(&i, &rel(8, "beta2"), &h(99), sw).unwrap(), Standing::Switch { same_revision: true });
         // The floor still holds.
         assert_eq!(code(check_entering(&i, &rel(2, "beta2"), &h(2), sw).unwrap_err()), ErrorCode::E4003);
         // Without the option the channel is refused first.
@@ -489,7 +499,7 @@ mod tests {
         assert_eq!(seen_floor(&d), 4);
         note_floor(&d, 9).unwrap();
         assert_eq!(seen_floor(&d), 9);
-        std::fs::write(d.join("floor"), "junk").unwrap();
+        std::fs::write(d.join(crate::trust::FILE), "floor=junk\n").unwrap();
         assert_eq!(seen_floor(&d), 0);
         let _ = std::fs::remove_dir_all(&d);
     }

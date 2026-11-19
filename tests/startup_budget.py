@@ -180,13 +180,13 @@ def main():
     p = run(rel / 'panpak', 'pack', tree, '--stub', rel / 'panpak-stub', '--secret-file', key, '-o', pkg)
     if p.returncode:
         sys.exit(p.stderr)
-    p = run(rel / 'panpak', 'install', '--yes', '--runtime', rel / 'panpak-stub', pkg)
+    p = run(rel / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', rel / 'panpak-stub', pkg)
     if p.returncode:
         sys.exit(p.stdout + p.stderr)
     launcher = home / '.local/bin' / ID
     if a.protected:
         appdir = home / '.local/share/panpak/apps' / ID
-        (appdir / 'floor').write_text('2\n')
+        isolation.set_floor(appdir, 2)
         (appdir / 'protected').write_text('2\n')
 
     direct = ['/bin/sh', str(script)]

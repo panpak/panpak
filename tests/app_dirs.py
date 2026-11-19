@@ -149,7 +149,7 @@ class Lab:
         """Pack and install the probe app with the extra manifest text. New permissions
         over an installed app are accepted here; the tests of that rule call the CLI directly."""
         pkg = self.pack(toml_extra)
-        return self.cli('install', '--yes', '--accept-new-permissions', '--runtime', self.stub, pkg, check=False)
+        return self.cli('install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', self.stub, pkg, check=False)
 
     def run(self, *args):
         """Run the launcher; return (returncode, report dict, stderr)."""
@@ -411,7 +411,7 @@ def main():
     serve = work / 'serve'
     serve.mkdir()
     url = f'http://127.0.0.1:{port}/remote.panpak'
-    p = lab.cli('install', '--yes', '--runtime', lab.stub, lab.pack('', url), check=False)
+    p = lab.cli('install', '--yes', '--trust-first-key', '--runtime', lab.stub, lab.pack('', url), check=False)
     assert p.returncode == 0, p.stdout + p.stderr
     assert 'asks for more than' not in p.stdout and 'isolation layers:' in p.stdout, p.stdout
     server = subprocess.Popen([sys.executable, str(ROOT / 'tests/range_server.py'), str(serve), str(port), 'normal'],
@@ -445,10 +445,10 @@ def main():
             p = lab.cli('install', *extra, '--runtime', lab.stub, pkg2, check=False)
             assert p.returncode != 0 and 'PANPAK-E5004' in p.stderr and 'Read Docs in your home folder' in p.stdout, (extra, p.stdout + p.stderr)
             assert current.readlink() == before, 'install replaced the app without an explicit yes'
-        p = lab.cli('install', '--yes', '--accept-new-permissions', '--runtime', lab.stub, pkg2)
+        p = lab.cli('install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', lab.stub, pkg2)
         assert current.readlink() != before
         before = current.readlink()
-        p = lab.cli('install', '--yes', '--runtime', lab.stub, pkg2)
+        p = lab.cli('install', '--yes', '--trust-first-key', '--runtime', lab.stub, pkg2)
         assert 'asks for more than' not in p.stdout, p.stdout
         # The kernel warning follows the Landlock level of this machine.
         doctor = lab.cli('doctor', check=False).stdout

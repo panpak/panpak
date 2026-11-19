@@ -169,7 +169,7 @@ The lines below are kept as history: in particular the old
 automatable" are not the current cycle's conclusions.
 
 Method: conversion with `panpak convert` (+ explicit
-`--entry`/`--allow-missing` where needed), `panpak install --yes`,
+`--entry`/`--allow-missing` where needed), `panpak install --yes --trust-first-key`,
 sandboxed run. Control: same app as original AppImage (userspace FUSE)
 on Xvfb (`DISPLAY=:99`, windows verified with `xwininfo`) and headless.
 Panpak GUI runs on native Wayland (filesystem socket, `connect()` not

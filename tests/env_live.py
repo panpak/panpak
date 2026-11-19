@@ -136,7 +136,7 @@ def main():
             (tmp / 'secret.key').write_text((bytes([41]) * 32).hex() + '\n')
             (tmp / 'secret.key').chmod(0o600)
             run([BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', tmp / 'secret.key', '-o', tmp / 'a.panpak'], env)
-            run([BIN / 'panpak', 'install', '--yes', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', tmp / 'a.panpak'], env)
+            run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', tmp / 'a.panpak'], env)
             def scenario(cmd, what):
                 for f in (theme / '16x16/apps/live-icon.png', home / '.config/qt6ct/extra.conf'):
                     f.unlink(missing_ok=True)

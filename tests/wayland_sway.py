@@ -127,7 +127,7 @@ def main():
         pkg = work / 'waysway.panpak'
         p = run(REL / 'panpak', 'pack', tree, '--stub', REL / 'panpak-stub', '--secret-file', key, '-o', pkg)
         need(p.returncode == 0, p.stderr)
-        p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
+        p = run(REL / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', REL / 'panpak-stub', pkg)
         need(p.returncode == 0, p.stdout + p.stderr)
         launcher = home / '.local/bin' / ID
         result = home / f'.local/share/panpak/userdata/{ID}/.local/share/globals.json'

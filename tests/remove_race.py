@@ -68,7 +68,7 @@ def main():
     pkg = work / 'race.panpak'
     p = run(REL / 'panpak', 'pack', tree, '--stub', REL / 'panpak-stub', '--secret-file', key, '-o', pkg)
     need(p.returncode == 0, p.stderr)
-    p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
+    p = run(REL / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', REL / 'panpak-stub', pkg)
     need(p.returncode == 0, p.stdout + p.stderr)
     launcher = home / '.local/bin' / ID
     ran = home / f'.local/share/panpak/userdata/{ID}/.local/share/ran'
@@ -103,7 +103,7 @@ def main():
     print(f'start during a removal: waited, then ended with PANPAK-E2004 ({e.strip()[:90]}); the app did not run: ok')
 
     # --- 2. a running copy stops the removal
-    p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
+    p = run(REL / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', REL / 'panpak-stub', pkg)
     need(p.returncode == 0, p.stdout + p.stderr)
     app = subprocess.Popen([str(launcher), '--hold'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     for _ in range(200):

@@ -137,7 +137,7 @@ def main():
     pkg = work / 'hardening.panpak'
     p = run(REL / 'panpak', 'pack', tree, '--stub', REL / 'panpak-stub', '--secret-file', key, '-o', pkg)
     need(p.returncode == 0, p.stderr)
-    p = run(REL / 'panpak', 'install', '--yes', '--runtime', REL / 'panpak-stub', pkg)
+    p = run(REL / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', REL / 'panpak-stub', pkg)
     need(p.returncode == 0, p.stdout + p.stderr)
     # The first start holds the app for a few seconds, to look at the receiver of the open channel.
     result = home / f'.local/share/panpak/userdata/{ID}/.local/share/result.json'
@@ -196,7 +196,7 @@ def main():
     pkg2 = work / 'hardening2.panpak'
     p = run(REL / 'panpak', 'pack', tree2, '--stub', REL / 'panpak-stub', '--secret-file', key, '-o', pkg2)
     need(p.returncode == 0, 'a package with `devices = true`: ' + p.stderr)
-    p = run(REL / 'panpak', 'install', '--yes', '--accept-new-permissions', '--runtime', REL / 'panpak-stub', pkg2)
+    p = run(REL / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', REL / 'panpak-stub', pkg2)
     need(p.returncode == 0, p.stdout + p.stderr)
     p = run(home / '.local/bin' / ID2)
     need(p.returncode == 0, f'the app with devices failed ({p.returncode}): {p.stdout}{p.stderr}')

@@ -99,7 +99,7 @@ impl Lab {
     }
 
     fn install(&self, pkg: &Path, flags: &[&str]) -> Output {
-        cli(&self.home, &[&["install", "--yes"], flags, &[pkg.to_str().unwrap()]].concat())
+        cli(&self.home, &[&["install", "--yes", "--trust-first-key"], flags, &[pkg.to_str().unwrap()]].concat())
     }
 
     fn manifest(&self, pkg: &Path) -> String {
@@ -203,8 +203,8 @@ fn nothing_below_the_floor_enters_by_install_and_allow_downgrade_does_not_change
     let o = l.install(&v2, &["--allow-downgrade"]);
     assert!(code_of(&o, "PANPAK-E4003") && text(&o).contains("floor 3"), "{}", text(&o));
     // The floor is kept for the app: even after the installed version goes away from `current` by a rollback elsewhere, it is in the app folder.
-    let kept = fs::read_to_string(l.home.join(".local/share/panpak/apps").join(ID).join("floor")).unwrap();
-    assert_eq!(kept.trim(), "3");
+    let kept = fs::read_to_string(l.home.join(".local/share/panpak/apps").join(ID).join("trust")).unwrap();
+    assert!(kept.lines().any(|l| l == "floor=3"), "{kept}");
 }
 
 #[test]

@@ -467,8 +467,8 @@ keeps the user's machine free of an SVG renderer and keeps the output the same f
 
 For 13a: the local key made by `panpak keygen`, in a file outside the repository, used by `panpak pack --secret-file`.
 How it will be replaced by the CI key of step 9 without changing the format: the format already carries the key in
-`[update]` and has a rotation (`rotation_old`, `rotation_sig`, `pack --rotate-from-file`): a package signed by
-the CI key can carry a rotation signed by the old one when users already trust it; for apps that were never
+`[trust]` (`root`, `recovery`, and a `chain` of successions made by `pack --rotate-from-file` or `--recover-with`): a package signed by
+the CI key can carry a succession signed by the old one when users already trust it; for apps that were never
 distributed, the package is simply signed again. The certification of the CI key (step 9) is a separate statement
 about a key, so it sits next to the package (an optional field or file that readers that do not know it ignore, as
 section 3.1 of the format already allows), not inside the signed bytes that exist today. No change to the footer,

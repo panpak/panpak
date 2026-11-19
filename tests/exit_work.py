@@ -134,7 +134,7 @@ def main():
         envn = dict(env, PANPAK_NO_BACKGROUND='1')
         try:
             time.sleep(0.8)
-            run([panpak, 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], envn)
+            run([panpak, 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], envn)
             (appdir / 'update-state').write_text(f'next_check={int(time.time()) + 10**6}\n')   # the daily job is not due: only the exit work is looked at
 
             # 1. HTTPS and the settings

@@ -20,7 +20,7 @@ built from kernel features, with its own private D-Bus bus; starting an app thro
 
 - **Nothing is made or run before it is verified.** Ed25519 signature over the manifest and the index, BLAKE3 hash
   of every chunk, key pinned at install (trust on first use). The signature and the pinned key are checked at every
-  start, and a changed key is refused; key rotation is signed. Every chunk is checked when the app's tree is made,
+  start, and a changed key is refused; a change of key is a signed succession, and a recovery key kept on paper takes the app back if the signing key is stolen. Every chunk is checked when the app's tree is made,
   when the app is made ready (at install), and the tree is then read-only. It is not rehashed at every start, so a process of your own
   user outside the sandbox could still change it ([KL-18](THREAT-MODEL.md#5-known-limitations)); `panpak verify <app>` reads every file of an installed
   app against the signed index when you ask, which finds a damaged disk or a change made on this machine after the fact (it is a diagnosis, not a guarantee up to the moment the app runs).
@@ -237,7 +237,7 @@ delta updates that are downloaded in the background and applied when the app is 
   they use their toolkit's own dialog on the folders they were granted. The clipboard is not mediated, and there is
   no keyring.
 - The seccomp filter is a deny list, and the internal sandbox of Electron and Chromium is not available.
-- The first key of a package is trusted on first use.
+- The first key of a package is trusted on first use: you say whom to trust (`--expect-key`, `--trust-first-key` or the question); nothing confirms the author's domain yet.
 - Panpak is not a store: there is no catalogue or review, and no shared runtime. You get a `.panpak` file from its
   author, and updates come from the URL in its manifest. Compatibility with AppImages that you convert yourself
   is in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
@@ -257,9 +257,9 @@ Before the beta, in this order. State on 2026-11-19.
 2. **Shared store and instant start.** *Done.* One copy of each file in the store, the app ready when `install` ends, updates prepared in the
    background and applied when the app is closed, a rotating daily check of the files, collection of what nothing reaches any more.
 3. **Trust and repository.** *In progress (step 9).* Done: a signed message with a signature block, a signed `[format]` table that older readers
-   refuse to guess about, the release table (revision, floor, channel, history), protected mode for a withdrawn version. To do: publisher keys
-   (a mother key, a recovery key, a chain of succession tied to the app), the ELF and library names in the signed index, what an app needs from the
-   host, the list of devices, a software bill of materials, and the confirmation of the publisher's domain at the first install.
+   refuse to guess about, the release table (revision, floor, channel, history), protected mode for a withdrawn version, and the publisher's keys (a signing key and a
+   recovery key kept as 24 words, a chain of successions tied to the app, a first install that says whom it trusts). To do: the ELF and library names in the signed index,
+   what an app needs from the host, the list of devices, a software bill of materials, and the confirmation of the publisher's domain at the first install.
 4. **App metadata and a Panpak app** to install and manage apps with a few clicks.
 5. **Browsers and Electron** in the sandbox, with a broker of our own.
 6. **Developer tools**: `panpak init` that understands a project, `panpak run --dev`, a CI template,
@@ -308,17 +308,17 @@ Build an app from its recipe (the folder that holds `panpak.toml`, the one above
 
 ```sh
 panpak build path/to/recipe-folder      # writes org.gnome.TextEditor.panpak in that folder
-panpak install path/to/recipe-folder/org.gnome.TextEditor.panpak
+panpak install path/to/recipe-folder/org.gnome.TextEditor.panpak     # asks whether to trust the key (`--trust-first-key` in a script)
 ~/.local/bin/org.gnome.TextEditor
 panpak list
 panpak remove org.gnome.TextEditor
 ```
 
-Nothing else is needed. The first `panpak build` makes your personal key in `~/.config/panpak/secret.key` and says so with its
-fingerprint (`--secret-file` uses another one), and `build` and `install` put the runtime that comes with `panpak` (the file
+Make your key first, once: `panpak key new` (the signing key goes to `~/.config/panpak/secret.key`; it also shows 24 words, the recovery key, to keep on paper; a key is
+never made by itself). Then nothing else is needed: `build` and `install` put the runtime that comes with `panpak` (the file
 `panpak-stub` beside it) in your home, one line each time. The first build also makes the build image (a few minutes and about
-1 GB; it needs network access to the registry and to the Debian snapshot service). `panpak install` shows the fingerprint of the
-key and the permissions and asks; in a script, `--yes` confirms after you have checked the fingerprint. `panpak doctor` shows
+1 GB; it needs network access to the registry and to the Debian snapshot service). `panpak install` shows the key and the permissions and asks;
+in a script, a first install says whom it trusts: `--expect-key <key>` (the key the author published) or `--trust-first-key`; `--yes` alone does not. `panpak doctor` shows
 what the system lacks.
 
 To try Panpak with apps you already have, `panpak convert` turns an AppImage into a package signed by

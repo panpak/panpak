@@ -89,7 +89,7 @@ class Lab:
         return env, home / 'data/panpak'
 
     def install_v1(self, env):
-        run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', self.tmp / 'v1.panpak'], env)
+        run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', self.tmp / 'v1.panpak'], env)
 
     def update(self, env, extra=None):
         return run([BIN / 'panpak', 'update', '--allow-insecure-http', '--timeout', '5', ID], dict(env, **(extra or {})), ok=extra is None)
@@ -180,11 +180,11 @@ def main():
                     e, store = lab.fresh()
                     fp = dict(PANPAK_FAILPOINT=name)
                     if cmd == 'install':
-                        p = run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], dict(e, **fp), ok=False)
+                        p = run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], dict(e, **fp), ok=False)
                         fired = f'failpoint {name}' in p.stderr
                         if fired:
                             whole(store, e, {'version 1'})
-                            run([BIN / 'panpak', 'install', '--yes', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], e)
+                            run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', tmp / 'v1.panpak'], e)
                         assert whole(store, e, {'version 1'}) == 'version 1', f'{name}: install again did not finish'
                     elif cmd == 'update':
                         (serve / 'remote.panpak').write_bytes(v2)
@@ -256,7 +256,7 @@ def main():
                             whole(store, e, {'version 1', 'version 2'})
                             run(args, e)
                         assert whole(store, e, {'version 2'}) == 'version 2', f'{name}: the update that replaces the key did not finish'
-                        pin = (store / 'apps' / ID / 'pinned-key').read_text().split()
+                        pin = [l.split('=', 1)[1] for l in (store / 'apps' / ID / 'trust').read_text().split() if l.startswith('root=')]
                         assert pin == [f'ed25519:{pub2}'], pin
                     else:  # repair
                         (serve / 'remote.panpak').write_bytes(v1)
@@ -283,7 +283,7 @@ def main():
             e, store = lab.fresh()
             pause = tmp / 'pause'
             pause.mkdir()
-            slow = subprocess.Popen([str(BIN / 'panpak'), 'install', '--yes', '--runtime', str(BIN / 'panpak-stub'), str(tmp / 'v1.panpak')],
+            slow = subprocess.Popen([str(BIN / 'panpak'), 'install', '--yes', '--trust-first-key', '--runtime', str(BIN / 'panpak-stub'), str(tmp / 'v1.panpak')],
                                     env=dict(e, PANPAK_FAILPOINT_PAUSE='prepare.blobs_named', PANPAK_FAILPOINT_DIR=str(pause)), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             for _ in range(200):
                 if (pause / 'reached').exists():

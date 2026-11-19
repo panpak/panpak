@@ -73,7 +73,7 @@ fn lab_with_app(name: &str) -> (Lab, PathBuf) {
     let pkg = home.join("v1.panpak");
     let o = cli(&home, &["pack", tree.to_str().unwrap(), "--stub", stub.to_str().unwrap(), "--secret-file", key.to_str().unwrap(), "-o", pkg.to_str().unwrap()]);
     assert!(o.status.success(), "{}", text(&o));
-    let o = cli(&home, &["install", "--yes", pkg.to_str().unwrap()]);
+    let o = cli(&home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]);
     assert!(o.status.success(), "{}", text(&o));
     (lab, pkg)
 }

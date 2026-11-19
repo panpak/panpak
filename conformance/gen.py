@@ -52,10 +52,18 @@ def format_table(critical):
 FORMAT = format_table([])
 
 
+RECOVERY = "blake3:" + blake3(Ed25519PrivateKey.from_private_bytes(hashlib.sha256(b'conformance recovery key').digest()).public_key().public_bytes_raw()).hex()
+
+
+def trust_table(key, recovery=None, extra=''):
+    return f'[trust]\nroot = ["{key}"]\nthreshold = 1\nrecovery = "{recovery or RECOVERY}"\n{extra}'
+
+
+TRUST = trust_table(PUBHEX)
 RELEASE = '[release]\nrevision = 1\nfloor = 0\nsecurity = 0\nchannel = "stable"\n'
 
 
-def manifest(key=PUBHEX, extra="", version="1.0", entry="bin/hello", iid="org.example.conf", name="Conf", fmt=None, release=RELEASE):
+def manifest(key=PUBHEX, extra="", version="1.0", entry="bin/hello", iid="org.example.conf", name="Conf", fmt=None, release=RELEASE, trust_extra="", trust_text=None):
     """A manifest as `panpak pack` writes it. `fmt` is the `[format]` text; by default it is made from what the manifest uses (the list
     of critical fields is derived, never written by hand), and a test of a refusal gives its own."""
     stub_hash = blake3(STUB).hex()
@@ -63,7 +71,7 @@ def manifest(key=PUBHEX, extra="", version="1.0", entry="bin/hello", iid="org.ex
         f'[app]\nid = {tstr(iid)}\nname = {tstr(name)}\nversion = {tstr(version)}\nentry = {tstr(entry)}\n'
         f"{extra}{release}",
         f'[runtime]\nstub_hash = "{stub_hash}"\n'
-        f'[update]\nkey = "{key}"\n',
+        + (trust_table(key, extra=trust_extra) if trust_text is None else trust_text),
     )
     if fmt is None:
         fmt = format_table(critical_paths("".join(parts).encode()))
@@ -142,7 +150,7 @@ def main():
 
     # The package of Appendix A of the specification: built here from its inputs, and its signature block and footer must be
     # the ones the specification prints (a check that the text and the code do not drift apart).
-    APPENDIX_A_SIZE = 839  # the total size that PANPAK-FORMAT.md prints for it
+    APPENDIX_A_SIZE = 991  # the total size that PANPAK-FORMAT.md prints for it
     _stub = b"PANPAKTEST-VECTOR-v1\0"
     _hi = b"hi\n"
     _hic = zstd_enc(_hi)
@@ -150,10 +158,10 @@ def main():
         {"path": "bin", "mode": 0o755, "kind": "dir"},
         {"path": "bin/hi", "mode": 0o755, "kind": "file", "size": 3, "chunks": [0]}])
     _vman = (f'[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n'
-             + format_table(["release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash"]) +
+             + format_table(["release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash", "trust.recovery", "trust.root", "trust.threshold"]) +
              RELEASE +
              f'[runtime]\nstub_hash = "{blake3(_stub).hex()}"\n'
-             f'[update]\nkey = "{PUBHEX}"\n').encode()
+             + trust_table(PUBHEX)).encode()
     _vec = assemble(_stub, _vidx, _vman, blobs=[_hic])
     if "--print-appendix" in sys.argv:
         # The bullets of Appendix A of PANPAK-FORMAT.md, from the bytes that this script makes (paste them there).
@@ -282,7 +290,7 @@ def main():
     put("invalid-sig-bare-64-bytes.panpak", assemble(STUB, idx, man, blobs=blobs, block=lambda s: s), False, ["not adjacent"])
 
     # manifest without [runtime].stub_hash (previous format), regularly signed
-    man_old = b'[app]\nid = "org.example.conf"\nname = "Conf"\nversion = "1.0"\nentry = "bin/hello"\n' + format_table(["release.channel", "release.floor", "release.revision", "release.security"]).encode() + RELEASE.encode() + b'[update]\nkey = "' + PUBHEX.encode() + b'"\n'
+    man_old = b'[app]\nid = "org.example.conf"\nname = "Conf"\nversion = "1.0"\nentry = "bin/hello"\n' + format_table(["release.channel", "release.floor", "release.revision", "release.security", "trust.recovery", "trust.root", "trust.threshold"]).encode() + RELEASE.encode() + TRUST.encode()
     put("invalid-no-stubhash.panpak", assemble(STUB, encode_index(*std_index()[:2]), man_old), False, ["stub_hash", "previous format"])
 
     # ---- [format] (PANPAK-FORMAT.md section 3.1.9): correctly signed, refused for what they say ----
@@ -301,13 +309,13 @@ def main():
     bad_format("invalid-format-critical-unknown-section.panpak", manifest(fmt=fmt(critical='["sandbox"]')), "update panpak")
     # The manifest was changed after pack and signed with the old list: a field that restricts the app that the list does not name.
     stale = '[permissions]\nnetwork = true\nx11 = true\n'
-    bad_format("invalid-format-critical-stale.panpak", manifest(extra=stale, fmt=fmt(critical='["release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash"]')), "critical")
-    bad_format("invalid-format-critical-incomplete.panpak", manifest(extra=stale, fmt=fmt(critical='["permissions.network", "release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash"]')), "critical")
+    bad_format("invalid-format-critical-stale.panpak", manifest(extra=stale, fmt=fmt(critical='["release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash", "trust.recovery", "trust.root", "trust.threshold"]')), "critical")
+    bad_format("invalid-format-critical-incomplete.panpak", manifest(extra=stale, fmt=fmt(critical='["permissions.network", "release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash", "trust.recovery", "trust.root", "trust.threshold"]')), "critical")
     put("valid-format-critical-complete.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=stale), blobs=std_index()[2]), True)
     bad_format("invalid-format-unknown-key.panpak", manifest(fmt=fmt(extra='future = 1\n')), "format")
     bad_format("invalid-format-critical-malformed.panpak", manifest(fmt=fmt(critical='["Permissions.X"]')), "critical")
     put("valid-format-critical-known.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(
-        extra='[permissions]\nnetwork = true\n', fmt=fmt(critical='["permissions.network", "release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash"]')), blobs=std_index()[2]), True)
+        extra='[permissions]\nnetwork = true\n', fmt=fmt(critical='["permissions.network", "release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash", "trust.recovery", "trust.root", "trust.threshold"]')), blobs=std_index()[2]), True)
     # An unknown key outside [format] that is not named in `critical` is read as before (it is ignored, with a warning).
     put("valid-unknown-key-not-critical.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(
         extra='[desktop]\nfuture_thing = 1\n'), blobs=std_index()[2]), True)
@@ -326,6 +334,27 @@ def main():
     bad_release("invalid-release-missing-revision.panpak", '[release]\nfloor = 0\n', "release")
     put("valid-release-full.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(
         release='[release]\nrevision = 7\nfloor = 5\nsecurity = 6\nchannel = "beta-2"\nhistory = "' + "ab" * 32 + '"\n'), blobs=std_index()[2]), True)
+
+    # ---- [trust] (PANPAK-FORMAT.md section 3.2) ----
+    def bad_trust(name, man, *errs):
+        bad_format(name, man, *errs)
+
+    other = "ed25519:" + "11" * 32
+    step = lambda by="root", frm=PUBHEX, to=other, rec=RECOVERY: f'[[trust.chain]]\nby = "{by}"\nfrom = "{frm}"\nto = "{to}"\nrecovery = "{rec}"\nsig = "{"ab" * 64}"\n'
+    bad_trust("invalid-no-trust.panpak", manifest(trust_text=""), "trust")
+    bad_trust("invalid-trust-two-roots.panpak", manifest(trust_text=f'[trust]\nroot = ["{PUBHEX}", "{other}"]\nthreshold = 1\nrecovery = "{RECOVERY}"\n'), "update panpak")
+    bad_trust("invalid-trust-threshold-two.panpak", manifest(trust_text=f'[trust]\nroot = ["{PUBHEX}"]\nthreshold = 2\nrecovery = "{RECOVERY}"\n'), "update panpak")
+    bad_trust("invalid-trust-bad-root.panpak", manifest(trust_text=f'[trust]\nroot = ["ed25519:zz"]\nthreshold = 1\nrecovery = "{RECOVERY}"\n'), "key")
+    bad_trust("invalid-trust-bad-recovery.panpak", manifest(trust_text=f'[trust]\nroot = ["{PUBHEX}"]\nthreshold = 1\nrecovery = "sha256:00"\n'), "recovery")
+    bad_trust("invalid-trust-domain-mismatch.panpak", manifest(trust_extra='domain = "example.com"\n'), "domain")
+    bad_trust("invalid-trust-domain-one-label.panpak", manifest(trust_extra='domain = "org"\n'), "domain")
+    bad_trust("invalid-trust-unknown-key.panpak", manifest(trust_extra='future = 1\n'), "trust")
+    bad_trust("invalid-trust-update-key.panpak", manifest(extra=f'[update]\nkey = "{PUBHEX}"\n'), "update")
+    bad_trust("invalid-trust-chain-too-long.panpak", manifest(trust_extra=step() * 9), "longer than 8")
+    bad_trust("invalid-trust-chain-unknown-by.panpak", manifest(trust_extra=step(by="threshold")), "update panpak")
+    bad_trust("invalid-trust-chain-bad-step.panpak", manifest(trust_extra=step(to="ed25519:00")), "malformed")
+    put("valid-trust-domain.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(trust_extra='domain = "example.org"\n'), blobs=std_index()[2]), True)
+    put("valid-trust-chain.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(trust_extra=step() + step(by="recovery")), blobs=std_index()[2]), True)
 
     # manifest_len that does not add up (footer man_len +1)
     good = bytearray(open(os.path.join(FIX, "valid-min.panpak"), "rb").read())
