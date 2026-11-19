@@ -79,6 +79,7 @@ jobs:
       run: ${{ steps.monday.outputs.run }}
     steps:
       - name: Monday
+        timeout-minutes: 11
         id: monday
         run: |
           if [ "$(date -u +%u)" = 1 ]; then run=true; else run=false; fi
@@ -97,9 +98,11 @@ jobs:
       repro: ${{ steps.classify.outputs.repro }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
         with:
           fetch-depth: 0
       - name: Classify the changed files and the level
+        timeout-minutes: 3
         id: classify
         env:
           EVENT: ${{ github.event_name }}
@@ -113,6 +116,7 @@ jobs:
             ./scripts/ci-changes.sh "" "" true | tee -a "$GITHUB_OUTPUT"
           fi
       - name: The build date of the reference follows the code (no build)
+        timeout-minutes: 3
         if: ${{ github.event_name == 'pull_request' }}
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -128,7 +132,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
       - name: Cache the Rust build (registry and target)
+        timeout-minutes: 5
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -139,6 +145,7 @@ jobs:
           restore-keys: |
             build-test-${{ env.RUST_TOOLCHAIN }}-
       - name: Cache the Rust toolchain (the key holds the version and the components)
+        timeout-minutes: 5
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -146,11 +153,13 @@ jobs:
             ~/.rustup/update-hashes/${{ env.RUST_TOOLCHAIN }}-x86_64-unknown-linux-gnu
           key: rustup-${{ env.RUST_TOOLCHAIN }}-minimal-rustfmt-musl
       - name: Pinned Rust toolchain
+        timeout-minutes: 3
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
       - name: Zig (pinned PyPI wheel, hash-checked)
+        timeout-minutes: 3
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
           # A read timeout of the download (files.pythonhosted.org) failed a run of main: three tries, 60 s each, the hash check stays.
@@ -164,46 +173,57 @@ jobs:
           # would hide the system Python that the conformance scripts need.
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Test dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd python3 python3-cryptography squashfs-tools
+        timeout-minutes: 8
+        run: ./scripts/apt-install.sh zstd python3 python3-cryptography squashfs-tools
       - name: Bubblewrap and user namespaces (for the isolated view)
+        timeout-minutes: 8
         # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
         # tests after it run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
         run: |
-          sudo apt-get install -y -qq bubblewrap xvfb x11-utils python3-gi gir1.2-gtk-3.0
+          ./scripts/apt-install.sh --no-update bubblewrap xvfb x11-utils python3-gi gir1.2-gtk-3.0
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
           bwrap --version
       - name: The programs that some tests start (cargo test does not build the stub by itself, and the tests of the windows use the debug build)
+        timeout-minutes: 3
         run: cargo build --locked --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
       - name: Test (musl)
+        timeout-minutes: 11
         # --no-fail-fast: one failing test does not hide the others (the first run with PANPAK_CI=1 shows every test that used to skip).
         env:
           PANPAK_SKIP_LOG: /tmp/panpak-known-skips.txt
         run: cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl
       - name: Protected mode, the way it is shown (the notification and its button, the windows, the questions of the terminal; fakes of the tools and the service)
-        run: python3 tests/protected_ui.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/protected_ui.py
       - name: The tests that cannot run on this runner (named, never silent)
+        timeout-minutes: 3
         run: |
           {
             echo "### Known skips (the runner's kernel is older than the test needs)"
             sort -u /tmp/panpak-known-skips.txt 2>/dev/null || echo "(none)"
           } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Release build (conformance and artifacts)
+        timeout-minutes: 4
         run: cargo build --locked --release --target x86_64-unknown-linux-musl
       - name: Test points (every command stopped at every named point; a release has none)
+        timeout-minutes: 11
         run: |
           cargo build --locked --release --target x86_64-unknown-linux-musl --target-dir target/failpoints --features panpak/failpoints,panpak-stub/failpoints -p panpak -p panpak-stub
           ./scripts/check-no-failpoints.sh target/x86_64-unknown-linux-musl/release/panpak target/x86_64-unknown-linux-musl/release/panpak-stub
           ./scripts/check-no-failpoints.sh --expect target/failpoints/x86_64-unknown-linux-musl/release/panpak target/failpoints/x86_64-unknown-linux-musl/release/panpak-stub
-          python3 tests/failpoints.py
+          python3 tests/with_timeout.py 600 tests/failpoints.py
       - name: A blob is visible only when it is on disk (a kill between writing and naming)
+        timeout-minutes: 3
         run: |
-          sudo apt-get install -y -qq strace
-          python3 tests/blob_visibility.py
+          ./scripts/apt-install.sh --no-update strace
+          python3 tests/with_timeout.py 120 tests/blob_visibility.py
       - name: Lock files left by an app that stops on a signal
-        run: python3 tests/stale_lock_exit.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/stale_lock_exit.py
       - name: Update with icons (changed, removed, new sizes, none)
-        run: python3 tests/update_icons.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/update_icons.py
 
   build-test:
     needs: changes
@@ -212,7 +232,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
       - name: Cache the Rust build (registry and target)
+        timeout-minutes: 5
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -223,6 +245,7 @@ jobs:
           restore-keys: |
             build-test-${{ env.RUST_TOOLCHAIN }}-
       - name: Cache the Rust toolchain (the key holds the version and the components)
+        timeout-minutes: 5
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -230,11 +253,13 @@ jobs:
             ~/.rustup/update-hashes/${{ env.RUST_TOOLCHAIN }}-x86_64-unknown-linux-gnu
           key: rustup-${{ env.RUST_TOOLCHAIN }}-minimal-rustfmt-musl
       - name: Pinned Rust toolchain
+        timeout-minutes: 3
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
       - name: Zig (pinned PyPI wheel, hash-checked)
+        timeout-minutes: 3
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
           # A read timeout of the download (files.pythonhosted.org) failed a run of main: three tries, 60 s each, the hash check stays.
@@ -248,91 +273,129 @@ jobs:
           # would hide the system Python that the conformance scripts need.
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Test dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq zstd python3 python3-cryptography squashfs-tools
+        timeout-minutes: 8
+        run: ./scripts/apt-install.sh zstd python3 python3-cryptography squashfs-tools
       - name: Bubblewrap and user namespaces (for the isolated view)
+        timeout-minutes: 8
         # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
         # tests after it run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
         run: |
-          sudo apt-get install -y -qq bubblewrap xvfb x11-utils python3-gi gir1.2-gtk-3.0
+          ./scripts/apt-install.sh --no-update bubblewrap xvfb x11-utils python3-gi gir1.2-gtk-3.0
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
           bwrap --version
       - name: Release build (conformance and artifacts)
+        timeout-minutes: 4
         run: cargo build --locked --release --target x86_64-unknown-linux-musl
       - name: Format conformance (independent verifier)
+        timeout-minutes: 3
         run: |
           python3 conformance/gen.py
           python3 conformance/run.py --rust
       - name: Hardening (seccomp filter and system font cache, through the real launcher)
-        run: python3 tests/hardening.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/hardening.py
       - name: The socket probe (a measurement mode that must stay off unless asked for)
-        run: python3 tests/socket_probe.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/socket_probe.py
       - name: The app folders and the private home (what an app can read and write in its home)
-        run: python3 tests/app_dirs.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/app_dirs.py
       - name: The warm cache of the library resolution, the licenses of a package
+        timeout-minutes: 3
         run: |
-          python3 tests/abi_cache.py
-          python3 tests/licenses.py
+          python3 tests/with_timeout.py 120 tests/abi_cache.py
+          python3 tests/with_timeout.py 120 tests/licenses.py
       - name: A start against a removal (needs the debug panpak, which has the hook that makes a removal slow)
+        timeout-minutes: 4
         run: |
           cargo build --locked -p panpak
-          python3 tests/remove_race.py
+          python3 tests/with_timeout.py 150 tests/remove_race.py
       - name: A real X11 client under Landlock (a dedicated Xvfb)
-        run: python3 tests/x11.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/x11.py
       - name: A change of the user's theme or settings reaches a running app (GTK 3 on a dedicated Xvfb; Qt settings folders)
-        run: python3 tests/env_live.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/env_live.py
       - name: The unit tests of the app harness
+        timeout-minutes: 3
         run: python3 -m unittest discover -s tests/apps -p 'test_*.py'
       - name: The helpers of the tests (a work folder with read-only trees is removed whole)
-        run: python3 tests/isolation_test.py
+        timeout-minutes: 3
+        run: |
+          python3 tests/with_timeout.py 120 tests/isolation_test.py
+          python3 tests/with_timeout_test.py
+          python3 tests/apt_install_test.py
       - name: The isolated view, end to end (full level only, 2.5 minutes)
+        timeout-minutes: 9
         # `fuzz` is the output of the full level (a push to main, a manual or weekly run, the label full-ci) and of a change that is not documentation.
         if: ${{ needs.changes.outputs.fuzz == 'true' }}
-        run: python3 tests/view.py
+        run: python3 tests/with_timeout.py 480 tests/view.py
       - name: A pty in the isolated view (shell, window size, job control, a full-screen program)
-        run: python3 tests/pty.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/pty.py
       - name: The [env] table (variables that point an app at its own tree)
-        run: python3 tests/pkgenv.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/pkgenv.py
       - name: One copy in the store (install, record, repair, update, rollback, remove)
-        run: python3 tests/store_flow.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/store_flow.py
       - name: The background job (check, backoff, rotating verification, settings)
-        run: python3 tests/background.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/background.py
       - name: Work at the end of the last copy, and downloads over HTTPS with a test authority
-        run: python3 tests/exit_work.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/exit_work.py
       - name: Garbage collection (reachability from the records, the store lock, copies, concurrency)
-        run: python3 tests/gc.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/gc.py
       - name: A store copied to another path (relative links)
-        run: python3 tests/store_move.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/store_move.py
       - name: A package cannot take the record of another app (PP-01)
-        run: python3 tests/record_names.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/record_names.py
       - name: An update against a footer that lies (PP-03)
-        run: python3 tests/update_footer.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/update_footer.py
       - name: The release table over HTTP (revision, floor, channel, history, the security number)
-        run: python3 tests/release_update.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/release_update.py
       - name: Protected mode (below the floor, no host network and no written programs; the internet back on; the end of the mode)
-        run: python3 tests/protected_mode.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/protected_mode.py
       - name: The folder that --write-rename opens (PP-07)
-        run: python3 tests/open_rename.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/open_rename.py
       - name: The collection keeps what it cannot read the links of (P2-04)
-        run: python3 tests/gc_unreadable.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/gc_unreadable.py
       - name: Help, version and a wrong command write nothing; the personal key is made when a package is signed
-        run: python3 tests/no_side_effects.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/no_side_effects.py
       - name: convert unpacks on disk and counts before it writes
-        run: python3 tests/convert_workdir.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/convert_workdir.py
       - name: A rollback takes only a record of the same app (P2-09)
-        run: python3 tests/rollback_identity.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/rollback_identity.py
       - name: convert cannot be led out of its tree by two links (P2-03)
-        run: python3 tests/convert_links.py
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/convert_links.py
       - name: Install and update stopped by a kill at many moments
-        run: python3 tests/interrupt_8a.py
+        timeout-minutes: 4
+        run: python3 tests/with_timeout.py 150 tests/interrupt_8a.py
       - name: The app harness (list of apps, signing, window readers; no network)
+        timeout-minutes: 3
         run: python3 -m unittest discover -s tests/apps -p 'test_*.py'
       - name: Startup budget (advisory)
+        timeout-minutes: 3
         # Reports the fixed cost of a start against running the program directly. Advisory until a week of
         # numbers from these runners shows how steady they are; then it moves into the gate.
         continue-on-error: true
-        run: python3 tests/startup_budget.py --advisory --runs 30 | tee -a "$GITHUB_STEP_SUMMARY"
+        run: python3 tests/with_timeout.py 120 tests/startup_budget.py --advisory --runs 30 | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Artifacts (static stub for the distro matrix)
+        timeout-minutes: 5
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: panpak-stub-musl
@@ -348,7 +411,9 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
       - name: Cache the Rust build (registry and target)
+        timeout-minutes: 5
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -360,11 +425,13 @@ jobs:
             sway-${{ env.RUST_TOOLCHAIN }}-
             build-test-${{ env.RUST_TOOLCHAIN }}-
       - name: Pinned Rust toolchain
+        timeout-minutes: 3
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
       - name: Zig (pinned PyPI wheel, hash-checked)
+        timeout-minutes: 3
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
           ok=0
@@ -375,14 +442,17 @@ jobs:
           [ "$ok" = 1 ]
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Bubblewrap, Sway and user namespaces
+        timeout-minutes: 8
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap sway
+          ./scripts/apt-install.sh bubblewrap sway
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Release build
+        timeout-minutes: 5
         run: cargo build --locked --release --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
       - name: Wayland security context against Sway (headless)
+        timeout-minutes: 3
         # Sway 1.9 on this image has the protocol. The test prints SKIP and succeeds when Sway cannot start here.
-        run: python3 tests/wayland_sway.py
+        run: python3 tests/with_timeout.py 120 tests/wayland_sway.py
 
   private-bus:
     # The private bus of each app against a real user session: a router, two proxies, the portal of the runner with the fake backend of the lab. The
@@ -393,7 +463,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
       - name: Cache the Rust build (registry and target)
+        timeout-minutes: 5
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -404,11 +476,13 @@ jobs:
           restore-keys: |
             private-bus-${{ env.RUST_TOOLCHAIN }}-
       - name: Pinned Rust toolchain
+        timeout-minutes: 3
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
       - name: Zig (pinned PyPI wheel, hash-checked)
+        timeout-minutes: 3
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
           # A read timeout of the download (files.pythonhosted.org) failed a run of main: three tries, 60 s each, the hash check stays.
@@ -420,11 +494,12 @@ jobs:
           [ "$ok" = 1 ]
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Release build
+        timeout-minutes: 4
         run: cargo build --locked --release --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
       - name: Packages, bubblewrap, and a systemd user manager for the runner user
+        timeout-minutes: 10
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq bubblewrap dbus-daemon dbus-user-session xdg-dbus-proxy xdg-desktop-portal python3-gi gir1.2-glib-2.0 gir1.2-gtk-4.0 sway libglib2.0-bin at-spi2-core
+          ./scripts/apt-install.sh bubblewrap dbus-daemon dbus-user-session xdg-dbus-proxy xdg-desktop-portal python3-gi gir1.2-glib-2.0 gir1.2-gtk-4.0 sway libglib2.0-bin at-spi2-core
           # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile (see the build-test job).
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo loginctl enable-linger "$USER"
@@ -434,28 +509,32 @@ jobs:
           XDG_RUNTIME_DIR="/run/user/$(id -u)" systemctl --user is-system-running || true
           xdg-desktop-portal --version || /usr/libexec/xdg-desktop-portal --version || true
       - name: Private bus, required scenarios (A, B, C, F11, F22, F23)
+        timeout-minutes: 3
         env:
           PANPAK_REQUIRE_LAB: "1"
           PANPAK_LAB_LOG: ${{ runner.temp }}/lab.log
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          python3 tests/privbus.py --only A,B,C,F,L,P,D || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
+          python3 tests/with_timeout.py 120 tests/privbus.py --only A,B,C,F,L,P,D || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
       - name: A real GTK 4 program against the answers of the file chooser (a refused dialog must not crash the app)
-        run: python3 tests/gtk_filechooser.py
+        timeout-minutes: 4
+        run: python3 tests/with_timeout.py 150 tests/gtk_filechooser.py
       - name: Private bus, all scenarios (advisory until they have passed on the runners for a while; the portal here is 1.18, older than the one the identity needs)
+        timeout-minutes: 5
         continue-on-error: true
         env:
           PANPAK_LAB_LOG: ${{ runner.temp }}/lab2.log
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          python3 tests/privbus.py || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
+          python3 tests/with_timeout.py 210 tests/privbus.py || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
       - name: Filtered session bus against a private bus (advisory; the lab portal of 1.18 does not export Settings with the fake backend)
+        timeout-minutes: 3
         continue-on-error: true
         env:
           PANPAK_LAB_LOG: ${{ runner.temp }}/lab3.log
         run: |
           export XDG_RUNTIME_DIR="/run/user/$(id -u)"
-          python3 tests/dbus_filter.py || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
+          python3 tests/with_timeout.py 120 tests/dbus_filter.py || { echo '--- lab log'; cat "$PANPAK_LAB_LOG" 2>/dev/null | tail -60; exit 1; }
 
   clippy:
     needs: monday
@@ -464,7 +543,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
       - name: Cache the Rust build (registry and target)
+        timeout-minutes: 5
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -475,11 +556,13 @@ jobs:
           restore-keys: |
             clippy-${{ env.RUST_TOOLCHAIN }}-
       - name: Pinned Rust toolchain
+        timeout-minutes: 3
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
       - name: Zig (pinned PyPI wheel, hash-checked)
+        timeout-minutes: 3
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
           # A read timeout of the download (files.pythonhosted.org) failed a run of main: three tries, 60 s each, the hash check stays.
@@ -493,6 +576,7 @@ jobs:
           # would hide the system Python that the conformance scripts need.
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Clippy (zero warnings)
+        timeout-minutes: 3
         run: cargo clippy --locked --all-targets --target x86_64-unknown-linux-musl -- -D warnings
 
   fuzz-smoke:
@@ -529,12 +613,15 @@ jobs:
           - fuzz_chooser
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
       - name: Cache the cargo-fuzz binary
+        timeout-minutes: 5
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-fuzz
           key: cargo-fuzz-0.13.2-${{ runner.os }}
       - name: Cache the fuzz build (registry and fuzz/target)
+        timeout-minutes: 5
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -545,12 +632,14 @@ jobs:
           restore-keys: |
             fuzz-${{ env.FUZZ_NIGHTLY }}-
       - name: Nightly toolchain (libfuzzer)
+        timeout-minutes: 3
         run: |
           rustup toolchain install "$FUZZ_NIGHTLY" --profile minimal
           if ! ~/.cargo/bin/cargo-fuzz --version 2>/dev/null | grep -qF 0.13.2; then
             cargo install cargo-fuzz --locked --version 0.13.2
           fi
       - name: Fuzz smoke
+        timeout-minutes: 5
         run: |
           cd fuzz
           cargo "+$FUZZ_NIGHTLY" fuzz run "${{ matrix.target }}" -- -max_total_time="$FUZZ_SECONDS" -print_final_stats=1
@@ -563,17 +652,20 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
         with:
           # The whole history, and the branch itself rather than the merge commit of a pull request: the build date is the date of the last commit
           # that touched the code (scripts/code-epoch.sh), the rule that panpak/build.rs uses.
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Pinned Rust toolchain
+        timeout-minutes: 3
         run: |
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
           rustup target add --toolchain "$RUST_TOOLCHAIN" x86_64-unknown-linux-musl
           echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
       - name: Zig (pinned PyPI wheel, hash-checked)
+        timeout-minutes: 3
         run: |
           python3 -m venv "$RUNNER_TEMP/zig"
           # A read timeout of the download (files.pythonhosted.org) failed a run of main: three tries, 60 s each, the hash check stays.
@@ -587,10 +679,12 @@ jobs:
           # would hide the system Python that the conformance scripts need.
           "$RUNNER_TEMP/zig/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
       - name: Double-build, compare, and regenerate the reference
+        timeout-minutes: 13
         run: |
           ./scripts/repro-build.sh --update | tee /tmp/repro.log
           grep -q IDENTICAL /tmp/repro.log
       - name: The tracked reference is what the script makes
+        timeout-minutes: 3
         run: |
           if ! git diff --exit-code -- REPRODUCIBLE-HASHES.md; then
             echo "::error::REPRODUCIBLE-HASHES.md is not what scripts/repro-build.sh --update makes (the date, the sizes or the hashes). Run it and commit the file, in the commit that follows the code."
@@ -605,29 +699,37 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
       - name: SPDX headers
+        timeout-minutes: 3
         run: ./scripts/check-spdx.sh
       - name: No large tracked files outside the allow-list
+        timeout-minutes: 3
         run: ./scripts/check-large-files.sh
       - name: panpak-core and panpak-stub use only zstd 0.14
+        timeout-minutes: 3
         run: ./scripts/check-zstd-copies.sh
       - name: CI helper scripts
+        timeout-minutes: 3
         run: |
           ./tests/ci-changes-test.sh
           ./tests/check-repro-date-test.sh
           ./tests/ci-gate-test.sh
           python3 -I tests/ci-workflow-test.py
       - name: Cache the cargo-deny binary
+        timeout-minutes: 5
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cargo/bin/cargo-deny
           key: cargo-deny-0.20.2-${{ runner.os }}
       - name: cargo-deny (pinned version)
+        timeout-minutes: 3
         run: |
           if ! ~/.cargo/bin/cargo-deny --version 2>/dev/null | grep -qF 0.20.2; then
             cargo install cargo-deny --locked --version 0.20.2
           fi
       - name: cargo-deny (licenses, bans, sources, advisories)
+        timeout-minutes: 3
         # The RustSec advisory database is fetched fresh on every run, so new
         # advisories are reported even when nothing in the repository changed.
         run: cargo deny check
@@ -647,11 +749,13 @@ jobs:
           - alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f # alpine:3.22
     steps:
       - name: Static stub from the build-test job
+        timeout-minutes: 5
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: panpak-stub-musl
           path: /tmp/panpak-stub-dir
       - name: Static stub in container ${{ matrix.image }}
+        timeout-minutes: 11
         run: |
           chmod +x /tmp/panpak-stub-dir/panpak-stub
           docker run --rm -v /tmp/panpak-stub-dir/panpak-stub:/panpak-stub:ro "${{ matrix.image }}" /panpak-stub --abi-version
@@ -664,9 +768,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
         with:
           fetch-depth: 0
       - name: Signed-off-by on every commit
+        timeout-minutes: 3
         env:
           EVENT: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
@@ -690,9 +796,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
         with:
           fetch-depth: 0
       - name: gitleaks (official release, pinned version and checksum)
+        timeout-minutes: 3
         # The gitleaks program itself, not gitleaks-action (which needs a paid
         # licence for organisation repositories). Config: .gitleaks.toml.
         run: |
@@ -714,7 +822,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
       - name: Every required job ran and succeeded
+        timeout-minutes: 3
         env:
           EVENT: ${{ github.event_name }}
           MONDAY_RUN: ${{ needs.monday.outputs.run }}
@@ -743,7 +853,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
       - name: Reporting channel defined
+        timeout-minutes: 11
         run: |
           if grep -qF 'TO-BE-SET' SECURITY.md || ! grep -qF 'private vulnerability reporting' SECURITY.md; then
             echo "SECURITY.md must describe private vulnerability reporting and contain no placeholder before a release"

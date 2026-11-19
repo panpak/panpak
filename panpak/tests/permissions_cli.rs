@@ -46,6 +46,7 @@ impl Lab {
             .args(args)
             .current_dir(&self.home)
             .env("HOME", &self.home)
+            .env("PANPAK_TEST_LINK_STORE", "1")
             .env("XDG_DATA_HOME", self.home.join(".local/share"))
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env("XDG_RUNTIME_DIR", self.home.join("run"))

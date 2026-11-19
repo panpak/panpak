@@ -22,6 +22,7 @@ fn cli(home: &Path, args: &[&str]) -> Output {
         .args(args)
         .current_dir(home)
         .env("HOME", home)
+        .env("PANPAK_TEST_LINK_STORE", "1")
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env_remove("PANPAK_SECRET_FILE")
         .output()

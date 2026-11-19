@@ -19,6 +19,7 @@ fn cmd_with(bin: &Path, home: &Path, args: &[&str]) -> Command {
     let mut c = Command::new(bin);
     c.args(args)
         .current_dir(home)
+        // No PANPAK_TEST_LINK_STORE here: tests of this file write into the stored panpak in place, which would write into the debug binary itself.
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
