@@ -7,6 +7,14 @@
 `docs/bench-data/`, and `make_charts.py` draws the SVG charts from them. Method, results, limits and
 the commands to run them again are in [docs/BENCHMARKS.md](../docs/BENCHMARKS.md).
 
+## Step 9b: Panpak and Flatpak on Fedora Silverblue
+
+`silverblue/` holds the procedure ([PROCEDURE.md](silverblue/PROCEDURE.md)), the script that is run inside the two virtual machines (`silverblue_bench.py`: bytes that came, space added, time
+to the first frame of the window, at the first start, after a reboot and at the following starts, with the median and the spread of each), the extension of GNOME Shell that reads
+the moment of the first frame, the recipes of GNOME Text Editor 51.0 and qBittorrent 5.3.0 (the versions that Flathub has), and `verify_sbom_build.py`, which makes a real `panpak build`
+of each recipe twice and checks that the SBOM says `coverage = "build"`, names what the recipe pins, and is the same bytes both times. `selftest.py` tests the script with fakes (no
+virtual machine needed).
+
 ## Earlier scripts: environment variables
 
 

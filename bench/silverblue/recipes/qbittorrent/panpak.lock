@@ -1,0 +1,6 @@
+# Written by `panpak init` or `panpak build`; changed only by `panpak build --update-lock`.
+[image]
+name = "debian-13"
+manifest_digest = "sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392"
+snapshot = "20261107T000000Z"
+patches = ["gtk4 gtk4-dmabuf-v5.patch sha256:edec43a4bc077ea6fc355b369dde33fea0051fff2f9fa55ccbad6fd6012e277a"]

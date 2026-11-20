@@ -1,0 +1,39 @@
+# GNOME Text Editor 51.0, the version that Flathub has (org.gnome.TextEditor) on 2026-11-20, for the comparison of step 9b.
+# 51.0 needs GTK 4.19.4 and libadwaita 1.8 (meson.build of the tag), which the image debian-13 does not have: this recipe names the image `debian-14`
+# (see docs/SOURCE-BUILD.md). The source is the tag 51.0 (the commit that the tag points at).
+[app]
+id = "org.gnome.TextEditor"
+name = "Text Editor"
+version = "51.0"
+entry = "bin/gnome-text-editor"
+
+[source]
+git = "https://gitlab.gnome.org/GNOME/gnome-text-editor.git"
+commit = "0eda8f023bc3a60256c1c1f064beced1805a3847"
+
+[build]
+image = "debian-14"
+system = "meson"
+configure = ["--prefix=/usr", "--libdir=lib", "--buildtype=release"]
+packages = [
+  "meson", "ninja-build", "libgtk-4-dev", "libadwaita-1-dev", "libgtksourceview-5-dev", "libspelling-1-dev", "libicu-dev",
+  "libenchant-2-dev", "libeditorconfig-dev", "blueprint-compiler", "itstool", "appstream", "sassc", "libxml2-utils",
+  "gsettings-desktop-schemas", "adwaita-icon-theme", "shared-mime-info", "librsvg2-common",
+]
+memory = "1G"
+jobs = 6
+
+[collect]
+toolkit = "gtk4"
+data = ["share/gtksourceview-5"]
+
+[desktop]
+icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"
+
+[permissions]
+dbus_own = ["org.gnome.TextEditor"]
+
+[license]
+spdx = "GPL-3.0-or-later"
+files = ["COPYING"]
+bundled = "auto"

@@ -48,6 +48,17 @@ pub const KNOWN: &[Known] = &[Known {
     snapshot: "20261107T000000Z",
     // GTK 4.18 crashes at the start on a compositor that offers zwp_linux_dmabuf_v1 version 6 (KWin 6.8): defect 54, docs/PRIVATE-BUS.md.
     patches: &[Patch { package: "gtk4", name: "gtk4-dmabuf-v5.patch", text: include_str!("../../data/patches/gtk4-dmabuf-v5.patch") }],
+},
+Known {
+    name: "debian-14",
+    repo: "library/debian",
+    suite: "forky",
+    // debian:forky-slim for linux/amd64, 2026-11-20 (debian:forky-slim is the testing suite of Debian: this image is for apps that need what trixie does not have yet,
+    // GTK 4.19.4 or later and libadwaita 1.8 or later: GNOME Text Editor 51; the snapshot has GTK 4.24.1, libadwaita 1.10, glibc 2.43 and Qt 6.11).
+    manifest_digest: "sha256:27b88700aef98dd3dd0b32538f8e5d662a88237ec8fbf969254c8d3c93dfdab1",
+    snapshot: "20261119T000000Z",
+    // No patch: the one of debian-13 is for GTK 4.18.6 (defect 54). Whether GTK 4.24 still needs something for a compositor with zwp_linux_dmabuf_v1 version 6 is not tested.
+    patches: &[],
 }];
 
 /// The tools every build image has (the compilers and the things a source package asks for first).
@@ -460,7 +471,8 @@ mod tests {
     #[test]
     fn known_images_and_keys() {
         assert!(known("debian-13").is_ok());
-        assert!(known("arch").unwrap_err().to_string().contains("debian-13"));
+        assert!(known("debian-14").is_ok());
+        assert!(known("arch").unwrap_err().to_string().contains("debian-13, debian-14"));
         let l = Lock::current_for("debian-13").unwrap();
         l.check().unwrap();
         let a = image_key(&l, &["libgtk-4-dev".to_string()]);

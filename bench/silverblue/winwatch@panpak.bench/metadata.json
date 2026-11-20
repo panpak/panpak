@@ -1,0 +1,7 @@
+{
+  "uuid": "winwatch@panpak.bench",
+  "name": "Panpak bench window watch",
+  "description": "Writes a line to ~/.cache/panpak-bench/windows.jsonl when a window is created, when its first frame is drawn, and when it is closed. A measurement tool for the comparison of Panpak and Flatpak; it changes nothing on the screen.",
+  "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
+  "version": 1
+}
