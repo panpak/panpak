@@ -2034,7 +2034,13 @@ fn real_main() -> Result<()> {
             ErrorCode::E1004,
             "key differs from the pinned key: unauthorized update, reinstall"
         );
+        // `[host]`: the display and the Landlock ABI can change from one session to the next, so they are looked at again (nothing else is: it was looked at when
+        // the app was installed). An app installed with --force-host is not refused for them.
+        if !pinned.forced_host {
+            start_host_check(&man)?;
+        }
     } else {
+        start_host_check(&man)?;
         eprintln!("panpak: {} {} — key fingerprint: {fp}", man.app.id, man.app.version);
     }
     stage("package checked");
@@ -2604,6 +2610,15 @@ fn wayland_context(ctx: &ViewStart) -> Option<WaylandContext> {
 /// that a full path is covered too), `BROWSER`, and a private `mimeapps.list` for GIO. Needs the
 /// real `xdg-open` in the `PATH` of this process and a plain runtime folder; otherwise nothing is set
 /// up and the view has no `xdg-open` that works. Failures only turn the channel off.
+/// The part of `[host]` that the start looks at again (PANPAK-FORMAT.md §3.1.11): the display server of the session and the Landlock ABI. Nothing is read when the
+/// package names neither.
+fn start_host_check(man: &panpak_core::Manifest) -> Result<()> {
+    if man.host.as_ref().is_some_and(|h| h.display.is_some() || h.landlock.is_some()) {
+        panpak_core::host::check_or_refuse(man, &panpak_core::host::Facts::detect(true), true)?;
+    }
+    Ok(())
+}
+
 fn open_channel(ctx: &ViewStart, cmd: &mut Command, stub: &Path, runtime: Option<&str>) -> (Vec<view::Mount>, Option<opener::Server>) {
     let none = (Vec::new(), None);
     let (Some(rt), Some(path)) = (runtime, std::env::var_os("PATH")) else { return none };

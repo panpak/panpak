@@ -262,6 +262,54 @@
   ],
   "ok": false
  },
+ "invalid-host-arch-unknown.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-host-bus-unknown.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-host-critical-missing.panpak": {
+  "err": [
+   "critical"
+  ],
+  "ok": false
+ },
+ "invalid-host-display-repeat.panpak": {
+  "err": [
+   "host.display"
+  ],
+  "ok": false
+ },
+ "invalid-host-display-unknown.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-host-kernel-form.panpak": {
+  "err": [
+   "host.kernel"
+  ],
+  "ok": false
+ },
+ "invalid-host-landlock-range.panpak": {
+  "err": [
+   "host.landlock"
+  ],
+  "ok": false
+ },
+ "invalid-host-unknown-key.panpak": {
+  "err": [
+   "host"
+  ],
+  "ok": false
+ },
  "invalid-id-digit-segment.panpak": {
   "code": "PANPAK-E0006",
   "err": [
@@ -760,6 +808,10 @@
   "ok": true
  },
  "valid-format-critical-known.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-host.panpak": {
   "err": [],
   "ok": true
  },

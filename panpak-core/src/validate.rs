@@ -67,7 +67,7 @@ fn shown(s: &str) -> String {
     format!("{t:?}")
 }
 
-fn bad_field(field: &str, why: &str) -> anyhow::Error {
+pub(crate) fn bad_field(field: &str, why: &str) -> anyhow::Error {
     coded(ErrorCode::E0007, format!("invalid manifest field {field}: {why}"))
 }
 
@@ -352,13 +352,10 @@ pub fn validate_manifest(man: &Manifest) -> Result<()> {
             display_text("provenance.image_deps.version", &d.version, 128)?;
         }
     }
+    if let Some(h) = &man.host {
+        crate::host::validate(h)?;
+    }
     if let Some(a) = &man.abi {
-        if let Some(g) = &a.glibc_min {
-            let ok = g.len() <= 16 && g.split('.').count() >= 2 && g.split('.').all(|p| !p.is_empty() && p.len() <= 4 && p.bytes().all(|b| b.is_ascii_digit()));
-            if !ok {
-                return Err(bad_field("abi.glibc_min", "must be a version like 2.39"));
-            }
-        }
         for (field, list) in [("abi.needs", &a.needs), ("abi.prefer_host", &a.prefer_host)] {
             for n in list.iter().flatten() {
                 soname(field, n)?;
@@ -498,7 +495,7 @@ mod tests {
     fn manifest_rejects_bad_library_names_and_urls() {
         let abi = |n: &str| -> Manifest {
             let mut m = man("");
-            m.abi = Some(crate::Abi { glibc_min: None, needs: Some(vec![n.into()]), prefer_host: None, modules: None });
+            m.abi = Some(crate::Abi { needs: Some(vec![n.into()]), prefer_host: None, modules: None });
             m
         };
         assert!(validate_manifest(&abi("libc.so.6")).is_ok());

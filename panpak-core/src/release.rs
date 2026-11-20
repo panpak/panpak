@@ -95,6 +95,8 @@ pub struct Installed {
 pub struct Allow {
     pub downgrade: bool,
     pub switch_channel: bool,
+    /// `--force-host`: install or update although the system does not meet what `[host]` needs.
+    pub force_host: bool,
 }
 
 /// What the revision of a candidate says about it, compared with the installed release.
@@ -435,7 +437,7 @@ mod tests {
     fn nothing_below_the_floor_enters_not_even_with_allow_downgrade() {
         let mut i = installed(8, None);
         i.floor = 6;
-        let allow = Allow { downgrade: true, switch_channel: false };
+        let allow = Allow { downgrade: true, ..Allow::default() };
         assert_eq!(code(check_entering(&i, &rel(5, "stable"), &h(5), allow).unwrap_err()), ErrorCode::E4003);
         assert!(check_entering(&i, &rel(6, "stable"), &h(6), allow).is_ok());
         // A rollback is the same rule: the previous version below the floor is refused, one at the floor is allowed.

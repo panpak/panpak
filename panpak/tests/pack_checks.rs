@@ -95,8 +95,8 @@ impl Lab {
     }
 }
 
-fn glibc_min_of(manifest: &str) -> Option<String> {
-    manifest.lines().find_map(|l| l.strip_prefix("glibc_min = ").map(|v| v.trim_matches('"').to_string()))
+fn host_glibc_of(manifest: &str) -> Option<String> {
+    manifest.lines().find_map(|l| l.strip_prefix("glibc = ").map(|v| v.trim_matches('"').to_string()))
 }
 
 /// A small real glibc program of this system, as the bytes of a tree file.
@@ -125,7 +125,7 @@ fn pack_writes_the_glibc_the_files_need_and_install_checks_it() {
     let want = expect.iter().map(u32::to_string).collect::<Vec<_>>().join(".");
     let (o, pkg) = l.pack("withelf", &[("bin/app", elf.clone())], "");
     assert!(o.status.success(), "{}", text(&o));
-    assert_eq!(glibc_min_of(&l.manifest(&pkg)).as_deref(), Some(want.as_str()));
+    assert_eq!(host_glibc_of(&l.manifest(&pkg)).as_deref(), Some(want.as_str()));
     // This system has at least that glibc (the program runs here), so the install is not refused for it.
     let o = cli(&l.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]);
     assert!(!text(&o).contains("PANPAK-E2005"), "{}", text(&o));
@@ -133,12 +133,12 @@ fn pack_writes_the_glibc_the_files_need_and_install_checks_it() {
     // A script needs no glibc: no field.
     let (o, pkg) = l.pack("script", &[("bin/app", b"#!/bin/sh\necho hi\n".to_vec())], "");
     assert!(o.status.success(), "{}", text(&o));
-    assert_eq!(glibc_min_of(&l.manifest(&pkg)), None);
+    assert_eq!(host_glibc_of(&l.manifest(&pkg)), None);
 
     // An author can raise the floor, and install refuses on this system, naming both versions.
-    let (o, pkg) = l.pack("raised", &[("bin/app", b"#!/bin/sh\necho hi\n".to_vec())], "[abi]\nglibc_min = \"99.1\"\n");
+    let (o, pkg) = l.pack("raised", &[("bin/app", b"#!/bin/sh\necho hi\n".to_vec())], "[host]\nglibc = \"99.1\"\n");
     assert!(o.status.success(), "{}", text(&o));
-    assert_eq!(glibc_min_of(&l.manifest(&pkg)).as_deref(), Some("99.1"));
+    assert_eq!(host_glibc_of(&l.manifest(&pkg)).as_deref(), Some("99.1"));
     let o = cli(&l.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]);
     let t = text(&o);
     assert!(!o.status.success() && t.contains("PANPAK-E2005") && t.contains("needs glibc 99.1 or newer") && t.contains("this system has glibc"), "{t}");
@@ -146,12 +146,12 @@ fn pack_writes_the_glibc_the_files_need_and_install_checks_it() {
     assert!(!l.home.join(".local/share/panpak/apps/org.example.raised").exists());
 
     // A floor lower than what the files need is not kept: the file wins.
-    let (o, pkg) = l.pack("lowered", &[("bin/app", elf)], "[abi]\nglibc_min = \"2.1\"\n");
+    let (o, pkg) = l.pack("lowered", &[("bin/app", elf)], "[host]\nglibc = \"2.1\"\n");
     assert!(o.status.success(), "{}", text(&o));
-    assert_eq!(glibc_min_of(&l.manifest(&pkg)).as_deref(), Some(want.as_str()));
+    assert_eq!(host_glibc_of(&l.manifest(&pkg)).as_deref(), Some(want.as_str()));
 
     // A badly written floor is refused by pack.
-    let (o, _) = l.pack("bad", &[("bin/app", b"#!/bin/sh\n".to_vec())], "[abi]\nglibc_min = \"two\"\n");
+    let (o, _) = l.pack("bad", &[("bin/app", b"#!/bin/sh\n".to_vec())], "[host]\nglibc = \"two\"\n");
     assert!(!o.status.success());
 }
 

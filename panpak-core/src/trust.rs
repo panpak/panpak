@@ -227,6 +227,9 @@ pub struct State {
     pub seen_revision: u64,
     /// Set when a change of channel took a release of the same revision with other bytes (an error of the author), for `doctor`.
     pub switch_note: Option<String>,
+    /// Set when the app was installed with `--force-host` although the system lacked what `[host]` needs: `doctor` keeps saying it, updates keep the choice, and the
+    /// start does not refuse the display or the Landlock ABI that the package named.
+    pub forced_host: bool,
     /// Reserved: a version the person holds back.
     pub hold: Option<String>,
     /// Reserved: the confirmation of the domain.
@@ -255,6 +258,7 @@ impl State {
                 "source" if !v.is_empty() => s.source = v.to_string(),
                 "floor" => s.floor = v.parse().unwrap_or(0),
                 "seen_revision" => s.seen_revision = v.parse().unwrap_or(0),
+                "forced_host" => s.forced_host = v == "1",
                 "switch_note" if !v.is_empty() => s.switch_note = Some(v.to_string()),
                 "hold" if !v.is_empty() => s.hold = Some(v.to_string()),
                 "confirmed" if !v.is_empty() => s.confirmed = Some(v.to_string()),
@@ -275,6 +279,9 @@ impl State {
         }
         out.push_str(&format!("source={}\n", self.source));
         out.push_str(&format!("floor={}\nseen_revision={}\n", self.floor, self.seen_revision));
+        if self.forced_host {
+            out.push_str("forced_host=1\n");
+        }
         for (k, v) in [("switch_note", &self.switch_note), ("hold", &self.hold), ("confirmed", &self.confirmed)] {
             if let Some(v) = v {
                 out.push_str(&format!("{k}={v}\n"));

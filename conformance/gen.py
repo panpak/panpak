@@ -376,6 +376,21 @@ def main():
     put("valid-trust-domain.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(trust_extra='domain = "example.org"\n'), blobs=std_index()[2]), True)
     put("valid-trust-chain.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(trust_extra=step() + step(by="recovery")), blobs=std_index()[2]), True)
 
+    # ---- the [host] table (section 3.1.11) ----
+    def bad_host(name, man, err):
+        put(name, assemble(STUB, encode_index(*std_index()[:2]), man, blobs=std_index()[2]), False, [err])
+
+    full_host = '[host]\narch = "x86_64"\nglibc = "2.28"\nkernel = "5.15"\nlandlock = 3\ndisplay = ["x11", "wayland"]\nportals = ["document"]\nbus = "private"\n'
+    put("valid-host.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=full_host), blobs=std_index()[2]), True)
+    bad_host("invalid-host-display-unknown.panpak", manifest(extra='[host]\ndisplay = ["mir"]\n'), "update panpak")
+    bad_host("invalid-host-arch-unknown.panpak", manifest(extra='[host]\narch = "riscv64"\n'), "update panpak")
+    bad_host("invalid-host-bus-unknown.panpak", manifest(extra='[host]\nbus = "shared"\n'), "update panpak")
+    bad_host("invalid-host-kernel-form.panpak", manifest(extra='[host]\nkernel = "five"\n'), "host.kernel")
+    bad_host("invalid-host-landlock-range.panpak", manifest(extra='[host]\nlandlock = 12\n'), "host.landlock")
+    bad_host("invalid-host-display-repeat.panpak", manifest(extra='[host]\ndisplay = ["x11", "x11"]\n'), "host.display")
+    bad_host("invalid-host-unknown-key.panpak", manifest(extra='[host]\nfuture = 1\n'), "host")
+    bad_host("invalid-host-critical-missing.panpak", manifest(extra='[host]\nkernel = "5.15"\n', fmt=fmt(critical='["release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash", "trust.recovery", "trust.root", "trust.threshold"]')), "critical")
+
     # manifest_len that does not add up (footer man_len +1)
     good = bytearray(open(os.path.join(FIX, "valid-min.panpak"), "rb").read())
     ml = struct.unpack_from("<Q", good, len(good) - 40)[0]

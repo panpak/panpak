@@ -35,7 +35,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the key the author published, or the key of the file; --yes alone does not)\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the key the author published, or the key of the file; --yes alone does not)\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -285,7 +285,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
         ErrorCode::E2007,
         "the files of the installed version are missing from the store: run `panpak repair {app_id}` first"
     );
-    check_glibc(&man)?;
+    check_host(&man, allow.force_host || panpak_core::trust::read(&appdir).is_some_and(|t| t.forced_host))?;
     // This version may already be staged (a background check, or an update that waited for a copy of the app to end): then nothing is downloaded.
     // The same version is the same record, byte for byte (two versions can have one root: the root is the hash of the files, not of the manifest).
     let root_hex_check = panpak_core::hex(&ft.root);
@@ -297,7 +297,6 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
     if already_staged {
         println!("version {} of {app_id} is already staged", man.app.version);
     } else {
-        check_glibc(&man)?;
         // New permissions need a yes before anything is downloaded (current stays on a no). A staging for later (`--stage`: the background job, with no
         // one to ask) downloads and prepares all the same and leaves the question to whoever applies it.
         print_isolation(&man);
@@ -1604,7 +1603,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
                     a.modules = report_hash;
                 }
                 None => {
-                    man.abi = Some(panpak_core::Abi { glibc_min: None, needs: (!needs.is_empty()).then_some(needs), prefer_host: None, modules: report_hash })
+                    man.abi = Some(panpak_core::Abi { needs: (!needs.is_empty()).then_some(needs), prefer_host: None, modules: report_hash })
                 }
             }
         }
@@ -1632,9 +1631,11 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
         eprintln!("panpak: WARNING: {note}");
     }
 
-    // glibc_min: the highest GLIBC_x.y that the ELF files of the tree ask of the system glibc. A tree that carries its own glibc
-    // (world B) runs on its own, so it has none from the files. It is computed from the files.
+    // [host]: the architecture of the machine that packs (the one of the runtime in the package), and the highest GLIBC_x.y that the ELF files of the tree ask of
+    // the system glibc. A tree that carries its own glibc (world B) runs on its own, so it has none from the files. The rest of the table is the author's.
     {
+        let mut host = man.host.take().unwrap_or_default();
+        ensure!(host.arch.is_none(), "[host].arch is written by `panpak pack`: remove it from panpak.toml");
         let bundles_libc = payload.iter().any(|p| p.entry.path.file_name().is_some_and(|n| n == "libc.so.6"));
         let mut best: Option<Vec<u32>> = None;
         if !bundles_libc {
@@ -1649,18 +1650,14 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
             }
         }
         // An author may declare a higher floor than the files show (a feature that needs a newer glibc at run time), never a lower one.
-        let declared = man.abi.as_ref().and_then(|a| a.glibc_min.as_deref()).map(|d| glibc_numbers(d).with_context(|| format!("abi.glibc_min {d:?} is not a version like 2.39"))).transpose()?;
+        let declared = host.glibc.as_deref().map(|d| glibc_numbers(d).with_context(|| format!("host.glibc {d:?} is not a version like 2.39"))).transpose()?;
         let floor = match (best, declared) {
             (Some(a), Some(b)) => Some(a.max(b)),
             (a, b) => a.or(b),
         };
-        if let Some(v) = floor {
-            let text = v.iter().map(u32::to_string).collect::<Vec<_>>().join(".");
-            match &mut man.abi {
-                Some(a) => a.glibc_min = Some(text),
-                None => man.abi = Some(panpak_core::Abi { glibc_min: Some(text), needs: None, prefer_host: None, modules: None }),
-            }
-        }
+        host.glibc = floor.map(|v| v.iter().map(u32::to_string).collect::<Vec<_>>().join("."));
+        host.arch = Some(std::env::consts::ARCH.to_string());
+        man.host = Some(host);
     }
 
     // The manifest is complete here (the libraries found in the files are in `abi.needs`): check it with
@@ -3320,9 +3317,9 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         "package requires runtime >= {need}, installed {best_abi}: update with `panpak install-runtime`"
     );
 
-    check_glibc(&man)?;
-
+    // What the package needs of the system (`[host]`): refused here, with what is needed, what is there and what to do, unless `--force-host`.
     let appdir = store.join("apps").join(&man.app.id);
+    let host_forced = check_host(&man, allow.force_host || panpak_core::trust::read(&appdir).is_some_and(|t| t.forced_host))?;
     fs::create_dir_all(&appdir)?;
     let revision_before = installed_manifest(&appdir).map(|o| o.release.as_ref().map_or(0, |r| r.revision));
     // Whether the app was in protected mode before this command saw the floor of the package: the end of the mode is told only then.
@@ -3410,9 +3407,13 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
             st.source = panpak_core::trust::SOURCE_AUTHOR.to_string();
             st.floor = st.floor.max(rel.floor);
             st.seen_revision = st.seen_revision.max(rel.revision);
+            st.forced_host = host_forced;
         })?;
     } else {
-        panpak_core::trust::modify(&appdir, |st| st.switch_note = switch_note.clone())?;
+        panpak_core::trust::modify(&appdir, |st| {
+            st.switch_note = switch_note.clone();
+            st.forced_host = host_forced;
+        })?;
     }
     panpak_core::failpoint!("install.pin_written");
     write_xdg_pin(&appdir, &xdg_found)?;
@@ -3590,9 +3591,21 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         }
     }
     // Host glibc.
-    match host_glibc() {
-        Some((kind, ver)) => line(true, &format!("libc host: {kind} {ver}")),
+    match panpak_core::host::glibc_of_system() {
+        Some(ver) => line(true, &format!("libc host: glibc {ver}")),
         None => line(false, "host libc not detected (missing ldd?); host resolution may fail"),
+    }
+    // What each installed app needs of the system (`[host]`): the ones that cannot run here, and whether the person installed them anyway.
+    let facts = panpak_core::host::Facts::detect(false);
+    for id in protected::installed_ids() {
+        let Ok(appdir) = store.join("apps").join(&id).canonicalize().or_else(|_| Ok::<_, std::io::Error>(store.join("apps").join(&id))) else { continue };
+        let Some(m) = installed_manifest(&appdir) else { continue };
+        let Some(h) = &m.host else { continue };
+        let list = panpak_core::host::unmet(h, &facts, false);
+        let forced = panpak_core::trust::read(&appdir).is_some_and(|t| t.forced_host);
+        for u in &list {
+            line(false, &format!("{} ({id}): {}{}", m.app.name, u.line(), if forced { " (installed with --force-host)" } else { "" }));
+        }
     }
     // Installed runtime.
     match best_runtime(&store) {
@@ -3646,6 +3659,16 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         match checked {
             Ok((ft, man, entries, report)) => {
                 line(true, &format!("verified package: {} {} (root {})", man.app.id, man.app.version, &panpak_core::hex(&ft.root)[..16]));
+                // What the package needs of the system (`[host]`): each requirement that this system does not meet, with what is there and what to do.
+                if let Some(h) = &man.host {
+                    let list = panpak_core::host::unmet(h, &panpak_core::host::Facts::detect(false), false);
+                    if list.is_empty() {
+                        line(true, "host: this system has what the package needs");
+                    }
+                    for u in &list {
+                        line(false, &format!("host: {}", u.line()));
+                    }
+                }
                 if let Ok(locks) = panpak_core::stalelocks::find_for_app(&man.app.id) {
                     if !locks.is_empty() {
                         println!("NOTE {} stale lock file(s) of {} (left by a copy that was killed; the app may refuse to start): run `panpak data unlock {}`", locks.len(), man.app.id, man.app.id);
@@ -3857,36 +3880,22 @@ fn glibc_numbers(text: &str) -> Option<Vec<u32>> {
     nums.filter(|n| n.len() >= 2)
 }
 
-/// Refuses a package whose `abi.glibc_min` is higher than the glibc of this system, with the two versions in the message.
-/// A system whose glibc cannot be read (musl, no `ldd`) is not refused here: the loader says what is wrong at the first start.
-fn check_glibc(man: &panpak_core::Manifest) -> Result<()> {
-    let Some(min) = man.abi.as_ref().and_then(|a| a.glibc_min.as_deref()) else { return Ok(()) };
-    let Some(need) = glibc_numbers(min) else { return Ok(()) };
-    if let Some((kind, ver)) = host_glibc() {
-        if kind == "glibc" {
-            if let Some(have) = glibc_numbers(&ver) {
-                ensure_code!(
-                    have >= need,
-                    ErrorCode::E2005,
-                    "{} {} needs glibc {min} or newer (it uses symbols of that version); this system has glibc {ver}. It cannot run here: install it on a newer distribution",
-                    man.app.name,
-                    man.app.version
-                );
-            }
+/// What `[host]` of the package needs and this system lacks. Refuses (with every missing item, what is there and what to do) unless `force` (`--force-host`, or an
+/// app that was installed that way): then it only says so. Returns whether the system lacks something (so that `install` records the forced install).
+fn check_host(man: &panpak_core::Manifest, force: bool) -> Result<bool> {
+    let Some(h) = &man.host else { return Ok(false) };
+    let list = panpak_core::host::unmet(h, &panpak_core::host::Facts::detect(false), false);
+    if list.is_empty() {
+        return Ok(false);
+    }
+    if force {
+        eprintln!("panpak: WARNING: {} {} cannot run on this system (installed anyway because of --force-host):", man.app.name, man.app.version);
+        for u in &list {
+            eprintln!("  - {}", u.line());
         }
+        return Ok(true);
     }
-    Ok(())
-}
-
-fn host_glibc() -> Option<(String, String)> {
-    let out = std::process::Command::new("ldd").arg("--version").output().ok()?;
-    let first = String::from_utf8_lossy(&out.stdout).lines().next()?.to_string();
-    // "ldd (Ubuntu GLIBC 2.39-...) ..." | "ldd (GNU libc) 2.39" | "musl libc (x86_64) ..."
-    if first.contains("musl") {
-        return Some(("musl".into(), first));
-    }
-    let ver = first.split_whitespace().last()?.to_string();
-    Some(("glibc".into(), ver))
+    Err(panpak_core::host::refusal(&format!("{} {}", man.app.name, man.app.version), &list))
 }
 
 /// Generic code for errors that carry no specific one, by subcommand.
@@ -4335,6 +4344,7 @@ fn real_main() -> Result<()> {
             let mut yes = false;
             let mut accept_new = false;
             let mut allow = false;
+            let mut force_host = false;
             let mut switch_channel = false;
             let mut stage = false;
             let mut insecure = false;
@@ -4353,6 +4363,10 @@ fn real_main() -> Result<()> {
                     }
                     "--allow-downgrade" => {
                         allow = true;
+                        i += 1;
+                    }
+                    "--force-host" => {
+                        force_host = true;
                         i += 1;
                     }
                     "--switch-channel" => {
@@ -4379,7 +4393,7 @@ fn real_main() -> Result<()> {
                     }
                 }
             }
-            cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, yes, accept_new, panpak_core::release::Allow { downgrade: allow, switch_channel }, insecure, timeout, stage)?;
+            cmd_update(id.ok_or_else(|| coded(ErrorCode::E5002, "update <app-id>"))?, yes, accept_new, panpak_core::release::Allow { downgrade: allow, switch_channel, force_host }, insecure, timeout, stage)?;
             Ok(())
         }
         Some("background") => {
@@ -4526,6 +4540,7 @@ fn real_main() -> Result<()> {
             let mut yes = false;
             let mut accept_new = false;
             let mut allow_down = false;
+            let mut force_host = false;
             let mut switch_channel = false;
             let mut expect_key: Option<&str> = None;
             let mut trust_first = false;
@@ -4558,6 +4573,10 @@ fn real_main() -> Result<()> {
                         allow_down = true;
                         i += 1;
                     }
+                    "--force-host" => {
+                        force_host = true;
+                        i += 1;
+                    }
                     "--switch-channel" => {
                         switch_channel = true;
                         i += 1;
@@ -4574,7 +4593,7 @@ fn real_main() -> Result<()> {
                 yes,
                 accept_new,
                 runtime.map(Path::new),
-                panpak_core::release::Allow { downgrade: allow_down, switch_channel },
+                panpak_core::release::Allow { downgrade: allow_down, switch_channel, force_host },
                 FirstKey { expect: expect_key, trust_first },
             )?;
             Ok(())
@@ -4631,12 +4650,16 @@ mod tests {
     #[test]
     fn a_package_that_needs_a_newer_glibc_is_refused_with_both_versions() {
         let man = |min: &str| -> panpak_core::Manifest {
-            toml::from_str(&format!("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n[abi]\nglibc_min = \"{min}\"\n")).unwrap()
+            toml::from_str(&format!("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n[host]\nglibc = \"{min}\"\n")).unwrap()
         };
-        assert!(check_glibc(&man("99.1")).is_err_and(|e| e.to_string().contains("needs glibc 99.1 or newer")));
-        assert!(check_glibc(&man("2.1")).is_ok());
+        if panpak_core::host::glibc_of_system().is_some() {
+            assert!(check_host(&man("99.1"), false).is_err_and(|e| e.to_string().contains("needs glibc 99.1 or newer")));
+            // `--force-host` goes on, and says that the system lacks something.
+            assert!(check_host(&man("99.1"), true).unwrap());
+        }
+        assert!(!check_host(&man("2.1"), false).unwrap());
         let none: panpak_core::Manifest = toml::from_str("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n").unwrap();
-        assert!(check_glibc(&none).is_ok());
+        assert!(!check_host(&none, false).unwrap());
     }
 
     #[test]

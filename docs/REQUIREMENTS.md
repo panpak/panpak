@@ -23,7 +23,7 @@ The tests and the distributions behind these statements are in [COMPATIBILITY.md
 
   The table with the effect of each version is in [../THREAT-MODEL.md](../THREAT-MODEL.md).
 - **glibc:** an app uses the glibc of the system unless its package carries its own. A package built from source with the current build
-  image (`debian-13`) needs glibc 2.39 or later: `pack` writes the highest `GLIBC_x.y` the files ask for into the manifest as `glibc_min`, and
+  image (`debian-13`) needs glibc 2.39 or later: `pack` writes the highest `GLIBC_x.y` the files ask for into the manifest as `[host].glibc`, and
   `install` and `update` refuse a package that needs a newer glibc than the system has, with both versions. An AppImage converted
   with `panpak convert` needs what the AppImage was built against (Cura needs 2.38 in the compatibility tests). Hosts with another libc
   (Alpine) run only packages that carry glibc and its loader, or static programs.

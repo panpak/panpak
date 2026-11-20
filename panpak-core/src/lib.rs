@@ -7,6 +7,7 @@ pub mod dbus;
 pub mod desktop;
 pub mod frames;
 mod elfsym;
+pub mod host;
 pub mod modules;
 pub mod chooserhost;
 pub mod docshare;
@@ -256,6 +257,8 @@ pub struct Manifest {
     pub origin: Option<Origin>,
     /// Who may sign the app and how the root changes (PANPAK-FORMAT.md §3.2). Written by `panpak pack`; a package without it is refused.
     pub trust: Option<trust::Trust>,
+    /// What the package needs of the system (PANPAK-FORMAT.md §3.1.11). Written by `panpak pack`.
+    pub host: Option<host::Host>,
     pub update: Option<Update>,
     /// Environment variables that point the app at files of its own tree (PANPAK-FORMAT.md §3.1.6): values relative to
     /// `${PANPAK_ROOT}`, from a fixed list of names, checked by `pack` and by `install`.
@@ -354,7 +357,6 @@ pub struct App {
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Abi {
-    pub glibc_min: Option<String>,
     pub needs: Option<Vec<String>>,
     pub prefer_host: Option<Vec<String>>,
     /// The BLAKE3 hash (64 hex characters) of `.panpak/modules`, the report that `pack` makes of which libraries the programs need and which only modules
@@ -594,6 +596,7 @@ pub const SECTIONS: &[(&str, bool)] = &[
     ("runtime", true),
     ("origin", false),
     ("trust", true),
+    ("host", true),
     ("update", false),
     ("env", true),
     ("provenance", false),
@@ -601,7 +604,7 @@ pub const SECTIONS: &[(&str, bool)] = &[
 pub(crate) const TRUST_PATHS: &[&str] = &["root", "threshold", "recovery", "domain", "chain"];
 const RELEASE_KEYS: &[&str] = &["revision", "floor", "security", "channel", "history"];
 const FORMAT_KEYS: &[&str] = &["min_panpak", "critical", "compression", "chunking", "packed_by"];
-const ABI_KEYS: &[&str] = &["glibc_min", "needs", "prefer_host", "modules"];
+const ABI_KEYS: &[&str] = &["needs", "prefer_host", "modules"];
 const PERM_KEYS: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"];
 const LAUNCH_KEYS: &[&str] = &["args", "env"];
 const RUNTIME_KEYS: &[&str] = &["min_runtime", "stub_hash"];
@@ -671,6 +674,7 @@ fn known_critical(path: &str) -> bool {
         Some(("abi", k)) => ABI_KEYS.contains(&k),
         Some(("release", k)) => RELEASE_KEYS.contains(&k),
         Some(("trust", k)) => TRUST_PATHS.contains(&k),
+        Some(("host", k)) => host::KEYS.contains(&k),
         Some(("runtime", k)) => RUNTIME_KEYS.contains(&k),
         Some(_) => false,
     }
@@ -782,6 +786,13 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
                 if !trust::STEP_KEYS.contains(&k) {
                     out.push(("[[trust.chain]]".to_string(), k.to_string()));
                 }
+            }
+        }
+    }
+    if let Some(v) = get("host") {
+        for k in keys(v, "[host]")? {
+            if !host::KEYS.contains(&k) {
+                out.push(("[host]".to_string(), k.to_string()));
             }
         }
     }
@@ -2297,6 +2308,7 @@ mod tests {
             app: App { id: "a.b".into(), name: "N".into(), version: "1".into(), entry: "x".into() },
             format: None,
             release: None,
+            host: None,
             abi: None,
             permissions: None,
             launch: None,

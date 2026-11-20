@@ -327,9 +327,10 @@ KNOWN_CRITICAL = {
     "permissions": {"x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs",
                     "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"},
     "launch": {"args", "env"},
-    "abi": {"glibc_min", "needs", "prefer_host", "modules"},
+    "abi": {"needs", "prefer_host", "modules"},
     "runtime": {"min_runtime", "stub_hash"},
     "trust": {"root", "threshold", "recovery", "domain", "chain"},
+    "host": {"arch", "glibc", "kernel", "landlock", "display", "portals", "bus"},
 }
 
 
@@ -340,6 +341,39 @@ def domain_fits_id(domain, app_id):
         return False
     ident = app_id.split(".")
     return len(ident) >= len(labels) and list(reversed(labels)) == ident[: len(labels)]
+
+
+HOST_ARCHS = {"x86_64", "aarch64"}
+HOST_DISPLAYS = {"x11", "wayland"}
+HOST_PORTALS = {"document"}
+HOST_BUSES = {"none", "private"}
+
+
+def check_host(man):
+    """The `[host]` table (section 3.1.11): the forms, and a name that this reader does not know is "update panpak"."""
+    h = man.get("host")
+    if h is None:
+        return
+    unknown = set(h) - KNOWN_CRITICAL["host"]
+    if unknown:
+        raise Fail(f"unknown keys in [host]: {sorted(unknown)}")
+    for k in ("glibc", "kernel"):
+        if k in h and not (isinstance(h[k], str) and re.fullmatch(r"[0-9]{1,4}(\.[0-9]{1,4}){1,3}", h[k]) and len(h[k]) <= 24):
+            raise Fail(f"invalid manifest field host.{k}")
+    if "landlock" in h and not (isinstance(h["landlock"], int) and not isinstance(h["landlock"], bool) and 1 <= h["landlock"] <= 9):
+        raise Fail("invalid manifest field host.landlock")
+    for k, known in (("display", HOST_DISPLAYS), ("portals", HOST_PORTALS)):
+        if k in h:
+            v = h[k]
+            if not (isinstance(v, list) and 1 <= len(v) <= 8 and all(isinstance(x, str) for x in v) and len(set(v)) == len(v)):
+                raise Fail(f"invalid manifest field host.{k}")
+            for x in v:
+                if x not in known:
+                    raise Fail(f"[host] {k} {x!r} is not known to this reader: update panpak")
+    if "arch" in h and h["arch"] not in HOST_ARCHS:
+        raise Fail(f"[host] arch {h['arch']!r} is not known to this reader: update panpak")
+    if "bus" in h and h["bus"] not in HOST_BUSES:
+        raise Fail(f"[host] bus {h['bus']!r} is not known to this reader: update panpak")
 
 
 def check_trust(man):
@@ -464,6 +498,7 @@ def check_fields(man):
     mods = man.get("abi", {}).get("modules")
     if mods is not None and not (isinstance(mods, str) and len(mods) == 64 and all(c in "0123456789abcdef" for c in mods)):
         raise Fail("invalid manifest field abi.modules")
+    check_host(man)
     check_home_paths(man)
     check_xdg_dirs(man)
     check_desktop(man)
