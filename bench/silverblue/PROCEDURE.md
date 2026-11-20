@@ -27,7 +27,7 @@ one measurement is not a result.
    `gnome-extensions enable winwatch@panpak.bench`, then log out and in once more. `cat ~/.cache/panpak-bench/windows.jsonl` has a line with `"event": "enabled"`.
    If GNOME Shell refuses it because of its version, say which version it is (`gnome-shell --version`): the list in `metadata.json` is widened and nothing else changes.
 6. The script: `cp silverblue_bench.py ~/` and `chmod +x ~/silverblue_bench.py`. `./silverblue_bench.py check --system flatpak|panpak` must print `ok` on every line.
-7. Write down: `rpm-ostree status`, `flatpak --version`, `gnome-shell --version`, `uname -r`, `lscpu`, `free -m`, the date.
+7. Write down: `rpm-ostree status`, `ldd --version` (glibc, see section 2), `flatpak --version`, `gnome-shell --version`, `uname -r`, `lscpu`, `free -m`, the date.
 
 **`silverblue-flatpak` only.** The Flathub remote is added by the script at the user level (`flatpak remote-add --user flathub ...`). Install nothing before.
 
@@ -51,6 +51,11 @@ one measurement is not a result.
 | Flathub | `org.gnome.TextEditor`, 51.0, runtime `org.gnome.Platform//51` | `org.qbittorrent.qBittorrent`, 5.3.0, runtime `org.kde.Platform//6.11` (libtorrent 2.1.2 and Boost 1.92 built into the app) |
 | Panpak | `org.gnome.TextEditor`, 51.0, built by `panpak build` from the upstream tag | `org.qbittorrent.qBittorrent`, 5.3.0, built by `panpak build` from the upstream tag |
 | Recipes | `recipes/text-editor/panpak.toml` | `recipes/qbittorrent/panpak.toml` |
+
+**The glibc of the machine.** The Panpak package of Text Editor 51.0 is built in the image `debian-14`, whose glibc is 2.43, and `pack` writes the highest symbol version that its files ask for in `[host].glibc`:
+the package in the check of 2026-11-20 says `2.43` (qBittorrent, built in `debian-13`, says `2.39`). `panpak install` refuses a package that the system cannot run (`PANPAK-E2005`), so the
+Silverblue of the machines must have glibc 2.43 or later (Fedora 44 or later; `ldd --version`). Write the version down with the rest. With Fedora 43 (glibc 2.42) the Text Editor package is refused, and
+the series cannot be made as written: the way out is another image for that recipe, not `--force-host` (an app run on a glibc that is too old fails at the start, and that is not a measure).
 
 Flathub's versions were read on 2026-11-20 from `https://flathub.org/api/v2/appstream/<id>`. Read them again the day of the series and, if they changed, change the pins in the
 recipes (the commit of the tag) and say so with the results. The point is: the same upstream source, a different way to deliver it. What differs on purpose and is part of the answer:
@@ -130,7 +135,7 @@ python3 verify_sbom_build.py recipes/text-editor recipes/qbittorrent
 
 For each recipe it runs `panpak build` twice, then `panpak sbom` on each package, and checks: `coverage` is `build`; the SBOM names the source (the commit of the recipe), the build image and
 every dependency taken from the image that the recipe declares; the libraries of the tree are listed with their hashes; the two builds give the **same SBOM bytes**; the signed hash of the
-manifest is the hash of the file; and `panpak sbom --export` has the name and the version of the recipe. A line that fails stops the check and says which.
+manifest is the hash of the file; and `panpak sbom --export` has the name and the version of the recipe. A line that fails stops the check and says which. Result of 2026-11-20 (both recipes, with the panpak of that day): Text Editor 51.0, `coverage = "build"`, 112 components (110 libraries), two builds with the same SBOM, the same root of the tree; qBittorrent 5.3.0, `coverage = "build"`, 85 components (83 libraries), the same. Neither recipe declares a dependency taken from the image, so that part of the check had nothing to look at in these two.
 
 ## 7. What to hand back
 
