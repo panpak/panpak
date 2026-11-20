@@ -294,13 +294,26 @@ pub fn refusal(app: &str, list: &[Unmet], session: bool) -> anyhow::Error {
 }
 
 /// Check the `[host]` of a manifest at the start of an app: the requirements of the session, and the Landlock ABI unless the app was installed with `--force-host`.
+/// The session bus is not one of the refusals: an app that asks for the filtered bus and finds no session bus starts without it (see `start_notes`).
 pub fn check_start(man: &crate::Manifest, f: &Facts, forced: bool) -> Result<()> {
     let Some(h) = &man.host else { return Ok(()) };
-    let list: Vec<Unmet> = unmet(h, f, Scope::Start).into_iter().filter(|u| !(forced && u.key == "landlock")).collect();
+    let list: Vec<Unmet> = unmet(h, f, Scope::Start).into_iter().filter(|u| u.key != "bus" && !(forced && u.key == "landlock")).collect();
     if list.is_empty() {
         return Ok(());
     }
     Err(refusal(&format!("{} {}", man.app.name, man.app.version), &list, true))
+}
+
+/// What the start says and goes on: an app that asks for the filtered session bus (`bus = "private"`) where there is no session bus or no `xdg-dbus-proxy` starts
+/// without any bridge to the session, and the person is told what that costs (the portals and the notifications).
+pub fn start_notes(man: &crate::Manifest, f: &Facts) -> Vec<String> {
+    use crate::i18n::{fill, tr};
+    let Some(h) = &man.host else { return Vec::new() };
+    unmet(h, f, Scope::Start)
+        .into_iter()
+        .filter(|u| u.key == "bus")
+        .map(|u| fill(&tr(M::HOST_BUS_START_NOTE), &[("app", man.app.name.clone()), ("line", u.line())]))
+        .collect()
 }
 
 #[cfg(test)]
@@ -348,6 +361,11 @@ mod tests {
         let keys = |s| unmet(&h, &f, s).iter().map(|u| u.key).collect::<Vec<_>>();
         assert_eq!(keys(Scope::Machine), ["arch", "kernel", "landlock"], "no display, portal or bus is asked of the session of an install");
         assert_eq!(keys(Scope::Start), ["landlock", "display", "portals", "bus"]);
+        // The bus is told and does not stop the start: only the others refuse.
+        let man: crate::Manifest = toml::from_str("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n[host]\nbus = \"private\"\n").unwrap();
+        assert!(check_start(&man, &f, false).is_ok(), "no session bus: the app starts");
+        assert_eq!(start_notes(&man, &f).len(), 1);
+        assert!(start_notes(&man, &Facts { private_bus: true, ..f.clone() }).is_empty());
     }
 
     #[test]

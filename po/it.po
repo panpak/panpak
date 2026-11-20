@@ -486,3 +486,6 @@ msgstr "(installata con --force-host)"
 
 msgid "{app} cannot run on this system (installed anyway because of --force-host):"
 msgstr "{app} non può funzionare su questo sistema (installata lo stesso per via di --force-host):"
+
+msgid "{app} starts without a connection to your session bus, so what goes through it will not work (portals, notifications): {line}"
+msgstr "{app} parte senza collegamento al bus della tua sessione, quindi non funzionerà ciò che passa da lì (portali, notifiche): {line}"

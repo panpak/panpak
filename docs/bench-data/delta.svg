@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="312" viewBox="0 0 760 312" role="img" aria-label="Update size: bytes downloaded for the new version">
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="396" viewBox="0 0 760 396" role="img" aria-label="Update size: bytes downloaded for the new version">
 <title>Update size: bytes downloaded for the new version</title>
 <style>
   .bg { fill: #ffffff; }
@@ -11,29 +11,36 @@
   .s3 { fill: #6e7781; }
   .s4 { fill: #8250df; }
 </style>
-<rect class="bg" x="0" y="0" width="760" height="312"/>
+<rect class="bg" x="0" y="0" width="760" height="396"/>
 <text class="fg" x="16" y="26" font-size="16" font-weight="600">Update size: bytes downloaded for the new version</text>
 <text class="muted" x="16" y="46" font-size="12">Local HTTP server counts the bytes it sends; one run per app (the size does not vary)</text>
-<line class="grid" x1="215" y1="62" x2="215" y2="250"/>
+<line class="grid" x1="215" y1="62" x2="215" y2="334"/>
 <text class="fg" x="205" y="105" font-size="13" text-anchor="end">ail 2.2.0 to 3.0.0-beta-3</text>
-<rect class="s0" x="215" y="70" width="228.4" height="18" rx="2"/>
-<text class="fg" x="449.4" y="83" font-size="12">36.5 MB</text>
-<rect class="s1" x="215" y="92" width="282.6" height="18" rx="2"/>
-<text class="fg" x="503.6" y="105" font-size="12">45.2 MB</text>
-<rect class="s2" x="215" y="114" width="246.9" height="18" rx="2"/>
-<text class="fg" x="467.9" y="127" font-size="12">39.5 MB</text>
+<rect class="s0" x="215" y="70" width="100.6" height="18" rx="2"/>
+<text class="fg" x="321.6" y="83" font-size="12">36.5 MB</text>
+<rect class="s1" x="215" y="92" width="125.1" height="18" rx="2"/>
+<text class="fg" x="346.1" y="105" font-size="12">45.4 MB</text>
+<rect class="s2" x="215" y="114" width="108.7" height="18" rx="2"/>
+<text class="fg" x="329.7" y="127" font-size="12">39.5 MB</text>
 <text class="fg" x="205" y="189" font-size="13" text-anchor="end">qownnotes 26.10.8 to 26.10.9</text>
-<rect class="s0" x="215" y="154" width="389.6" height="18" rx="2"/>
-<text class="fg" x="610.6" y="167" font-size="12">62.3 MB</text>
-<rect class="s1" x="215" y="176" width="435.0" height="18" rx="2"/>
-<text class="fg" x="656.0" y="189" font-size="12">69.6 MB</text>
-<rect class="s2" x="215" y="198" width="33.0" height="18" rx="2"/>
-<text class="fg" x="254.0" y="211" font-size="12">5.3 MB</text>
-<rect class="s0" x="16" y="262" width="12" height="12" rx="2"/>
-<text class="fg" x="34" y="273" font-size="12">New AppImage (whole file)</text>
-<rect class="s1" x="231" y="262" width="12" height="12" rx="2"/>
-<text class="fg" x="249" y="273" font-size="12">New Panpak package (whole file)</text>
-<rect class="s2" x="488" y="262" width="12" height="12" rx="2"/>
-<text class="fg" x="506" y="273" font-size="12">Panpak update (bytes fetched)</text>
-<text class="muted" x="16" y="300" font-size="11">AMD Ryzen 7 7735HS, Ubuntu 26.04.1 LTS, kernel 7.0.0-43-generic, 2026-11-19</text>
+<rect class="s0" x="215" y="154" width="171.6" height="18" rx="2"/>
+<text class="fg" x="392.6" y="167" font-size="12">62.3 MB</text>
+<rect class="s1" x="215" y="176" width="192.2" height="18" rx="2"/>
+<text class="fg" x="413.2" y="189" font-size="12">69.8 MB</text>
+<rect class="s2" x="215" y="198" width="14.5" height="18" rx="2"/>
+<text class="fg" x="235.5" y="211" font-size="12">5.3 MB</text>
+<text class="fg" x="205" y="273" font-size="13" text-anchor="end">simplenote 2.27.0 to 2.27.1</text>
+<rect class="s0" x="215" y="238" width="405.1" height="18" rx="2"/>
+<text class="fg" x="626.1" y="251" font-size="12">147.2 MB</text>
+<rect class="s1" x="215" y="260" width="435.0" height="18" rx="2"/>
+<text class="fg" x="656.0" y="273" font-size="12">158.1 MB</text>
+<rect class="s2" x="215" y="282" width="4.8" height="18" rx="2"/>
+<text class="fg" x="225.8" y="295" font-size="12">1.7 MB</text>
+<rect class="s0" x="16" y="346" width="12" height="12" rx="2"/>
+<text class="fg" x="34" y="357" font-size="12">New AppImage (whole file)</text>
+<rect class="s1" x="231" y="346" width="12" height="12" rx="2"/>
+<text class="fg" x="249" y="357" font-size="12">New Panpak package (whole file)</text>
+<rect class="s2" x="488" y="346" width="12" height="12" rx="2"/>
+<text class="fg" x="506" y="357" font-size="12">Panpak update (bytes fetched)</text>
+<text class="muted" x="16" y="384" font-size="11">AMD Ryzen 7 7735HS, Ubuntu 26.04.1 LTS, kernel 7.0.0-43-generic, 2026-11-20</text>
 </svg>

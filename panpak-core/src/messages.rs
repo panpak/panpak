@@ -87,6 +87,7 @@ pub const HOST_PORTALS_HAVE: &str = "no such portal in this session";
 pub const HOST_PORTALS_TODO: &str = "Install xdg-desktop-portal and the portal of your desktop, then start a new session.";
 pub const HOST_BUS_NEED: &str = "a session bus and xdg-dbus-proxy (the filtered bus)";
 pub const HOST_BUS_HAVE: &str = "no session bus, or no xdg-dbus-proxy";
+pub const HOST_BUS_START_NOTE: &str = "{app} starts without a connection to your session bus, so what goes through it will not work (portals, notifications): {line}";
 pub const HOST_BUS_TODO: &str = "Install xdg-dbus-proxy and start it from a session that has a user bus.";
 pub const HOST_SESSION_NOTE: &str = "the current session does not give what {app} needs: {line}";
 pub const HOST_FORCED_NOTE: &str = "(installed with --force-host)";
@@ -177,6 +178,7 @@ pub const ALL: &[&str] = &[
     HOST_BUS_NEED,
     HOST_BUS_HAVE,
     HOST_BUS_TODO,
+    HOST_BUS_START_NOTE,
     HOST_SESSION_NOTE,
     HOST_FORCED_NOTE,
     HOST_FORCED_WARNING,

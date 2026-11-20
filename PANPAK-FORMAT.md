@@ -691,7 +691,7 @@ author gives and checks the forms.
 | `landlock` | a number from 1 to 9 | the author | the Landlock ABI of the kernel is this or higher |
 | `display` | a list of one to eight different names of `x11` and `wayland`; one is enough | the author | (at the start) the session has one of them (`DISPLAY` is set for `x11`; `WAYLAND_DISPLAY` leads to a socket for `wayland`) |
 | `portals` | a list of one to eight different names; only `document` is defined | the author | (at the start) the session has the portal (for `document`, `$XDG_RUNTIME_DIR/doc/by-app`) |
-| `bus` | `none` or `private` | the author | (at the start) `none` asks nothing; `private` needs a session bus and `xdg-dbus-proxy` |
+| `bus` | `none` or `private` | the author | (at the start, a note and not a refusal) `none` asks nothing; `private` asks for a session bus and `xdg-dbus-proxy`; without them the app starts with no bridge to the session |
 
 A Reader MUST refuse a value that is not of the form (a malformed field), and MUST refuse with "update panpak" an `arch`, a display, a portal or a bus that it does not
 know: it cannot check it. An unknown key in the table is refused too. The name `host_contract` is reserved for a numbered promise by Panpak about what the view gives
@@ -705,8 +705,9 @@ runs the command. An install over ssh, from a script or in the build of an image
   (`PANPAK-E2009`; `PANPAK-E2005` for the glibc). They MUST NOT refuse for a key of the session. The option `--force-host` of `install` and `update` goes on; it says what is
   missing, and the client keeps the choice (`forced_host=1` in the state of the app, §3.2): `doctor` reports the requirements of the machine that are still not met, an
   update of the app does not need the option again, and a version that the system can run clears the choice.
-- The start of an app (installed, or run from a file) checks the keys of the session, and `landlock`, in the session that starts it, and MUST refuse with the same three
-  parts when one is not met. A key of the session is not forced: `--force-host` is for the machine. An app that was installed with `--force-host` is not refused for
+- The start of an app (installed, or run from a file) checks `display`, `portals` and `landlock` in the session that starts it, and MUST refuse with the same three
+  parts when one is not met. `bus = "private"` is not a refusal: where there is no session bus, or no `xdg-dbus-proxy`, the app starts without any bridge to the
+  session, and the client MUST say, at the start and in `doctor`, what that costs (what goes through the bus: the portals and the notifications). A key of the session is not forced: `--force-host` is for the machine. An app that was installed with `--force-host` is not refused for
   `landlock`. A package that names none of these keys costs the start nothing.
 - `doctor` says, as a note and not as a failure, what the session that runs it lacks of what an installed app or a package needs.
 

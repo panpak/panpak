@@ -8,7 +8,6 @@ Build release binaries BEFORE invoking this test. Uses an isolated HOME/store.
 import json
 import os
 from pathlib import Path
-import re
 import socket
 import struct
 import subprocess
@@ -16,7 +15,6 @@ import sys
 import tempfile
 
 import isolation
-import sigfmt
 import time
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -47,19 +45,20 @@ def index(data):
 
 
 def resign(data, version, port, scheme='http'):
-    footer, _ = index(data)
-    magic, ver, flags, off, ilen, moff, mlen, root = footer
-    man = data[moff:moff + mlen].decode()
-    man = re.sub(r'^id = .*$', 'id = "org.example.incremental"', man, count=1, flags=re.M)
-    man = re.sub(r'^version = .*$', f'version = "{version}"', man, count=1, flags=re.M)
-    # The revision is what a client compares: it follows the version of the test ("1.0" is revision 1, "1.1" revision 2, ...).
-    man = re.sub(r'^revision = \d+$', f"revision = {int(version.split('.')[-1]) + 1}", man, count=1, flags=re.M)
-    man = re.sub(r'^key = .*$', f'key = "ed25519:{PUBLIC}"', man, flags=re.M)
-    man = re.sub(r'^url = .*\n', '', man, flags=re.M)
-    man = man.replace('[update]', f'[update]\nurl = "{scheme}://127.0.0.1:{port}/remote.panpak"')
-    man = sigfmt.with_critical(man.encode())
-    return data[:moff] + man + sigfmt.block(KEY.sign(sigfmt.message(ver, flags, root, man))) + struct.pack(
-        "<8sIIQQQQ32s", magic, ver, flags, off, ilen, moff, len(man), root)
+    """The same files as a release of the test app (`org.example.incremental`, `version`, the revision that follows it, an update address on `port`), signed with the
+    test key. It is made by `panpak resign`, which reads the manifest into the structure that `pack` writes and signs with the signing function of panpak: the text
+    of the manifest is never edited here (a table that is added to the format, as `[trust]` was, would otherwise break every test that uses this)."""
+    with tempfile.TemporaryDirectory(prefix='panpak-resign-') as d:
+        d = Path(d)
+        (d / 'in.panpak').write_bytes(data)
+        key = d / 'test.key'
+        key.write_text(bytes([41]).hex() * 32 + '\n')
+        key.chmod(0o600)
+        revision = int(version.split('.')[-1]) + 1
+        p = subprocess.run([str(BIN / 'panpak'), 'resign', d / 'in.panpak', '--secret-file', key, '--id', 'org.example.incremental', '--version', version, '--revision', str(revision),
+                            '--update-url', f'{scheme}://127.0.0.1:{port}/remote.panpak', '-o', d / 'out.panpak'], capture_output=True, text=True, env=dict(os.environ, PANPAK_NO_BACKGROUND='1'))
+        assert p.returncode == 0, 'panpak resign failed: ' + p.stdout + p.stderr
+        return (d / 'out.panpak').read_bytes()
 
 
 def main():

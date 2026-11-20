@@ -430,6 +430,9 @@ msgstr ""
 msgid "{app} cannot run on this system:"
 msgstr ""
 
+msgid "{app} starts without a connection to your session bus, so what goes through it will not work (portals, notifications): {line}"
+msgstr ""
+
 msgid "{name} ({id}) is in protected mode: the author reported a serious problem in the installed version. It runs without internet and does not run programs that it downloads; your files are safe. The mode ends when the app is updated."
 msgstr ""
 

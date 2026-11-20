@@ -2612,7 +2612,11 @@ fn wayland_context(ctx: &ViewStart) -> Option<WaylandContext> {
 /// Nothing is read when the package names none of them.
 fn start_host_check(man: &panpak_core::Manifest, forced: bool) -> Result<()> {
     if man.host.as_ref().is_some_and(|h| h.display.is_some() || h.landlock.is_some() || h.portals.is_some() || h.bus.is_some()) {
-        panpak_core::host::check_start(man, &panpak_core::host::Facts::detect_for_start(man.host.as_ref()), forced)?;
+        let facts = panpak_core::host::Facts::detect_for_start(man.host.as_ref());
+        panpak_core::host::check_start(man, &facts, forced)?;
+        for note in panpak_core::host::start_notes(man, &facts) {
+            eprintln!("panpak: {note}");
+        }
     }
     Ok(())
 }

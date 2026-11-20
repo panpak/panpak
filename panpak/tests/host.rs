@@ -213,3 +213,72 @@ fn an_install_without_a_display_works_and_the_start_without_one_refuses_with_the
     let o = start(Some(":99"));
     assert!(!text(&o).contains("cannot run in this session"), "{}", text(&o));
 }
+
+#[test]
+fn an_app_that_asks_for_the_private_bus_starts_without_a_session_bus_and_says_what_is_missing() {
+    let l = lab("bus");
+    let pkg = l.pack_ok("1", "[host]\nbus = \"private\"\n", None);
+    assert!(l.install(&pkg, &[], &[]).status.success());
+    // `doctor` says what is missing, as a note.
+    let d = text(&cli(&l.home, &["doctor"]));
+    assert!(d.contains("NOTE HostLab starts without a connection to your session bus, so what goes through it will not work (portals, notifications): needs a session bus and xdg-dbus-proxy"), "{d}");
+    assert!(!d.contains("KO   HostLab"), "{d}");
+    // The start is not refused, and says the same.
+    let o = Command::new(l.home.join(".local/bin").join(ID))
+        .current_dir(&l.home)
+        .env("HOME", &l.home)
+        .env("XDG_DATA_HOME", l.home.join(".local/share"))
+        .env("XDG_RUNTIME_DIR", l.home.join("run"))
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
+        .env("PANPAK_NO_BACKGROUND", "1")
+        .env("LC_ALL", "C")
+        .output()
+        .unwrap();
+    let t = text(&o);
+    assert!(o.status.success() && t.contains("HostLab starts without a connection to your session bus") && !t.contains("cannot run"), "{t}");
+    // The same note in Italian.
+    let it = Command::new(l.home.join(".local/bin").join(ID))
+        .current_dir(&l.home)
+        .env("HOME", &l.home)
+        .env("XDG_DATA_HOME", l.home.join(".local/share"))
+        .env("XDG_RUNTIME_DIR", l.home.join("run"))
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
+        .env("PANPAK_NO_BACKGROUND", "1")
+        .env("LC_ALL", "it_IT.UTF-8")
+        .env("LANGUAGE", "it")
+        .output()
+        .unwrap();
+    assert!(text(&it).contains("parte senza collegamento al bus della tua sessione"), "{}", text(&it));
+}
+
+#[test]
+fn resign_makes_the_same_files_a_release_of_another_identity_with_the_real_signing_function() {
+    let l = lab("resign");
+    let pkg = l.pack_ok("1", "[host]\nkernel = \"5.10\"\n", None);
+    let key2 = l.home.join("second.key");
+    assert!(cli(&l.home, &["keygen", "-o", key2.to_str().unwrap()]).status.success());
+    let out = l.home.join("again.panpak");
+    let o = cli(&l.home, &["resign", pkg.to_str().unwrap(), "--secret-file", key2.to_str().unwrap(), "--id", "org.example.resigned", "--version", "2.0", "--revision", "7", "--update-url", "http://127.0.0.1:1/x.panpak", "-o", out.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    // It is a package that every check accepts, with the new identity, the new key, and the table of the old one.
+    let d = text(&cli(&l.home, &["doctor", out.to_str().unwrap()]));
+    assert!(d.contains("verified package: org.example.resigned 2.0"), "{d}");
+    let m = l.manifest(&out);
+    assert!(m.contains("id = \"org.example.resigned\"") && m.contains("version = \"2.0\"") && m.contains("revision = 7") && m.contains("url = \"http://127.0.0.1:1/x.panpak\""), "{m}");
+    assert!(m.contains("kernel = \"5.10\"") && m.contains("\"host.kernel\""), "the critical list is made again: {m}");
+    // The root is the key that signed (not the one of the first package), and the original files are the same.
+    let first = l.manifest(&pkg);
+    let root = |m: &str| m.lines().find(|x| x.starts_with("root = ")).map(str::to_string);
+    assert_ne!(root(&m), root(&first));
+    let (ia, ib) = (l.home.join("a.index"), l.home.join("b.index"));
+    assert!(cli(&l.home, &["dump-index", pkg.to_str().unwrap(), ia.to_str().unwrap()]).status.success());
+    assert!(cli(&l.home, &["dump-index", out.to_str().unwrap(), ib.to_str().unwrap()]).status.success());
+    assert_eq!(fs::read(ia).unwrap(), fs::read(ib).unwrap());
+    // It installs as the new app.
+    let o = cli(&l.home, &["install", "--yes", "--trust-first-key", out.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    // Without a key, or with an unreadable one, nothing is written.
+    let nope = l.home.join("nope.panpak");
+    let o = cli(&l.home, &["resign", pkg.to_str().unwrap(), "--secret-file", l.home.join("absent.key").to_str().unwrap(), "-o", nope.to_str().unwrap()]);
+    assert!(!o.status.success() && !nope.exists());
+}

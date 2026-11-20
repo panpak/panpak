@@ -244,8 +244,8 @@ def measure_delta(out_dir, meta):
         try:
             lab.install(work / 'old.panpak')
         except SystemExit as e:
-            # Since step 8 `install` makes the app ready, which needs its libraries on the host: an app whose libraries this machine lacks is not installed, and has no update to measure.
-            print(f'{name}: not installed here, no update measured: {str(e).splitlines()[-1][:160]}', flush=True)
+            # What `install` said, as it said it: the reason is in the message, not guessed here.
+            print(f'{name}: the install of the old version failed, no update measured. The message of panpak:\n{str(e)[-800:]}', flush=True)
             lab.close()
             rmtree(work)
             continue

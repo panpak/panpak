@@ -33,7 +33,7 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
+    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the key the author published, or the key of the file; --yes alone does not)\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
@@ -1784,6 +1784,73 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
         panpak_core::hex(&root)
     );
     Ok(out_path)
+}
+
+/// `panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery blake3:<hash>] -o <out>`: the same files under another
+/// identity, signed with a key of the person who runs it. For tests and benchmarks, which need two releases of one app out of a package they already have (a converted
+/// AppImage) and must not make them by editing the text of the manifest: the manifest is read into the same structure `pack` writes, the fields are changed, the `[trust]`
+/// table is made again for the new key, the list of critical fields and the checks are those of `pack`, and the signature is made by the same function. The index and the
+/// chunks are copied as they are. A package that is made again this way is a new publication of the person who signs it, not a copy of the one it came from.
+fn cmd_resign(pkg: &Path, secret: &str, edits: &Resign, out: &Path) -> Result<()> {
+    use std::io::{Read, Seek as _};
+    let mut f = File::open(pkg).with_context(|| format!("open {}", pkg.display()))?;
+    let ft = panpak_core::read_footer(&mut f)?;
+    let man_b = panpak_core::read_at(&mut f, ft.man_off, ft.man_len)?;
+    let mut man: Manifest = toml::from_str(std::str::from_utf8(&man_b).context("the manifest is not UTF-8")?).context("the manifest does not parse")?;
+    if let Some(v) = &edits.id {
+        man.app.id = v.clone();
+    }
+    if let Some(v) = &edits.version {
+        man.app.version = v.clone();
+    }
+    if let Some(u) = &edits.update_url {
+        man.update = Some(panpak_core::Update { url: Some(u.clone()), key: None });
+    }
+    let rel = man.release.as_mut().context("the package has no [release]")?;
+    if let Some(n) = edits.revision {
+        rel.revision = n;
+        rel.floor = rel.floor.min(n);
+        rel.security = rel.security.min(n);
+    }
+    let sk = parse_secret(secret)?;
+    let key = format!("ed25519:{}", panpak_core::hex(sk.verifying_key().as_bytes()));
+    let recovery = match &edits.recovery {
+        Some(r) => r.clone(),
+        None => man.trust.as_ref().map(|t| t.recovery.clone()).context("the package has no [trust]: give --recovery")?,
+    };
+    // A new identity: the chain of successions of the old one does not lead to this key.
+    man.trust = Some(panpak_core::trust::Trust { root: vec![key], threshold: 1, recovery, domain: man.trust.as_ref().and_then(|t| t.domain.clone()), chain: Vec::new() });
+    man.format = Some(panpak_core::Format { critical: panpak_core::critical_paths(&man), ..man.format.clone().context("the package has no [format]")? });
+    panpak_core::check_format(&man)?;
+    panpak_core::trust::check(&man).context("[trust] of the package")?;
+    panpak_core::check_release(&man)?;
+    panpak_core::validate_manifest(&man).context("the manifest that would be signed is invalid")?;
+    let toml_b = toml::to_string(&man)?.into_bytes();
+    let msg = panpak_core::package_message(ft.version, ft.flags, &ft.root, &toml_b);
+    let sig = {
+        use ed25519_dalek::Signer;
+        sk.sign(&msg).to_bytes()
+    };
+    // Everything before the manifest (the stub, the chunks, the index) is copied as it is.
+    let mut head = Vec::new();
+    f.seek(std::io::SeekFrom::Start(0))?;
+    Read::by_ref(&mut f).take(ft.man_off).read_to_end(&mut head)?;
+    let mut data = head;
+    data.extend_from_slice(&toml_b);
+    data.extend_from_slice(&panpak_core::encode_sig_block(&sig));
+    data.extend_from_slice(&encode_footer(&Footer { man_len: toml_b.len() as u64, ..ft }));
+    panpak_core::durable::write_file(out, &data, 0o755)?;
+    Ok(())
+}
+
+/// What `resign` changes.
+#[derive(Default)]
+struct Resign {
+    id: Option<String>,
+    version: Option<String>,
+    revision: Option<u64>,
+    update_url: Option<String>,
+    recovery: Option<String>,
 }
 
 /// Sign with an external command (a token, ssh-agent, an HSM): it gets the bytes on its standard input and writes the 64 bytes of the signature on its standard output.
@@ -3903,7 +3970,8 @@ fn host_report(man: &panpak_core::Manifest, forced: bool, facts: &panpak_core::h
     let Some(h) = &man.host else { return };
     for u in host::unmet(h, facts, host::Scope::All) {
         if u.is_session() {
-            let l = i18n::fill(&i18n::tr(m::HOST_SESSION_NOTE), &[("app", man.app.name.clone()), ("line", u.line())]);
+            let (id, vals) = if u.key == "bus" { (m::HOST_BUS_START_NOTE, [("app", man.app.name.clone()), ("line", u.line())]) } else { (m::HOST_SESSION_NOTE, [("app", man.app.name.clone()), ("line", u.line())]) };
+            let l = i18n::fill(&i18n::tr(id), &vals);
             println!("NOTE {l}");
         } else {
             let note = if forced { format!(" {}", i18n::tr(m::HOST_FORCED_NOTE)) } else { String::new() };
@@ -4534,6 +4602,34 @@ fn real_main() -> Result<()> {
                 println!("{a}");
             }
             Ok(())
+        }
+        Some("resign") => {
+            let (mut pkg, mut out, mut secret_file) = (None, None, None);
+            let mut edits = Resign::default();
+            let mut i = 2;
+            while i < args.len() {
+                let val = |i: usize| -> Result<String> { Ok(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, format!("{} needs a value", args[i])))?.clone()) };
+                match args[i].as_str() {
+                    "--secret-file" => secret_file = Some(val(i)?),
+                    "--id" => edits.id = Some(val(i)?),
+                    "--version" => edits.version = Some(val(i)?),
+                    "--revision" => edits.revision = Some(val(i)?.parse().map_err(|_| coded(ErrorCode::E5001, "--revision must be a number"))?),
+                    "--update-url" => edits.update_url = Some(val(i)?),
+                    "--recovery" => edits.recovery = Some(val(i)?),
+                    "-o" => out = Some(val(i)?),
+                    x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    _ if pkg.is_none() => {
+                        pkg = Some(args[i].clone());
+                        i += 1;
+                        continue;
+                    }
+                    x => bail_code!(ErrorCode::E5001, "unexpected argument: {x}\n{usage}", usage = usage()),
+                }
+                i += 2;
+            }
+            let (pkg, out) = (pkg.ok_or_else(|| coded(ErrorCode::E5002, "resign <package> --secret-file <f> -o <out>"))?, out.ok_or_else(|| coded(ErrorCode::E5002, "resign needs -o <out>"))?);
+            let (secret, _) = load_personal_secret(secret_file.as_deref())?;
+            cmd_resign(Path::new(&pkg), &secret, &edits, Path::new(&out))
         }
         Some("dump-index") | Some("dump-manifest") => {
             let what = args[1].clone();

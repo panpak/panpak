@@ -1,4 +1,4 @@
-# date_utc: 2026-11-19T21:22:04Z
+# date_utc: 2026-11-20T10:32:25Z
 # cpu: AMD Ryzen 7 7735HS with Radeon Graphics
 # threads: 16
 # ram_mib: 14652
@@ -9,9 +9,10 @@
 # bubblewrap: bubblewrap 0.11.1
 # python: 3.14.4
 # rustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)
-# panpak_commit: 08b0ea3-dirty
-# panpak_sha256: 638fee33f7899265
-# stub_sha256: 848baffeba72289c
+# panpak_commit: 1f115f6-dirty
+# panpak_sha256: ac9c8a89a802833c
+# stub_sha256: 0b145610364e3fba
 app,old_version,new_version,appimage_new_bytes,panpak_new_bytes,downloaded_bytes,client_counted_bytes,downloaded_percent,requests,new_chunks,total_chunks,update_seconds
-ail,2.2.0,3.0.0-beta-3,36542968,45216114,39505213,39505213,87.3698,40,1293,1372,3.6752
-qownnotes,26.10.8,26.10.9,62347768,69607998,5280651,5280651,7.5863,6,151,3201,1.8536
+ail,2.2.0,3.0.0-beta-3,36542968,45446704,39506613,39506613,86.9295,40,1294,1373,1.1874
+qownnotes,26.10.8,26.10.9,62347768,69839908,5282154,5282154,7.5632,6,151,3202,1.5772
+simplenote,2.27.0,2.27.1,147197267,158077093,1732668,1732668,1.0961,12,78,5425,9.2788

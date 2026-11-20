@@ -18,7 +18,7 @@ comparison with Flatpak or Snap, which have not been measured.
 | Landlock | ABI V8 |
 | Bubblewrap | 0.11.1 |
 | Build | release, `x86_64-unknown-linux-musl`, rustc 1.99.1 |
-| Date of the run | 2026-10-31 for the cost of the view and the resolution; 2026-11-19 for the update size, the start time and the fixed cost of a start (main at 08b0ea3, the machine as above, kernel 7.0.0-43) |
+| Date of the run | 2026-10-31 for the cost of the view and the resolution; 2026-11-20 for the update size, 2026-11-19 for the start time and the fixed cost of a start (main at 08b0ea3, the machine as above, kernel 7.0.0-43) |
 
 The CSV files also hold the commit and the first hex digits of the SHA-256 of the two binaries. Each section says on which date it was measured; a number that is not dated there is
 from the run of 2026-10-31. The runs of 2026-11-19 were made with the bench script of this change (the daily background job is off during them: `PANPAK_NO_BACKGROUND=1`), so the CSV says `-dirty` next to the commit.
@@ -54,21 +54,24 @@ to the local server; the content is not changed. One run per app: the number of 
 
 | App | Old to new | New AppImage | New package | Fetched by `update` | Share of the package | Chunks new / total | Requests |
 |---|---|---:|---:|---:|---:|---:|---:|
-| AppImageLauncher Lite | 2.2.0 to 3.0.0-beta-3 | 36,542,968 | 45,216,114 | 39,505,213 | 87.4% | 1,293 / 1,372 | 40 |
-| QOwnNotes | 26.10.8 to 26.10.9 | 62,347,768 | 69,607,998 | 5,280,651 | 7.6% | 151 / 3,201 | 6 |
-| Simplenote (measured on 2026-10-31, not again) | 2.27.0 to 2.27.1 | 147,197,267 | 157,216,344 | 1,732,034 | 1.1% | 78 / 5,424 | 12 |
+| AppImageLauncher Lite | 2.2.0 to 3.0.0-beta-3 | 36,542,968 | 45,446,704 | 39,506,613 | 86.9% | 1,294 / 1,373 | 40 |
+| QOwnNotes | 26.10.8 to 26.10.9 | 62,347,768 | 69,839,908 | 5,282,154 | 7.6% | 151 / 3,202 | 6 |
+| Simplenote | 2.27.0 to 2.27.1 | 147,197,267 | 158,077,093 | 1,732,668 | 1.1% | 78 / 5,425 | 12 |
 
-AppImageLauncher Lite and QOwnNotes were measured on 2026-11-19 (main at 08b0ea3); the packages are 0.6 MB larger than on 2026-10-31 because they now carry the signed `[format]`
-and `[release]` tables and the signature block. Simplenote is the row of 2026-10-31: since step 8 `install` makes the app ready, which needs its libraries on the host, and this machine lacks
-`libdbus-glib-1.so.2`, `libdbusmenu-gtk.so.4` and `libgtk-x11-2.0.so.0`, so it cannot be installed here and was not measured again (the bench says so and goes on). The chart has the two
-apps of the day; the check of the bench after an update is now `panpak list --json` and `panpak verify` (the store keeps a record and a tree, not the package file).
+The three rows are one run, on 2026-11-20 (`main` at 1f115f6 and the change of the benchmark, `docs/bench-data/delta.csv`); the update of Simplenote took 9.3 s, of QOwnNotes 1.6 s and of
+AppImageLauncher 1.2 s. The packages are larger than on 2026-11-19 (by 0.2 MB) because they now carry the `[host]` and `[trust]` tables, the report of the modules and the three more fields of
+every file entry of the index. **A correction:** the row of Simplenote used to be marked "not measured again" and the text said that the package could not be installed here for lack of three libraries.
+That was a guess. The real cause was the benchmark: it made the two releases by editing lines of the text of the manifest and signing with its own key, and since PR 4 the key of a
+package is in `[trust].root`, which the edit did not change, so `install` refused every one of them with `PANPAK-E1001`, and the benchmark printed a guess in place of that message. The
+releases are now made by `panpak resign`, which signs with the same function as `pack`, and the benchmark prints the message of panpak as it is. The check of the bench after an update is
+`panpak list --json` and `panpak verify` (the store keeps a record and a tree, not the package file).
 
 Where Panpak does worse:
 
 - When most of the app changes, an update saves almost nothing: AppImageLauncher between these two
   versions fetches 87.4% of the package.
-- The package is larger than the AppImage it comes from: 24% for AppImageLauncher, 11.6% for QOwnNotes,
-  6.8% for Simplenote (2026-10-31). For AppImageLauncher the update (39.5 MB) is larger than the new AppImage
+- The package is larger than the AppImage it comes from: 24.4% for AppImageLauncher, 12.0% for QOwnNotes,
+  7.4% for Simplenote (2026-11-20). For AppImageLauncher the update (39.5 MB) is larger than the new AppImage
   (36.5 MB). An AppImage user who updates with a delta tool such as zsync was not measured.
 
 ## Start time
@@ -292,7 +295,7 @@ Limits specific to this measurement:
 - One process per app in the isolated view cannot be read through `smaps_rollup` (it lives in a user namespace of its own): its `VmRSS` (1.7 MiB per app, upper bound) is in the CSV as
   `unreadable_rss_kib` and is not in the PSS sums. The panpak figures are therefore lower bounds by at most that.
 - The apps are idle after startup, headless, software rendering. A used app grows, mostly in private memory.
-- Simplenote (Electron) was meant to be a second app, but its package does not install on this machine (`libdbus-glib-1.so.2` is missing on the host), so it is not in the data.
+- Simplenote (Electron) was meant to be a second app of this measure and is not in the data. The reason given here before, a library missing on the host, was never checked: the update benchmark had the same "not installed" for a signing error of its own (see the update size above), so the cause for this one is open.
 - PSS counts mapped pages; the cgroup counters also count page cache that the apps read but do not map, charged to the scope that touched it first.
 
 ```sh
