@@ -150,7 +150,7 @@ def launcher(system, app):
     return [str(HOME / '.local/bin' / a['panpak_id'])]
 
 
-def install_cmds(system, app, pkg_url, pkg_file):
+def install_cmds(system, app, pkg_url, pkg_file, keys=None):
     """The steps of an install, in the order they run. A step is (what, command)."""
     a = APPS[app]
     if system == 'flatpak':
@@ -164,8 +164,26 @@ def install_cmds(system, app, pkg_url, pkg_file):
         steps.append(('download', ['curl', '-fsS', '-o', f, pkg_url]))
     if not f:
         raise SystemExit('panpak: give --pkg-url (counted as bytes that come) or --pkg-file (a package that is already here)')
-    steps.append(('install', [PANPAK, 'install', '--yes', '--trust-first-key', f]))
+    # The key that the author published, given by the person (`--keys te=ed25519:...`): the install refuses a package of another key and pins this one. Never `--trust-first-key`: the
+    # safe way is the one that the comparison shows.
+    key = (keys or {}).get(app)
+    if not key:
+        raise SystemExit(f'panpak: give the key that the author of {app} published (--keys {app}=ed25519:...); the install is made with --expect-key, not --trust-first-key')
+    steps.append(('install', [PANPAK, 'install', '--yes', '--expect-key', key, f]))
     return steps
+
+
+def parse_keys(text):
+    """`te=ed25519:<hex>,qb=ed25519:<hex>` as a dictionary; a key that does not have the form of a key is refused here, before anything is downloaded."""
+    keys = {}
+    for part in (text or '').split(','):
+        if not part.strip():
+            continue
+        app, _, key = part.partition('=')
+        if app not in APPS or not re.fullmatch(r'ed25519:[0-9a-f]{64}', key):
+            raise SystemExit(f'--keys: {part!r} is not <app>=ed25519:<64 lowercase hex> with an app of {sorted(APPS)}')
+        keys[app] = key
+    return keys
 
 
 def uninstall(system, app):
@@ -182,7 +200,7 @@ def uninstall(system, app):
 
 
 def do_install(system, app, args, tag=None):
-    steps = install_cmds(system, app, getattr(args, 'pkg_url', None), getattr(args, 'pkg_file', None))
+    steps = install_cmds(system, app, getattr(args, 'pkg_url', None), getattr(args, 'pkg_file', None), parse_keys(getattr(args, 'keys', None)))
     quiet()
     space0, used0, rx0, t0 = space(system), fs_used(), rx_bytes(), time.time()
     times = {}
@@ -435,6 +453,7 @@ def main():
     def pkg(p):
         p.add_argument('--pkg-url', help='panpak: where the package is served (the bytes that come are counted)')
         p.add_argument('--pkg-file', help='panpak: a package that is here already (nothing is counted)')
+        p.add_argument('--keys', help='panpak: the key that the author of each app published, as te=ed25519:<hex>,qb=ed25519:<hex>; the install uses --expect-key with it')
 
     p = sub.add_parser('check')
     common(p, apps=False)
@@ -460,6 +479,7 @@ def main():
     p.add_argument('--warm', type=int, default=15)
     p.add_argument('--gap', type=float, default=3.0)
     p.add_argument('--pkg-base-url', help='panpak: the folder that serves <app id>.panpak')
+    p.add_argument('--keys', help='panpak: te=ed25519:<hex>,qb=ed25519:<hex> (the key that each author published; --expect-key)')
     p.set_defaults(fn=cmd_scenario)
     p = sub.add_parser('reboot-series')
     p.add_argument('action', choices=['start', 'step', 'cancel', 'status'])

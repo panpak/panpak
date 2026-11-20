@@ -114,7 +114,11 @@ export BENCH_RESULTS=~/panpak-bench-results/te-qb          # the name of the fol
 sudo systemctl reboot
 ```
 
-For Panpak the same with `--system panpak --pkg-base-url http://<host>:8000` for `scenario`, and `--pkg-url http://<host>:8000/<app id>.panpak` for `cycle`. The series of reboots ends
+For Panpak the same with `--system panpak --pkg-base-url http://<host>:8000` for `scenario`, and `--pkg-url http://<host>:8000/<app id>.panpak` for `cycle`, and in both **`--keys te=<key>,qb=<key>`**:
+the key that the author of each app published (the two apps have two authors, so two keys; write them from the page of each author, never from the package that is being installed). The script
+installs with `panpak install --yes --expect-key <key>`: a package of another key is refused and nothing is pinned. It never uses `--trust-first-key`: the comparison shows the safe way
+(the key that the person was told), not the one that trusts what comes. The keys of the packages of 2026-11-20 are in the notes that come with them (`panpak inspect <package>` shows the key of a package: read it on the
+machine of the author, not on this one). The series of reboots ends
 by itself (the log shows `series done`; `reboot-series status` says where it is). The results are lines of JSON in `$BENCH_RESULTS/<system>.jsonl`.
 
 When a series is done: copy the folder out of the machine (`scp -r`), then revert the machine to `clean`.

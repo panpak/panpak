@@ -48,6 +48,22 @@ esac
         p = run('summarize', '--dir', str(tmp / 'results/te-qb'))
         assert p.returncode == 0 and '| te-qb | flatpak | te | warm | 3 |' in p.stdout and 'install' not in p.stdout.split('### Installs')[0], p.stdout
         assert '| te-qb | flatpak | te | - | 1 |' in p.stdout, p.stdout
+        # panpak: the install is made with --expect-key and the key given, never with --trust-first-key; without the key it is refused before anything is downloaded.
+        argsf = tmp / 'panpak-args.txt'
+        (bins / 'panpak').write_text(f'#!/bin/sh\necho "$@" >> {argsf}\nmkdir -p "$HOME/.local/share/panpak"\nhead -c 1000000 /dev/zero > "$HOME/.local/share/panpak/blob"\n')
+        (bins / 'panpak').chmod(0o755)
+        (bins / 'curl').write_text('#!/bin/sh\nwhile [ "$1" != "-o" ]; do shift; done\nhead -c 1000 /dev/zero > "$2"\n')
+        (bins / 'curl').chmod(0o755)
+        env['PANPAK'] = str(bins / 'panpak')
+        key = 'ed25519:' + 'ab' * 32
+        p = run('install', '--system', 'panpak', '--app', 'te', '--pkg-url', 'http://127.0.0.1:1/x.panpak')
+        assert p.returncode != 0 and '--expect-key' in (p.stdout + p.stderr) and not argsf.exists(), p.stdout + p.stderr
+        p = run('install', '--system', 'panpak', '--app', 'te', '--pkg-url', 'http://127.0.0.1:1/x.panpak', '--keys', f'te={key}')
+        assert p.returncode == 0, p.stdout + p.stderr
+        got = argsf.read_text()
+        assert f'install --yes --expect-key {key} ' in got and '--trust-first-key' not in got, got
+        p = run('install', '--system', 'panpak', '--app', 'te', '--pkg-url', 'http://127.0.0.1:1/x.panpak', '--keys', 'te=ed25519:xyz')
+        assert p.returncode != 0 and 'is not <app>=ed25519' in (p.stdout + p.stderr), p.stdout + p.stderr
         # No window extension: refused with the way out.
         win.write_text('')
         p = run('start', '--system', 'flatpak', '--app', 'te', '--trials', '1')
