@@ -734,7 +734,7 @@ Status of the project: pre-beta.
 
 - **KL-17 The first key is pinned without proof, unless the author's domain confirms it.**
   Trust on first use has no proof of identity in the package. Where the author
-  names a domain and publishes `/.well-known/panpak.toml`, the client asks for it before
+  names a domain and publishes `https://<domain>/.well-known/panpak.toml`, the client asks for it before
   the first pin and at every succession, and a domain that contradicts stops the install
   (§1.1, `PANPAK-FORMAT.md` §3.2.1). What stays open: an author with no file, an offline
   machine or one with the check turned off (the key is then the only proof, and it is
