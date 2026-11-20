@@ -20,8 +20,11 @@ one measurement is not a result.
    (`gsettings set org.gnome.software download-updates false`, `gsettings set org.gnome.software allow-updates false`; it is also best to remove it from the autostart),
    and no Flatpak apps installed (`flatpak list` is empty, `flatpak remotes` has no remote with data). Note that the bytes are counted on the network interface: while a series
    runs, nothing else may use the network of the machine.
-4. `sudo` without a password for this user (`/etc/sudoers.d/bench`: `<user> ALL=(ALL) NOPASSWD:ALL`), only to drop the caches and, if `systemctl reboot` is refused, to reboot.
-   (This is the machine of a test, never a machine with data. It is a change of permissions, so it is made by the person who owns the machine.)
+4. **A sudoers rule for two commands, and nothing more** (`sudoers-panpak-bench` in this folder): `sysctl -q vm.drop_caches=3` (the caches are dropped before a measurement of the first
+   start) and `systemctl reboot` (the fallback of the reboot series; the user of the session can reboot through polkit). Each is written with all its arguments and no wildcard, so
+   `sudo -n` refuses every other command; the script reads the bytes of the interface from `/proc/net/dev` and the space with `du` and `statvfs`, which need no root. It is a change of
+   permissions, so it is made by the person who owns the machine: `sudo install -m 0440 -o root -g root sudoers-panpak-bench /etc/sudoers.d/panpak-bench` after replacing `BENCHUSER`
+   (`visudo -cf` first). `silverblue_bench.py check` tells if the two commands are allowed for this user (`sudo -n -l <command>`).
 5. The window extension, to read the moment of the first frame from the compositor:
    `mkdir -p ~/.local/share/gnome-shell/extensions && cp -r winwatch@panpak.bench ~/.local/share/gnome-shell/extensions/`, then log out and in, then
    `gnome-extensions enable winwatch@panpak.bench`, then log out and in once more. `cat ~/.cache/panpak-bench/windows.jsonl` has a line with `"event": "enabled"`.
@@ -52,12 +55,15 @@ one measurement is not a result.
 | Panpak | `org.gnome.TextEditor`, 51.0, built by `panpak build` from the upstream tag | `org.qbittorrent.qBittorrent`, 5.3.0, built by `panpak build` from the upstream tag |
 | Recipes | `recipes/text-editor/panpak.toml` | `recipes/qbittorrent/panpak.toml` |
 
-**The glibc of the machine.** The Panpak package of Text Editor 51.0 is built in the image `debian-14`, whose glibc is 2.43, and `pack` writes the highest symbol version that its files ask for in `[host].glibc`:
+**The glibc of the machine, and a limit of ours.** The Panpak package of Text Editor 51.0 is built in the image `debian-14`, whose glibc is 2.43, and `pack` writes the highest symbol version that its files ask for in `[host].glibc`:
 the package in the check of 2026-11-20 says `2.43` (qBittorrent, built in `debian-13`, says `2.39`). `panpak install` refuses a package that the system cannot run (`PANPAK-E2005`), so the
-Silverblue of the machines must have glibc 2.43 or later (Fedora 44 or later; `ldd --version`). Write the version down with the rest. With Fedora 43 (glibc 2.42) the Text Editor package is refused, and
-the series cannot be made as written: the way out is another image for that recipe, not `--force-host` (an app run on a glibc that is too old fails at the start, and that is not a measure).
+Silverblue of the machines must have glibc 2.43 or later (Fedora 44 or later; `ldd --version`). Write the version down with the rest. **The Flatpak does not have this limit**: it brings its own runtime (the GNOME 51 runtime
+carries its own glibc), so the same app runs on a system with an older glibc, and the Flatpak of Text Editor 51.0 would install on a Fedora 43 where our package is refused. That is a limit of Panpak for an app built on a
+newer base than the machine, and the results page says it as such, next to the numbers, not in a footnote: it is the price of using the glibc of the system, which is also what keeps the packages small and the graphics drivers working. With Fedora 43 (glibc 2.42) the Text Editor
+package is refused, and the series cannot be made as written: the way out is another image for that recipe, not `--force-host` (an app run on a glibc that is too old fails at the start, and that is not a measure).
 
-Flathub's versions were read on 2026-11-20 from `https://flathub.org/api/v2/appstream/<id>`. Read them again the day of the series and, if they changed, change the pins in the
+qBittorrent is built with the same libtorrent as the Flatpak (2.1.2, from the release archive with the hash that Flathub pins, static, C++20: `[[build.deps]]` of the recipe). Boost is the one of the image in the Panpak package and
+Boost 1.92 built by Flatpak: both only use its headers, and the results say so. Flathub's versions were read on 2026-11-20 from `https://flathub.org/api/v2/appstream/<id>`. Read them again the day of the series and, if they changed, change the pins in the
 recipes (the commit of the tag) and say so with the results. The point is: the same upstream source, a different way to deliver it. What differs on purpose and is part of the answer:
 Flatpak delivers the app and a **shared runtime** (that is downloaded once for the apps of that runtime); Panpak delivers one package that carries its libraries. The permissions
 are not the same list (Flatpak's qBittorrent has `--filesystem=host`; the Panpak recipe asks for what it needs): write that in the report, not in the numbers.
@@ -147,4 +153,5 @@ had to be done another way, and why. Nothing is changed in the repository by the
 Two machines are not two users: a Silverblue that has already had other Flatpak apps installed shares runtimes with them, and the first-app cost of Flatpak then falls. The network
 is one network at one time: Flathub's CDN and the host that serves the Panpak packages are not the same path, so the **time** of the downloads is written down but not compared; the bytes are.
 The time to the first frame is the time on a virtual GPU (software rendering or virtio-gpu), which is slower than the metal and slower in a way that does not have to be the same for the two
-systems. The packages of the series are made by `panpak build` from the upstream source; an AppImage converted by `panpak convert` is a different thing and is not measured here.
+systems. **What Panpak cannot do that Flatpak can, and what Flatpak cannot do that Panpak does** are written on the results page (`RESULTS.md`) before any number: an app built on a base newer than the machine's glibc is refused by Panpak and
+runs under Flatpak; an app that must keep the same files at the same hash for a signed, offline-checkable update is something only the Panpak package says. The packages of the series are made by `panpak build` from the upstream source; an AppImage converted by `panpak convert` is a different thing and is not measured here.

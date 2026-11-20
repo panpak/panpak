@@ -260,6 +260,18 @@ systemd user scope with `MemoryMax` of 1.25 times what it needs and `MemorySwapM
 At the end it prints the peak and, if there is no `build.memory` or the peak is above it, the value to write (the peak plus a tenth). The peak is **not** written into the package: it changes from run to run, and the same inputs must give the same bytes.
 Without `systemd-run --user` the build runs without a cap, with a warning.
 
+**Libraries built from a pinned archive.** `[[build.deps]]` (`name`, `url`, `sha256`, `configure`) names a library that the recipe builds before the app, with CMake and Ninja, from a source archive that is fetched and checked against its hash like the source of the app:
+```toml
+[[build.deps]]
+name = "libtorrent-rasterbar"
+url = "https://github.com/arvidn/libtorrent/releases/download/v2.1.2/libtorrent-rasterbar-2.1.2.tar.gz"
+sha256 = "3362546d9cd71b9e49ee6cac7d3f1f914ce9cdb217c86b63d5b22cbed0334dbc"
+configure = ["-DBUILD_SHARED_LIBS=OFF", "-DCMAKE_CXX_STANDARD=20", "-Ddeprecated-functions=OFF"]
+```
+Each is configured with `-DCMAKE_INSTALL_PREFIX=/deps -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON` before its own options, installed into `/deps` (not into the package) and found by the build of the app through `CMAKE_PREFIX_PATH=/deps` and
+`PKG_CONFIG_PATH`. Link it statically (`-DBUILD_SHARED_LIBS=OFF`): nothing of `/deps` is collected, so a shared library would be missing at run time. At most 8, in the order given, CMake only. The list goes into the signed `[provenance].deps`
+(`<name> url <url> sha256 <hex>`) and into the SBOM as components with the hash and the address.
+
 **Dependencies taken from the image.** `[[build.image_deps]]` declares them one by one, with the reason; the package must be in `build.packages`. The build records the version found, and the list goes into the signed
 `[provenance]` of the package and is shown by `install`. The three recipes below have one (Ghostty: `gtk4-layer-shell`); the `-fsys` route of Ghostty 1.4.0 (13b) would add `glslang` and `spirv-cross`.
 

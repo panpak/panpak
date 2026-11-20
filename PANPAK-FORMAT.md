@@ -602,7 +602,7 @@ is run without it (readers ignore what they do not know): a package that cannot 
 
 **`[provenance]`** is written by `panpak build` and refused by `pack` in an input file written by hand. It says how the package was made, and `install` shows it:
 `source` (`git <url> @ <commit>` or `url <url> sha256 <hex>`), `image` (the name of the build image, the digest of its manifest and the date of the package snapshot) and `image_deps`: the
-dependencies that were taken from the build image instead of being built from the source that the author pinned (`name`, the image `package`, and the `version` found). A reader MUST ignore a
+dependencies that were taken from the build image instead of being built from the source that the author pinned (`name`, the image `package`, and the `version` found), and `deps`: the libraries that the recipe built from a pinned archive (`[[build.deps]]`), each as `<name> url <url> sha256 <hex>`. A reader MUST ignore a
 `[provenance]` it cannot use. It carries no measurement that changes from one build to the next (the peak memory of a build is not in it): the same inputs give the same bytes.
 
 ### 3.1.8 Programs the app writes [NORMATIVE]

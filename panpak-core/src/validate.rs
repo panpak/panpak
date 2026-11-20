@@ -365,6 +365,12 @@ pub fn validate_manifest(man: &Manifest) -> Result<()> {
         if p.image_deps.as_ref().is_some_and(|d| d.len() > 32) {
             return Err(bad_field("provenance.image_deps", "at most 32 entries"));
         }
+        if p.deps.as_ref().is_some_and(|d| d.len() > 32) {
+            return Err(bad_field("provenance.deps", "at most 32 entries"));
+        }
+        for d in p.deps.iter().flatten() {
+            display_text("provenance.deps", d, 512)?;
+        }
         for d in p.image_deps.iter().flatten() {
             display_text("provenance.image_deps.name", &d.name, 128)?;
             display_text("provenance.image_deps.package", &d.package, 128)?;

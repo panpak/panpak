@@ -126,6 +126,20 @@ pub fn make(input: &Input) -> (String, &'static str) {
                 ("type", js("container")),
             ]));
         }
+        // A source archive that was built and linked into the app: its name, the address it came from and its SHA-256 (the recipe pins both).
+        for (i, d) in p.deps.iter().flatten().enumerate() {
+            let words: Vec<&str> = d.split_whitespace().collect();
+            if let [name, "url", url, "sha256", hex] = words.as_slice() {
+                components.push(obj(&[
+                    ("bom-ref", js(&format!("dep-{i}"))),
+                    ("externalReferences", reference("distribution", url)),
+                    ("hashes", hash_of("SHA-256", hex)),
+                    ("name", js(name)),
+                    ("properties", properties(&[("role", "built-dependency")])),
+                    ("type", js("library")),
+                ]));
+            }
+        }
         for (i, d) in p.image_deps.iter().flatten().enumerate() {
             components.push(obj(&[
                 ("bom-ref", js(&format!("image-dep-{i}"))),
@@ -389,6 +403,19 @@ mod tests {
         assert_eq!(header_property(&text, "components").as_deref(), Some("3"));
         assert!(text.contains("\"type\": \"vcs\""));
         assert!(text.contains("\"name\": \"zlib1g\"") && text.contains("\"version\": \"1.3\""));
+    }
+
+    #[test]
+    fn a_dependency_built_from_an_archive_is_a_component_with_its_hash() {
+        let man = manifest(&format!(
+            "[provenance]\nsource=\"git https://e.org/a.git @ {}\"\ndeps=[\"libfoo url https://e.org/libfoo-2.1.2.tar.gz sha256 {}\", \"not a dependency line\"]\n",
+            "ab".repeat(20),
+            "cd".repeat(32)
+        ));
+        let (text, coverage) = make(&Input { manifest: &man, libs: Vec::new() });
+        assert_eq!(coverage, COVERAGE_BUILD);
+        assert_eq!(header_property(&text, "components").as_deref(), Some("2"), "the line that is not a dependency is left out");
+        assert!(text.contains("\"name\": \"libfoo\"") && text.contains("libfoo-2.1.2.tar.gz") && text.contains(&"cd".repeat(32)) && text.contains("built-dependency"), "{text}");
     }
 
     #[test]

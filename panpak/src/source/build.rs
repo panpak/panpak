@@ -32,6 +32,14 @@ pub fn steps(r: &Recipe, jobs: usize, src: &str) -> Vec<Vec<String>> {
     }
 }
 
+/// The steps that build one dependency (`[[build.deps]]`), into `/deps`, from its source at `/deps-src/<name>`: CMake with Ninja, a release build with position independent code.
+pub fn dep_steps(d: &super::recipe::BuildDep, jobs: usize) -> Vec<Vec<String>> {
+    let (src, bld) = (format!("/deps-src/{}", d.name), format!("/work/deps/{}", d.name));
+    let mut configure: Vec<String> = ["cmake", "-S", &src, "-B", &bld, "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/deps", "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON"].iter().map(|s| s.to_string()).collect();
+    configure.extend(d.configure.iter().cloned());
+    vec![configure, vec!["ninja".into(), "-C".into(), bld.clone(), "-j".into(), jobs.to_string()], vec!["ninja".into(), "-C".into(), bld, "install".into()]]
+}
+
 fn run_step(root: &Path, shim: &Path, argv: &[String], env: &[(&str, String)], mounts: &[(&Path, &str, bool)], cwd: &str, net: bool) -> sandbox::Run {
     let a: Vec<&str> = argv.iter().map(String::as_str).collect();
     let mut r = sandbox::Run::new(root, shim, &a);
@@ -120,6 +128,25 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
             super::say("the first build of this recipe fetches its Zig packages (every package is checked by its hash); later builds need no network");
         }
     }
+    // 5b. The libraries that the recipe builds from a pinned archive (`[[build.deps]]`): fetched and hashed like the source, built first with CMake into `/deps`
+    // (no DESTDIR: they are not part of the package), and found by the build of the app through the two variables below. Linked statically, so nothing of them is collected.
+    let mut dep_prov: Vec<String> = Vec::new();
+    let mut dep_steps_all: Vec<Vec<String>> = Vec::new();
+    if !r.build.deps.is_empty() {
+        let deps_dir = ws.join("deps");
+        std::fs::create_dir_all(&deps_dir)?;
+        mounts.push((deps_dir, "/deps".into(), true));
+        for d in &r.build.deps {
+            let td = std::time::Instant::now();
+            let fetched = fetch::fetch(&cache, &super::recipe::Source { git: None, commit: None, url: Some(d.url.clone()), sha256: Some(d.sha256.clone()), epoch: None })?;
+            super::said_phase(&format!("source {}", d.name), td.elapsed(), false);
+            mounts.push((fetched.dir, format!("/deps-src/{}", d.name), false));
+            dep_prov.push(format!("{} url {} sha256 {}", d.name, d.url, d.sha256));
+            dep_steps_all.extend(dep_steps(d, plan.jobs));
+        }
+        env.push(("CMAKE_PREFIX_PATH", "/deps".into()));
+        env.push(("PKG_CONFIG_PATH", "/deps/lib/pkgconfig:/deps/lib64/pkgconfig:/deps/share/pkgconfig".into()));
+    }
     // 6. The build.
     super::say(&format!("building with {} job(s), memory cap {}", plan.jobs, memory::fmt_size(plan.cap)));
     let swap = if avail.swap > 0 { avail.swap.min(6 << 30) } else { 0 };
@@ -128,9 +155,12 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
     std::fs::create_dir_all(&logs)?;
     let mt: Vec<(&Path, &str, bool)> = mounts.iter().map(|(s, d, rw)| (s.as_path(), d.as_str(), *rw)).collect();
     let tc = std::time::Instant::now();
-    for (n, step) in steps(&r, plan.jobs, "/src").iter().enumerate() {
+    // The dependencies first, with no DESTDIR (they install into /deps), then the steps of the app.
+    let env_deps: Vec<(&str, String)> = env.iter().filter(|(k, _)| *k != "DESTDIR").cloned().collect();
+    let all_steps: Vec<(bool, Vec<String>)> = dep_steps_all.into_iter().map(|s| (true, s)).chain(steps(&r, plan.jobs, "/src").into_iter().map(|s| (false, s))).collect();
+    for (n, (is_dep, step)) in all_steps.iter().enumerate() {
         let log = logs.join(format!("step-{n}.log"));
-        let run = run_step(&root, &shim, step, &env, &mt, &cwd, net);
+        let run = run_step(&root, &shim, step, if *is_dep { &env_deps } else { &env }, &mt, if *is_dep { "/work" } else { &cwd }, net);
         let mut argv: Vec<OsString> = vec!["bwrap".into()];
         argv.extend(run.args());
         let _ = std::fs::write(&log, "");
@@ -181,6 +211,7 @@ pub fn cmd_build(a: BuildArgs) -> Result<PathBuf> {
         source: Some(src.describe.clone()),
         image: Some(format!("{} {} snapshot {}{}", lk.image.name, lk.image.manifest_digest, lk.image.snapshot, lk.image.patches.iter().map(|p| format!(" patch {p}")).collect::<String>())),
         image_deps: (!deps.is_empty()).then_some(deps),
+        deps: (!dep_prov.is_empty()).then_some(dep_prov),
     };
     let toml_text = manifest_toml(&r, &col, &pubkey, &prov)?;
     collect::write_file(&tree, &tree.join("panpak.toml"), toml_text.as_bytes())?;
@@ -295,6 +326,16 @@ mod tests {
     }
 
     #[test]
+    fn a_dependency_is_built_into_deps_from_its_own_source() {
+        let d = super::super::recipe::BuildDep { name: "libfoo".into(), url: "https://e.org/x.tar.gz".into(), sha256: "ab".repeat(32), configure: vec!["-DBUILD_SHARED_LIBS=OFF".into()] };
+        let s = dep_steps(&d, 4);
+        assert_eq!(s[0][..4], ["cmake", "-S", "/deps-src/libfoo", "-B"]);
+        assert!(s[0].contains(&"-DCMAKE_INSTALL_PREFIX=/deps".to_string()) && s[0].last().unwrap() == "-DBUILD_SHARED_LIBS=OFF", "{:?}", s[0]);
+        assert_eq!(s[1], ["ninja", "-C", "/work/deps/libfoo", "-j", "4"]);
+        assert_eq!(s[2], ["ninja", "-C", "/work/deps/libfoo", "install"]);
+    }
+
+    #[test]
     fn the_steps_of_the_build_systems() {
         let m = steps(&recipe("meson", "configure = [\"--prefix=/usr\"]"), 4, "/src");
         assert_eq!(m[0], ["meson", "setup", "/work/build", "/src", "--prefix=/usr"]);
@@ -317,7 +358,7 @@ mod tests {
         ))
         .unwrap();
         let col = collect::Collected { env: [("GSETTINGS_BACKEND".to_string(), "keyfile".to_string())].into(), needs: vec!["libpixbufloader_svg.so".into()], icons: vec!["share/icons/hicolor/48x48/apps/org.example.A.png".into()], mime_types: vec!["text/plain".into()], libs: 1, bytes: 1, notes: vec![] };
-        let prov = panpak_core::Provenance { source: Some("git x".into()), image: Some("debian-13 sha256:x snapshot y".into()), image_deps: Some(vec![panpak_core::ImageDep { name: "g".into(), package: "p".into(), version: "1".into() }]) };
+        let prov = panpak_core::Provenance { source: Some("git x".into()), image: Some("debian-13 sha256:x snapshot y".into()), image_deps: Some(vec![panpak_core::ImageDep { name: "g".into(), package: "p".into(), version: "1".into() }]), deps: None };
         let t = manifest_toml(&r, &col, &format!("ed25519:{}", "0".repeat(64)), &prov).unwrap();
         panpak_core::check_panpak_toml_schema(&t).unwrap();
         let m: panpak_core::Manifest = toml::from_str(&t).unwrap();

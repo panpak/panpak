@@ -60,6 +60,21 @@ pub struct Build {
     pub zig: Option<Zig>,
     #[serde(default)]
     pub image_deps: Vec<ImageDepDecl>,
+    /// Libraries that are built from a pinned source archive before the app, and linked into it (statically: nothing of them is collected).
+    #[serde(default)]
+    pub deps: Vec<BuildDep>,
+}
+
+/// A library built from a pinned archive with CMake, into a folder that the build of the app finds by `CMAKE_PREFIX_PATH` and `PKG_CONFIG_PATH`.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildDep {
+    pub name: String,
+    pub url: String,
+    pub sha256: String,
+    /// Options for CMake, after the ones that every dependency gets (`-DCMAKE_INSTALL_PREFIX=/deps`, `-DCMAKE_BUILD_TYPE=Release`, `-DCMAKE_POSITION_INDEPENDENT_CODE=ON`).
+    #[serde(default)]
+    pub configure: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -195,6 +210,17 @@ impl Recipe {
             super::memory::parse_size(m).context("build.memory_per_job")?;
         }
         ensure!(b.jobs.is_none_or(|j| (1..=256).contains(&j)), "build.jobs must be between 1 and 256");
+        ensure!(b.deps.len() <= 8, "build.deps: at most 8");
+        for d in &b.deps {
+            ensure!(!d.name.is_empty() && d.name.len() <= 64 && d.name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_' || c == b'.'), "build.deps: {:?} is not a name (letters, digits, - _ .)", d.name);
+            ensure!(d.url.starts_with("https://"), "build.deps {}: url must be an https:// URL", d.name);
+            ensure!(d.sha256.len() == 64 && d.sha256.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()), "build.deps {}: sha256 must be 64 lowercase hex digits: a download without a hash is refused", d.name);
+            ensure!(d.configure.iter().all(|a| !a.contains('\0')), "build.deps {}: configure is a list of arguments", d.name);
+        }
+        let mut names: Vec<&str> = b.deps.iter().map(|d| d.name.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        ensure!(names.len() == b.deps.len(), "build.deps: a name is used twice");
         for d in &b.image_deps {
             ensure!(!d.name.is_empty() && !d.package.is_empty() && !d.why.trim().is_empty(), "each [[build.image_deps]] needs name, package and why: a dependency taken from the image is declared with its reason");
             ensure!(b.packages.contains(&d.package), "image dependency {}: its package {} is not in build.packages", d.name, d.package);
@@ -249,6 +275,23 @@ name = "gtk"
 package = "libgtk-4-dev"
 why = "the system copy"
 "#;
+
+    #[test]
+    fn a_dependency_built_from_an_archive_is_checked() {
+        let with = |extra: &str| Recipe::parse(&format!("{GOOD}\n[[build.deps]]\n{extra}"));
+        let h = "ab".repeat(32);
+        let ok = format!("name = \"libtorrent\"\nurl = \"https://e.org/lt.tar.gz\"\nsha256 = \"{h}\"\nconfigure = [\"-DBUILD_SHARED_LIBS=OFF\"]\n");
+        assert_eq!(with(&ok).unwrap().build.deps[0].name, "libtorrent");
+        for (bad, why) in [
+            (format!("name = \"a/b\"\nurl = \"https://e.org/x.tar.gz\"\nsha256 = \"{h}\"\n"), "not a name"),
+            (format!("name = \"a\"\nurl = \"http://e.org/x.tar.gz\"\nsha256 = \"{h}\"\n"), "https"),
+            ("name = \"a\"\nurl = \"https://e.org/x.tar.gz\"\nsha256 = \"ABC\"\n".to_string(), "sha256"),
+            (format!("{ok}\n[[build.deps]]\n{ok}"), "used twice"),
+        ] {
+            let e = format!("{:#}", with(&bad).unwrap_err());
+            assert!(e.contains(why), "{bad:?}: {e}");
+        }
+    }
 
     #[test]
     fn defaults_and_a_good_recipe() {

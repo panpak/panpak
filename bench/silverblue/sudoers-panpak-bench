@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Step 9b: the only two commands that silverblue_bench.py runs as root, on the virtual machines of the comparison and nowhere else.
+# Install as /etc/sudoers.d/panpak-bench (mode 0440, owner root) by the person who owns the machine, after `visudo -cf` accepts it:
+#   sudo install -m 0440 -o root -g root sudoers-panpak-bench /etc/sudoers.d/panpak-bench
+# Replace BENCHUSER with the name of the user that runs the measurements. Every command is written with all its arguments: sudo refuses any other line, and
+# no wildcard is used. The paths are the ones of Fedora; if `sudo -n -l /usr/sbin/sysctl -q vm.drop_caches=3` does not answer with the command, look at
+# `readlink -f $(command -v sysctl)` and `readlink -f $(command -v systemctl)` and write those paths.
+#
+#   - drop the page cache, the dentries and the inodes before a measurement of the first start: it changes nothing that is kept and takes no data.
+#   - reboot, for the series of starts after a reboot (the user of an active session can also reboot with polkit; this is the fallback).
+Cmnd_Alias PANPAK_BENCH = /usr/sbin/sysctl -q vm.drop_caches=3, /usr/bin/systemctl reboot
+BENCHUSER ALL=(root) NOPASSWD: PANPAK_BENCH

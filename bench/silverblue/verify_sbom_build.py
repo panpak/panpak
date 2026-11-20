@@ -97,7 +97,7 @@ def main():
         comp = full['metadata']['component']
         assert comp['name'] == r['app']['name'] and comp['version'] == r['app']['version'], comp
         assert props(comp).get('panpak:id') == r['app']['id'], comp
-        print(f'{name}: coverage build, {len(comps)} components ({len(libs)} libraries, {len(found)} from the image), two builds with the same SBOM, export names {comp["name"]} {comp["version"]} PASS', flush=True)
+        print(f'{name}: coverage build, {len(comps)} components ({len(libs)} libraries, {len(found)} from the image, {len(built)} built from an archive), two builds with the same SBOM, export names {comp["name"]} {comp["version"]} PASS', flush=True)
     print('verify_sbom_build PASS')
 
 

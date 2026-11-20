@@ -102,12 +102,17 @@ def fs_used():
     return (st.f_blocks - st.f_bfree) * st.f_frsize
 
 
+# The two commands that the script runs as root, written as the sudoers rule of PROCEDURE.md allows them: the whole command line, no more.
+SYSCTL_DROP = ['/usr/sbin/sysctl', '-q', 'vm.drop_caches=3']
+REBOOT = ['/usr/bin/systemctl', 'reboot']
+
+
 def drop_caches():
-    """The page cache, the dentries and the inodes, so that the next start reads from the disk. Needs sudo without a password (PROCEDURE.md)."""
+    """The page cache, the dentries and the inodes, so that the next start reads from the disk. Needs the sudoers rule of PROCEDURE.md (section 1)."""
     sh(['sync'])
-    p = sh(['sudo', '-n', 'sh', '-c', 'echo 3 > /proc/sys/vm/drop_caches'], check=False)
+    p = sh(['sudo', '-n', *SYSCTL_DROP], check=False)
     if p.returncode != 0:
-        raise SystemExit('cannot drop the caches: the user needs `sudo -n` (PROCEDURE.md, section 1)')
+        raise SystemExit('cannot drop the caches: the sudoers rule of PROCEDURE.md (section 1) is not there, or it does not name ' + ' '.join(SYSCTL_DROP))
 
 
 def quiet(seconds=5):
@@ -264,7 +269,7 @@ def cmd_check(args):
     for what, cond in [
         ('the window extension has written "enabled"', extension_ready()),
         ('a default route (the bytes that come can be counted)', has_route()),
-        ('sudo without a password (drop the caches)', sh(['sudo', '-n', 'true'], check=False).returncode == 0),
+        ('the sudoers rule for the caches (and only for the caches and the reboot)', sh(['sudo', '-n', '-l', *SYSCTL_DROP], check=False).returncode == 0 and sh(['sudo', '-n', '-l', *REBOOT], check=False).returncode == 0),
         ('systemd-run --user works', sh(['systemd-run', '--user', '--scope', '--quiet', '--', 'true'], check=False).returncode == 0),
         ('the tool of the system is there', sh(['which', 'flatpak' if args.system == 'flatpak' else PANPAK], check=False).returncode == 0),
     ]:
@@ -342,8 +347,8 @@ def cmd_reboot(args):
     STATE.write_text(json.dumps(st))
     if st['done'] < st['total']:
         time.sleep(5)
-        if sh(['systemctl', 'reboot'], check=False).returncode != 0:
-            sh(['sudo', '-n', 'systemctl', 'reboot'])
+        if sh(['systemctl', 'reboot'], check=False).returncode != 0:  # polkit lets the user of the session do it; the sudoers rule is the fallback
+            sh(['sudo', '-n', *REBOOT])
     else:
         sh(['systemctl', '--user', 'disable', 'panpak-bench-reboot.service'], check=False)
         say('series done')

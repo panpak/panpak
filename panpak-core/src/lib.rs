@@ -337,6 +337,8 @@ pub struct Provenance {
     pub image: Option<String>,
     /// Dependencies taken from the image instead of built from the pinned source.
     pub image_deps: Option<Vec<ImageDep>>,
+    /// Sources that were built from a pinned archive and linked into the app (`[[build.deps]]` of the recipe), each as `<name> url <url> sha256 <hex>`.
+    pub deps: Option<Vec<String>>,
 }
 
 /// One dependency taken from the build image (declared in the recipe; the version is what the build found).
@@ -743,7 +745,7 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
     let mut out: Vec<(String, String)> = Vec::new();
     let v: toml::Value = toml::from_str(input).context("panpak.toml is not TOML")?;
     let t = v.as_table().context("panpak.toml: table required")?;
-    const PROVENANCE: &[&str] = &["source", "image", "image_deps"];
+    const PROVENANCE: &[&str] = &["source", "image", "image_deps", "deps"];
     const IMAGE_DEP: &[&str] = &["name", "package", "version"];
     const DESKTOP: &[&str] = &["schemes", "mime_types", "wm_class", "icons"];
     const XDG_DIR: &[&str] = &["name", "access"];
