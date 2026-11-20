@@ -12,7 +12,9 @@ use std::path::PathBuf;
 pub const PATH: &str = ".panpak/modules";
 /// The largest report a reader takes.
 pub const MAX_REPORT: usize = 4 << 20;
-const HEADER: &str = "panpak modules 1";
+const HEADER_PREFIX: &str = "panpak modules ";
+/// The version of the form that this reader knows.
+const VERSION: &str = "1";
 /// How many modules are named for a library.
 const NAMED: usize = 3;
 
@@ -92,7 +94,7 @@ pub fn make(files: &[ElfFile], bundled: &HashMap<String, PathBuf>) -> Report {
 impl Report {
     /// The text that goes in the tree: one line for each fact, fields separated by a tab, in a fixed order, so that the same tree gives the same bytes.
     pub fn render(&self) -> String {
-        let mut out = format!("{HEADER}\n");
+        let mut out = format!("{HEADER_PREFIX}{VERSION}\n");
         for p in &self.programs {
             out.push_str(&format!("program\t{p}\n"));
         }
@@ -105,11 +107,18 @@ impl Report {
         out
     }
 
-    /// The report from its text. Anything that is not exactly the form above is refused: the file is signed content and a reader does not guess.
+    /// The report from its text, by the grammar of PANPAK-FORMAT.md §7.2: the first line names the version of the form, then the `program` lines, the `needs` lines
+    /// and the `module` lines, each group in ascending byte order with no repeat. Anything else is refused: the file is signed content and a reader does not guess. A
+    /// version above the one this reader knows is "update panpak".
     pub fn parse(text: &str) -> Result<Report> {
         ensure!(text.len() <= MAX_REPORT, "the modules report is too large");
         let mut lines = text.split('\n');
-        ensure!(lines.next() == Some(HEADER), "the modules report does not start with `{HEADER}`");
+        let first = lines.next().unwrap_or("");
+        let version = first.strip_prefix(HEADER_PREFIX).filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && !v.starts_with('0'));
+        let Some(version) = version else { anyhow::bail!("the first line of the modules report is not `{HEADER_PREFIX}<version>`") };
+        if version != VERSION {
+            return Err(crate::coded(crate::ErrorCode::E0002, format!("the modules report has the form {version}, which this panpak does not know: update panpak")));
+        }
         let mut r = Report::default();
         let clean = |s: &str| -> Result<String> {
             ensure!(!s.is_empty() && !s.chars().any(char::is_control), "a field of the modules report is empty or has a control character");
@@ -117,16 +126,36 @@ impl Report {
         };
         let mut rest: Vec<&str> = lines.collect();
         ensure!(rest.pop() == Some(""), "the modules report does not end with a newline");
+        // The groups come in this order; `phase` is the lowest group that may still come.
+        let mut phase = 0;
+        let mut last: Option<String> = None;
         for line in rest {
             let f: Vec<&str> = line.split('\t').collect();
+            let (group, key) = match f.as_slice() {
+                ["program", p] => (0, clean(p)?),
+                ["needs", n] => (1, clean(n)?),
+                ["module", lib, ..] => (2, clean(lib)?),
+                _ => anyhow::bail!("a line of the modules report is not understood: {line:?}"),
+            };
+            ensure!(group >= phase, "the modules report has its groups out of order: {line:?}");
+            if group > phase {
+                phase = group;
+                last = None;
+            }
+            ensure!(last.as_ref().is_none_or(|l| *l < key), "the modules report is not in ascending order without repeats: {line:?}");
+            last = Some(key.clone());
             match f.as_slice() {
-                ["program", p] => r.programs.push(clean(p)?),
-                ["needs", n] => {
-                    r.required.insert(clean(n)?);
+                ["program", _] => r.programs.push(key),
+                ["needs", _] => {
+                    r.required.insert(key);
                 }
-                ["module", lib, count, by @ ..] if !by.is_empty() && by.len() <= NAMED => {
+                ["module", _, count, by @ ..] if !by.is_empty() && by.len() <= NAMED => {
+                    ensure!(!count.starts_with('0') && count.bytes().all(|b| b.is_ascii_digit()), "a count of the modules report is not a number");
                     let count: usize = count.parse().context("count in the modules report")?;
-                    r.unbundled.push(Unbundled { lib: clean(lib)?, count, by: by.iter().map(|s| clean(s)).collect::<Result<_>>()? });
+                    ensure!(count >= by.len(), "a count of the modules report is smaller than the modules it names");
+                    let by: Vec<String> = by.iter().map(|s| clean(s)).collect::<Result<_>>()?;
+                    ensure!(by.windows(2).all(|w| w[0] < w[1]), "the modules of a line of the report are not in ascending order without repeats");
+                    r.unbundled.push(Unbundled { lib: key, count, by });
                 }
                 _ => anyhow::bail!("a line of the modules report is not understood: {line:?}"),
             }
@@ -214,7 +243,17 @@ mod tests {
         assert_eq!(Report::parse(&text).unwrap(), r);
         assert_eq!(hash(text.as_bytes()).len(), 64);
         // Not exactly the form: refused.
-        assert!(Report::parse("panpak modules 2\n").is_err());
+        let newer = Report::parse("panpak modules 2\n").unwrap_err().to_string();
+        assert!(newer.contains("update panpak"), "{newer}");
+        assert!(Report::parse("panpak modules\n").is_err() && Report::parse("panpak modules 01\n").is_err() && Report::parse("panpak modules 1.0\n").is_err());
+        // The groups in their order, each in ascending order without a repeat.
+        assert!(Report::parse("panpak modules 1\nneeds\tb\nneeds\ta\n").is_err(), "not ascending");
+        assert!(Report::parse("panpak modules 1\nneeds\ta\nneeds\ta\n").is_err(), "a repeat");
+        assert!(Report::parse("panpak modules 1\nneeds\ta\nprogram\tp\n").is_err(), "groups out of order");
+        assert!(Report::parse("panpak modules 1\nmodule\tl\t1\tb\ta\n").is_err(), "paths not ascending");
+        assert!(Report::parse("panpak modules 1\nmodule\tl\t1\ta\tb\n").is_err(), "a count below the paths");
+        assert!(Report::parse("panpak modules 1\nmodule\tl\t2\ta\tb\tc\td\te\n").is_err(), "more than three paths");
+        assert!(Report::parse("panpak modules 1\nmodule\tl\t2\ta\tb\n").is_ok());
         assert!(Report::parse(&text.replace("program\t", "prog\t")).is_err());
         assert!(Report::parse(text.trim_end()).is_err(), "a missing final newline");
         assert!(Report::parse("panpak modules 1\nneeds\ta\u{7}b\n").is_err());

@@ -1133,17 +1133,25 @@ it) whose BLAKE3 hash, in 64 lowercase hex characters, is `[abi].modules`. A *pr
 that they reach. A library that is not required and that the tree does not provide is asked only by *modules*: plugins, extension modules and workbenches that are
 loaded on demand.
 
-The file is text, UTF-8, one fact in each line ending in LF, fields separated by TAB, no empty field and no control character:
+The file is UTF-8 text. Its grammar (RFC 5234; `TAB` is %x09, `LF` is %x0A):
 
 ```
-panpak modules 1
-program<TAB>path                          one for each program, in order
-needs<TAB>name                            one for each required library, in order
-module<TAB>name<TAB>count<TAB>path ...    a library only modules need and the tree lacks; count is how many modules ask for it, then the first 1 to 3 in order
+report   = header *program *needs *module
+header   = "panpak modules " version LF          ; the form of the file, not of the package
+version  = %x31-39 *DIGIT                        ; no leading zero; "1" is the only form defined
+program  = "program" TAB field LF                ; a path of the index
+needs    = "needs" TAB field LF                  ; a library name (a file name or a SONAME)
+module   = "module" TAB field TAB count 1*3(TAB field) LF
+count    = %x31-39 *DIGIT                        ; how many modules ask for the library
+field    = 1*(%x20-7E / %x80-FF)                 ; UTF-8, no control character, no TAB
 ```
 
-A reader MUST refuse a file that is not exactly of this form, and a file whose hash is not the one in the manifest. A package that has an ELF file MUST have the
-report; one that has none has neither the file nor `[abi].modules`.
+The first line is the version of the form. A Reader that knows the form MUST refuse a file whose first line is not exactly of this grammar; one that finds a version above
+the ones it knows MUST refuse the package with "update panpak". A change to the grammar, for a field or a line, is a new version. Inside a group the lines are in ascending
+byte order of their first field and no first field repeats; the three groups come in the order above. For a `module` line the paths after the count are in ascending byte
+order without a repeat, `count` is at least their number, and they are paths of the index. A Reader MUST refuse a report that breaks any of these, and a file whose BLAKE3
+hash is not the one in the manifest. A package that has an ELF file MUST have the report; one that has none has neither the file nor `[abi].modules`. A Writer MUST give
+the same bytes for the same tree.
 
 Resolution (§7) uses it: a library that is not required and that neither the system nor the tree provides is left out, and the app starts; the modules that ask for it do
 not load, and `panpak inspect` lists the library as "not available on this system". A required library that nothing provides is an error where the app starts, as before.
