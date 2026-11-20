@@ -543,6 +543,24 @@
   ],
   "ok": false
  },
+ "invalid-sbom-coverage-form.panpak": {
+  "err": [
+   "sbom.coverage"
+  ],
+  "ok": false
+ },
+ "invalid-sbom-coverage-missing.panpak": {
+  "err": [
+   "sbom"
+  ],
+  "ok": false
+ },
+ "invalid-sbom-hash-form.panpak": {
+  "err": [
+   "sbom.hash"
+  ],
+  "ok": false
+ },
  "invalid-scheme-digit-first.panpak": {
   "code": "PANPAK-E0007",
   "err": [
@@ -866,6 +884,14 @@
   "ok": true
  },
  "valid-release-full.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-sbom-unknown-coverage.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-sbom.panpak": {
   "err": [],
   "ok": true
  },

@@ -365,6 +365,9 @@ jobs:
       - name: Who may sign an app (key new, the first install, the succession of the key, the recovery key, a thief, a change of channel)
         timeout-minutes: 5
         run: python3 tests/with_timeout.py 120 tests/trust_update.py
+      - name: The SBOM (written by pack, signed through the manifest, the same bytes for the same tree, read from a package, an installed app and a URL by range)
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/sbom.py
       - name: No test reaches the session bus of the real user (the canary of the runner, and the address of a test run by hand)
         timeout-minutes: 2
         run: python3 tests/with_timeout.py 60 tests/bus_guard.py

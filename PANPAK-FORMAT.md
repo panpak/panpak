@@ -208,6 +208,10 @@ display = ["x11", "wayland"]   # one of them is enough
 portals = ["document"]
 bus = "private"                # "none" or "private" (the filtered session bus)
 
+[sbom]                         # written by `panpak pack` (§3.1.12); not critical
+hash = "<64 hex>"              # BLAKE3 of .panpak/sbom.cdx.json (§7.3)
+coverage = "best-effort"       # "build" or "best-effort"
+
 [permissions]                  # static, applied by Landlock
 x11 = false                    # opt-in: X11 access, default false
 audio = false                  # opt-in: the PipeWire and PulseAudio sockets of the session (playing and recording), default false
@@ -718,6 +722,21 @@ runs the command. An install over ssh, from a script or in the build of an image
 
 The messages for the person are in the catalog (English and Italian), like the other messages of the client; the names (`glibc`, `Linux`, `Landlock`, the display servers) are
 not translated.
+
+### 3.1.12 The `[sbom]` table [NORMATIVE]
+
+`[sbom]` names the software bill of materials of the package (§7.3): `hash` is the BLAKE3 hash of `.panpak/sbom.cdx.json`, in 64 lowercase hex characters, and
+`coverage` says how much of the package the document covers. `panpak pack` writes both; `pack` refuses a `[sbom]` in `panpak.toml` (`PANPAK-E0008`). The table is **not
+critical**: a Reader that does not read SBOMs loses nothing that matters for safety, and no key of it is in `[format].critical`. An unknown key is ignored, like the keys of
+the other tables that are not critical.
+
+| Key | Value |
+|---|---|
+| `hash` | 64 lowercase hex characters |
+| `coverage` | 1 to 16 characters, lowercase ASCII letters and `-`. Defined: `build`, `best-effort`. A Reader MUST accept a value that it does not know and show it as it is |
+
+A Reader MUST refuse a `hash` or a `coverage` that is not of the form, a `[sbom]` that lacks one of the two, and a document whose BLAKE3 hash is not `hash`. A package
+made before the table existed has none, and is not refused for that.
 
 ### 3.2 Keys, trust on first use, and successions [NORMATIVE]
 
@@ -1250,6 +1269,37 @@ LD_LIBRARY_PATH=/$ORIGIN/.panpak-lib-<h>/.farm:/$ORIGIN/.panpak-lib-<h>/lib:...
   (`PANPAK-E0009`, "make it again"), and a package with no program gets no `LD_LIBRARY_PATH` from the runtime.
   `--library-path` of the bundled loader (world B) is absolute: it is an argument of the loader, not an environment variable that
   other programs inherit.
+
+### 7.3 The SBOM [NORMATIVE]
+
+`panpak pack` writes `.panpak/sbom.cdx.json`, a file of the tree (so the signed index covers it), as a [CycloneDX](https://cyclonedx.org/) 1.6 JSON document. Its
+BLAKE3 hash is `[sbom].hash` (§3.1.12), so the signature covers the document through the manifest, and a Reader that has the manifest can read the document alone: the
+index gives the chunks of the file, and a request for those chunks (a range request, for a package that is served) is enough, with no download of the rest of the package.
+A document larger than 8 MiB is refused by `pack` and by a Reader.
+
+What the document holds depends on `[sbom].coverage`:
+
+- **`build`**: the package was made by `panpak build` (it has `[provenance]`, §3.1.7). The components are the source (`vcs` or `distribution` reference, with the commit
+  or the SHA-256 that the recipe pins), the build image, each dependency taken from the build image (its package and version), and the libraries of the tree.
+- **`best-effort`**: the package was made by `pack` or `convert` from files, and the document says only what the files show: the libraries that the tree carries (an ELF
+  file with a SONAME: its name, its path and its BLAKE3 hash) and, for a conversion, the file it was made from (name, version, SHA-256). It lists no version of a library
+  that nothing signed names, and it is not a statement that nothing else is in the package.
+
+A Writer MUST give the same bytes for the same input: no time, no random serial number, no name or version of the app (the tree is addressed by its content, so the same
+files under two names are one tree, and a name in the file would make every release another tree; the manifest names the app), and the components in a fixed order (what the
+package was made from, then the libraries in order of their path). The first lines of the document, up to `"version": 1,`, are fixed, and the `metadata` holds the properties `panpak:coverage` (the
+coverage of the manifest) and `panpak:components` (how many components there are), so that a Reader can show a summary without parsing the document; a Reader MUST NOT
+rely on that form for anything that matters, because the hash is what is signed. The names that Panpak adds to CycloneDX are properties with the prefix `panpak:`.
+
+`panpak sbom [--export] <package | app id | URL>` writes the signed document. For an installed app it reads the file of the tree and checks it against the hash; for a package served
+over HTTPS it reads the footer, the manifest, the signature block and the index, and then only the chunks of the SBOM, and checks the signature against the key that the
+manifest names. That check shows that the document is whole and was signed by whoever holds that key: it does not make the key trusted, and the command says so.
+
+**The document for a scanner.** The file of the package has no identity, no serial number and no time, so that it is the same bytes for the same files. A scanner usually wants
+them, so `panpak sbom --export` writes the complete document: the same components, and `metadata.component` (the name, the version, and the id as the property `panpak:id`) taken
+from the signed manifest, a `serialNumber` that is a function of the root of the tree and of `[sbom].hash` (the same package, the same number), and `metadata.timestamp` (the
+time of the export, or `SOURCE_DATE_EPOCH` when it is set, so that an export can be reproduced). The export reads only the manifest and the SBOM (a range request for a URL), is
+made at the time and never stored, and refuses a signed document that is not of the form that `pack` writes. This is the way to give the SBOM of a package to a scanner.
 
 ## 8. Out of scope of v1 [INFORMATIVE]
 

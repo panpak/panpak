@@ -374,6 +374,15 @@ pub fn validate_manifest(man: &Manifest) -> Result<()> {
     if let Some(h) = &man.host {
         crate::host::validate(h)?;
     }
+    if let Some(s) = &man.sbom {
+        if s.hash.len() != 64 || !s.hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(bad_field("sbom.hash", "must be 64 lowercase hex characters"));
+        }
+        // A coverage this panpak does not know is shown as it is: the table is not critical.
+        if s.coverage.is_empty() || s.coverage.len() > 16 || !s.coverage.bytes().all(|b| b.is_ascii_lowercase() || b == b'-') {
+            return Err(bad_field("sbom.coverage", "must be lowercase letters and dashes, 16 characters at most"));
+        }
+    }
     if let Some(a) = &man.abi {
         for (field, list) in [("abi.needs", &a.needs), ("abi.prefer_host", &a.prefer_host)] {
             for n in list.iter().flatten() {

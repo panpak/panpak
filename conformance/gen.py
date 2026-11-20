@@ -402,6 +402,14 @@ def main():
     bad_host("invalid-host-unknown-key.panpak", manifest(extra='[host]\nfuture = 1\n'), "host")
     bad_host("invalid-host-critical-missing.panpak", manifest(extra='[host]\nkernel = "5.15"\n', fmt=fmt(critical='["release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash", "trust.recovery", "trust.root", "trust.threshold"]')), "critical")
 
+    # ---- the [sbom] table (section 3.1.12): not critical, so a reader that does not use it still reads the package ----
+    h64 = "ab" * 32
+    put("valid-sbom.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=f'[sbom]\nhash = "{h64}"\ncoverage = "best-effort"\n'), blobs=std_index()[2]), True)
+    put("valid-sbom-unknown-coverage.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=f'[sbom]\nhash = "{h64}"\ncoverage = "full-audit"\n'), blobs=std_index()[2]), True)
+    bad_host("invalid-sbom-hash-form.panpak", manifest(extra='[sbom]\nhash = "ABCD"\ncoverage = "build"\n'), "sbom.hash")
+    bad_host("invalid-sbom-coverage-form.panpak", manifest(extra=f'[sbom]\nhash = "{h64}"\ncoverage = "Best Effort"\n'), "sbom.coverage")
+    bad_host("invalid-sbom-coverage-missing.panpak", manifest(extra=f'[sbom]\nhash = "{h64}"\n'), "sbom")
+
     # manifest_len that does not add up (footer man_len +1)
     good = bytearray(open(os.path.join(FIX, "valid-min.panpak"), "rb").read())
     ml = struct.unpack_from("<Q", good, len(good) - 40)[0]

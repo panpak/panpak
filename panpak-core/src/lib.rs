@@ -9,6 +9,7 @@ pub mod frames;
 mod elfsym;
 pub mod host;
 pub mod modules;
+pub mod sbom;
 pub mod chooserhost;
 pub mod docshare;
 pub mod filechooser;
@@ -259,6 +260,8 @@ pub struct Manifest {
     pub trust: Option<trust::Trust>,
     /// What the package needs of the system (PANPAK-FORMAT.md §3.1.11). Written by `panpak pack`.
     pub host: Option<host::Host>,
+    /// The software bill of materials of the package (PANPAK-FORMAT.md §7.3). Written by `panpak pack`.
+    pub sbom: Option<Sbom>,
     pub update: Option<Update>,
     /// Environment variables that point the app at files of its own tree (PANPAK-FORMAT.md §3.1.6): values relative to
     /// `${PANPAK_ROOT}`, from a fixed list of names, checked by `pack` and by `install`.
@@ -314,6 +317,14 @@ pub struct Release {
     /// The BLAKE3 hash (64 hex characters) of `.panpak/history`, the file of the tree that lists the earlier releases of the channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<String>,
+}
+
+/// The `[sbom]` table: the hash of `.panpak/sbom.cdx.json` and how much of the package it covers (`build` or `best-effort`). Not critical.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Sbom {
+    /// The BLAKE3 hash (64 lowercase hex characters) of the file.
+    pub hash: String,
+    pub coverage: String,
 }
 
 /// What `panpak build` records about the build, so that the user can see it at install.
@@ -597,6 +608,7 @@ pub const SECTIONS: &[(&str, bool)] = &[
     ("origin", false),
     ("trust", true),
     ("host", true),
+    ("sbom", false),
     ("update", false),
     ("env", true),
     ("provenance", false),
@@ -604,6 +616,7 @@ pub const SECTIONS: &[(&str, bool)] = &[
 pub(crate) const TRUST_PATHS: &[&str] = &["root", "threshold", "recovery", "domain", "chain"];
 const RELEASE_KEYS: &[&str] = &["revision", "floor", "security", "channel", "history"];
 const FORMAT_KEYS: &[&str] = &["min_panpak", "critical", "compression", "chunking", "packed_by"];
+pub(crate) const SBOM_KEYS: &[&str] = &["hash", "coverage"];
 const ABI_KEYS: &[&str] = &["needs", "prefer_host", "modules"];
 const PERM_KEYS: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"];
 const LAUNCH_KEYS: &[&str] = &["args", "env"];
@@ -796,6 +809,13 @@ fn unknown_keys_of(input: &str) -> Result<Vec<(String, String)>> {
             }
         }
     }
+    if let Some(v) = get("sbom") {
+        for k in keys(v, "[sbom]")? {
+            if !SBOM_KEYS.contains(&k) {
+                out.push(("[sbom]".to_string(), k.to_string()));
+            }
+        }
+    }
     if let Some(v) = get("release") {
         for k in keys(v, "[release]")? {
             if !RELEASE_KEYS.contains(&k) {
@@ -887,6 +907,9 @@ pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
     }
     if toml::from_str::<toml::Value>(input).ok().and_then(|v| v.get("release")?.get("history").cloned()).is_some() {
         return Err(coded(ErrorCode::E0008, "panpak.toml: release.history is written by `panpak pack` (give the earlier package with --previous), remove it"));
+    }
+    if toml::from_str::<toml::Value>(input).ok().and_then(|v| v.get("sbom").cloned()).is_some() {
+        return Err(coded(ErrorCode::E0008, "panpak.toml: [sbom] is written by `panpak pack`, remove it"));
     }
     // `permissions.devices` was a boolean in the test versions: it is a list of categories now.
     if let Some(d) = toml::from_str::<toml::Value>(input).ok().and_then(|v| v.get("permissions")?.get("devices").cloned()) {
@@ -2315,6 +2338,7 @@ mod tests {
             format: None,
             release: None,
             host: None,
+            sbom: None,
             abi: None,
             permissions: None,
             launch: None,

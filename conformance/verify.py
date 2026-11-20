@@ -366,6 +366,19 @@ HOST_PORTALS = {"document"}
 HOST_BUSES = {"none", "private"}
 
 
+def check_sbom(man):
+    """The `[sbom]` table (section 3.1.12): the hash of `.panpak/sbom.cdx.json` and the coverage. It is not critical: a key that this reader does not know is ignored."""
+    s = man.get("sbom")
+    if s is None:
+        return
+    h = s.get("hash")
+    if not (isinstance(h, str) and len(h) == 64 and all(c in "0123456789abcdef" for c in h)):
+        raise Fail("invalid manifest field sbom.hash")
+    c = s.get("coverage")
+    if not (isinstance(c, str) and 1 <= len(c) <= 16 and all(ch.islower() and ch.isascii() or ch == "-" for ch in c)):
+        raise Fail("invalid manifest field sbom.coverage")
+
+
 def check_host(man):
     """The `[host]` table (section 3.1.11): the forms, and a name that this reader does not know is "update panpak"."""
     h = man.get("host")
@@ -515,6 +528,7 @@ def check_fields(man):
     mods = man.get("abi", {}).get("modules")
     if mods is not None and not (isinstance(mods, str) and len(mods) == 64 and all(c in "0123456789abcdef" for c in mods)):
         raise Fail("invalid manifest field abi.modules")
+    check_sbom(man)
     check_host(man)
     check_devices(man)
     check_home_paths(man)

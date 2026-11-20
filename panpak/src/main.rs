@@ -33,7 +33,7 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
+    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak sbom [--export] <package | app id | https URL> [--allow-insecure-http] [--timeout <s>]   (the software bill of materials of a package, CycloneDX 1.6 JSON; --export completes it with the name, id and version, a serial number and the time, for a scanner; from a URL only the parts of the package that hold it are downloaded)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the key the author published, or the key of the file; --yes alone does not)\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
@@ -1609,6 +1609,32 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
         }
     }
 
+    // The SBOM (PANPAK-FORMAT.md §7.3): the libraries that the tree carries, with their hashes, and what the package was made from. A file of the tree whose
+    // hash the manifest signs; not critical.
+    {
+        ensure!(man.sbom.is_none(), "[sbom] is written by `panpak pack`");
+        let mut libs = Vec::new();
+        for p in payload.iter() {
+            if let (Some(src), Some(soname)) = (&p.source, p.entry.info.soname.as_ref()) {
+                if p.entry.info.is_elf() {
+                    let mut hasher = blake3::Hasher::new();
+                    hasher.update_reader(File::open(src).with_context(|| format!("read {}", src.display()))?)?;
+                    libs.push(panpak_core::sbom::Lib { path: p.entry.path.to_str().context("non-UTF-8 path")?.to_string(), soname: soname.clone(), blake3: panpak_core::hex(hasher.finalize().as_bytes()) });
+                }
+            }
+        }
+        let (text, coverage) = panpak_core::sbom::make(&panpak_core::sbom::Input { manifest: &man, libs });
+        ensure!(text.len() <= panpak_core::sbom::MAX_SBOM, "the SBOM is {} bytes, more than the {} that a reader takes", text.len(), panpak_core::sbom::MAX_SBOM);
+        man.sbom = Some(panpak_core::Sbom { hash: panpak_core::sbom::hash(text.as_bytes()), coverage: coverage.to_string() });
+        payload.push(PayloadEntry {
+            entry: Entry { path: PathBuf::from(panpak_core::sbom::PATH), mode: 0o644, kind: Kind::File { chunks: Vec::new() }, info: Default::default() },
+            source: None,
+            embedded: None,
+            data: Some(text.into_bytes()),
+        });
+        payload.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
+    }
+
     // A Qt tree without the plugins that Qt loads with dlopen starts, and then looks or works wrong without a word: no dark mode,
     // no tray icon. Say so while the author can still fix it.
     for note in qt_plugin_notes(payload.iter().map(|p| p.entry.path.as_path())) {
@@ -3148,6 +3174,92 @@ fn print_isolation(man: &panpak_core::Manifest) {
     }
 }
 
+/// The SBOM of a package that is served over HTTP, read with range requests: the footer, the manifest and its signature, the index, and only the chunks of the SBOM file
+/// (the rest of the package is not downloaded). The signature is checked against the key that the manifest names, which shows that the file is whole and was signed by
+/// whoever holds that key; the key itself is not checked against anything here, so the fingerprint is printed.
+fn remote_sbom(url: &str, allow_insecure: bool, timeout_secs: u64) -> Result<(Vec<u8>, panpak_core::Manifest, [u8; 32])> {
+    let agent = agent_for(url, allow_insecure, timeout_secs)?;
+    let (foot, total) = http_suffix(&agent, url, panpak_core::FOOTER_LEN)?;
+    let ft = panpak_core::parse_footer(total, &foot)?;
+    panpak_core::check_layout(total, &ft)?;
+    ensure!(ft.man_len <= panpak_core::MAX_MANIFEST_TOML, "remote manifest too large");
+    ensure!(ft.index_len <= panpak_core::MAX_INDEX_COMP, "remote index too large");
+    let mut downloaded = foot.len() as u64;
+    let mut range = |start: u64, end: u64| -> Result<Vec<u8>> {
+        let (b, t) = http_range(&agent, url, start, end)?;
+        ensure!(t == total, "file changed during download ({total} vs {t})");
+        downloaded += b.len() as u64;
+        Ok(b)
+    };
+    let man_b = range(ft.man_off, ft.man_off + ft.man_len - 1)?;
+    let man: panpak_core::Manifest = toml::from_str(std::str::from_utf8(&man_b).context("non-UTF-8 manifest")?)?;
+    panpak_core::require_format(&man)?;
+    let key = panpak_core::parse_pubkey(panpak_core::trust::require(&man)?.root.first().context("[trust] has no root")?)?;
+    let sig_b = range(ft.man_off + ft.man_len, total - panpak_core::FOOTER_LEN - 1)?;
+    let signed = panpak_core::package_message(ft.version, ft.flags, &ft.root, &man_b);
+    key.verify_strict(&signed, &ed25519_dalek::Signature::from_bytes(&panpak_core::parse_sig_block(&sig_b)?))
+        .map_err(|_| coded(ErrorCode::E1001, "invalid remote signature: the package is not whole or was not signed by the key it names"))?;
+    panpak_core::check_format(&man)?;
+    panpak_core::trust::check(&man)?;
+    panpak_core::check_release(&man)?;
+    panpak_core::validate_manifest(&man)?;
+    ensure!(man.sbom.is_some(), "this package has no SBOM: it was made before `panpak pack` wrote one");
+    let index_comp = range(ft.index_off, ft.index_off + ft.index_len - 1)?;
+    let index_raw = panpak_core::decode_capped(&index_comp, panpak_core::MAX_INDEX_RAW)?;
+    ensure_code!(blake3::hash(&index_raw).as_bytes() == &ft.root, ErrorCode::E0004, "remote root hash mismatch: corrupt or tampered download, retry; if it persists do not trust the file");
+    let (chunks, entries) = panpak_core::parse_index(&index_raw)?;
+    let want = Path::new(panpak_core::sbom::PATH);
+    let entry = entries.iter().find(|e| e.path == want).with_context(|| format!("{} is not in the package", panpak_core::sbom::PATH))?;
+    let Kind::File { chunks: ids } = &entry.kind else { bail!("{} is not a regular file", panpak_core::sbom::PATH) };
+    let raw_total: u64 = ids.iter().map(|&i| chunks.get(i as usize).map_or(u64::MAX, |c| c.raw as u64)).fold(0, u64::saturating_add);
+    ensure!(raw_total <= panpak_core::sbom::MAX_SBOM as u64, "the SBOM is larger than {} bytes", panpak_core::sbom::MAX_SBOM);
+    let mut dec = panpak_core::ChunkDecoder::new()?;
+    let (mut bytes, mut raw) = (Vec::new(), Vec::new());
+    let mut wanted: Vec<&panpak_core::Chunk> = ids.iter().map(|&i| chunks.get(i as usize).context("bad chunk id")).collect::<Result<_>>()?;
+    for c in wanted.drain(..) {
+        ensure!(c.off.checked_add(c.comp as u64).is_some_and(|e| e <= ft.index_off), "chunk outside region: {c:?}");
+        dec.decode(&range(c.off, c.off + c.comp as u64 - 1)?, c.raw as u64, &mut raw)?;
+        panpak_core::verify_chunk(c, &raw)?;
+        bytes.extend_from_slice(&raw);
+    }
+    let summary = panpak_core::sbom::check(&bytes, &man)?;
+    eprintln!("panpak: {} {} signed with the key {} (the key is not checked against any you trust); SBOM coverage {}; {downloaded} of {total} bytes downloaded", man.app.name, man.app.version, panpak_core::fingerprint(&key), summary.coverage);
+    Ok((bytes, man, ft.root))
+}
+
+/// `panpak sbom [--export] <package | app id | URL>`: the software bill of materials that the manifest signs, as it is in the package (CycloneDX 1.6 JSON), on the
+/// standard output. With `--export` the complete document for a scanner: the same, with the name, id and version of the app, a serial number and the time added from the
+/// signed manifest (the file of the package has none, so that the same files are the same bytes).
+fn cmd_sbom(arg: &str, export: bool, allow_insecure: bool, timeout_secs: u64) -> Result<()> {
+    use std::io::Write as _;
+    let (bytes, man, root) = if arg.starts_with("https://") || arg.starts_with("http://") {
+        remote_sbom(arg, allow_insecure, timeout_secs)?
+    } else {
+        let given = Path::new(arg);
+        let path = if given.is_file() { given.to_path_buf() } else { store_dir()?.join("apps").join(arg).join("current") };
+        ensure_code!(path.exists(), ErrorCode::E5001, "{arg}: not a package file, not an installed app and not an address (see `panpak list`)");
+        let mut o = panpak_core::record::open_verified(&path)?;
+        ensure!(o.manifest.sbom.is_some(), "this package has no SBOM: it was made before `panpak pack` wrote one");
+        let found = if o.is_record {
+            let tree = store_dir()?.join("trees").join(panpak_core::hex(&o.footer.root));
+            ensure_code!(tree.join(".complete").exists(), ErrorCode::E2007, "the files of the installed version are missing from the store: run `panpak repair {arg}`");
+            panpak_core::sbom::load_from_tree(&tree, &o.manifest)?
+        } else {
+            panpak_core::sbom::load_from_package(&mut o.file, &o.raw_index, &o.manifest)?
+        };
+        (found.context("this package has no SBOM")?, o.manifest.clone(), o.footer.root)
+    };
+    let bytes = if export {
+        // SOURCE_DATE_EPOCH (https://reproducible-builds.org/specs/source-date-epoch/) makes the export reproducible too.
+        let now = std::env::var("SOURCE_DATE_EPOCH").ok().and_then(|v| v.parse().ok()).unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+        panpak_core::sbom::export(&bytes, &man, &root, now)?
+    } else {
+        bytes
+    };
+    std::io::stdout().write_all(&bytes).context("write the SBOM")?;
+    Ok(())
+}
+
 /// `panpak inspect [--json] <package or app id>`: what a package is, who signed it, what it may do and may not do, and how it is isolated.
 /// One line for `inspect` of a converted app when scripts of the app set `LD_LIBRARY_PATH` themselves (a launcher of the AppImage: Shotcut's `usr/bin/shotcut`). The
 /// scripts are the ones that the signed index marks (no file is read).
@@ -3200,20 +3312,24 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
     if json {
         let q = |s: &str| format!("{s:?}");
         println!(
-            "{{\"id\":{},\"name\":{},\"version\":{},\"key_fingerprint\":{},\"isolation\":{},\"permissions\":{},\"modules_not_available\":[{}]}}",
+            "{{\"id\":{},\"name\":{},\"version\":{},\"key_fingerprint\":{},\"isolation\":{},\"permissions\":{},\"modules_not_available\":[{}],\"sbom_coverage\":{}}}",
             q(&man.app.id),
             q(&man.app.name),
             q(&man.app.version),
             q(&fp),
             q(if perms::top_level(&items) == Some(perms::Level::High) { "partial" } else { "full" }),
             perms::items_json(&items),
-            unavailable.iter().map(|u| q(&u.lib)).collect::<Vec<_>>().join(",")
+            unavailable.iter().map(|u| q(&u.lib)).collect::<Vec<_>>().join(","),
+            man.sbom.as_ref().map_or("null".to_string(), |s| q(&s.coverage))
         );
         return Ok(());
     }
     println!("{} {} ({})", man.app.name, man.app.version, man.app.id);
     println!("signed with the key {fp}");
     println!("key: {key}");
+    if let Some(s) = &man.sbom {
+        println!("SBOM: {} coverage (`panpak sbom --export {arg}` gives it to a scanner)", s.coverage);
+    }
     if let Some(o) = &man.origin {
         println!("converted from {} (NOT verified by the author; signed by the converter, not upstream)", o.converted_from);
         // The scripts of the app are not rewritten; one that sets LD_LIBRARY_PATH itself overrides the library path of panpak for the programs it starts.
@@ -4602,6 +4718,25 @@ fn real_main() -> Result<()> {
                 println!("{a}");
             }
             Ok(())
+        }
+        Some("sbom") => {
+            let (mut target, mut insecure, mut timeout, mut export) = (None, false, 30u64, false);
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--allow-insecure-http" => insecure = true,
+                    "--export" => export = true,
+                    "--timeout" => {
+                        i += 1;
+                        timeout = args.get(i).and_then(|v| v.parse().ok()).ok_or_else(|| coded(ErrorCode::E5002, "--timeout needs a number of seconds"))?;
+                    }
+                    x if x.starts_with('-') => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
+                    x if target.is_none() => target = Some(x.to_string()),
+                    x => bail_code!(ErrorCode::E5001, "unexpected argument: {x}\n{usage}", usage = usage()),
+                }
+                i += 1;
+            }
+            cmd_sbom(&target.ok_or_else(|| coded(ErrorCode::E5002, "sbom [--export] <package | app id | URL>"))?, export, insecure, timeout)
         }
         Some("resign") => {
             let (mut pkg, mut out, mut secret_file) = (None, None, None);
