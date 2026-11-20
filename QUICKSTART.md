@@ -129,7 +129,7 @@ With no terminal on stdin the command refuses to continue
 (`PANPAK-E5004`) unless you say whom to trust: `--expect-key <key>` (the key the author published: a package of
 another key is refused, `PANPAK-E1004`, and nothing is pinned) or `--trust-first-key` (you trust the key of this file). `--yes` alone is not enough for a first install
 (`PANPAK-E1003`), **unless the domain of the author confirms the key**: when the package names a domain, `install` asks
-`https://<domain>/.well-known/panpak.toml` first (once, it says what that server learns), and a confirmed key needs only `--yes`; the domain is shown in capitals and the key is
+`https://<domain>/.well-known/panpak.toml` first (once, it says what that server learns), and a confirmed key needs only `--yes`; the domain is shown on a line of its own (in the `xn--` form if it has characters outside ASCII) and the key is
 behind `--show-key`. A domain that says the key is not the author's stops the install (`PANPAK-E1006`, even with `--yes` and `--trust-first-key`; `--despite-domain-mismatch`
 goes on, and you still say whom you trust). `--offline` (one command) and `panpak config set trust.confirm_domain off` do not ask; the key is then "not confirmed". The line "Updates: from <host>, named by the author" says where the new versions will come from. The rule itself
 (pin, rotation, atomic update) is specified in `PANPAK-FORMAT.md` §3.2.

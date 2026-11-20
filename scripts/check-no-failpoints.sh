@@ -1,7 +1,7 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # A release binary must not hold the failpoints of the test builds (panpak_core::failpoint!): the names of the points, the message that a point
-# prints, and the name of the environment variable that arms one.
+# prints, the name of the environment variable that arms one, and the one that points the check of a domain at a local server.
 # Usage: scripts/check-no-failpoints.sh <binary>...            fails (1) if one of them holds any
 #        scripts/check-no-failpoints.sh --expect <binary>...   fails (1) if one of them holds none: proves that the check can see them
 set -eu
@@ -16,7 +16,7 @@ for f in "$@"; do
   [ -f "$f" ] || { echo "error: no such file: $f" >&2; exit 2; }
   n=0
   # The words are split so that this script does not hold them as one string.
-  for w in "FAIL""POINT" "fail""point " "install.record_""written" "prepare.tree_""renamed" "rollback.between_""links"; do
+  for w in "FAIL""POINT" "fail""point " "install.record_""written" "prepare.tree_""renamed" "rollback.between_""links" "PANPAK_TEST_""RESOLVE"; do
     if grep -aqF -- "$w" "$f"; then
       n=$((n + 1))
     fi

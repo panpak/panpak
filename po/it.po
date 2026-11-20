@@ -496,14 +496,17 @@ msgstr "controller di gioco"
 msgid "cameras"
 msgstr "fotocamere"
 
-msgid "Published by: {domain}"
-msgstr "Pubblicata da: {domain}"
+msgid "Published by:"
+msgstr "Pubblicata da:"
 
 msgid "Confirmed: {domain} lists this key for {app} (https://{domain}/.well-known/panpak.toml)."
 msgstr "Confermato: {domain} elenca questa chiave per {app} (https://{domain}/.well-known/panpak.toml)."
 
 msgid "Confirmed: {domain} lists the new key of {app}."
 msgstr "Confermato: {domain} elenca la nuova chiave di {app}."
+
+msgid "Install it only if you trust the place where you got the file."
+msgstr "Installalo solo se ti fidi del posto da cui hai preso il file."
 
 msgid "Not confirmed: {why}. The key of the package is the only proof of who made it."
 msgstr "Non confermato: {why}. La chiave del pacchetto è l'unica prova di chi lo ha fatto."

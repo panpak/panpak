@@ -61,6 +61,9 @@ msgstr ""
 msgid "If you do not accept, you stay on the current version."
 msgstr ""
 
+msgid "Install it only if you trust the place where you got the file."
+msgstr ""
+
 msgid "Install xdg-dbus-proxy and start it from a session that has a user bus."
 msgstr ""
 
@@ -187,7 +190,7 @@ msgstr ""
 msgid "Programs that the app writes into its own folders (downloaded, unpacked or built) can be run. Without this, nothing it can write can be executed."
 msgstr ""
 
-msgid "Published by: {domain}"
+msgid "Published by:"
 msgstr ""
 
 msgid "Put an icon in the notification area"

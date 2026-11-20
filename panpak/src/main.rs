@@ -1391,7 +1391,8 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
         }
     }
     // The author gives the domain; the rest of [trust] is made here.
-    let domain = man.trust.take().and_then(|t| t.domain);
+    // A domain that the author writes with other characters is kept in the form that a browser shows and that the id is checked against (`xn--...`).
+    let domain = man.trust.take().and_then(|t| t.domain).map(|d| panpak_core::domain::ascii_form(&d));
     // The chain: the successions kept beside the key that lead to this key, and the one asked for now.
     let mut chain = match (&trust.chain_file, &trust.command) {
         (Some(f), None) => {
@@ -3348,7 +3349,7 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
     println!("signed with the key {fp}");
     println!("key: {key}");
     if let Some(d) = man.trust.as_ref().and_then(|t| t.domain.as_deref()) {
-        println!("domain: {d} (named by the author; `panpak install` asks it to confirm the key)");
+        println!("domain: {} (named by the author; `panpak install` asks it to confirm the key)", panpak_core::domain::ascii_form(d));
     }
     if let Some(s) = &man.sbom {
         println!("SBOM: {} coverage (`panpak sbom --export {arg}` gives it to a scanner)", s.coverage);
@@ -3456,7 +3457,7 @@ fn confirm_domain(store: &Path, man: &Manifest, key: &str) -> DomainResult {
     use panpak_core::messages as m;
     use std::sync::atomic::Ordering;
     let not = |why: String| DomainResult::NotConfirmed { why };
-    let Some(domain) = man.trust.as_ref().and_then(|t| t.domain.clone()) else { return not(tr(m::DOMAIN_WHY_NO_DOMAIN).into_owned()) };
+    let Some(domain) = man.trust.as_ref().and_then(|t| t.domain.as_deref()).map(panpak_core::domain::ascii_form) else { return not(tr(m::DOMAIN_WHY_NO_DOMAIN).into_owned()) };
     if DOMAIN_OFFLINE.load(Ordering::Relaxed) {
         return not(tr(m::DOMAIN_WHY_OFFLINE).into_owned());
     }
@@ -3636,20 +3637,24 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         println!("app: {} {} ({})", man.app.id, man.app.name, man.app.version);
         // Who stands behind the key is asked of the domain before anything else is shown or done: the answer leads the prompt.
         let domain = confirm_domain(&store, &man, key);
+        // The domain is the main text: on a line of its own, in the form that a browser shows for a name it does not trust to be read as written.
         if let Some(d) = man.trust.as_ref().and_then(|t| t.domain.as_deref()) {
             println!();
-            println!("    {}", fill(&tr(panpak_core::messages::DOMAIN_PUBLISHER), &[("domain", d.to_uppercase())]));
+            println!("{}", tr(panpak_core::messages::DOMAIN_PUBLISHER));
+            println!();
+            println!("    {}", panpak_core::domain::ascii_form(d));
+            println!();
         }
         let vals = |d: &str| vec![("domain", d.to_string()), ("app", man.app.id.clone())];
         let mut confirmed = false;
         match &domain {
             DomainResult::Confirmed { domain } => {
                 confirmed = true;
-                println!("    {}", fill(&tr(panpak_core::messages::DOMAIN_CONFIRMED), &vals(domain)));
+                println!("{}", fill(&tr(panpak_core::messages::DOMAIN_CONFIRMED), &vals(domain)));
             }
-            DomainResult::NotConfirmed { why } => println!("    {}", fill(&tr(panpak_core::messages::DOMAIN_NOT_CONFIRMED), &[("why", why.clone())])),
+            DomainResult::NotConfirmed { why } => println!("{} {}", fill(&tr(panpak_core::messages::DOMAIN_NOT_CONFIRMED), &[("why", why.clone())]), tr(panpak_core::messages::DOMAIN_INSTALL_ONLY_IF)),
             DomainResult::Contradicted { text } => {
-                println!("    {text}");
+                println!("{text}");
                 refuse_contradiction(text, panpak_core::messages::DOMAIN_CONTRA_REFUSED_INSTALL)?;
             }
         }

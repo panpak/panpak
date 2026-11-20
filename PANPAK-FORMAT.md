@@ -844,7 +844,7 @@ section. A contradiction is the only outcome with a consequence of its own:
 - Not at an ordinary update (the key is the pin), not at `apply`, not at the start.
 
 What a confirmation is worth: it shows that, now, whoever controls the web server of the domain (and the certificate for it) lists this key for this app. It is no better than
-that: a look-alike domain is another domain (the client shows the domain that the package names, in capitals, as the main text); a domain whose server is taken over can
+that: a look-alike domain is another domain (the client shows the domain that the package names, on a line of its own as the main text, and a name with characters outside ASCII in its Punycode form `xn--...`, as a browser does, so that a look-alike in another script does not read as the name it imitates); a domain whose server is taken over can
 confirm a key that the thief chose, which is the same loss as the author's; and an offline machine, or one with the check turned off, has nothing. What it adds is that a
 first key supplied by a hostile channel (a mirror, a forum, an e-mail) is no longer enough on its own where the author published the domain file, and that a succession that
 the pin signs is still stopped when the domain of the author says that it is not theirs. A domain can also stop an installation by contradicting (a denial by whoever controls it);

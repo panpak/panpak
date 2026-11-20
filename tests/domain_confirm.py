@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """The confirmation of the domain of an author (PANPAK-FORMAT.md 3.2.1), against a local HTTPS server with a certificate of a test authority: confirmed, not confirmed
 (no file, an app that is not listed, a redirect to another host, a file that is too big, a server that does not answer, the check turned off, `--offline`), contradicted
-(other keys, a key that the domain says was replaced), the first install with `--yes` and no `--trust-first-key` when the domain confirms, a refusal that `--yes` and
+(other keys, a key that the domain says was replaced), certificates that must never confirm (another authority, expired, for another name), a domain with
+characters outside ASCII shown as Punycode, the release build that does not read the test hook, the first install with `--yes` and no `--trust-first-key` when the domain confirms, a refusal that `--yes` and
 `--trust-first-key` do not override, the privacy sentence once, and a succession of the key at an update. Real binaries (build the release first), an isolated store.
 """
 import os
@@ -17,10 +18,17 @@ import isolation
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tests'))
-from incremental import BIN  # noqa: E402
+from incremental import BIN as RELEASE  # noqa: E402
+
+# The hook that points the check at a local server is in the test build only (the feature of the test points), like the failpoints: this test runs that build, and
+# a section of it runs the release build to show that the release does not have the hook.
+BIN = ROOT / 'target/failpoints/x86_64-unknown-linux-musl/release'
+if not (BIN / 'panpak').exists():
+    sys.exit(f'{BIN}/panpak is missing: cargo build --release --target x86_64-unknown-linux-musl --target-dir target/failpoints --features panpak/failpoints,panpak-stub/failpoints -p panpak -p panpak-stub')
 
 DOMAIN = 'example.test'
 ID = 'test.example.dlab'
+IDN_ID = 'test.xn--bcher-kva.dlab'   # the app of the domain bücher.test, which is xn--bcher-kva.test
 
 
 def run(args, env, ok=True, timeout=60):
@@ -52,14 +60,47 @@ def main():
         env.pop('WAYLAND_DISPLAY', None)
         env.pop('PANPAK_RECOVERY', None)
 
-        # A test authority and a certificate for the domain.
-        ca, srv = tmp / 'ca.pem', tmp / 'srv.pem'
-        ec = ['-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes']
-        run(['openssl', 'req', '-x509', *ec, '-keyout', tmp / 'ca.key', '-out', ca, '-subj', '/CN=panpak-test-ca', '-days', '2',
-             '-addext', 'basicConstraints=critical,CA:TRUE', '-addext', 'keyUsage=critical,keyCertSign'], env)
-        run(['openssl', 'req', *ec, '-keyout', tmp / 'srv.key', '-out', tmp / 'srv.csr', '-subj', f'/CN={DOMAIN}'], env)
-        (tmp / 'ext').write_text(f'subjectAltName=DNS:{DOMAIN}\nbasicConstraints=CA:FALSE\n')
-        run(['openssl', 'x509', '-req', '-in', tmp / 'srv.csr', '-CA', ca, '-CAkey', tmp / 'ca.key', '-CAcreateserial', '-out', srv, '-days', '2', '-extfile', tmp / 'ext'], env)
+        # A test authority and certificates made with it: the good one, and three that must never confirm anything.
+        import datetime
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+
+        def pem_key(k, path):
+            Path(path).write_bytes(k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+
+        def authority(cn):
+            k = ec.generate_private_key(ec.SECP256R1())
+            name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)])
+            now = datetime.datetime.now(datetime.timezone.utc)
+            c = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(k.public_key()).serial_number(x509.random_serial_number())
+                 .not_valid_before(now - datetime.timedelta(days=1)).not_valid_after(now + datetime.timedelta(days=2))
+                 .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+                 .add_extension(x509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
+                 .sign(k, hashes.SHA256()))
+            return k, c
+
+        def leaf(ca, names, name, valid=(-1, 2)):
+            """A certificate for `names` made by the authority `ca`, valid from `valid[0]` to `valid[1]` days from now. Returns the paths of the chain and of the key."""
+            ca_key, ca_cert = ca
+            k = ec.generate_private_key(ec.SECP256R1())
+            now = datetime.datetime.now(datetime.timezone.utc)
+            c = (x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[0])])).issuer_name(ca_cert.subject)
+                 .public_key(k.public_key()).serial_number(x509.random_serial_number())
+                 .not_valid_before(now + datetime.timedelta(days=valid[0])).not_valid_after(now + datetime.timedelta(days=valid[1]))
+                 .add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in names]), critical=False)
+                 .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+                 .sign(ca_key, hashes.SHA256()))
+            cert, key = tmp / f'{name}.pem', tmp / f'{name}.key.pem'
+            cert.write_bytes(c.public_bytes(serialization.Encoding.PEM))
+            pem_key(k, key)
+            return cert, key
+
+        trusted, stranger = authority('panpak-test-ca'), authority('another-ca')
+        ca = tmp / 'ca.pem'
+        ca.write_bytes(trusted[1].public_bytes(serialization.Encoding.PEM))
+        good = leaf(trusted, [DOMAIN, 'xn--bcher-kva.test'], 'good')
         run([BIN / 'panpak', 'config', 'set', 'network.ca_file', ca], env)
 
         ctl = tmp / 'ctl'
@@ -102,17 +143,22 @@ def main():
         appdir = tmp / 'data/panpak/apps' / ID
         install = [BIN / 'panpak', 'install', '--runtime', BIN / 'panpak-stub']
 
-        server = subprocess.Popen([sys.executable, ROOT / 'tests/domain_server.py', str(tls_port), str(srv), str(tmp / 'srv.key'), str(ctl)], env=env,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        try:
+        def serve_tls(cert_key):
+            srv = subprocess.Popen([sys.executable, ROOT / 'tests/domain_server.py', str(tls_port), str(cert_key[0]), str(cert_key[1]), str(ctl)], env=env,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(0.6)
+            return srv
+
+        server = serve_tls(good)
+        try:
             v1 = pack('v1', 'a')
 
             # 1. Not confirmed: the domain does not list the app. The privacy sentence is said once. `--yes` alone is not enough, as before.
             say('file', entry('test.example.other', [pub_a]))
             p = run([*install, '--yes', v1], env, ok=False)
             assert 'PANPAK-E1003' in p.stderr, p.stderr
-            assert 'Published by: EXAMPLE.TEST' in p.stdout and 'Not confirmed: example.test does not list test.example.dlab' in p.stdout, p.stdout
+            assert '\nPublished by:\n\n    example.test\n\n' in p.stdout, p.stdout  # the domain, alone on its line, not in capitals
+            assert 'Not confirmed: example.test does not list test.example.dlab' in p.stdout and 'Install it only if you trust the place where you got the file.' in p.stdout, p.stdout
             assert 'asks https://example.test/.well-known/panpak.toml' in p.stdout and 'confirm_domain off' in p.stdout, p.stdout
             assert 'key: ' + pub_a in p.stdout, 'without a confirmation the key is what says who this is'
             assert requests() == ['/.well-known/panpak.toml'], requests()
@@ -125,7 +171,8 @@ def main():
             # 2. Confirmed: `--yes` is enough, the domain is the main text and the key is behind --show-key.
             say('file', entry(ID, [pub_a]))
             p = run([*install, '--yes', v1], env)
-            assert 'Published by: EXAMPLE.TEST' in p.stdout and 'Confirmed: example.test lists this key for test.example.dlab' in p.stdout, p.stdout
+            assert '\nPublished by:\n\n    example.test\n\n' in p.stdout and 'Confirmed: example.test lists this key for test.example.dlab' in p.stdout, p.stdout
+            assert 'Install it only if' not in p.stdout, 'the warning is for what is not confirmed'
             assert 'key: ed25519' not in p.stdout and '--show-key' in p.stdout, p.stdout
             run([BIN / 'panpak', 'remove', '--yes', ID], env)
             p = run([*install, '--yes', '--show-key', v1], env)
@@ -192,6 +239,48 @@ def main():
             run([BIN / 'panpak', 'remove', '--yes', ID], env)
             print('--offline, the setting and a package with no domain: not confirmed, and nothing is asked PASS')
 
+            # 5b. A certificate that must never confirm: another authority, an expired one, one for another name. Each ends as "not confirmed" with the reason, the
+            # server never sees a request, and `--yes` alone still does not install.
+            say('file', entry(ID, [pub_a]))
+            for what, cert in [('another authority', leaf(stranger, [DOMAIN], 'stranger')),
+                               ('an expired certificate', leaf(trusted, [DOMAIN], 'expired', valid=(-10, -1))),
+                               ('a certificate for another name', leaf(trusted, ['other.test'], 'othername'))]:
+                server.terminate()
+                server.wait(timeout=5)
+                server = serve_tls(cert)
+                (ctl / 'requests.log').write_text('')
+                p = run([*install, '--yes', v1], env, ok=False)
+                assert 'PANPAK-E1003' in p.stderr, (what, p.stderr)
+                assert 'Not confirmed: example.test could not be asked' in p.stdout and 'Install it only if you trust the place' in p.stdout, (what, p.stdout)
+                assert 'Confirmed: example.test' not in p.stdout and not (appdir / 'trust').exists() and not (appdir / 'current').exists(), (what, p.stdout)
+                p = run([*install, '--yes', '--trust-first-key', v1], env)
+                assert 'Not confirmed' in p.stdout and 'Confirmed: example.test' not in p.stdout and requests() == [], (what, p.stdout, requests())
+                run([BIN / 'panpak', 'remove', '--yes', ID], env)
+            server.terminate()
+            server.wait(timeout=5)
+            server = serve_tls(good)
+            print('certificates: another authority, an expired one and one for another name are never "confirmed", and the server sees no request PASS')
+
+            # 5c. A domain with characters outside ASCII is the form of a browser: `pack` writes `xn--...`, `inspect` and the prompt show it, the request is made for it.
+            idn_tree = tmp / 'tree-idn'
+            idn_tree.mkdir()
+            (idn_tree / 'hello').write_text('#!/bin/sh\necho idn\n')
+            (idn_tree / 'hello').chmod(0o755)
+            (idn_tree / 'panpak.toml').write_text(f'[app]\nid="{IDN_ID}"\nname="Idn Lab"\nversion="1"\nentry="hello"\n[trust]\ndomain="b\u00fccher.test"\n')
+            idn = tmp / 'idn.panpak'
+            run([BIN / 'panpak', 'pack', idn_tree, '--stub', BIN / 'panpak-stub', '--secret-file', tmp / 'a.key', '-o', idn], env)
+            manifest = tmp / 'idn-manifest.toml'
+            run([BIN / 'panpak', 'dump-manifest', idn, manifest], env)
+            assert 'domain = "xn--bcher-kva.test"' in manifest.read_text() and '\u00fc' not in manifest.read_text(), manifest.read_text()
+            assert 'domain: xn--bcher-kva.test' in run([BIN / 'panpak', 'inspect', idn], env).stdout
+            idn_env = dict(env, PANPAK_TEST_RESOLVE=f'xn--bcher-kva.test=127.0.0.1:{tls_port}')
+            say('file', entry(IDN_ID, [pub_a]))
+            p = run([*install, '--yes', idn], idn_env)
+            assert '\nPublished by:\n\n    xn--bcher-kva.test\n\n' in p.stdout and 'Confirmed: xn--bcher-kva.test lists this key' in p.stdout, p.stdout
+            assert '\u00fc' not in p.stdout, 'the name is shown only in the form that a browser shows'
+            run([BIN / 'panpak', 'remove', '--yes', IDN_ID], idn_env)
+            print('a domain with other characters is written and shown as xn--..., and the request is made for that name PASS')
+
             # 6. A succession of the key at an update: asked before the body, confirmed or contradicted.
             say('file', entry(ID, [pub_a]))
             run([*install, '--yes', v1], env)
@@ -216,6 +305,19 @@ def main():
             finally:
                 rng.terminate()
                 rng.wait(timeout=5)
+            # 7. The release build does not have the hook: with the variable set it connects to the real name (that is not there), never to the local server, and it
+            # does not hold the name of the variable at all.
+            rel_env = dict(env, PANPAK_TEST_RESOLVE=f'{DOMAIN}=127.0.0.1:{tls_port}')
+            rel_pkg = tmp / 'rel-v1.panpak'
+            run([RELEASE / 'panpak', 'pack', tmp / 'tree-v1', '--stub', RELEASE / 'panpak-stub', '--secret-file', tmp / 'a.key', '-o', rel_pkg], env)
+            run([BIN / 'panpak', 'remove', '--yes', ID], env)
+            say('file', entry(ID, [pub_a]))
+            p = run([RELEASE / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', RELEASE / 'panpak-stub', rel_pkg], rel_env)
+            assert 'Not confirmed: example.test could not be asked' in p.stdout and requests() == [], (p.stdout, requests())
+            for exe in ('panpak', 'panpak-stub'):
+                assert b'PANPAK_TEST_RESOLVE' not in (RELEASE / exe).read_bytes(), f'the release {exe} holds the name of the test hook'
+            assert b'PANPAK_TEST_RESOLVE' in (BIN / 'panpak').read_bytes(), 'the test build must hold it (the check above could not see it otherwise)'
+            print('the release build ignores PANPAK_TEST_RESOLVE and does not hold its name PASS')
         finally:
             server.terminate()
             server.wait(timeout=5)

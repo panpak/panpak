@@ -26,12 +26,19 @@ pub enum Failure {
     TooBig,
 }
 
-/// The names of the domain checks that tests point at a local server: `PANPAK_TEST_RESOLVE=<domain>=<ip>:<port>` makes the connection for that name go there, while the
-/// name in the address and in the certificate stays the domain. Whoever can set the environment of the client can already do anything to it.
+/// Test builds only (the feature `failpoints`, like the test points; a release has none, and `scripts/check-no-failpoints.sh` looks for the name in it): the environment
+/// variable `PANPAK_TEST_RESOLVE=<domain>=<ip>:<port>` makes the connection for that name go to a local server, while the name in the address and in the certificate stays the
+/// domain. It is a way for a test to reach a server of its own, and a way for whoever sets the environment to send the check elsewhere, which is why a release does not read it.
+#[cfg(feature = "failpoints")]
 fn test_target() -> Option<(String, SocketAddr)> {
     let v = std::env::var("PANPAK_TEST_RESOLVE").ok()?;
     let (name, addr) = v.split_once('=')?;
     Some((name.to_string(), addr.parse().ok()?))
+}
+
+#[cfg(not(feature = "failpoints"))]
+fn test_target() -> Option<(String, SocketAddr)> {
+    None
 }
 
 #[derive(Debug)]

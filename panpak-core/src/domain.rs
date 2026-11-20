@@ -21,6 +21,76 @@ pub const MAX_ENTRIES: usize = 256;
 const MAX_ROOT: usize = 8;
 const MAX_REPLACES: usize = 16;
 
+/// The form of a domain that is shown and asked for: lowercase, and every label with a character outside ASCII written as `xn--` and its Punycode (RFC 3492), as a browser
+/// shows a name that it does not trust to be read as written. A domain that is already ASCII is not changed. (A domain in a package is ASCII by rule; this is for what an
+/// author types in `panpak.toml` and for any other text that reaches a screen as a domain.)
+pub fn ascii_form(domain: &str) -> String {
+    domain
+        .to_lowercase()
+        .split('.')
+        .map(|l| if l.is_ascii() { l.to_string() } else { format!("xn--{}", punycode(l)) })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// RFC 3492 section 6.3, with the parameters of the RFC for IDNA.
+fn punycode(label: &str) -> String {
+    const BASE: u32 = 36;
+    const TMIN: u32 = 1;
+    const TMAX: u32 = 26;
+    const SKEW: u32 = 38;
+    const DAMP: u32 = 700;
+    let digit = |d: u32| (if d < 26 { b'a' + d as u8 } else { b'0' + (d - 26) as u8 }) as char;
+    let adapt = |mut delta: u32, points: u32, first: bool| {
+        delta = if first { delta / DAMP } else { delta / 2 };
+        delta += delta / points;
+        let mut k = 0;
+        while delta > ((BASE - TMIN) * TMAX) / 2 {
+            delta /= BASE - TMIN;
+            k += BASE;
+        }
+        k + (BASE - TMIN + 1) * delta / (delta + SKEW)
+    };
+    let chars: Vec<u32> = label.chars().map(|c| c as u32).collect();
+    let mut out: String = label.chars().filter(char::is_ascii).collect();
+    let basic = out.len() as u32;
+    let mut handled = basic;
+    if basic > 0 {
+        out.push('-');
+    }
+    let (mut n, mut delta, mut bias) = (128u32, 0u32, 72u32);
+    while (handled as usize) < chars.len() {
+        let m = chars.iter().copied().filter(|&c| c >= n).min().unwrap_or(n);
+        delta += (m - n) * (handled + 1);
+        n = m;
+        for &c in &chars {
+            if c < n {
+                delta += 1;
+            }
+            if c == n {
+                let mut q = delta;
+                let mut k = BASE;
+                loop {
+                    let t = if k <= bias { TMIN } else if k >= bias + TMAX { TMAX } else { k - bias };
+                    if q < t {
+                        break;
+                    }
+                    out.push(digit(t + (q - t) % (BASE - t)));
+                    q = (q - t) / (BASE - t);
+                    k += BASE;
+                }
+                out.push(digit(q));
+                bias = adapt(delta, handled + 1, handled == basic);
+                delta = 0;
+                handled += 1;
+            }
+        }
+        delta += 1;
+        n += 1;
+    }
+    out
+}
+
 /// The address that a domain publishes at.
 pub fn url_of(domain: &str) -> String {
     format!("https://{domain}/.well-known/panpak.toml")
@@ -193,6 +263,21 @@ mod tests {
     fn what_the_reader_does_not_know_is_ignored() {
         let f = file(&format!("format = 7\n[future]\nx = 1\n[[app]]\nid=\"org.example.a\"\nroot=[\"{}\"]\nnote=\"hello\"\n", k(1))).unwrap();
         assert_eq!(f.apps.len(), 1);
+    }
+
+    #[test]
+    fn a_domain_with_other_characters_is_shown_as_punycode() {
+        // The vectors are those of the `punycode` codec of Python and of the RFC.
+        assert_eq!(ascii_form("bücher.example"), "xn--bcher-kva.example");
+        assert_eq!(ascii_form("München.de"), "xn--mnchen-3ya.de");
+        assert_eq!(ascii_form("日本語.jp"), "xn--wgv71a119e.jp");
+        assert_eq!(ascii_form("例え.テスト"), "xn--r8jz45g.xn--zckzah");
+        // Nothing to change: ASCII is kept, in lowercase; a name that is already in the form stays.
+        assert_eq!(ascii_form("Example.ORG"), "example.org");
+        assert_eq!(ascii_form("xn--bcher-kva.example"), "xn--bcher-kva.example");
+        // A look-alike of a Latin name in another script is not shown as the Latin name.
+        assert_eq!(ascii_form("раураl.com"), "xn--l-7sba6dbr.com");
+        assert!(ascii_form("раураl.com").is_ascii());
     }
 
     #[test]

@@ -96,9 +96,10 @@ pub const HOST_FORCED_NOTE: &str = "(installed with --force-host)";
 pub const HOST_FORCED_WARNING: &str = "{app} cannot run on this system (installed anyway because of --force-host):";
 
 // The confirmation of the domain of an author (PANPAK-FORMAT.md 3.2.1).
-pub const DOMAIN_PUBLISHER: &str = "Published by: {domain}";
+pub const DOMAIN_PUBLISHER: &str = "Published by:";
 pub const DOMAIN_CONFIRMED: &str = "Confirmed: {domain} lists this key for {app} (https://{domain}/.well-known/panpak.toml).";
 pub const DOMAIN_CONFIRMED_SUCCESSION: &str = "Confirmed: {domain} lists the new key of {app}.";
+pub const DOMAIN_INSTALL_ONLY_IF: &str = "Install it only if you trust the place where you got the file.";
 pub const DOMAIN_NOT_CONFIRMED: &str = "Not confirmed: {why}. The key of the package is the only proof of who made it.";
 pub const DOMAIN_WHY_NO_DOMAIN: &str = "the package names no domain";
 pub const DOMAIN_WHY_OFF: &str = "the check is turned off (panpak config set trust.confirm_domain on)";
@@ -210,6 +211,7 @@ pub const ALL: &[&str] = &[
     DOMAIN_PUBLISHER,
     DOMAIN_CONFIRMED,
     DOMAIN_CONFIRMED_SUCCESSION,
+    DOMAIN_INSTALL_ONLY_IF,
     DOMAIN_NOT_CONFIRMED,
     DOMAIN_WHY_NO_DOMAIN,
     DOMAIN_WHY_OFF,

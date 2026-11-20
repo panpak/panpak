@@ -34,7 +34,7 @@ A3 (hostile update) is the attacker of the trust layer (`PANPAK-FORMAT.md` §3.0
 | A thief of the root key, **before** the author notices | reach the clients that update first, with no expiry to bound the window | | **not covered**: the mitigation is custody (a token, `--sign-command`); a delegation with an expiry is designed for the beta and only its names are reserved |
 | A thief of the recovery words | take the app back from the author (the same power as the author's own recovery) | | **not covered**: on paper, offline; lost together with the root they are lost for good |
 | The domain of the author contradicts, or is made to | refuse a first install or a succession (a denial of service by whoever controls the domain file) | accept a package that the checks of §3.0 and §3.2 refuse | `--despite-domain-mismatch`, which still asks whom to trust; a contradiction is never silent |
-| A look-alike domain | host a package whose `[trust].domain` names itself and confirm its own key | pass as the real domain: the name of the domain is the main text of the prompt, but a person who does not read it is not protected | **not covered** (KL-17) |
+| A look-alike domain | host a package whose `[trust].domain` names itself and confirm its own key | pass as the real domain: the name of the domain is the main text of the prompt, on a line of its own and in Punycode if it is not ASCII, but a person who does not read it is not protected | **not covered** (KL-17) |
 | A coerced or malicious author | sign anything | | **not covered**: no human review, no transparency log (the signature block reserves a type for a proof; none is implemented) |
 | The same user, outside the sandbox | rewrite the store, the pin, the floor | | out of model (KL-18) |
 
@@ -742,7 +742,7 @@ Status of the project: pre-beta.
   taken over, which confirms the thief's key as it would the author's; and a person who
   does not read the domain. The request tells the server of the domain that an address
   installs one of its apps (said once, before the first request). In practice: install
-  from the address of the author, read the domain that is shown in capitals, and compare
+  from the address of the author, read the domain that is shown on a line of its own (in the `xn--` form if it is not plain ASCII), and compare
   the key with one published elsewhere when it is not confirmed.
 - **KL-18 The local store is trusted.** The store is under the user's account, and a
   process of the same user outside the sandbox is out of the model. The tree is checked

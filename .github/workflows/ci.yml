@@ -214,6 +214,9 @@ jobs:
           ./scripts/check-no-failpoints.sh target/x86_64-unknown-linux-musl/release/panpak target/x86_64-unknown-linux-musl/release/panpak-stub
           ./scripts/check-no-failpoints.sh --expect target/failpoints/x86_64-unknown-linux-musl/release/panpak target/failpoints/x86_64-unknown-linux-musl/release/panpak-stub
           python3 tests/with_timeout.py 600 tests/failpoints.py
+      - name: The confirmation of the domain of an author (a local HTTPS server and a test authority; confirmed, not confirmed, contradicted, certificates that never confirm, Punycode, the release without the test hook)
+        timeout-minutes: 5
+        run: python3 tests/with_timeout.py 300 tests/domain_confirm.py
       - name: A blob is visible only when it is on disk (a kill between writing and naming)
         timeout-minutes: 24
         run: |
@@ -368,9 +371,6 @@ jobs:
       - name: The SBOM (written by pack, signed through the manifest, the same bytes for the same tree, read from a package, an installed app and a URL by range)
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/sbom.py
-      - name: The confirmation of the domain of an author (a local HTTPS server and a test authority; confirmed, not confirmed, contradicted, redirect, size, time, off, a succession)
-        timeout-minutes: 5
-        run: python3 tests/with_timeout.py 300 tests/domain_confirm.py
       - name: No test reaches the session bus of the real user (the canary of the runner, and the address of a test run by hand)
         timeout-minutes: 2
         run: python3 tests/with_timeout.py 60 tests/bus_guard.py
