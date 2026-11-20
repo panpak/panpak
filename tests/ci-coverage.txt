@@ -5,6 +5,7 @@
 tests/isolation.py | helper | the rules for isolated homes, imported by the tests
 tests/incremental.py | helper | the packages and the Range server that the tests of the store build on (also a test with its own arguments)
 tests/range_server.py | helper | an HTTP server with Range support, started by the tests of update
+tests/domain_server.py | helper | an HTTPS server that answers as the domain of an author, started by domain_confirm.py
 tests/dbus_lab.py | helper | the private bus, portals and fake backends of dbus_filter.py and privbus.py
 tests/dbus_fake_backend.py | helper | a fake portal backend for dbus_filter.py
 tests/fake_native.py | helper | a fake native application on the session bus for dbus_filter.py
