@@ -584,7 +584,7 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   saw it runs the version as usual. The person can turn the internet back on for one app; the programs it wrote stay refused. Nobody is told to type a
   command: the notification has a button (only when an update is ready), the windows of the system show the permissions and the risk, and a program of the
   terminal asks where it is, once for each fixed version that is ready (after an answer, even a "no", the next starts have one short line until a new version is ready; the record is `apps/<id>/protected-asked`).
-- **Keys and succession** (spec §3.2): the root key signs the packages; the recovery key (24 words on paper, only its commitment in the package, from the first release)
+- **Keys and succession** (spec §3.2): the root key signs the packages; the recovery key (24 words of BIP-39 on paper, only its commitment in the package, from the first release)
   takes the app back. A chain of at most 8 successions, each signed by the key that was and bound to the app id, moves the pin; a succession of the root cannot change
   the recovery commitment, and one of the recovery key wins over any of the root, so a thief of the signing key can move the pin (he signs what the key is for) but only until
   the author uses the words. No delay is imposed (a clock is something to attack). The first install has to say whom it trusts (`--expect-key` or `--trust-first-key`;

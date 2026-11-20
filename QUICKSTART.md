@@ -30,8 +30,8 @@ panpak key new -o hello.key        # without -o: ~/.config/panpak/secret.key, th
 A key is never made by itself: `pack`, `build` and `convert` without one stop and name this command. `key new` makes two keys. The **signing key** is in the file
 (mode 0600). The **recovery key** is shown once as 24 words: write them on paper and keep them away from the computer; the file `hello.key.recovery` holds only its
 commitment (a hash), which every package you make carries from the first one. If the signing key is ever stolen or lost, the 24 words (`pack --recover-with`) take
-your apps back; nobody can do that without them. To change the signing key on purpose, make the new package with `--rotate-from-file <old key> --recovery <the same
-commitment>`; to sign with a token or an agent, `pack --sign-command <cmd> --public-key <key> --recovery <commitment>` (the command gets the bytes on its standard
+your apps back; nobody can do that without them. The 24 words are the English list of BIP-39, so any tool that reads BIP-39 can check them. To change the signing key on purpose, make the new package with `--rotate-from-file <old key> --recovery <the same
+commitment>` once for each app: the succession is kept beside the new key (`<key>.chain`) and every later package of that app carries it by itself, so a user who stayed on the old key still reaches the new one; to sign with a token or an agent, `pack --sign-command <cmd> --public-key <key> --recovery <commitment>` (the command gets the bytes on its standard
 input and writes the 64 bytes of the signature). `keygen -o` is the same command, for scripts.
 
 The secret key is written only to the file, created with mode 0600; it

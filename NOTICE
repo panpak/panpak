@@ -9,3 +9,6 @@ third parties. It includes third-party components under their own licenses,
 listed in THIRD-PARTY-LICENSES. A .panpak package carries this notice and
 those license texts under .panpak/licenses/; show them with
 `<package> --panpak-licenses` or `panpak licenses <package>`.
+
+The 24 recovery words use the English word list of BIP-39 (panpak-core/src/bip39-english.txt), from https://github.com/bitcoin/bips, MIT license,
+Copyright (c) the BIP authors. The list is unchanged: its SHA-256 is 2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda.

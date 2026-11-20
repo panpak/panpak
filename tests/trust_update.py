@@ -130,27 +130,32 @@ def main():
             serving(v2)
             assert 'updated' in update().stdout
             # 3. The author changes the signing key: the old key signs the new one, and the recovery commitment stays.
-            v3 = pack('v3', 'b', extra=['--previous', v2, '--rotate-from-file', tmp / 'a.key', '--recovery', rec_a])
-            # Without the succession the new key is refused.
+            # Without the succession the new key is refused (made first: once a succession is made, the chain is kept beside the key and every package carries it).
             v3bare = pack('v3bare', 'b', extra=['--recovery', rec_a], release='[release]\nrevision = 3\n')
             serving(v3bare)
             p = update(ok=False)
             assert 'PANPAK-E1005' in p.stderr and 'succession' in p.stderr, p.stderr
-            serving(v3)
+            v3 = pack('v3', 'b', extra=['--previous', v2, '--rotate-from-file', tmp / 'a.key', '--recovery', rec_a])
+            assert (tmp / 'b.key.chain').exists(), 'the chain is kept beside the new key'
+            # Two more releases, with no option about the succession: they carry the chain by themselves. The client has not seen v3 or v3b: it stays on the old key
+            # until v3c, and follows the chain from there.
+            v3b = pack('v3b', 'b', extra=['--previous', v3])
+            v3c = pack('v3c', 'b', extra=['--previous', v3b])
+            serving(v3c)
             p = update()
             assert 'changed the signing key' in p.stderr + p.stdout, p.stdout + p.stderr
             st = state()
             assert st['root'] == pub_b and st['recovery'] == rec_a, st
-            print('a succession by the old key moves the pin, and the recovery commitment stays PASS')
+            print('a succession by the old key moves the pin, the recovery commitment stays, and later releases carry the chain with no option PASS')
 
             # 4. A thief of the signing key b: he can sign a succession to his own key that keeps the commitment (that is what the key is for), but never one that
             # changes the commitment.
-            greedy = pack('v4greedy', 't', extra=['--previous', v3, '--rotate-from-file', tmp / 'b.key', '--recovery', rec_t])
+            greedy = pack('v4greedy', 't', extra=['--previous', v3c, '--rotate-from-file', tmp / 'b.key', '--recovery', rec_t])
             serving(greedy)
             p = update(ok=False)
             assert 'PANPAK-E1005' in p.stderr and 'recovery commitment' in p.stderr, p.stderr
             assert state()['root'] == pub_b
-            thief = pack('v4thief', 't', extra=['--previous', v3, '--rotate-from-file', tmp / 'b.key', '--recovery', rec_a])
+            thief = pack('v4thief', 't', extra=['--previous', v3c, '--rotate-from-file', tmp / 'b.key', '--recovery', rec_a])
             serving(thief)
             update()
             assert state()['root'] == pub_t and state()['recovery'] == rec_a
@@ -180,11 +185,11 @@ def main():
             # 6. A change of channel that takes the same revision with other bytes is told by `doctor`, with the note kept in the trust record.
             serving(pack('v7', 'c', extra=['--previous', back]))
             update()
-            installed_rev = 6  # v1 to v5 are revisions 1 to 5 (`--previous`); v6 was refused; v7 is revision 6
+            installed_rev = 8  # v1 to v3c are revisions 1 to 5, v4thief 6, v5 7 (`--previous`); v6 was refused; v7 is revision 8
             same = pack('v7beta', 'c', release=f'[release]\nrevision = {installed_rev}\nchannel = "beta"\n')
             serving(same)
             update(['--switch-channel'])
-            assert 'switch_note=stable to beta at revision 6' in (appdir / 'trust').read_text(), (appdir / 'trust').read_text()
+            assert 'switch_note=stable to beta at revision 8' in (appdir / 'trust').read_text(), (appdir / 'trust').read_text()
             doctor = run([BIN / 'panpak', 'doctor'], env).stdout
             assert 'the same revision as the installed one and other bytes' in doctor and 'error of the author' in doctor, doctor
             print('a change of channel with the same revision and other bytes is noted and doctor says so PASS')

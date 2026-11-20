@@ -312,38 +312,39 @@ pub fn modify(appdir: &Path, f: impl FnOnce(&mut State)) -> Result<()> {
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // The phrase of the recovery key
 
-/// 2048 words of four letters, two syllables (a consonant and a vowel each): easy to read aloud and to write down, all different. It is not the
-/// BIP-39 list; it is this format's own.
-fn word(i: usize) -> String {
-    const C: &[u8] = b"bdfghjklmnprstvz";
-    const V: &[u8] = b"aeiou";
-    let syl = |n: usize| [C[n / V.len()] as char, V[n % V.len()] as char];
-    let (a, b) = (i / 80, i % 80);
-    let mut s = String::with_capacity(4);
-    s.extend(syl(a));
-    s.extend(syl(b));
-    s
+/// The English word list of BIP-39 (2048 words, the first four letters of each are unique), the public list that hardware wallets and password managers
+/// also use: a phrase can be checked by other tools, and a word can be looked up in any copy of the list. MIT licensed (see NOTICE).
+const WORDS: &str = include_str!("bip39-english.txt");
+
+fn word(i: usize) -> &'static str {
+    WORDS.lines().nth(i).expect("the list has 2048 words")
 }
 
-/// 24 words: the 256 bits of the key and 8 bits of check, 11 bits a word.
+/// The check byte of BIP-39 for 256 bits: the first byte of the SHA-256 of the key.
+fn check_byte(secret: &[u8; 32]) -> u8 {
+    use sha2::Digest;
+    sha2::Sha256::digest(secret)[0]
+}
+
+/// 24 words: the 256 bits of the key and 8 bits of check (BIP-39), 11 bits a word.
 pub fn phrase_of(secret: &[u8; 32]) -> Vec<String> {
     let mut bits: Vec<bool> = Vec::with_capacity(264);
-    for b in secret.iter().chain(std::iter::once(&blake3::hash(secret).as_bytes()[0])) {
+    for b in secret.iter().chain(std::iter::once(&check_byte(secret))) {
         for i in (0..8).rev() {
             bits.push(b >> i & 1 == 1);
         }
     }
-    bits.chunks(11).map(|c| word(c.iter().fold(0usize, |a, &b| a << 1 | b as usize))).collect()
+    bits.chunks(11).map(|c| word(c.iter().fold(0usize, |a, &b| a << 1 | b as usize)).to_string()).collect()
 }
 
 /// The key of a phrase; the check catches a word that was written wrong.
 pub fn secret_of(phrase: &str) -> Result<[u8; 32]> {
     let words: Vec<String> = phrase.split_whitespace().map(|w| w.to_ascii_lowercase()).collect();
     ensure!(words.len() == 24, "a recovery phrase has 24 words, this one has {}", words.len());
-    let index: std::collections::HashMap<String, usize> = (0..2048).map(|i| (word(i), i)).collect();
+    let index: std::collections::HashMap<&str, usize> = WORDS.lines().enumerate().map(|(i, w)| (w, i)).collect();
     let mut bits: Vec<bool> = Vec::with_capacity(264);
     for w in &words {
-        let i = *index.get(w).with_context(|| format!("{w:?} is not a word of the recovery phrase"))?;
+        let i = *index.get(w.as_str()).with_context(|| format!("{w:?} is not a word of the recovery phrase"))?;
         for k in (0..11).rev() {
             bits.push(i >> k & 1 == 1);
         }
@@ -351,8 +352,53 @@ pub fn secret_of(phrase: &str) -> Result<[u8; 32]> {
     let bytes: Vec<u8> = bits.chunks(8).map(|c| c.iter().fold(0u8, |a, &b| a << 1 | b as u8)).collect();
     let mut secret = [0u8; 32];
     secret.copy_from_slice(&bytes[..32]);
-    ensure!(bytes[32] == blake3::hash(&secret).as_bytes()[0], "the recovery phrase does not check: a word is wrong or out of place");
+    ensure!(bytes[32] == check_byte(&secret), "the recovery phrase does not check: a word is wrong or out of place");
     Ok(secret)
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// The chain beside the key
+
+/// The successions an author carries, kept in a file beside the signing key (`<key>.chain`): `pack`, `build` and `convert` put them in every package, so that a client that
+/// stayed on an old key still reaches the current one. A succession is signed for one app, so the file keeps them by app id. Missing or unreadable means no chain.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ChainEntry {
+    app: String,
+    by: String,
+    from: String,
+    to: String,
+    recovery: String,
+    sig: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct ChainFile {
+    #[serde(default)]
+    chain: Vec<ChainEntry>,
+}
+
+fn read_chain_file(path: &Path) -> ChainFile {
+    std::fs::read_to_string(path).ok().and_then(|t| toml::from_str::<ChainFile>(&t).ok()).unwrap_or_default()
+}
+
+/// The steps kept for `app`, oldest first.
+pub fn read_chain(path: &Path, app: &str) -> Vec<Step> {
+    read_chain_file(path).chain.into_iter().filter(|e| e.app == app).map(|e| Step { by: e.by, from: e.from, to: e.to, recovery: e.recovery, sig: e.sig }).collect()
+}
+
+/// Keep `chain` for `app`; the steps of the other apps in the file stay as they are.
+pub fn write_chain(path: &Path, app: &str, chain: &[Step]) -> Result<()> {
+    let mut file = read_chain_file(path);
+    file.chain.retain(|e| e.app != app);
+    file.chain.extend(chain.iter().map(|s| ChainEntry { app: app.to_string(), by: s.by.clone(), from: s.from.clone(), to: s.to.clone(), recovery: s.recovery.clone(), sig: s.sig.clone() }));
+    let text = format!("# The successions of this signing key, by app; panpak puts them in every package. A public file.\n{}", toml::to_string(&file)?);
+    crate::durable::write_file(path, text.as_bytes(), 0o644)
+}
+
+/// A step, signed.
+pub fn sign_step(signer: &ed25519_dalek::SigningKey, app_id: &str, by_recovery: bool, to: &VerifyingKey, new_recovery: &[u8; 32]) -> ed25519_dalek::Signature {
+    use ed25519_dalek::Signer;
+    signer.sign(&succession_message(app_id, by_recovery, &signer.verifying_key(), to, new_recovery))
 }
 
 #[cfg(test)]
@@ -455,11 +501,43 @@ mod tests {
     }
 
     #[test]
+    fn the_phrase_is_bip39() {
+        // The published test vectors of BIP-39 for 256 bits, and the list itself.
+        let zeros = phrase_of(&[0u8; 32]).join(" ");
+        assert_eq!(zeros, format!("{}art", "abandon ".repeat(23)));
+        let ones = phrase_of(&[0xff; 32]).join(" ");
+        assert_eq!(ones, format!("{}vote", "zoo ".repeat(23)));
+        assert_eq!(secret_of(&zeros).unwrap(), [0u8; 32]);
+        assert_eq!(WORDS.lines().count(), 2048);
+        use sha2::Digest;
+        assert_eq!(crate::hex(&sha2::Sha256::digest(WORDS.as_bytes())), "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda");
+    }
+
+    #[test]
+    fn the_chain_file_keeps_each_app_apart() {
+        let d = std::env::temp_dir().join(format!("panpak-chain-test-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("k.chain");
+        let _ = std::fs::remove_file(&f);
+        assert!(read_chain(&f, "org.a.app").is_empty());
+        let st = Step { by: "root".into(), from: "ed25519:aa".into(), to: "ed25519:bb".into(), recovery: "blake3:cc".into(), sig: "dd".into() };
+        write_chain(&f, "org.a.app", &[st.clone(), st.clone()]).unwrap();
+        write_chain(&f, "org.b.app", &[st]).unwrap();
+        assert_eq!(read_chain(&f, "org.a.app").len(), 2);
+        assert_eq!(read_chain(&f, "org.b.app").len(), 1);
+        write_chain(&f, "org.a.app", &[]).unwrap();
+        assert!(read_chain(&f, "org.a.app").is_empty());
+        assert_eq!(read_chain(&f, "org.b.app")[0].to, "ed25519:bb");
+        std::fs::remove_file(&f).unwrap();
+        std::fs::remove_dir(&d).unwrap();
+    }
+
+    #[test]
     fn the_phrase_gives_the_key_back_and_a_wrong_word_is_caught() {
         let secret = [0x5au8; 32];
         let words = phrase_of(&secret);
         assert_eq!(words.len(), 24);
-        assert!(words.iter().all(|w| w.len() == 4 && w.is_ascii()));
+        assert!(words.iter().all(|w| w.is_ascii()));
         assert_eq!(secret_of(&words.join(" ")).unwrap(), secret);
         assert_eq!(secret_of(&words.join("\n").to_uppercase()).unwrap(), secret);
         let mut other = words.clone();
@@ -470,7 +548,7 @@ mod tests {
         bad[0] = "xxxx".into();
         assert!(secret_of(&bad.join(" ")).is_err());
         // 2048 distinct words.
-        let all: std::collections::HashSet<String> = (0..2048).map(word).collect();
+        let all: std::collections::HashSet<&str> = (0..2048).map(word).collect();
         assert_eq!(all.len(), 2048);
     }
 

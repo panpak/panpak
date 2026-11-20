@@ -11,6 +11,7 @@ failpoints = []
 [dependencies]
 anyhow = "1"
 blake3 = "1"
+sha2 = "0.10"
 zstd = "0.14"
 ed25519-dalek = "2"
 toml = "0.8"

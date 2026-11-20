@@ -1048,7 +1048,15 @@ fn trust_args(secret_path: &Path, recovery: Option<&str>, rotate_from: Option<&s
         }
         _ => None,
     };
-    Ok(TrustArgs { recovery, rotation, command: None })
+    // The chain kept beside the key; for a succession from another key file, the chain kept beside that one when this one has none yet.
+    let beside = |p: &Path| {
+        let mut f = p.as_os_str().to_owned();
+        f.push(".chain");
+        PathBuf::from(f)
+    };
+    let chain_file = beside(secret_path);
+    let chain_file_old = rotate_from.map(|o| beside(Path::new(o)));
+    Ok(TrustArgs { recovery, rotation, command: None, chain_file: Some(chain_file), chain_file_old })
 }
 
 /// Secret from `--secret-file` or, if absent, `PANPAK_SECRET_FILE` (a path,
@@ -1277,6 +1285,7 @@ fn pinned(appdir: &Path) -> Result<panpak_core::trust::Pin> {
 }
 
 /// What a package says about trust beside the signing key: the recovery commitment (from the first package on), a succession to carry, and an external signer.
+#[derive(Default)]
 pub struct TrustArgs {
     /// `blake3:<hash of the recovery public key>`.
     pub recovery: String,
@@ -1284,6 +1293,9 @@ pub struct TrustArgs {
     pub rotation: Option<Rotation>,
     /// `--sign-command`: a command that gets the bytes to sign on its standard input and writes the 64 bytes of the signature; the key it signs with.
     pub command: Option<(String, String)>,
+    /// The file beside the key where its successions are kept (`<key>.chain`), and the one beside the key a succession starts from, read when the first has none.
+    pub chain_file: Option<PathBuf>,
+    pub chain_file_old: Option<PathBuf>,
 }
 
 /// Who authorizes the new root in a succession: the old root (its secret, hex) or the recovery key (its secret, hex: the phrase, decoded).
@@ -1339,25 +1351,56 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
     }
     // The author gives the domain; the rest of [trust] is made here.
     let domain = man.trust.take().and_then(|t| t.domain);
-    let mut chain = Vec::new();
+    // The chain: the successions kept beside the key that lead to this key, and the one asked for now.
+    let mut chain = match (&trust.chain_file, &trust.command) {
+        (Some(f), None) => {
+            let mut c = panpak_core::trust::read_chain(f, &man.app.id);
+            if c.is_empty() {
+                if let Some(o) = &trust.chain_file_old {
+                    c = panpak_core::trust::read_chain(o, &man.app.id);
+                }
+            }
+            c
+        }
+        _ => Vec::new(),
+    };
     if let Some(rot) = &trust.rotation {
-        use ed25519_dalek::Signer;
         let new_vk = panpak_core::parse_pubkey(&derived)?;
         let new_rec = panpak_core::trust::parse_commitment(&trust.recovery)?;
         let (by_recovery, signer) = match rot {
             Rotation::Root(h) => (false, parse_secret(h)?),
             Rotation::Recovery(h) => (true, parse_secret(h)?),
         };
-        let msg = panpak_core::trust::succession_message(&man.app.id, by_recovery, &signer.verifying_key(), &new_vk, &new_rec);
+        // A succession made again (the same command run twice) replaces the one kept.
+        while chain.last().is_some_and(|s| s.to == derived) {
+            chain.pop();
+        }
+        let signer_key = format!("ed25519:{}", panpak_core::hex(signer.verifying_key().as_bytes()));
+        if !by_recovery && chain.last().is_some_and(|s| s.to != signer_key) {
+            chain.clear();
+        }
         chain.push(panpak_core::trust::Step {
             by: if by_recovery { "recovery" } else { "root" }.to_string(),
             from: format!("ed25519:{}", panpak_core::hex(signer.verifying_key().as_bytes())),
             to: derived.clone(),
             recovery: trust.recovery.clone(),
-            sig: panpak_core::hex(&signer.sign(&msg).to_bytes()),
+            sig: panpak_core::hex(&panpak_core::trust::sign_step(&signer, &man.app.id, by_recovery, &new_vk, &new_rec).to_bytes()),
         });
+        // Kept beside the key, so that the next packages carry it without being asked. Only for a key in a file.
+        if let (Some(f), None) = (&trust.chain_file, &trust.command) {
+            let keep = chain.len().saturating_sub(panpak_core::trust::MAX_CHAIN);
+            panpak_core::trust::write_chain(f, &man.app.id, &chain[keep..])?;
+        }
     }
-    man.trust = Some(panpak_core::trust::Trust { root: vec![derived.clone()], threshold: 1, recovery: trust.recovery.clone(), domain, chain });
+    // What does not lead to this key (a chain kept for another key) is not carried; the newest steps stay when the chain is long.
+    if chain.last().is_none_or(|s| s.to != derived) {
+        chain.clear();
+    }
+    let keep = chain.len().saturating_sub(panpak_core::trust::MAX_CHAIN);
+    chain.drain(..keep);
+    // A chain ends at the commitment of its last step (a step of the root keeps the one before, so it is not the one `key new` made for this key): the packages after it name that one.
+    let recovery = chain.last().map_or_else(|| trust.recovery.clone(), |s| s.recovery.clone());
+    man.trust = Some(panpak_core::trust::Trust { root: vec![derived.clone()], threshold: 1, recovery, domain, chain });
     // The table is checked as a reader checks it (the domain fits the id, the forms are right): a package that install refuses must not exist.
     panpak_core::trust::check(&man).context("[trust] of the package")?;
 
@@ -3906,7 +3949,7 @@ fn real_main() -> Result<()> {
                     let public = public_key.clone().ok_or_else(|| coded(ErrorCode::E5002, "--sign-command needs --public-key ed25519:<the key the command signs with>"))?;
                     let recovery = recovery.clone().ok_or_else(|| coded(ErrorCode::E5002, "--sign-command needs --recovery blake3:<the commitment of your recovery key> (it is in the file `<secret key>.recovery` that `panpak key new` made)"))?;
                     panpak_core::trust::parse_commitment(&recovery).map_err(|e| coded(ErrorCode::E5002, format!("--recovery: {e}")))?;
-                    (String::new(), TrustArgs { recovery, rotation: None, command: Some((cmd, public)) })
+                    (String::new(), TrustArgs { recovery, rotation: None, command: Some((cmd, public)), ..Default::default() })
                 }
                 None => {
                     ensure_code!(public_key.is_none(), ErrorCode::E5002, "--public-key is for --sign-command\n{usage}", usage = usage());
@@ -4705,7 +4748,7 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None }, Some(&out), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None).unwrap();
         let mut f = File::open(&out).unwrap();
         let ft = panpak_core::read_footer(&mut f).unwrap();
         let (_man, raw) = panpak_core::verify(&mut f, &ft).unwrap();
@@ -4718,12 +4761,12 @@ mod tests {
         }
         // Same input -> same package (licenses do not break determinism).
         let out2 = dir.join("b.panpak");
-        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None }, Some(&out2), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out2), Vec::new(), Previous::None).unwrap();
         assert_eq!(fs::read(&out).unwrap(), fs::read(&out2).unwrap());
         // The reserved top level cannot come from the user's tree.
         fs::create_dir_all(tree.join(".panpak")).unwrap();
         fs::write(tree.join(".panpak/x"), "x").unwrap();
-        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None }, Some(&dir.join("c.panpak")), Vec::new(), Previous::None).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&dir.join("c.panpak")), Vec::new(), Previous::None).unwrap_err();
         assert!(panpak_core::err_text(&e).contains("reserved"), "{e:?}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -4751,14 +4794,14 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None }, Some(&out), Vec::new(), Previous::None).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None).unwrap_err();
         let text = panpak_core::render(&e, ErrorCode::E0000);
         assert!(text.contains("invalid") && text.contains("abi.needs") && text.contains("nothing was written"), "{text}");
         assert!(!out.exists(), "a file was written for an invalid manifest");
         // The same tree with a valid name is packed.
         elf[241..250].copy_from_slice(b"libc.so.6");
         fs::write(tree.join("bin/app"), &elf).unwrap();
-        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None }, Some(&out), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None).unwrap();
         assert!(out.exists());
         let _ = fs::remove_dir_all(&dir);
     }
