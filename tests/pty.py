@@ -47,6 +47,9 @@ except OSError as e:
 def session(argv, env=None):
     pid, fd = pty.fork()
     if pid == 0:
+        # A command that a non-interactive shell starts in the background (`cmd &`) has SIGINT ignored, and the ignore is inherited by everything it starts, the shell
+        # of this test and its jobs included: Ctrl+C would do nothing. A terminal that a person opens never has it.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
         os.execvpe(argv[0], argv, env or dict(os.environ, TERM='xterm', PS1='$ '))
     return pid, fd
 
@@ -83,8 +86,9 @@ r = read(fd, 'Stopped', 5); out['stopped'] = 'Stopped' in r
 os.write(fd, b'jobs\n'); out['jobs'] = 'sleep 30' in read(fd, 'sleep 30', 5)
 # `fg` prints the command when it puts the job in the foreground: Ctrl+C is sent after that, not after a fixed time (on a busy machine the shell may not have
 # resumed the job yet, and then the interrupt goes to the shell while the job goes on and takes the next line as its input).
-os.write(fd, b'fg\n'); read(fd, 'sleep 30', 5); time.sleep(0.3); os.write(fd, b'\x03'); time.sleep(0.3)
-os.write(fd, b'echo after-$((1+1))\n'); out['fg_ctrl_c'] = 'after-2' in read(fd, 'after-2', 5)
+os.write(fd, b'fg\n'); seen_fg = read(fd, 'sleep 30', 5); time.sleep(0.3); os.write(fd, b'\x03'); time.sleep(0.3)
+os.write(fd, b'echo after-$((1+1))\n'); seen_after = read(fd, 'after-2', 5); out['fg_ctrl_c'] = 'after-2' in seen_after
+out['fg_debug'] = {'after_fg': seen_fg[-300:], 'after_ctrl_c': seen_after[-300:]}
 os.write(fd, b'exit\n'); read(fd, None, 1)
 try:
     os.kill(pid, signal.SIGKILL)
