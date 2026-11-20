@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! The report of the modules (PANPAK-FORMAT.md §7.2): which libraries the programs of a package need, and which only the modules (plugins, extension modules,
 //! workbenches: files that are loaded on demand) need. `pack` makes it from the ELF files of the tree, signs its hash in `[abi].modules`, and puts it in the tree as
 //! `.panpak/modules`. A library that a program needs and that nothing provides is an error where the app starts; one that only modules need is "not available": the

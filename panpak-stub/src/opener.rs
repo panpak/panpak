@@ -103,6 +103,15 @@ fn data_dirs_for_open(own: Option<String>, home: Option<String>, manager: impl F
 
 /// `XDG_DATA_DIRS` from `systemctl --user show-environment`, if the manager is there and sets it.
 fn user_manager_data_dirs() -> Option<String> {
+    // The tests of the opener must not ask the user manager of the real session (`data_dirs_for_open` is tested with a closure of its own).
+    #[cfg(test)]
+    return None;
+    #[cfg(not(test))]
+    user_manager_data_dirs_now()
+}
+
+#[cfg(not(test))]
+fn user_manager_data_dirs_now() -> Option<String> {
     let exe = ["/usr/bin/systemctl", "/bin/systemctl", "/run/current-system/sw/bin/systemctl"].into_iter().find(|p| Path::new(p).exists())?;
     let out = Command::new(exe).args(["--user", "show-environment"]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
     if !out.status.success() {

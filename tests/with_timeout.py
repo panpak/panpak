@@ -59,6 +59,15 @@ class Canary:
                 self.who.append('(gone before it could be read)')
             c.close()
 
+    def names(self):
+        """Who connected, each program once with how many times (at most eight), the process numbers left out."""
+        counts = {}
+        for w in self.who:
+            k = w.split(': ', 1)[-1]
+            counts[k] = counts.get(k, 0) + 1
+        shown = sorted(counts.items(), key=lambda kv: -kv[1])[:8]
+        return '; '.join(f'{k} x{n}' for k, n in shown)
+
     def close(self):
         try:
             self.sock.close()
@@ -84,7 +93,7 @@ def main(argv):
         time.sleep(0.2)  # a connection that was just made is counted
         canary.close()
         if canary.hits:
-            print(f"::error::BUS: `{' '.join(cmd)}` connected {canary.hits} time(s) to the session bus (the canary stands in for the real one; {'; '.join(canary.who)}): a test gets a bus of its own or none (tests/dbus_lab.py, or DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent)", file=sys.stderr, flush=True)
+            print(f"::error::BUS: `{' '.join(cmd)}` connected {canary.hits} time(s) to the session bus (the canary stands in for the real one; {canary.names()}): a test gets a bus of its own or none (tests/dbus_lab.py, or DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent)", file=sys.stderr, flush=True)
             return status or 1
         return status
     except subprocess.TimeoutExpired:
