@@ -6,7 +6,9 @@ Run it inside the virtual machine, as the user that is logged in to the GNOME se
 session). Python 3.9 or newer and nothing else (no module outside the standard library).
 
   silverblue_bench.py check   --system flatpak|panpak
-  silverblue_bench.py install --system S --app te|qb [--pkg-url URL | --pkg-file F]     one install: bytes that came, space added, time
+  silverblue_bench.py base    --system S                                                  what the system has before the series (the Fedora Flatpaks of Silverblue), versions
+  silverblue_bench.py permissions --system S --app te                                     the permissions of the Text Editor (the one of Fedora, or ours), as the system says them
+  silverblue_bench.py install --system S --app su|mj|qb [--pkg-url URL | --pkg-file F]     one install: bytes that came, space added, time
   silverblue_bench.py start   --system S --app A --kind warm --trials N                  N starts, one after the other (a start, a stop, a pause)
   silverblue_bench.py cycle   --system S --app A --trials R                              R times: remove, drop the caches, install, first start
   silverblue_bench.py scenario --system S --order te,qb --warm N                         one app after the other: install, first start, N warm starts
@@ -33,10 +35,14 @@ RESULTS = Path(os.environ.get('BENCH_RESULTS', HOME / 'panpak-bench-results'))
 WINDOWS = HOME / '.cache/panpak-bench/windows.jsonl'
 PANPAK = os.environ.get('PANPAK', str(HOME / '.local/bin/panpak'))
 
-# The apps of the comparison: the same upstream version on both sides (PROCEDURE.md, section 2).
+# The apps of the series: the same upstream version on both sides (PROCEDURE.md, section 2). `su` and `mj` are two GNOME apps on the same GNOME runtime (what Flatpak shares between
+# two apps, and what Panpak shares as chunks), `qb` is a KDE app on another runtime. `te` is **not** in a series: it is the app of the test of permissions and operations (`permissions`),
+# and on the Flatpak machine it is the Text Editor of Fedora that Silverblue already has, in the system installation.
 APPS = {
-    'te': {'name': 'GNOME Text Editor', 'flatpak': 'org.gnome.TextEditor', 'panpak_id': 'org.gnome.TextEditor', 'window': r'(?i)org\.gnome\.TextEditor|texteditor'},
-    'qb': {'name': 'qBittorrent', 'flatpak': 'org.qbittorrent.qBittorrent', 'panpak_id': 'org.qbittorrent.qBittorrent', 'window': r'(?i)qbittorrent'},
+    'su': {'name': 'GNOME Sudoku', 'flatpak': 'org.gnome.Sudoku', 'panpak_id': 'org.gnome.Sudoku', 'window': r'(?i)org\.gnome\.Sudoku|sudoku', 'series': True},
+    'mj': {'name': 'GNOME Mahjongg', 'flatpak': 'org.gnome.Mahjongg', 'panpak_id': 'org.gnome.Mahjongg', 'window': r'(?i)org\.gnome\.Mahjongg|mahjongg', 'series': True},
+    'qb': {'name': 'qBittorrent', 'flatpak': 'org.qbittorrent.qBittorrent', 'panpak_id': 'org.qbittorrent.qBittorrent', 'window': r'(?i)qbittorrent', 'series': True},
+    'te': {'name': 'GNOME Text Editor', 'flatpak': 'org.gnome.TextEditor', 'panpak_id': 'org.gnome.TextEditor', 'window': r'(?i)org\.gnome\.TextEditor|texteditor', 'series': False},
 }
 
 # What each system adds to the disk, for the measure of the space: the places that it writes to.
@@ -51,7 +57,11 @@ def say(*a):
 
 
 def sh(cmd, check=True, timeout=1800, **kw):
-    p = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, timeout=timeout, **kw)
+    try:
+        p = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, timeout=timeout, **kw)
+    except FileNotFoundError:
+        # A tool that is not there (`rpm-ostree` on another system, `gnome-shell` over ssh) is an answer, not a crash: 127, as a shell says it.
+        p = subprocess.CompletedProcess([str(c) for c in cmd], 127, '', f'{cmd[0]}: not found\n')
     if check and p.returncode != 0:
         raise SystemExit(f'failed: {" ".join(map(str, cmd))}\n{p.stdout}{p.stderr}')
     return p
@@ -153,6 +163,8 @@ def launcher(system, app):
 def install_cmds(system, app, pkg_url, pkg_file, keys=None):
     """The steps of an install, in the order they run. A step is (what, command)."""
     a = APPS[app]
+    if not a['series']:
+        raise SystemExit(f'{app} is not an app of the series (it is the app of the test of permissions and operations): nothing is installed or measured for it')
     if system == 'flatpak':
         ensure_flathub()
         return [('install', ['flatpak', 'install', '--user', '-y', '--noninteractive', 'flathub', a['flatpak']])]
@@ -257,6 +269,8 @@ def stop(system, app, unit):
 def one_start(system, app, kind, trial, timeout=60):
     """One start: the command is started inside a systemd scope (for both systems, so that the cost is the same) and stopped through it. The time is from just before the
     command to the first frame of the window that the compositor reports."""
+    if not APPS[app]['series']:
+        raise SystemExit(f'{app} is not an app of the series: no time is measured for it (PROCEDURE.md, section 6 is the test of permissions and operations)')
     if not extension_ready():
         raise SystemExit('the window extension is not running: PROCEDURE.md, section 1 (install winwatch@panpak.bench, enable it, log in again)')
     unit = f'panpak-bench-{os.getpid()}-{trial}'
@@ -296,6 +310,39 @@ def cmd_check(args):
     say('session type: ' + os.environ.get('XDG_SESSION_TYPE', '?') + ', desktop: ' + os.environ.get('XDG_CURRENT_DESKTOP', '?'))
     say('gnome-shell: ' + sh(['gnome-shell', '--version'], check=False).stdout.strip())
     sys.exit(0 if ok else 1)
+
+
+def cmd_base(args):
+    """What the system already has before anything is installed: the apps and runtimes of Fedora that Silverblue brings (Flatpaks of the system installation), their space, the system
+    and the versions. It is part of what a person receives, so it is written down and not hidden: it is the same on both machines (clones of one image) and the series start from it."""
+    fl = sh(['flatpak', 'list', '--system', '--columns=application,branch,size,origin'], check=False).stdout
+    sysdir = Path('/var/lib/flatpak')
+    row = record(args.system, kind='base', app='-', flatpak_system_bytes=du(sysdir), flatpak_system_apps_bytes=du(sysdir / 'app'), flatpak_system_runtimes_bytes=du(sysdir / 'runtime'),
+                 fs_used_bytes=fs_used(), flatpak_system_list=fl.strip().splitlines(),
+                 versions={'uname': os.uname().release, 'ldd': sh(['ldd', '--version'], check=False).stdout.splitlines()[:1], 'gnome_shell': sh(['gnome-shell', '--version'], check=False).stdout.strip(),
+                           'flatpak': sh(['flatpak', '--version'], check=False).stdout.strip(), 'rpm_ostree': sh(['rpm-ostree', 'status'], check=False).stdout.splitlines()[:8]})
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    (RESULTS / f'base-{args.system}.txt').write_text(fl)
+    return row
+
+
+def cmd_permissions(args):
+    """The permissions that a system gives an app, as the system says them, for the test of permissions and operations (PROCEDURE.md, section 6): `flatpak info --show-permissions`
+    for the Text Editor of Fedora that is already on the Flatpak machine, `panpak inspect` (text and JSON) for ours."""
+    a = APPS[args.app]
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    out = RESULTS / f'permissions-{args.system}-{args.app}.txt'
+    if args.system == 'flatpak':
+        parts = [('flatpak info', ['flatpak', 'info', a['flatpak']]), ('flatpak info --show-permissions', ['flatpak', 'info', '--show-permissions', a['flatpak']]),
+                 ('flatpak info --show-metadata', ['flatpak', 'info', '--show-metadata', a['flatpak']])]
+    else:
+        parts = [('panpak inspect', [PANPAK, 'inspect', a['panpak_id']]), ('panpak inspect --json', [PANPAK, 'inspect', '--json', a['panpak_id']])]
+    text = ''
+    for title, cmd in parts:
+        p = sh(cmd, check=False)
+        text += f'## {title}\n{p.stdout}{p.stderr}\n'
+    out.write_text(text)
+    record(args.system, kind='permissions', app=args.app, file=out.name)
 
 
 def cmd_install(args):
@@ -458,6 +505,12 @@ def main():
     p = sub.add_parser('check')
     common(p, apps=False)
     p.set_defaults(fn=cmd_check)
+    p = sub.add_parser('base')
+    p.add_argument('--system', choices=['flatpak', 'panpak'], required=True)
+    p.set_defaults(fn=cmd_base)
+    p = sub.add_parser('permissions')
+    common(p)
+    p.set_defaults(fn=cmd_permissions)
     p = sub.add_parser('install')
     common(p)
     pkg(p)
@@ -475,7 +528,7 @@ def main():
     p.set_defaults(fn=cmd_cycle)
     p = sub.add_parser('scenario')
     common(p, apps=False)
-    p.add_argument('--order', required=True, help='for example te,qb; panpak needs --pkg-url-te and --pkg-url-qb')
+    p.add_argument('--order', required=True, help='the apps in the order they are installed: su,mj,qb or qb,mj,su (panpak needs --pkg-base-url and --keys)')
     p.add_argument('--warm', type=int, default=15)
     p.add_argument('--gap', type=float, default=3.0)
     p.add_argument('--pkg-base-url', help='panpak: the folder that serves <app id>.panpak')
@@ -484,7 +537,7 @@ def main():
     p = sub.add_parser('reboot-series')
     p.add_argument('action', choices=['start', 'step', 'cancel', 'status'])
     p.add_argument('--system', choices=['flatpak', 'panpak'])
-    p.add_argument('--apps', default='te,qb')
+    p.add_argument('--apps', default='su,mj,qb')
     p.add_argument('--count', type=int, default=5, help='reboots per app')
     p.add_argument('--settle', type=int, default=45, help='seconds of quiet after the extension is up, before the start is measured')
     p.set_defaults(fn=cmd_reboot)

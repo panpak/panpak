@@ -1,6 +1,7 @@
 # GNOME Text Editor 51.0, the version that Flathub has (org.gnome.TextEditor) on 2026-11-20, for the comparison of step 9b.
 # 51.0 needs GTK 4.19.4 and libadwaita 1.8 (meson.build of the tag), which the image debian-13 does not have: this recipe names the image `debian-14`
-# (see docs/SOURCE-BUILD.md). The source is the tag 51.0 (the commit that the tag points at).
+# (see docs/SOURCE-BUILD.md). The source is the tag 51.0 (the commit that the tag points at). Not an app of the series: it is the app of the test of permissions and operations
+# (PROCEDURE.md, section 6), against the Text Editor of Fedora that Silverblue already has.
 [app]
 id = "org.gnome.TextEditor"
 name = "Text Editor"
@@ -32,6 +33,10 @@ icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"
 
 [permissions]
 dbus_own = ["org.gnome.TextEditor"]
+
+# What an author who wants "Save as" and "Open" to work asks for: the file dialog of the portal, in which the person chooses the file (nothing is granted until they do).
+[permissions.portal]
+files = "picker"
 
 [license]
 spdx = "GPL-3.0-or-later"

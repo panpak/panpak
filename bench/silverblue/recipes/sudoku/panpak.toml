@@ -1,0 +1,37 @@
+# GNOME Sudoku 51.0.1, the version that Flathub has (org.gnome.Sudoku, runtime org.gnome.Platform//51) on 2026-11-20, the first app of the series of step 9b.
+# It needs GTK 4.19.3 and libadwaita 1.8 (meson.build of the tag): the image debian-14. The source is the tag 51.0.1 (the commit that it points at); Flathub builds the
+# release tarball of the same tag, with qqwing 1.3.4 built from source: the image has qqwing 1.3.4 as a package, the same version.
+[app]
+id = "org.gnome.Sudoku"
+name = "Sudoku"
+version = "51.0.1"
+entry = "bin/gnome-sudoku"
+
+[source]
+git = "https://gitlab.gnome.org/GNOME/gnome-sudoku.git"
+commit = "023b079c09df05ff7ff1ab61d04527226ee4e72d"
+
+[build]
+image = "debian-14"
+system = "meson"
+configure = ["--prefix=/usr", "--libdir=lib", "--buildtype=release"]
+packages = [
+  "meson", "ninja-build", "valac", "libgtk-4-dev", "libadwaita-1-dev", "libgee-0.8-dev", "libjson-glib-dev", "libqqwing-dev",
+  "blueprint-compiler", "itstool", "appstream", "libxml2-utils", "gsettings-desktop-schemas", "adwaita-icon-theme", "shared-mime-info", "librsvg2-common",
+]
+memory = "1G"
+jobs = 4
+
+[collect]
+toolkit = "gtk4"
+
+[desktop]
+icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.Sudoku.svg"
+
+[permissions]
+dbus_own = ["org.gnome.Sudoku"]
+
+[license]
+spdx = "GPL-3.0-or-later"
+files = ["COPYING"]
+bundled = "auto"

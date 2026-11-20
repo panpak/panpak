@@ -7,6 +7,7 @@ Usage: python3 bench/silverblue/verify_sbom_build.py [--panpak DIR] [--cache DIR
 For each recipe (a folder with a `panpak.toml`): `panpak build` twice, then checks on both packages:
   - `[sbom].coverage` is `build`, and `panpak sbom` is a CycloneDX 1.6 document whose header says the same;
   - the source component has the commit of the recipe (or the SHA-256 of its archive);
+  - every library that the recipe builds from an archive (`[[build.deps]]`) is a component with the hash and the address of the recipe;
   - the build image is named, and every dependency that the recipe takes from the image (`[[build.image_deps]]`) is a component, with a version;
   - the libraries of the tree are components with a BLAKE3 hash each;
   - the two builds give the same SBOM bytes, and the same hash in the manifest;
@@ -88,6 +89,11 @@ def main():
         found = {c['name']: c for c in by_role.get('build-image-dependency', [])}
         assert sorted(found) == sorted(declared), (sorted(found), sorted(declared))
         assert all(c.get('version') for c in found.values()), 'a dependency of the image has no version'
+        declared_built = {d['name']: d for d in r['build'].get('deps', [])}
+        built = {c['name']: c for c in by_role.get('built-dependency', [])}
+        assert sorted(built) == sorted(declared_built), (sorted(built), sorted(declared_built))
+        for n, d in declared_built.items():
+            assert built[n]['hashes'][0]['content'] == d['sha256'] and d['url'] in json.dumps(built[n]), f'the component of {n} does not hold the url and the hash of the recipe'
         libs = by_role['library-of-the-tree']
         assert libs, 'no library of the tree'
         assert all(c['hashes'][0]['alg'] == 'BLAKE3' and len(c['hashes'][0]['content']) == 64 for c in libs)

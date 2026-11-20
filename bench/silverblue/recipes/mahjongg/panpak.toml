@@ -1,0 +1,36 @@
+# GNOME Mahjongg 51.1, the version that Flathub has (org.gnome.Mahjongg, runtime org.gnome.Platform//51) on 2026-11-20, the second app of the series of step 9b: the same GNOME
+# runtime for the Flatpak, the same libraries (and chunks) for Panpak. It needs GTK 4.22 and libadwaita 1.9 (meson.build of the tag): the image debian-14.
+[app]
+id = "org.gnome.Mahjongg"
+name = "Mahjongg"
+version = "51.1"
+entry = "bin/gnome-mahjongg"
+
+[source]
+git = "https://gitlab.gnome.org/GNOME/gnome-mahjongg.git"
+commit = "cec303c005e70f22b74214f6547cd7859cb08165"
+
+[build]
+image = "debian-14"
+system = "meson"
+configure = ["--prefix=/usr", "--libdir=lib", "--buildtype=release"]
+packages = [
+  "meson", "ninja-build", "valac", "libgtk-4-dev", "libadwaita-1-dev", "librsvg2-dev", "blueprint-compiler", "itstool", "appstream", "libxml2-utils",
+  "gsettings-desktop-schemas", "adwaita-icon-theme", "shared-mime-info", "librsvg2-common",
+]
+memory = "1G"
+jobs = 4
+
+[collect]
+toolkit = "gtk4"
+
+[desktop]
+icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.Mahjongg.svg"
+
+[permissions]
+dbus_own = ["org.gnome.Mahjongg"]
+
+[license]
+spdx = "GPL-3.0-or-later"
+files = ["COPYING"]
+bundled = "auto"
