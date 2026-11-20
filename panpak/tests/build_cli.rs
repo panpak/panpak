@@ -6,7 +6,7 @@ use std::{fs, path::{Path, PathBuf}, process::{Command, Output}};
 fn cli(dir: &Path, args: &[&str]) -> Output {
     let home = dir.join("home");
     fs::create_dir_all(home.join("cache")).unwrap();
-    Command::new(env!("CARGO_BIN_EXE_panpak"))
+    Command::new(env!("CARGO_BIN_EXE_panpak")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
         .args(args)
         .current_dir(dir)
         .env("HOME", &home)

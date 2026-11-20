@@ -213,7 +213,7 @@ why = "linked from the system by pkg-config"   # required
 
 [collect]
 toolkit = "gtk4"             # gtk4 | qt6 | none
-# prefer_host = []   allow_missing = []   data = ["share/gtksourceview-5"]   exclude = ["include/*"]
+# prefer_host = []   data = ["share/gtksourceview-5"]   exclude = ["include/*"]
 
 [desktop]                    # sizes default to [256, 128, 64, 48, 32]
 icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"   # or icons_png = [...] for PNG files of the tree

@@ -35,9 +35,9 @@ and checked against a pinned SHA-256 before use. No input is stored in the repos
 | Simplenote (Electron) | 2.27.0 and 2.27.1 | update size only (no command that exits) |
 | PrusaSlicer (GTK 3) | 2.8.1 | starts |
 
-The AppImages are converted with `panpak convert` into signed packages. QOwnNotes needs
-`--allow-missing` for Qt libraries that the AppImage does not carry; the commands used here run
-without them. The exact options are in `bench/public_bench.py`.
+The AppImages are converted with `panpak convert` into signed packages. QOwnNotes asks for Qt
+libraries that the AppImage does not carry; since `pack` works out which libraries only modules ask for, no option is needed. The exact options are in
+`bench/public_bench.py`.
 
 ## Update size
 

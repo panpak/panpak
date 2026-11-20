@@ -77,7 +77,7 @@ hashes in `REPRODUCIBLE-HASHES.md`), `python3 conformance/run.py --rust`,
    fuzz `fuzz_stub`? no — `verify_accepts_*` / `verify_rejects_*` tests.
    The stub run in `run-mode` is the installed runtime.
 7. **ELF scanner + SquashFS** (convert): fuzz `fuzz_elf`,
-   `fuzz_squash`; explicit `allow_missing`. NOT covered: DwarFS
+   `fuzz_squash`; the signed report of the modules (PANPAK-FORMAT.md §7.2). NOT covered: DwarFS
    (refused), upstream-signed AppImages (`signed_by_upstream=false`).
 8. **HTTP update** (HTTPS only, localhost only with flag, max 3
    redirects without downgrade, verified Ranges): fuzz `fuzz_http`,

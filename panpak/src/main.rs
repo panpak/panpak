@@ -33,7 +33,7 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--allow-missing <glob>] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
+    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [-o <out.panpak>]\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the key the author published, or the key of the file; --yes alone does not)\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
@@ -461,9 +461,12 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
     // The staged version enters over the installed one by the same rules as when it was staged (the floor may have risen since): a refusal takes
     // the staging away, so that it is not tried again at every start.
     let mut switch_note: Option<String> = None;
+    // Whether the app was in protected mode before this command saw the floor of the staged version: the end of the mode is told only then.
+    let mut was_protected = false;
     {
         let rel = man.release.as_ref().context("the staged record has no [release]")?;
         let checked = (|| -> Result<panpak_core::release::Standing> {
+            was_protected = panpak_core::release::is_marked_protected(&appdir);
             panpak_core::release::note_release(&appdir, rel.floor, rel.revision)?;
             if panpak_core::release::sync_protected(&appdir, old_man.release.as_ref().map_or(0, |r| r.revision))? {
                 refresh_menu_entry(app_id);
@@ -540,11 +543,11 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
             st.switch_note = switch_note.clone();
         })?;
         let msg = if *rec != pin.recovery { panpak_core::messages::KEY_RECOVERED } else { panpak_core::messages::KEY_CHANGED };
-        eprintln!("panpak: {}", panpak_core::i18n::fill(&panpak_core::i18n::tr(msg), &[("name", man.app.name.clone()), ("key", k.clone())]));
+        eprintln!("panpak: {}", panpak_core::i18n::fill(&panpak_core::i18n::tr(msg), &[("name", man.app.name.clone())]));
     }
     panpak_core::pending::clear(&appdir)?;
     panpak_core::failpoint!("apply.pending_removed");
-    protected::mode_ended(&appdir, man, old_man.release.as_ref().map_or(0, |r| r.revision));
+    protected::mode_ended(&appdir, man, was_protected);
     let (best_abi, _) = best_runtime(&store)?;
     let stub = stable_stub_link(&store)?;
     ensure_stable_panpak(&store)?;
@@ -975,6 +978,7 @@ fn cmd_key_new(out: &Path) -> Result<()> {
     println!("RECOVERY PHRASE: write these 24 words on paper and keep them away from this computer. They are shown once and are not kept.");
     println!("They are what takes your apps back if the signing key is ever stolen or lost; anyone who has them can do that, so they are as secret as the key.");
     println!();
+    println!("Panpak recovery phrase: this is not a wallet seed. Keep it on paper, offline; Panpak will never ask for it.");
     for line in panpak_core::trust::phrase_of(&rec).chunks(6) {
         println!("    {}", line.join(" "));
     }
@@ -1097,7 +1101,7 @@ fn add_license_entries(payload: &mut Vec<PayloadEntry>) -> Result<()> {
     );
     for dir in [panpak_core::RESERVED_TOP, panpak_core::LICENSES_DIR] {
         payload.push(PayloadEntry {
-            entry: Entry { path: PathBuf::from(dir), mode: 0o755, kind: Kind::Dir },
+            entry: Entry { path: PathBuf::from(dir), mode: 0o755, kind: Kind::Dir, info: Default::default() },
             source: None,
             embedded: None,
             data: None,
@@ -1108,7 +1112,7 @@ fn add_license_entries(payload: &mut Vec<PayloadEntry>) -> Result<()> {
             entry: Entry {
                 path: Path::new(panpak_core::LICENSES_DIR).join(name),
                 mode: 0o644,
-                kind: Kind::File { chunks: Vec::new() },
+                kind: Kind::File { chunks: Vec::new() }, info: Default::default(),
             },
             source: None,
             embedded: Some(text),
@@ -1118,6 +1122,24 @@ fn add_license_entries(payload: &mut Vec<PayloadEntry>) -> Result<()> {
     // Same deterministic order as walk_tree.
     payload.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
     Ok(())
+}
+
+/// The signed facts about a file (PANPAK-FORMAT.md §4): an ELF file (and its SONAME), or a script that sets `LD_LIBRARY_PATH` itself (an executable of at most 64 KiB
+/// that starts with `#!`, not named like a library).
+fn file_info_of(path: &Path, mode: u32) -> Result<panpak_core::FileInfo> {
+    use panpak_core::{FileInfo, FILE_ELF, FILE_SETS_LD_PATH};
+    if let Some(soname) = panpak_core::elf_soname(path) {
+        return Ok(FileInfo { flags: FILE_ELF, soname, ext: Vec::new() });
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let size = fs::metadata(path)?.len();
+    if mode & 0o111 != 0 && !name.contains(".so") && (4..=(64 << 10)).contains(&size) {
+        let bytes = fs::read(path)?;
+        if bytes.starts_with(b"#!") && std::str::from_utf8(&bytes).is_ok_and(panpak_core::libpath::sets_library_path) {
+            return Ok(FileInfo { flags: FILE_SETS_LD_PATH, soname: None, ext: Vec::new() });
+        }
+    }
+    Ok(FileInfo::default())
 }
 
 fn walk_tree(root: &Path) -> Result<Vec<PayloadEntry>> {
@@ -1137,7 +1159,7 @@ fn walk_tree(root: &Path) -> Result<Vec<PayloadEntry>> {
             ensure!(mode & 0o6000 == 0, "setuid/setgid not allowed: {}", rel_s);
             if meta.is_dir() {
                 out.push(PayloadEntry {
-                    entry: Entry { path, mode: mode & 0o777, kind: Kind::Dir },
+                    entry: Entry { path, mode: mode & 0o777, kind: Kind::Dir, info: Default::default() },
                     source: None,
                     embedded: None,
                     data: None,
@@ -1150,7 +1172,7 @@ fn walk_tree(root: &Path) -> Result<Vec<PayloadEntry>> {
                     "the link {rel_s} points to {t:?}, outside the package, and the runtime refuses such a link: replace it with a copy of the file or with a relative link inside the tree (for example `ln -sfn ../lib/x {rel_s}`), or delete it"
                 );
                 out.push(PayloadEntry {
-                    entry: Entry { path, mode: mode & 0o777, kind: Kind::Link(t) },
+                    entry: Entry { path, mode: mode & 0o777, kind: Kind::Link(t), info: Default::default() },
                     source: None,
                     embedded: None,
                     data: None,
@@ -1161,7 +1183,7 @@ fn walk_tree(root: &Path) -> Result<Vec<PayloadEntry>> {
                     entry: Entry {
                         path,
                         mode: mode & 0o777,
-                        kind: Kind::File { chunks: Vec::new() },
+                        kind: Kind::File { chunks: Vec::new() }, info: Default::default(),
                     },
                     source: Some(abs),
                     embedded: None,
@@ -1434,7 +1456,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
                 let entries = panpak_core::release::extend_history(p.history.as_deref(), p.revision, p.signed)?;
                 let text = panpak_core::release::encode_history(&entries);
                 payload.push(PayloadEntry {
-                    entry: Entry { path: PathBuf::from(panpak_core::release::HISTORY_PATH), mode: 0o644, kind: Kind::File { chunks: Vec::new() } },
+                    entry: Entry { path: PathBuf::from(panpak_core::release::HISTORY_PATH), mode: 0o644, kind: Kind::File { chunks: Vec::new() }, info: Default::default() },
                     source: None,
                     embedded: None,
                     data: Some(text.as_bytes().to_vec()),
@@ -1477,10 +1499,10 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
         }
     } else {
         let mut paths = Vec::new();
-        payload.push(PayloadEntry { entry: Entry { path: PathBuf::from(panpak_core::ICONS_DIR), mode: 0o755, kind: Kind::Dir }, source: None, embedded: None, data: None });
+        payload.push(PayloadEntry { entry: Entry { path: PathBuf::from(panpak_core::ICONS_DIR), mode: 0o755, kind: Kind::Dir, info: Default::default() }, source: None, embedded: None, data: None });
         for (side, data) in generated {
             let path = format!("{}/{side}.png", panpak_core::ICONS_DIR);
-            payload.push(PayloadEntry { entry: Entry { path: PathBuf::from(&path), mode: 0o644, kind: Kind::File { chunks: Vec::new() } }, source: None, embedded: None, data: Some(data) });
+            payload.push(PayloadEntry { entry: Entry { path: PathBuf::from(&path), mode: 0o644, kind: Kind::File { chunks: Vec::new() }, info: Default::default() }, source: None, embedded: None, data: Some(data) });
             paths.push(path);
         }
         match &mut man.desktop {
@@ -1541,22 +1563,48 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
             .unwrap_or_default()
             .into_iter()
             .collect();
-        for p in payload.iter() {
-            if let Some(src) = &p.source {
-                set.extend(elf_needs(src).with_context(|| format!("scan {}", src.display()))?);
+        // What each file is is read here, once, and signed with the index; the ELF files give their libraries.
+        let mut elfs: Vec<panpak_core::modules::ElfFile> = Vec::new();
+        for p in payload.iter_mut() {
+            if let (Some(src), None, Kind::File { .. }) = (&p.source, &p.data, &p.entry.kind) {
+                p.entry.info = file_info_of(src, p.entry.mode)?;
+                if p.entry.info.is_elf() {
+                    let needs = elf_needs(src).with_context(|| format!("scan {}", src.display()))?;
+                    set.extend(needs.iter().cloned());
+                    elfs.push(panpak_core::modules::ElfFile {
+                        path: p.entry.path.to_str().context("non-UTF-8 path")?.to_string(),
+                        is_program: panpak_core::libpath::is_program(src),
+                        needs,
+                    });
+                }
             }
         }
-        if !set.is_empty() {
+        // The report of the modules: what the programs need, and what only modules need (PANPAK-FORMAT.md §7.2).
+        let report_hash = if elfs.is_empty() {
+            None
+        } else {
+            let entries: Vec<Entry> = payload.iter().map(|p| p.entry.clone()).collect();
+            let bundled = panpak_core::abi::bundled_libs_from_entries(&entries);
+            let text = panpak_core::modules::make(&elfs, &bundled).render();
+            let hash = panpak_core::modules::hash(text.as_bytes());
+            payload.push(PayloadEntry {
+                entry: Entry { path: PathBuf::from(panpak_core::modules::PATH), mode: 0o644, kind: Kind::File { chunks: Vec::new() }, info: Default::default() },
+                source: None,
+                embedded: None,
+                data: Some(text.into_bytes()),
+            });
+            payload.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
+            Some(hash)
+        };
+        if !set.is_empty() || report_hash.is_some() {
             let needs: Vec<String> = set.into_iter().collect();
             match &mut man.abi {
-                Some(a) => a.needs = Some(needs),
+                Some(a) => {
+                    a.needs = (!needs.is_empty()).then_some(needs);
+                    a.modules = report_hash;
+                }
                 None => {
-                    man.abi = Some(panpak_core::Abi {
-                        glibc_min: None,
-                        needs: Some(needs),
-                        prefer_host: None,
-                        allow_missing: None,
-                    })
+                    man.abi = Some(panpak_core::Abi { glibc_min: None, needs: (!needs.is_empty()).then_some(needs), prefer_host: None, modules: report_hash })
                 }
             }
         }
@@ -1610,7 +1658,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
             let text = v.iter().map(u32::to_string).collect::<Vec<_>>().join(".");
             match &mut man.abi {
                 Some(a) => a.glibc_min = Some(text),
-                None => man.abi = Some(panpak_core::Abi { glibc_min: Some(text), needs: None, prefer_host: None, allow_missing: None }),
+                None => man.abi = Some(panpak_core::Abi { glibc_min: Some(text), needs: None, prefer_host: None, modules: None }),
             }
         }
     }
@@ -2069,7 +2117,6 @@ struct ConvertArgs<'a> {
     name_ov: Option<&'a str>,
     version_ov: Option<&'a str>,
     entry_ov: Option<&'a str>,
-    allow_missing: Vec<String>,
     icon_ov: Option<&'a Path>,
     out: Option<&'a Path>,
 }
@@ -2089,7 +2136,7 @@ fn valid_squashfs_sb(b: &[u8]) -> bool {
 
 fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     use std::io::Read;
-    let ConvertArgs { src, id, stub, secret, trust, name_ov, version_ov, entry_ov, allow_missing, icon_ov, out } = a;
+    let ConvertArgs { src, id, stub, secret, trust, name_ov, version_ov, entry_ov, icon_ov, out } = a;
     panpak_core::validate_app_id(id)?;
     let mut f = File::open(src)?;
     // Look for the squashfs v4 magic ("hsqs") in the first 64 MiB, validating the
@@ -2300,16 +2347,6 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     if x11 {
         eprintln!("panpak convert: xcb-only app detected: declaring [permissions] x11 = true (verify before distributing)");
         toml.push_str("[permissions]\nx11 = true\n");
-    }
-    if !allow_missing.is_empty() {
-        toml.push_str("[abi]\nallow_missing = [");
-        for (i, g) in allow_missing.iter().enumerate() {
-            if i > 0 {
-                toml.push_str(", ");
-            }
-            toml.push_str(&q(g));
-        }
-        toml.push_str("]\n");
     }
     // The window class and the icons: the desktop groups windows by the class and shows the icon in the menu.
     let mut desktop_keys = String::new();
@@ -3049,20 +3086,9 @@ fn print_isolation(man: &panpak_core::Manifest) {
 
 /// `panpak inspect [--json] <package or app id>`: what a package is, who signed it, what it may do and may not do, and how it is isolated.
 /// One line for `inspect` of a converted app when scripts of the app set `LD_LIBRARY_PATH` themselves (a launcher of the AppImage: Shotcut's `usr/bin/shotcut`). The
-/// scripts are read from the package (its chunks) or, for an installed app, from its tree when that is on the disk; when they cannot be read there is no line.
+/// scripts are the ones that the signed index marks (no file is read).
 fn scripts_with_own_library_path(o: &panpak_core::record::Opened) -> Option<String> {
-    let tree = store_dir().ok().map(|s| s.join("trees").join(panpak_core::hex(&o.footer.root)));
-    let mut file = o.file.try_clone().ok()?;
-    let found = panpak_core::libpath::scripts_setting_the_path(&o.raw_index, |e, chunks| {
-        if o.is_record {
-            let t = tree.as_ref()?;
-            std::fs::read(t.join(&e.path)).ok()
-        } else {
-            let panpak_core::Kind::File { chunks: ids } = &e.kind else { return None };
-            panpak_core::read_chunks(&mut file, chunks, ids).ok()
-        }
-    })
-    .ok()?;
+    let found = panpak_core::libpath::scripts_setting_the_path(&o.raw_index).ok()?;
     if found.is_empty() {
         return None;
     }
@@ -3071,13 +3097,38 @@ fn scripts_with_own_library_path(o: &panpak_core::record::Opened) -> Option<Stri
     Some(format!("note: {}{more} set{} LD_LIBRARY_PATH itself, so the library path of panpak does not reach the programs they start (the scripts of the app are not rewritten)", shown.join(", "), if found.len() > 1 { "" } else { "s" }))
 }
 
+/// The report of the modules of an opened package or record (checked against the hash that the manifest signs); `None` when there is none or it cannot be read.
+fn modules_report_of(o: &mut panpak_core::record::Opened) -> Option<panpak_core::modules::Report> {
+    if o.is_record {
+        let tree = store_dir().ok()?.join("trees").join(panpak_core::hex(&o.footer.root));
+        if !tree.join(".complete").exists() {
+            return None;
+        }
+        panpak_core::modules::load_from_tree(&tree, &o.manifest).ok().flatten()
+    } else {
+        panpak_core::modules::load_from_package(&mut o.file, &o.raw_index, &o.manifest).ok().flatten()
+    }
+}
+
+/// The libraries that only modules ask for and that neither the package nor this system has: the modules that ask for them will not load. From the signed report; no
+/// file of the tree is read.
+fn modules_not_available(o: &mut panpak_core::record::Opened) -> Vec<panpak_core::modules::Unbundled> {
+    let Some(report) = modules_report_of(o) else { return Vec::new() };
+    if report.unbundled.is_empty() {
+        return Vec::new();
+    }
+    let host = panpak_core::abi::host_libs();
+    report.unbundled.into_iter().filter(|u| !host.contains_key(&u.lib)).collect()
+}
+
 fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
     use panpak_core::permissions as perms;
     let given = Path::new(arg);
     let path = if given.is_file() { given.to_path_buf() } else { store_dir()?.join("apps").join(arg).join("current") };
     ensure_code!(path.exists(), ErrorCode::E5001, "{arg}: not a package file and not an installed app (see `panpak list`)");
-    let opened = panpak_core::record::open_verified(&path)?;
+    let mut opened = panpak_core::record::open_verified(&path)?;
     let man = opened.manifest.clone();
+    let unavailable = modules_not_available(&mut opened);
     let key = man.trust.as_ref().and_then(|t| t.root.first().cloned()).unwrap_or_default();
     let fp = panpak_core::parse_pubkey(&key).map(|vk| panpak_core::fingerprint(&vk)).unwrap_or_else(|_| "?".into());
     let (lang, style) = (panpak_core::i18n::current(), perm_style());
@@ -3085,18 +3136,20 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
     if json {
         let q = |s: &str| format!("{s:?}");
         println!(
-            "{{\"id\":{},\"name\":{},\"version\":{},\"key_fingerprint\":{},\"isolation\":{},\"permissions\":{}}}",
+            "{{\"id\":{},\"name\":{},\"version\":{},\"key_fingerprint\":{},\"isolation\":{},\"permissions\":{},\"modules_not_available\":[{}]}}",
             q(&man.app.id),
             q(&man.app.name),
             q(&man.app.version),
             q(&fp),
             q(if perms::top_level(&items) == Some(perms::Level::High) { "partial" } else { "full" }),
-            perms::items_json(&items)
+            perms::items_json(&items),
+            unavailable.iter().map(|u| q(&u.lib)).collect::<Vec<_>>().join(",")
         );
         return Ok(());
     }
     println!("{} {} ({})", man.app.name, man.app.version, man.app.id);
     println!("signed with the key {fp}");
+    println!("key: {key}");
     if let Some(o) = &man.origin {
         println!("converted from {} (NOT verified by the author; signed by the converter, not upstream)", o.converted_from);
         // The scripts of the app are not rewritten; one that sets LD_LIBRARY_PATH itself overrides the library path of panpak for the programs it starts.
@@ -3118,6 +3171,14 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
     }
     println!();
     print_isolation(&man);
+    if !unavailable.is_empty() {
+        println!();
+        println!("not available on this system (only modules of the app ask for them; the app starts, and these modules do not load):");
+        for u in &unavailable {
+            let more = if u.count > u.by.len() { format!(" and {} more", u.count - u.by.len()) } else { String::new() };
+            println!("  {}: asked by {}{more}", u.lib, u.by.join(", "));
+        }
+    }
     Ok(())
 }
 
@@ -3264,6 +3325,8 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     let appdir = store.join("apps").join(&man.app.id);
     fs::create_dir_all(&appdir)?;
     let revision_before = installed_manifest(&appdir).map(|o| o.release.as_ref().map_or(0, |r| r.revision));
+    // Whether the app was in protected mode before this command saw the floor of the package: the end of the mode is told only then.
+    let mut was_protected = false;
     // The user folders the manifest asks for, found now in the real user-dirs.dirs.
     let (xdg_found, xdg_problems) = resolve_xdg_dirs(&man);
     let mut new_pin = false;
@@ -3277,6 +3340,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         // another channel is refused), and new permissions need a yes.
         if let Some(old) = installed_manifest(&appdir) {
             let rel = man.release.as_ref().context("the package has no [release]")?;
+            was_protected = panpak_core::release::is_marked_protected(&appdir);
             panpak_core::release::note_release(&appdir, rel.floor, rel.revision)?;
             if panpak_core::release::sync_protected(&appdir, old.release.as_ref().map_or(0, |r| r.revision))? {
                 refresh_menu_entry(&man.app.id);
@@ -3307,14 +3371,6 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
             println!("  from: {} (version {})", o.converted_from, o.version);
             println!("  sha256: {}", o.sha256);
             println!("  signed by upstream: {}", o.signed_by_upstream);
-        }
-        if let Some(allow) = man.abi.as_ref().and_then(|a| a.allow_missing.clone()) {
-            if !allow.is_empty() {
-                println!("WARNING: libraries excluded from resolution (allow_missing declared by the author; `panpak doctor <package>` checks the symbols that stay undefined):");
-                for g in &allow {
-                    println!("  {g} (if actually needed, the app will fail at startup)");
-                }
-            }
         }
         println!("pin: {}", appdir.join(panpak_core::trust::FILE).display());
         // Whom to trust is said by the person: the key they were told (checked above), or the key of this file. `--yes` is not that.
@@ -3379,8 +3435,8 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     if let Some(apps) = appdir.parent() {
         panpak_core::durable::fsync_dir(apps)?;
     }
-    if let Some(r) = revision_before {
-        protected::mode_ended(&appdir, &man, r);
+    if revision_before.is_some() {
+        protected::mode_ended(&appdir, &man, was_protected);
     }
 
     fs::create_dir_all(launcher.parent().unwrap())?;
@@ -3579,10 +3635,16 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                     panpak_core::verify_chunk(c, &raw)?;
                 }
             }
-            Ok((o.footer, o.manifest, entries))
+            let report = if o.is_record {
+                let tree = store.join("trees").join(panpak_core::hex(&o.footer.root));
+                if tree.join(".complete").exists() { panpak_core::modules::load_from_tree(&tree, &o.manifest).ok().flatten() } else { None }
+            } else {
+                panpak_core::modules::load_from_package(&mut o.file, &o.raw_index, &o.manifest)?
+            };
+            Ok((o.footer, o.manifest, entries, report))
         });
         match checked {
-            Ok((ft, man, entries)) => {
+            Ok((ft, man, entries, report)) => {
                 line(true, &format!("verified package: {} {} (root {})", man.app.id, man.app.version, &panpak_core::hex(&ft.root)[..16]));
                 if let Ok(locks) = panpak_core::stalelocks::find_for_app(&man.app.id) {
                     if !locks.is_empty() {
@@ -3591,7 +3653,8 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                 }
                 let need: Vec<String> = man.abi.as_ref().and_then(|a| a.needs.clone()).unwrap_or_default();
                 let prefer: Vec<String> = man.abi.as_ref().and_then(|a| a.prefer_host.clone()).unwrap_or_default();
-                let allowed: Vec<String> = man.abi.as_ref().and_then(|a| a.allow_missing.clone()).unwrap_or_default();
+                // The libraries that no program asks for (only modules do): left out when nothing provides them.
+                let allowed: Vec<String> = report.as_ref().map(|r| r.optional_of(&need)).unwrap_or_else(|| need.clone());
                 let tree = store.join("trees").join(panpak_core::hex(&ft.root));
                 let installed = tree.join(&man.app.entry).exists();
                 // The libraries the package carries: from the tree when it is on disk (the app has been started), else from the index of the package
@@ -3620,7 +3683,7 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
                             if n.starts_with("ld-linux") || *n == "ld.so" {
                                 line(true, &format!("lib {n}: bundle loader (not in farm)"));
                             } else if !decided.contains(n.as_str()) {
-                                line(true, &format!("lib {n}: ignored (explicit allow_missing from package author)"));
+                                line(true, &format!("lib {n}: not available here (only modules ask for it)"));
                             }
                         }
                         if need.is_empty() {
@@ -4123,7 +4186,6 @@ fn real_main() -> Result<()> {
             let mut name = None;
             let mut version = None;
             let mut entry = None;
-            let mut allow_missing: Vec<&str> = Vec::new();
             let mut icon = None;
             let mut out = None;
             let mut i = 3;
@@ -4135,7 +4197,7 @@ fn real_main() -> Result<()> {
                     "--name" => { name = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--name <n>"))?.as_str()); i += 2; }
                     "--version" => { version = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--version <v>"))?.as_str()); i += 2; }
                     "--entry" => { entry = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--entry <e>"))?.as_str()); i += 2; }
-                    "--allow-missing" => { allow_missing.push(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--allow-missing <glob>"))?.as_str()); i += 2; }
+                    "--allow-missing" => bail_code!(ErrorCode::E5002, "--allow-missing is gone: `pack` works out which libraries only modules ask for (the report in .panpak/modules), and those are left out by itself; a library that a program needs and nothing provides is an error"),
                     "--icon" => { icon = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--icon <file.png>"))?.as_str()); i += 2; }
                     "-o" => { out = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "-o <out>"))?.as_str()); i += 2; }
                     x => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
@@ -4158,7 +4220,6 @@ fn real_main() -> Result<()> {
                 name_ov: name,
                 version_ov: version,
                 entry_ov: entry,
-                allow_missing: allow_missing.into_iter().map(|s| s.to_string()).collect(),
                 icon_ov: icon.map(Path::new),
                 out: out.map(PathBuf::from).as_deref(),
             })?;

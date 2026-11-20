@@ -12,7 +12,7 @@ use std::{
 const ID: &str = "org.example.prot";
 
 fn cli(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_panpak"))
+    Command::new(env!("CARGO_BIN_EXE_panpak")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
         .args(args)
         .current_dir(home)
         .env("HOME", home)
@@ -178,6 +178,35 @@ fn a_floor_above_the_installed_version_shows_in_list_and_doctor_and_the_internet
     assert!(!text(&cli(&l.home, &["doctor"])).contains("is in protected mode"));
     // The same status in another language, with the catalog of the program (the words are checked in `po/it.po` by the tests of the core).
     set_floor(&appdir, 9);
-    let it = Command::new(env!("CARGO_BIN_EXE_panpak")).args(["list"]).current_dir(&l.home).env("HOME", &l.home).env("XDG_DATA_HOME", l.home.join(".local/share")).env("XDG_CACHE_HOME", l.home.join(".cache")).env("XDG_CONFIG_HOME", l.home.join(".config")).env("LC_ALL", "it_IT.UTF-8").output().unwrap();
+    let it = Command::new(env!("CARGO_BIN_EXE_panpak")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus").args(["list"]).current_dir(&l.home).env("HOME", &l.home).env("XDG_DATA_HOME", l.home.join(".local/share")).env("XDG_CACHE_HOME", l.home.join(".cache")).env("XDG_CONFIG_HOME", l.home.join(".config")).env("LC_ALL", "it_IT.UTF-8").output().unwrap();
     assert!(!text(&it).contains("protected mode") && text(&it).contains(ID), "the status is not in English: {}", text(&it));
+}
+
+#[test]
+fn the_end_of_protected_mode_is_told_only_when_the_app_was_in_it() {
+    let l = lab("ended");
+    let v1 = l.pack_ok("1", "a", "", None);
+    assert!(ok(&l.install(&v1, &[])));
+    let appdir = l.home.join(".local/share/panpak/apps").join(ID);
+    let told = |o: &Output| text(o).contains("is updated") || text(o).contains("The problem is fixed");
+    // An ordinary update: nothing about protected mode.
+    let v2 = l.pack_ok("2", "b", "", Some(&v1));
+    let o = l.install(&v2, &[]);
+    assert!(ok(&o) && !told(&o), "{}", text(&o));
+    // A package that is its own fix (it raises the floor to its own revision), over an app that never ran in the mode: it was not in the mode, so nothing is told.
+    let v3 = l.pack_ok("3", "c", "[release]\nrevision = 3\nfloor = 3\n", Some(&v2));
+    let o = l.install(&v3, &[]);
+    assert!(ok(&o) && !told(&o), "{}", text(&o));
+    assert!(!appdir.join("protected").exists());
+    // An app that is in the mode (a floor above it was seen, here from a package of another channel that is refused): the fix tells it, once.
+    let beta = l.pack_ok("4", "d", "[release]\nchannel = \"beta\"\nfloor = 9\nrevision = 9\n", None);
+    assert!(code_of(&l.install(&beta, &[]), "PANPAK-E4005"));
+    assert!(appdir.join("protected").is_file(), "the mode is marked");
+    let v5 = l.pack_ok("5", "e", "[release]\nrevision = 9\nfloor = 9\n", Some(&v3));
+    let o = l.install(&v5, &[]);
+    assert!(ok(&o) && told(&o), "{}", text(&o));
+    // And an update after it is ordinary again.
+    let v6 = l.pack_ok("6", "f", "", Some(&v5));
+    let o = l.install(&v6, &[]);
+    assert!(ok(&o) && !told(&o), "{}", text(&o));
 }

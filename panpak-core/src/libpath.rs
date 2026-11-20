@@ -205,25 +205,11 @@ pub fn sets_library_path(text: &str) -> bool {
     })
 }
 
-/// The scripts of a package that set `LD_LIBRARY_PATH` themselves (a converted AppImage often has one: its own launcher). Candidates are the executable files of
-/// at most 64 KiB, not named like a library, that start with `#!`; `read` gives the bytes of one of them (the caller knows where they are: the chunks of a package
-/// file, or the tree of an installed app) or `None` when it cannot. The paths come back in order.
-pub fn scripts_setting_the_path(raw_index: &[u8], mut read: impl FnMut(&crate::Entry, &[crate::Chunk]) -> Option<Vec<u8>>) -> Result<Vec<String>> {
-    const MAX: u64 = 64 << 10;
-    let (chunks, entries) = crate::parse_index(raw_index)?;
-    let mut out = Vec::new();
-    for e in &entries {
-        let crate::Kind::File { chunks: ids } = &e.kind else { continue };
-        let name = e.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let size: u64 = ids.iter().map(|&id| chunks.get(id as usize).map_or(u64::MAX, |c| c.raw as u64)).fold(0, u64::saturating_add);
-        if e.mode & 0o111 == 0 || name.contains(".so") || !(4..=MAX).contains(&size) {
-            continue;
-        }
-        let Some(bytes) = read(e, &chunks) else { continue };
-        if bytes.starts_with(b"#!") && std::str::from_utf8(&bytes).is_ok_and(sets_library_path) {
-            out.push(e.path.display().to_string());
-        }
-    }
+/// The scripts of a package that set `LD_LIBRARY_PATH` themselves (a converted AppImage often has one: its own launcher), from the flag that `pack` signed in the index:
+/// no file is read. The paths come back in order.
+pub fn scripts_setting_the_path(raw_index: &[u8]) -> Result<Vec<String>> {
+    let (_, entries) = crate::parse_index(raw_index)?;
+    let mut out: Vec<String> = entries.iter().filter(|e| e.info.sets_library_path()).map(|e| e.path.display().to_string()).collect();
     out.sort();
     Ok(out)
 }

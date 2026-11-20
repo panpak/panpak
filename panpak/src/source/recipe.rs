@@ -86,8 +86,6 @@ pub struct Collect {
     pub toolkit: Option<String>,
     #[serde(default)]
     pub prefer_host: Vec<String>,
-    #[serde(default)]
-    pub allow_missing: Vec<String>,
     /// Folders of the image's `/usr/share` to copy into the tree (`share/gtksourceview-5`).
     #[serde(default)]
     pub data: Vec<String>,

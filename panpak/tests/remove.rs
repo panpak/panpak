@@ -22,6 +22,7 @@ fn work(name: &str) -> PathBuf {
 
 fn cmd(home: &Path, args: &[&str]) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_panpak"));
+    c.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus");
     c.args(args)
         .current_dir(home)
         .env("HOME", home)

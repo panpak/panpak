@@ -17,7 +17,7 @@ fn work(name: &str) -> PathBuf {
 /// Runs the CLI with `HOME` and `XDG_DATA_HOME` inside `dir` and `PATH` limited
 /// to `path_dir`, so the host's `update-mime-database` is never used.
 fn cli(dir: &Path, path_dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_panpak"))
+    Command::new(env!("CARGO_BIN_EXE_panpak")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
         .args(args)
         .env("HOME", dir)
         .env("XDG_DATA_HOME", dir.join("data"))

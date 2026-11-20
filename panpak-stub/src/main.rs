@@ -2784,7 +2784,7 @@ mod tests {
         let entries = vec![Entry {
             path: PathBuf::from("bin/hello"),
             mode: 0o755,
-            kind: Kind::File { chunks: vec![0] },
+            kind: Kind::File { chunks: vec![0] }, info: Default::default(),
         }];
         let raw_index = encode_index(&chunks, &entries);
         let root = *blake3::hash(&raw_index).as_bytes();
@@ -2832,7 +2832,7 @@ mod tests {
         let entries = vec![Entry {
             path: PathBuf::from("bin/hello"),
             mode: 0o755,
-            kind: Kind::File { chunks: vec![0] },
+            kind: Kind::File { chunks: vec![0] }, info: Default::default(),
         }];
         let panpak = sign_and_assemble(AssembleIn { dir, name: "t.panpak", sk: &sk, key: &key, chunks: &chunks, chunk_blobs: &[comp], entries: &entries, manifest_extra });
         let store = dir.join("store");
@@ -3198,13 +3198,13 @@ mod tests {
         let mut entries = vec![Entry {
             path: PathBuf::from("bin/hello"),
             mode: 0o755,
-            kind: Kind::File { chunks: vec![0] },
+            kind: Kind::File { chunks: vec![0] }, info: Default::default(),
         }];
         for (p, t) in links {
             entries.push(Entry {
                 path: PathBuf::from(p),
                 mode: 0o777,
-                kind: Kind::Link(t.to_string()),
+                kind: Kind::Link(t.to_string()), info: Default::default(),
             });
         }
         let raw_index = encode_index(&chunks, &entries);
@@ -3438,7 +3438,7 @@ mod tests {
             chunks.push(Chunk { hash: *blake3::hash(&data).as_bytes(), off, comp: comp.len() as u32, raw: data.len() as u32 });
             off += comp.len() as u64;
             blobs.push(comp);
-            entries.push(Entry { path: PathBuf::from(format!("d{}/f{i}", i % 7)), mode: 0o644, kind: Kind::File { chunks: vec![i as u32] } });
+            entries.push(Entry { path: PathBuf::from(format!("d{}/f{i}", i % 7)), mode: 0o644, kind: Kind::File { chunks: vec![i as u32] }, info: Default::default() });
         }
         let raw_index = encode_index(&chunks, &entries);
         let root = *blake3::hash(&raw_index).as_bytes();
@@ -3534,7 +3534,7 @@ mod tests {
                 };
                 ids.push(id as u32);
             }
-            entries.push(Entry { path: PathBuf::from(name), mode: *mode, kind: Kind::File { chunks: ids } });
+            entries.push(Entry { path: PathBuf::from(name), mode: *mode, kind: Kind::File { chunks: ids }, info: Default::default() });
         }
         (chunks, entries, MemChunks(data))
     }
@@ -3882,7 +3882,7 @@ mod tests {
         assert!(decide(&["missing.so".into()], &["missing*".to_string()], &[], &host, &bund).is_err());
         // needs missing everywhere: error.
         assert!(decide(&["nope.so".into()], &[], &[], &host, &bund).is_err());
-        // Explicit allow_missing: skipped, not an error.
+        // A library that only modules ask for: left out when nothing provides it, not an error.
         let d = decide(&["nope.so".into()], &[], &["nope*".into()], &host, &bund).unwrap();
         assert!(d.is_empty());
     }
@@ -3956,8 +3956,8 @@ mod tests {
         assert_eq!(both(&host_pref, "libgcc_s.so.1"), 'B');
         assert_eq!(who("libstdc++.so.6", &["libstdc++.so.6"], &[]), 'H');
         assert_eq!(who("libstdc++.so.6", &[], &["libstdc++.so.6"]), 'B');
-        // allow_missing: skipped even if both copies exist. prefer_host: always the system.
-        assert!(decide(&["libSoundTouch.so.1".into()], &[], &["libSoundTouch*".into()], &map(&["libSoundTouch.so.1"], "/usr/lib"), &map(&["libSoundTouch.so.1"], "lib")).unwrap().is_empty());
+        // prefer_host: always the system.
+        assert!(!decide(&["libSoundTouch.so.1".into()], &[], &["libSoundTouch*".into()], &map(&["libSoundTouch.so.1"], "/usr/lib"), &map(&["libSoundTouch.so.1"], "lib")).unwrap().is_empty(), "present: decided as usual");
         let d = decide(&["libSoundTouch.so.1".into()], &["libSoundTouch*".into()], &[], &map(&["libSoundTouch.so.1"], "/usr/lib"), &map(&["libSoundTouch.so.1"], "lib")).unwrap();
         assert!(matches!(d[0].1, Source::Host(_)));
         // A bundle with its own glibc (B-world) keeps everything in the bundle, graphics included
@@ -4042,11 +4042,12 @@ mod tests {
         let d = decide_with(&needs, &[], &[], &map(&both, "/usr/lib"), &map(&both, "lib"), &back).unwrap();
         // The choice "bundled" is honoured for libfoo only: libGL and libm stay with the system.
         assert!(matches!(d[0].1, Source::Bundled(_)) && matches!(d[1].1, Source::Host(_)) && matches!(d[2].1, Source::Host(_)), "{d:?}");
-        // prefer_host and allow_missing are stronger than a choice.
+        // prefer_host is stronger than a choice.
         let d = decide_with(&needs, &["libfoo*".into()], &[], &map(&both, "/usr/lib"), &map(&both, "lib"), &back).unwrap();
         assert!(matches!(d[0].1, Source::Host(_)));
+        // A library that only modules ask for is decided like any other when something provides it; it is left out only when nothing does.
         let d = decide_with(&needs, &[], &["libfoo*".into()], &map(&both, "/usr/lib"), &map(&both, "lib"), &prefs).unwrap();
-        assert!(d.iter().all(|(n, _)| n != "libfoo.so.1"));
+        assert!(d.iter().any(|(n, _)| n == "libfoo.so.1"));
         // A bundle with its own glibc ignores the choices: everything is the bundle's.
         let w = ["libc.so.6", "libfoo.so.1"];
         let wn: Vec<String> = w.iter().map(|n| n.to_string()).collect();

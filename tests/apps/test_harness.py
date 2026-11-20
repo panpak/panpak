@@ -180,22 +180,14 @@ FAKE_PANPAK = r"""#!/usr/bin/env python3
 import os, sys
 log = os.path.join(os.environ["HOME"], "calls.log")
 a = sys.argv[1:]
+open(log, "a").write(" ".join(a) + "\n")
 if a[0] == "convert":
-    open(log, "a").write(" ".join(a) + "\n")
     open(a[a.index("-o") + 1], "wb").write(open(os.path.join(os.environ["HOME"], "base-package"), "rb").read())
-elif a[0] == "doctor":
-    last = open(log).read().splitlines()[-1].split()
-    allowed = [last[i + 1] for i, w in enumerate(last) if w == "--allow-missing"]
-    miss = [n for n in ("libaa.so.1", "Bb.so", "libcc.so.3") if n not in allowed]
-    if miss:
-        print("KO   unresolved libraries: " + ", ".join(miss) + " missing on the host and not included in the tree: the app cannot start here (try another distro)")
-    else:
-        print("OK   verified package")
 """
 
 
-class ConvertLoop(unittest.TestCase):
-    def test_every_unresolved_library_is_allowed_in_one_round(self):
+class ConvertOnce(unittest.TestCase):
+    def test_convert_runs_once_and_no_library_is_allowed_by_name(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
             fake = d / "panpak"
@@ -210,10 +202,9 @@ class ConvertLoop(unittest.TestCase):
             apps, _ = appcfg.parse(GOOD)
             pkg, notes = pipeline.convert(ctx, apps["one"], "k1", (d / "src.AppImage", "digest", []))
             calls = (d / "calls.log").read_text().splitlines()
-            self.assertEqual(len(calls), 2, f"one round to find them all, one with them allowed: {calls}")
-            self.assertEqual(sorted(w for i, w in enumerate(calls[1].split()[1:]) if calls[1].split()[i] == "--allow-missing"), ["Bb.so", "libaa.so.1", "libcc.so.3"])
+            self.assertEqual(len(calls), 1, calls)
+            self.assertNotIn("--allow-missing", calls[0])
             self.assertTrue(pkg.exists())
-            self.assertTrue(any("allow_missing added by the harness: libaa.so.1, Bb.so, libcc.so.3" in n for n in notes), notes)
 
 
 class Readers(unittest.TestCase):

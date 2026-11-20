@@ -175,7 +175,9 @@ fn resolve_in(
     let a = man.abi.as_ref();
     let mut needs = a.and_then(|v| v.needs.clone()).unwrap_or_default();
     let prefer = a.and_then(|v| v.prefer_host.clone()).unwrap_or_default();
-    let allowed = a.and_then(|v| v.allow_missing.clone()).unwrap_or_default();
+    // The libraries that only modules ask for are left out when nothing provides them; a library that a program asks for is an error (the signed report of the modules).
+    let report = panpak_core::modules::load_from_tree(tree, man).context("the report of the modules")?;
+    let optional_of = |needs: &[String]| -> Vec<String> { report.as_ref().map_or_else(|| needs.to_vec(), |r| r.optional_of(needs)) };
     let t_b = std::time::Instant::now();
     let bundled = abi::bundled_libs(tree);
     trace(&format!("bundled inventory of the tree: {} us", t_b.elapsed().as_micros()));
@@ -192,7 +194,7 @@ fn resolve_in(
     // The needs grow to the closure of DT_NEEDED of what is decided.
     let mut seen: HashSet<String> = needs.iter().cloned().collect();
     loop {
-        let decisions = abi::decide(&needs, &prefer, &allowed, &host, &bundled)?;
+        let decisions = abi::decide(&needs, &prefer, &optional_of(&needs), &host, &bundled)?;
         let paths: Vec<PathBuf> = decisions.iter().map(|(_, s)| abi::source_path(tree, s)).collect();
         files.prefetch(&paths);
         let mut extra = Vec::new();
@@ -209,6 +211,7 @@ fn resolve_in(
     // defines a symbol that nothing defines changes source, with its family, until a fixed point.
     // The result is cached below, so this runs once per package, kernel and library inventory.
     let rules = std::time::Instant::now();
+    let allowed = optional_of(&needs);
     let _ = abi::decide(&needs, &prefer, &allowed, &host, &bundled)?;
     let rules_ms = rules.elapsed().as_millis();
     let resolution = abi::resolve_consistent(&mut files, tree, &man.app.entry, &needs, &prefer, &allowed, &host, &bundled)?;

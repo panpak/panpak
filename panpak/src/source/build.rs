@@ -224,8 +224,6 @@ pub fn manifest_toml(r: &Recipe, col: &collect::Collected, pubkey: &str, prov: &
         needs: Vec<String>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         prefer_host: Vec<String>,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        allow_missing: Vec<String>,
     }
     #[derive(serde::Serialize)]
     struct Upd {
@@ -249,10 +247,9 @@ pub fn manifest_toml(r: &Recipe, col: &collect::Collected, pubkey: &str, prov: &
         provenance: &'a panpak_core::Provenance,
     }
     let c = r.collect.as_ref();
-    let abi = (!col.needs.is_empty() || c.is_some_and(|c| !c.prefer_host.is_empty() || !c.allow_missing.is_empty())).then(|| Abi {
+    let abi = (!col.needs.is_empty() || c.is_some_and(|c| !c.prefer_host.is_empty())).then(|| Abi {
         needs: col.needs.clone(),
         prefer_host: c.map(|c| c.prefer_host.clone()).unwrap_or_default(),
-        allow_missing: c.map(|c| c.allow_missing.clone()).unwrap_or_default(),
     });
     let d = r.desktop.as_ref();
     let m = M {

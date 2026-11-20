@@ -150,7 +150,7 @@ def main():
 
     # The package of Appendix A of the specification: built here from its inputs, and its signature block and footer must be
     # the ones the specification prints (a check that the text and the code do not drift apart).
-    APPENDIX_A_SIZE = 991  # the total size that PANPAK-FORMAT.md prints for it
+    APPENDIX_A_SIZE = 987  # the total size that PANPAK-FORMAT.md prints for it
     _stub = b"PANPAKTEST-VECTOR-v1\0"
     _hi = b"hi\n"
     _hic = zstd_enc(_hi)
@@ -170,6 +170,10 @@ def main():
         _me = _mo + _ml
         _be = len(_vec) - 80
         print(f"- total size: {len(_vec)} bytes")
+        print(f"- chunk 0 `[{len(_stub)}, {len(_stub) + len(_hic)})`: `{_hic.hex()}`")
+        print(f"- compressed index `[{_io}, {_io + _il})` ({_il} bytes): `{_vec[_io:_io + _il].hex()}`")
+        print(f"- raw index ({len(_vidx)} bytes): `{_vidx.hex()}`")
+        print(f"- root_hash: `{blake3(_vidx).hex()}`")
         print(f"- manifest TOML `[{_mo}, {_me})` ({_ml} bytes):\n  `" + _vman.decode().replace("\n", "\\n") + "`")
         print(f"- signature block `[{_me}, {_be})` ({_be - _me} bytes): `{_vec[_me:_be].hex()}`")
         print(f"- footer `[{_be}, {len(_vec)})` (80 bytes): `{_ft.hex()}` (index_len={_il}, manifest_off={_mo}, manifest_len={_ml})")
@@ -266,6 +270,22 @@ def main():
         False,
         ["beyond table", "size"],
     )
+    # ---- the facts about a file (section 4): flags, SONAME, extension area ----
+    def with_file(**kw):
+        data = b"xy"
+        comp = zstd_enc(data)
+        cc = [(blake3(data), len(STUB), len(comp), len(data))]
+        ee = [{"path": "f", "mode": 0o755, "kind": "file", "size": len(data), "chunks": [0], **kw}]
+        return assemble(STUB, encode_index(cc, ee), manifest(), blobs=[comp])
+
+    put("valid-file-elf-soname.panpak", with_file(flags=1, soname="libf.so.1"), True)
+    put("valid-file-script-flag.panpak", with_file(flags=2), True)
+    put("valid-file-ext-noncritical.panpak", with_file(ext=struct.pack("<HH", 0x0001, 3) + b"abc"), True)
+    put("invalid-file-flag-unknown.panpak", with_file(flags=8), False, ["flags", "update panpak"])
+    put("invalid-file-soname-not-elf.panpak", with_file(flags=0, soname="libf.so.1"), False, ["SONAME"])
+    put("invalid-file-elf-and-script.panpak", with_file(flags=3), False, ["ELF", "script"])
+    put("invalid-file-ext-critical.panpak", with_file(ext=struct.pack("<HH", 0x8001, 0)), False, ["critical", "update panpak"])
+    put("invalid-file-ext-cut.panpak", with_file(ext=struct.pack("<HH", 0x0001, 9) + b"abc"), False, ["extension"])
     # trailing extra byte in the index
     idx_extra = encode_index(
         [(blake3(b"xy"), len(STUB), len(zstd_enc(b"xy")), 2)],

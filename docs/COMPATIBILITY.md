@@ -1,5 +1,7 @@
 # Compatibility tests with real AppImages
 
+> Since Step 9 PR 5 there is no `allow_missing`: `pack` works out which libraries only modules ask for (PANPAK-FORMAT.md §7.2). The rows below were measured before, with the list of libraries that the harness allowed by name; they are kept as they were measured.
+
 Status: second round of tests. The build under test has the fixes listed under Defects (string table limit, loader symbols, reachable sockets, stale lock files, a library name with a path); the first round was made before them. X11 on Xvfb only
 (no headless Wayland compositor was available), isolated HOME, one app at a time. Converted
 packages are local and are not redistributed. Times are the first window that appeared (it can be

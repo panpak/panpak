@@ -291,7 +291,7 @@ no control character and no NUL.
 | `app.name` | 1 to 256 bytes of UTF-8. MUST NOT contain a control character (U+0000..U+001F, U+007F..U+009F), U+2028, U+2029, U+200E, U+200F, U+202A..U+202E or U+2066..U+2069 |
 | `app.version` | `alnum *63( alnum / "." / "_" / "+" / "~" / "-" )` |
 | `app.entry` | A relative path: no empty, `.` or `..` segment, no leading `/`, no control character, at most 4096 bytes |
-| `[abi]` `needs`, `prefer_host`, `allow_missing` | Each item: 1 to 255 bytes of printable ASCII (%x21-7E), without `/`, and not `.` or `..` |
+| `[abi]` `needs`, `prefer_host` | Each item: 1 to 255 bytes of printable ASCII (%x21-7E), without `/`, and not `.` or `..` |
 | `origin.converted_from` | Like `app.name`, and without `/` |
 | `origin.version` | Like `app.name`, at most 64 bytes |
 | `origin.sha256` | 64 lowercase hexadecimal digits |
@@ -761,9 +761,23 @@ n_entries x {
   kind=file:    u64 size, u32 n, u32 chunk_id[n]
                 // size MUST equal the sum of the raw_len of the
                 // indicated chunks (mandatory coherence check)
+                u8  flags       // bit 0 ELF file, bit 1 script that sets LD_LIBRARY_PATH itself,
+                                // bit 2 the SONAME follows; bits 3-7 are 0
+                [u16 len, soname]   // only when bit 2 is set: 1 to 255 bytes of UTF-8, no control character, no "/"
+                u16 ext_len, ext    // the extension area, at most 1024 bytes
   kind=symlink: u16 len, target
 }
 ```
+
+The flags, the SONAME and the extension area are what `panpak pack` read from the file; they are signed with the index, so a reader that has the index does not
+open the tree to know what a file is. A Reader MUST refuse an entry that sets a flag bit it does not know ("update panpak"), a SONAME with no ELF flag, and a
+file that is both an ELF file and a script. Bit 0 is set for a little-endian ELF64 file (`ET_EXEC` or `ET_DYN`) whose first 64 bytes are readable; bit 1 for an
+executable of at most 64 KiB, whose name has no `.so`, that starts with `#!` and has a line that assigns `LD_LIBRARY_PATH` (not a comment, not `unset`, not another
+name that ends in it).
+
+The extension area is a list of entries `u16 type, u16 length, data`, so that fields about a file can be added after the format is frozen (an fs-verity digest is one
+that is studied) without a new format. The top bit of the type makes an entry critical: a Reader that does not know a critical entry MUST refuse the package ("update
+panpak"); any other unknown entry is ignored. No entry is defined yet. An entry that is longer than the area, or a cut-short entry, makes the index malformed.
 
 Chunk offsets are relative to the start of the file. Chunks are
 produced with FastCDC (min 16K, avg 64K, max 256K) — the exact split
@@ -1055,15 +1069,15 @@ only: it takes `lib*.so*`, the loader and any file with `.so` in its name. The r
      entry, the executables next to it, the chosen libraries, the loader and the
      system libraries that those need in turn, and looks for non-weak undefined
      symbols (with their version names) that none of them defines; symbols asked
-     of an `allow_missing` library do not count. If there are some, it moves to
+     of a library that only modules need (§7.2) do not count. If there are some, it moves to
      its other copy (bundle to host, or host to bundle) every library whose other
      copy defines one of them, together with the rest of its atomic family (only
      if every member has that other copy), and checks again. A step counts only if
      it lowers the number of undefined symbols; otherwise it is undone and those
      libraries are not tried again. It stops when nothing is undefined, when no
      library can move, or after 8 steps. It never moves a library of exception 1,
-     `libstdc++` or `libgcc_s` (exception 2), a library named in `prefer_host`
-     or `allow_missing`, nor anything in world B. If symbols remain undefined,
+     `libstdc++` or `libgcc_s` (exception 2), a library named in `prefer_host`,
+     nor anything in world B. If symbols remain undefined,
      the app still installs and starts, the runtime prints a warning with the
      files and symbols at the first start after the resolution is computed, and
      `panpak doctor` shows the same detail.
@@ -1097,8 +1111,8 @@ The decision closes over the transitive closure at a fixed point: the
 or bundle) are decided with the same policy. Without this, bundle
 libdirs in `LD_LIBRARY_PATH` would shadow system libs for transitives,
 mixing versions (observed: newer host libgio + older bundle
-libmount). Never a silent fallback: every missing lib not declared in
-`allow_missing` stays a hard error.
+libmount). Never a silent fallback: a missing library that a program needs stays a hard
+error; one that only modules need is "not available" (§7.2).
 
 Libs in `prefer_host` MUST never be substituted: if missing on the
 host it is an error, never the bundle. `prefer_host` + included glibc
@@ -1111,12 +1125,29 @@ covers all of them, the whole family comes from the host. Only if
 neither coverage is complete does it fall back to per-SONAME rules
 (known mix risk: see NOTE v1 below).
 
-`allow_missing` (globs like `prefer_host`) declares SONAMEs the loader
-MAY not find: typically plugins loaded via `dlopen` whose DT_NEEDED
-exceed the files included in the original package. If actually needed,
-the loader fails explicitly. Never usable for the glibc family
-(rejected). MUST be declared explicitly (`--allow-missing` of
-`panpak convert`): not a silent fallback.
+### 7.2 The report of the modules [NORMATIVE]
+
+No author declares a library optional. `panpak pack` reads the ELF files of the tree and writes `.panpak/modules`, a file of the tree (so the signed index covers
+it) whose BLAKE3 hash, in 64 lowercase hex characters, is `[abi].modules`. A *program* is an executable ELF file with an interpreter whose name has no `.so`. The
+*required* libraries are the names in the `DT_NEEDED` of the programs and, going through the libraries of the tree (found by file name or SONAME), of every file
+that they reach. A library that is not required and that the tree does not provide is asked only by *modules*: plugins, extension modules and workbenches that are
+loaded on demand.
+
+The file is text, UTF-8, one fact in each line ending in LF, fields separated by TAB, no empty field and no control character:
+
+```
+panpak modules 1
+program<TAB>path                          one for each program, in order
+needs<TAB>name                            one for each required library, in order
+module<TAB>name<TAB>count<TAB>path ...    a library only modules need and the tree lacks; count is how many modules ask for it, then the first 1 to 3 in order
+```
+
+A reader MUST refuse a file that is not exactly of this form, and a file whose hash is not the one in the manifest. A package that has an ELF file MUST have the
+report; one that has none has neither the file nor `[abi].modules`.
+
+Resolution (§7) uses it: a library that is not required and that neither the system nor the tree provides is left out, and the app starts; the modules that ask for it do
+not load, and `panpak inspect` lists the library as "not available on this system". A required library that nothing provides is an error where the app starts, as before.
+There is no way for an author to turn this off or on.
 
 NOTE v1: symbol-version comparison (`VERNEED` vs host) decides only between
 the two copies of `libstdc++.so.6` and `libgcc_s.so.1`. For every other library
@@ -1694,30 +1725,30 @@ production). Verified by both the independent verifier
 (`conformance/verify.py`) and the Rust side (`panpak doctor`): both
 MUST accept it and report the same values.
 
-- total size: 991 bytes
+- total size: 987 bytes
 - stub `[0, 21)`: `50414e50414b544553542d564543544f522d763100`
   (`PANPAKTEST-VECTOR-v1\0`)
 - chunk 0 `[21, 37)`, zstd level 3 of `hi\n`:
   `28b52ffd045819000068690a343d5092` (16 compressed bytes, 3 raw)
-- compressed index `[37, 140)` (103 bytes):
-  `28b52ffd0458d50200e404010000000b8b60248fad7ac6dfac221b7e01a8b91c772421a15b387dd1fb2d6a94aee438150010000000030000000262696e01ed010000060062696e2f686900ed010000000001000000000000000300859ab072a5074006494a273f`
-- raw index (95 bytes, whose BLAKE3 is the root_hash below):
-  `010000000b8b60248fad7ac6dfac221b7e01a8b91c772421a15b387dd1fb2d6a94aee4381500000000000000100000000300000002000000030062696e01ed010000060062696e2f686900ed01000003000000000000000100000000000000`
+- compressed index `[37, 136)` (99 bytes):
+  `28b52ffd0458b502008404010000000b8b60248fad7ac6dfac221b7e01a8b91c772421a15b387dd1fb2d6a94aee438150010000000030000000262696e01ed010000060062696e2f686900ed010000000001000400b8520a3561e54a0f800ce9caefff`
+- raw index (98 bytes, whose BLAKE3 is the root_hash below):
+  `010000000b8b60248fad7ac6dfac221b7e01a8b91c772421a15b387dd1fb2d6a94aee4381500000000000000100000000300000002000000030062696e01ed010000060062696e2f686900ed01000003000000000000000100000000000000000000`
   (n_chunks=1: hash=`0b8b6024…f7e01`, off=21, comp=16, raw=3;
-  n_entries=2: dir `bin`, file `bin/hi` mode 0755 size 3 chunk [0])
+  n_entries=2: dir `bin`, file `bin/hi` mode 0755 size 3 chunk [0], flags 0, no extension area)
 - root_hash = `BLAKE3(raw index)` =
-  `ad7a506ac9fbaf289065933e9217f2a552593b0ff77fd458ad16d0695f9853f5`
-- manifest TOML `[140, 839)` (699 bytes):
+  `5c0359291daee4146c9b3046df3d012672fe3c832e59aab5f9d8580c33d6b0f6`
+- manifest TOML `[136, 835)` (699 bytes):
   `[app]\nid = "org.example.tv"\nname = "TV"\nversion = "1.0"\nentry = "bin/hi"\n[format]\nmin_panpak = 1\ncritical = ["release.channel", "release.floor", "release.revision", "release.security", "runtime.stub_hash", "trust.recovery", "trust.root", "trust.threshold"]\ncompression = "zstd"\nchunking = "fastcdc:16384:65536:262144"\npacked_by = "conformance generator"\n[release]\nrevision = 1\nfloor = 0\nsecurity = 0\nchannel = "stable"\n[runtime]\nstub_hash = "503da793bbca6afccdd883c02e32c139ef3a589894325916eddc2bf67b87520c"\n[trust]\nroot = ["ed25519:783e43d53f1193914442b4346eed8e69d537a4786ee74af8c878230faa875c72"]\nthreshold = 1\nrecovery = "blake3:a6595f111fb45d19c482a93774d53e0d33464174135b8d3f62c70a0b295ee465"\n`
   (the key is the public half of the fixed test key of `conformance/gen.py`; `critical` names `runtime.stub_hash` and the keys of `[release]` and `[trust]` that the manifest uses, because `[runtime]`, `[release]` and `[trust]` are critical sections, §3.1.9; the recovery commitment is the BLAKE3 hash of the public key of a second fixed test key)
-- signature block `[839, 911)` (72 bytes: one entry, type 1, critical, 64 bytes of
+- signature block `[835, 907)` (72 bytes: one entry, type 1, critical, 64 bytes of
   Ed25519 over the labeled message of §3.0, that is
   `"panpak/package/v1\0" || 01000000 || 00000000 || root_hash || manifest_toml`):
-  `0100010040000000eb6a375c136168cb9712d7b3fb5ff88173a4057225014ddee1d23b251ad80907cf264325cc08bbec0b57f8b0c092b2cddc927823e764c016c98e016a33a6da0d`
-- footer `[911, 991)` (80 bytes):
-  `50414e50000100000100000000000000250000000000000067000000000000008c00000000000000bb02000000000000ad7a506ac9fbaf289065933e9217f2a552593b0ff77fd458ad16d0695f9853f5`
-  (magic `PANP\0\1\0\0`, version=1, flags=0, index_off=37, index_len=103,
-  manifest_off=140, manifest_len=699, root_hash=see above)
+  `01000100400000003a0062d15d117a7163e4348eb4d4ad6a5b4c6ef081a0b78aa27ac94587001e47c3a5eed0eac09e63c9bd5126d01ecc028062bfa8eae013da23b3bf75ce19a108`
+- footer `[907, 987)` (80 bytes):
+  `50414e50000100000100000000000000250000000000000063000000000000008800000000000000bb020000000000005c0359291daee4146c9b3046df3d012672fe3c832e59aab5f9d8580c33d6b0f6`
+  (magic `PANP\0\1\0\0`, version=1, flags=0, index_off=37, index_len=99,
+  manifest_off=136, manifest_len=699, root_hash=see above)
 
 Invalid vectors: the conformance suite (`conformance/fixtures/`,
 wrong magic/version/flags, incoherent layout, tampered

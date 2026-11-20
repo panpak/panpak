@@ -42,7 +42,7 @@ impl Lab {
         l
     }
     fn cli(&self, lang: &str, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_panpak"))
+        Command::new(env!("CARGO_BIN_EXE_panpak")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
             .args(args)
             .current_dir(&self.home)
             .env("HOME", &self.home)

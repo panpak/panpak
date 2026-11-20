@@ -359,9 +359,14 @@ pub fn validate_manifest(man: &Manifest) -> Result<()> {
                 return Err(bad_field("abi.glibc_min", "must be a version like 2.39"));
             }
         }
-        for (field, list) in [("abi.needs", &a.needs), ("abi.prefer_host", &a.prefer_host), ("abi.allow_missing", &a.allow_missing)] {
+        for (field, list) in [("abi.needs", &a.needs), ("abi.prefer_host", &a.prefer_host)] {
             for n in list.iter().flatten() {
                 soname(field, n)?;
+            }
+        }
+        if let Some(h) = &a.modules {
+            if h.len() != 64 || !h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+                return Err(bad_field("abi.modules", "must be 64 lowercase hex characters"));
             }
         }
     }
@@ -493,7 +498,7 @@ mod tests {
     fn manifest_rejects_bad_library_names_and_urls() {
         let abi = |n: &str| -> Manifest {
             let mut m = man("");
-            m.abi = Some(crate::Abi { glibc_min: None, needs: Some(vec![n.into()]), prefer_host: None, allow_missing: None });
+            m.abi = Some(crate::Abi { glibc_min: None, needs: Some(vec![n.into()]), prefer_host: None, modules: None });
             m
         };
         assert!(validate_manifest(&abi("libc.so.6")).is_ok());

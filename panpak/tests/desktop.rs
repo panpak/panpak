@@ -25,6 +25,8 @@ fn cmd_with(bin: &Path, home: &Path, args: &[&str]) -> Command {
         .env("XDG_CACHE_HOME", home.join(".cache"))
         .env("XDG_DATA_DIRS", home.join("sysdata")) // the data folders of this system must not hold an app with the id of a test
         .env("XDG_RUNTIME_DIR", home.join("run"))
+        // No test reaches the session bus of the person at the keyboard: an address that leads nowhere.
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
         .env_remove("PANPAK_SECRET_FILE")
         .env("PANPAK_OWN_RUNTIME", "off") // the test programs have stand-in runtimes; the real one beside `panpak` must not replace them
         .stdin(std::process::Stdio::null());
@@ -169,7 +171,7 @@ fn an_older_stable_panpak_is_updated_and_a_newer_or_other_one_is_never_replaced(
     let say = |v: &str| say_at(v, None);
     // The date of the running panpak (none when this build did not know it: then a build is never told apart from another of the same version).
     let mine_date: Option<u64> = {
-        let o = std::process::Command::new(env!("CARGO_BIN_EXE_panpak")).arg("--build-epoch").output().unwrap();
+        let o = std::process::Command::new(env!("CARGO_BIN_EXE_panpak")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus").arg("--build-epoch").output().unwrap();
         String::from_utf8(o.stdout).unwrap().trim().parse().ok()
     };
     let leftovers = || {

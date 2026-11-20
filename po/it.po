@@ -367,8 +367,8 @@ msgstr "Per riattivare internet per {name} serve una tua conferma, ma non c'è u
 msgid "There is no window to ask you. To turn the internet off again for {name}, open a terminal and type: panpak allow-internet --undo {id}"
 msgstr "Non c'è una finestra per chiedertelo. Per disattivare di nuovo internet per {name}, apri un terminale e scrivi: panpak allow-internet --undo {id}"
 
-msgid "{name} ({id}): the channel was changed to a release with the same revision as the installed one and other bytes ({note}). With one counter for every channel this should not happen: it is an error of the author; tell them."
-msgstr "{name} ({id}): il canale è stato cambiato con una versione che ha la stessa revisione di quella installata e byte diversi ({note}). Con un solo contatore per tutti i canali non dovrebbe succedere: è un errore dell'autore, segnalaglielo."
+msgid "{name}: after switching to another channel you received a version with the same number as the one you had, but with different content. It is not dangerous, but it is an error of the author: tell them."
+msgstr "{name}: passando a un altro canale hai ricevuto una versione con lo stesso numero di quella che avevi, ma con un contenuto diverso. Non è pericoloso, ma è un errore dell'autore: segnalaglielo."
 
 msgid "Updates: from {host}, named by the author."
 msgstr "Aggiornamenti: da {host}, indicato dall'autore."
@@ -376,11 +376,11 @@ msgstr "Aggiornamenti: da {host}, indicato dall'autore."
 msgid "This app does not update itself: for a new version, download the file again from the author."
 msgstr "Questa app non si aggiorna da sola: per una versione nuova scarica di nuovo il file dall'autore."
 
-msgid "{name}: the author changed the signing key, with a signature of the key that was trusted. The new key is {key}."
-msgstr "{name}: l'autore ha cambiato la chiave di firma, con una firma della chiave di cui ti fidavi. La nuova chiave è {key}."
+msgid "{name}: the author changed their signing key in the regular way. You do not need to do anything."
+msgstr "{name}: l'autore ha cambiato la sua chiave di firma in modo regolare. Non devi fare nulla."
 
-msgid "{name}: the author took the app back with the recovery key: the old signing key is no longer trusted. The new key is {key}."
-msgstr "{name}: l'autore ha ripreso l'app con la chiave di recupero: la vecchia chiave di firma non è più considerata affidabile. La nuova chiave è {key}."
+msgid "{name}: the author took control of the app back after losing their key, or after it was stolen. Versions signed with the old key are no longer accepted. You do not need to do anything."
+msgstr "{name}: l'autore ha ripreso il controllo dell'app dopo aver perso la sua chiave, o dopo che gli è stata rubata. Le versioni firmate con la vecchia chiave non sono più accettate. Non devi fare nulla."
 
 msgid "Turn the internet back on…"
 msgstr "Riattiva internet…"

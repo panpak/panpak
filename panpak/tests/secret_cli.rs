@@ -25,6 +25,7 @@ fn key_file(dir: &Path, mode: u32) -> PathBuf {
 
 fn cli(args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut c = Command::new(env!("CARGO_BIN_EXE_panpak"));
+    c.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus");
     c.args(args).env_remove("PANPAK_SECRET_FILE");
     for (k, v) in env {
         c.env(k, v);
@@ -47,6 +48,7 @@ fn release(key: &Path, env: &[(&str, &str)], dir: &Path) -> Output {
         a.push(key.to_str().unwrap());
     }
     let mut c = Command::new(env!("CARGO_BIN_EXE_panpak"));
+    c.env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus");
     c.args(&a).current_dir(dir).env_remove("PANPAK_SECRET_FILE");
     for (k, v) in env {
         c.env(k, v);

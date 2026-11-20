@@ -313,8 +313,8 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
     }
     // 3. The libraries: the closure of DT_NEEDED over every ELF file of the tree.
     let dirs = lib_dirs(i.root);
-    let (prefer, allow) = r.collect.as_ref().map(|c| (c.prefer_host.clone(), c.allow_missing.clone())).unwrap_or_default();
-    let host_wins = |n: &str| panpak_core::abi::SYSTEM_WINS.iter().any(|g| panpak_core::abi::glob_match(g, n)) || prefer.iter().any(|g| panpak_core::abi::glob_match(g, n)) || allow.iter().any(|g| panpak_core::abi::glob_match(g, n));
+    let prefer = r.collect.as_ref().map(|c| c.prefer_host.clone()).unwrap_or_default();
+    let host_wins = |n: &str| panpak_core::abi::SYSTEM_WINS.iter().any(|g| panpak_core::abi::glob_match(g, n)) || prefer.iter().any(|g| panpak_core::abi::glob_match(g, n));
     let libdir = i.tree.join("lib");
     ensure_dirs(i.tree, &libdir)?;
     let mut have: BTreeSet<String> = panpak_core::abi::bundled_libs(i.tree).keys().cloned().collect();
@@ -323,6 +323,7 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
     walk_files(i.tree, &mut files);
     let mut todo: Vec<PathBuf> = files.into_iter().filter(|p| is_elf(p)).collect();
     let (mut libs, mut bytes) = (0usize, 0u64);
+    let mut unfound: Vec<(String, PathBuf)> = Vec::new();
     while let Some(f) = todo.pop() {
         let info = panpak_core::read_elf_info(&f).with_context(|| format!("read {}", f.display()))?;
         // Where the loader of the image would have looked first: the RUNPATH of the file, `$ORIGIN` being the folder the file came from in the image.
@@ -345,7 +346,10 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
                 continue;
             }
             let Some(real) = find_lib(i.root, &search, &n) else {
-                bail!("{} needs {n}, which is not in the build image: add the package that has it to build.packages, or list it in collect.prefer_host or collect.allow_missing", f.strip_prefix(i.tree).unwrap_or(&f).display());
+                // Said after the loop: it is an error only if a program of the tree needs it; a module that asks for a library that the image does not have is
+                // "not available" (the report of the modules, made by `pack`).
+                unfound.push((n, f.strip_prefix(i.tree).unwrap_or(&f).to_path_buf()));
+                continue;
             };
             let dst = libdir.join(&n);
             copy_file(&real, &dst)?;
@@ -356,6 +360,25 @@ pub fn collect(i: &Inputs) -> Result<Collected> {
             origin.insert(n, real);
             todo.push(dst);
         }
+    }
+    if !unfound.is_empty() {
+        let mut files = Vec::new();
+        walk_files(i.tree, &mut files);
+        let mut elfs = Vec::new();
+        for p in files.iter().filter(|p| is_elf(p)) {
+            let Ok(rel) = p.strip_prefix(i.tree) else { continue };
+            elfs.push(panpak_core::modules::ElfFile { path: rel.display().to_string(), is_program: panpak_core::libpath::is_program(p), needs: panpak_core::elf_needs(p).unwrap_or_default() });
+        }
+        let report = panpak_core::modules::make(&elfs, &panpak_core::abi::bundled_libs(i.tree));
+        for (n, by) in &unfound {
+            if report.required.contains(n) {
+                bail!("{} needs {n}, which is not in the build image: add the package that has it to build.packages, or list it in collect.prefer_host", by.display());
+            }
+        }
+        let mut names: Vec<&str> = unfound.iter().map(|(n, _)| n.as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        notes.push(format!("{} libraries that only modules ask for are not in the build image and are not in the package (the modules that ask for them will not load): {}", names.len(), names.join(", ")));
     }
     // 4. A plugin that a linked module needs must be there.
     for (lib, plugin, package) in tk.requires {

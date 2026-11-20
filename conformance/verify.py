@@ -327,7 +327,7 @@ KNOWN_CRITICAL = {
     "permissions": {"x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs",
                     "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"},
     "launch": {"args", "env"},
-    "abi": {"glibc_min", "needs", "prefer_host", "allow_missing"},
+    "abi": {"glibc_min", "needs", "prefer_host", "modules"},
     "runtime": {"min_runtime", "stub_hash"},
     "trust": {"root", "threshold", "recovery", "domain", "chain"},
 }
@@ -454,13 +454,16 @@ def check_fields(man):
         and all(seg not in ("", ".", "..") for seg in entry.split("/"))
     ):
         raise Fail(f"invalid app.entry: {entry!r}")
-    for key in ("needs", "prefer_host", "allow_missing"):
+    for key in ("needs", "prefer_host"):
         for n in man.get("abi", {}).get(key, []):
             if not (isinstance(n, str) and 1 <= len(n) <= 255 and n not in (".", "..") and all(0x21 <= ord(c) <= 0x7E and c != "/" for c in n)):
                 raise Fail(f"invalid manifest field abi.{key}")
     for s in man.get("permissions", {}).get("sockets_allow", []):
         if not (isinstance(s, str) and 1 <= len(s.encode()) <= 4096 and not any(unicodedata.category(c) == "Cc" for c in s)):
             raise Fail("invalid manifest field permissions.sockets_allow")
+    mods = man.get("abi", {}).get("modules")
+    if mods is not None and not (isinstance(mods, str) and len(mods) == 64 and all(c in "0123456789abcdef" for c in mods)):
+        raise Fail("invalid manifest field abi.modules")
     check_home_paths(man)
     check_xdg_dirs(man)
     check_desktop(man)
@@ -539,7 +542,47 @@ def parse_index(raw: bytes):
                 ids.append(cid)
             if total != size:
                 raise Fail(f"size {size} does not match chunks ({total})")
-            entries.append({"path": path, "mode": mode, "kind": "file", "size": size, "chunks": ids})
+            # The facts about the content (section 4): flags, the SONAME, the extension area.
+            if p >= len(raw):
+                raise Fail("truncated file flags")
+            flags = raw[p]
+            p += 1
+            if flags & ~0x07:
+                raise Fail(f"file flags {flags:#x} that this reader does not know: update panpak")
+            if flags & 4 and not flags & 1:
+                raise Fail("a SONAME on a file that is not marked as ELF")
+            if flags & 1 and flags & 2:
+                raise Fail("a file marked as ELF and as a script")
+            soname = None
+            if flags & 4:
+                sl = u16(raw, p)
+                p += 2
+                if not (1 <= sl <= 255) or p + sl > len(raw):
+                    raise Fail("SONAME length out of range")
+                try:
+                    soname = raw[p : p + sl].decode("utf-8")
+                except UnicodeDecodeError:
+                    raise Fail("non-UTF-8 SONAME")
+                p += sl
+                if any(unicodedata.category(c) == "Cc" or c == "/" for c in soname):
+                    raise Fail("unsafe SONAME")
+            el = u16(raw, p)
+            p += 2
+            if el > 1024 or p + el > len(raw):
+                raise Fail("extension area of a file out of range")
+            ext = raw[p : p + el]
+            p += el
+            q = 0
+            while q < len(ext):
+                if len(ext) - q < 4:
+                    raise Fail("extension area: an entry is cut short")
+                ty, xl = struct.unpack_from("<HH", ext, q)
+                if len(ext) - q - 4 < xl:
+                    raise Fail("extension area: an entry is longer than the area")
+                if ty & 0x8000:
+                    raise Fail(f"a critical extension of type {ty:#x} that this reader does not know: update panpak")
+                q += 4 + xl
+            entries.append({"path": path, "mode": mode, "kind": "file", "size": size, "chunks": ids, "flags": flags, "soname": soname})
         elif kind == 1:
             entries.append({"path": path, "mode": mode, "kind": "dir"})
         elif kind == 2:

@@ -43,6 +43,39 @@ pub struct Connection {
 }
 
 /// The socket path of a `unix:path=...` address (the first such entry of a `;`-separated list).
+/// A debug build (the programs that `cargo test` starts) that runs with a HOME that is not the real home of the user and reaches `/run/user/<uid>/…`, the session of the
+/// person at the keyboard, is a test that does what no test may do: notifications and calls would arrive on the real desktop. The program stops (status 97) and says how to
+/// give the test a bus of its own (`tests/dbus_lab.py`) or none (`DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent`). A release build never does this.
+pub fn guard_real_bus(path: &std::path::Path) {
+    #[cfg(debug_assertions)]
+    {
+        // SAFETY: getuid cannot fail.
+        let uid = unsafe { libc::getuid() };
+        if reaches_real_session(path, uid, std::env::var_os("HOME").map(PathBuf::from).as_deref(), real_home_of(uid).as_deref()) {
+            eprintln!("panpak: TEST GUARD: this program runs with an isolated HOME and tried to reach the session bus of the real user ({}). A test gets a bus of its own (tests/dbus_lab.py) or none (DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent).", path.display());
+            std::process::exit(97);
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = path;
+}
+
+/// Is `path` in the runtime folder of the real user (`/run/user/<uid>/`) while `home` is not the real home of that user?
+#[cfg(any(debug_assertions, test))]
+fn reaches_real_session(path: &std::path::Path, uid: u32, home: Option<&std::path::Path>, real_home: Option<&std::path::Path>) -> bool {
+    let isolated = matches!((home, real_home), (Some(h), Some(r)) if h != r);
+    isolated && path.to_string_lossy().starts_with(&format!("/run/user/{uid}/"))
+}
+
+#[cfg(debug_assertions)]
+fn real_home_of(uid: u32) -> Option<PathBuf> {
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|l| {
+        let f: Vec<&str> = l.split(':').collect();
+        (f.len() > 5 && f[2].parse::<u32>().ok() == Some(uid)).then(|| PathBuf::from(f[5]))
+    })
+}
+
 pub fn address_path(addr: &str) -> Result<PathBuf> {
     for entry in addr.split(';') {
         let Some(rest) = entry.strip_prefix("unix:") else { continue };
@@ -94,6 +127,12 @@ impl Connection {
 
     /// The user's session bus: `DBUS_SESSION_BUS_ADDRESS`, else `$XDG_RUNTIME_DIR/bus`.
     pub fn session(timeout: Duration) -> Result<Connection> {
+        let path = Self::session_path()?;
+        guard_real_bus(&path);
+        Connection::open(&path, timeout)
+    }
+
+    fn session_path() -> Result<PathBuf> {
         let path = match std::env::var("DBUS_SESSION_BUS_ADDRESS") {
             Ok(a) if !a.is_empty() => address_path(&a)?,
             _ => {
@@ -101,7 +140,7 @@ impl Connection {
                 PathBuf::from(rt).join("bus")
             }
         };
-        Connection::open(&path, timeout)
+        Ok(path)
     }
 
     fn read_line(&mut self) -> Result<String> {
@@ -299,6 +338,19 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_test_with_an_isolated_home_may_not_reach_the_real_session() {
+        use std::path::Path;
+        let real = Some(Path::new("/home/me"));
+        // An isolated HOME and the runtime folder of the real user: refused.
+        assert!(reaches_real_session(Path::new("/run/user/1000/bus"), 1000, Some(Path::new("/tmp/t/home")), real));
+        // The real home (a person who runs a debug build), another user's folder, a private bus: not the case.
+        assert!(!reaches_real_session(Path::new("/run/user/1000/bus"), 1000, real, real));
+        assert!(!reaches_real_session(Path::new("/run/user/1001/bus"), 1000, Some(Path::new("/tmp/t/home")), real));
+        assert!(!reaches_real_session(Path::new("/tmp/t/run/bus"), 1000, Some(Path::new("/tmp/t/home")), real));
+        assert!(!reaches_real_session(Path::new("/run/user/1000/bus"), 1000, None, real));
+    }
+
     use super::*;
     use std::io::{Read, Write};
     use std::os::unix::net::UnixListener;

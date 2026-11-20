@@ -124,37 +124,18 @@ def add_permissions(src, dst, extra, seed):
     Path(dst).chmod(0o755)
 
 
-def max_allow():
-    """How many libraries nothing provides the harness allows, one by one, before it stops (HCAP, default 60: a Qt 6 AppImage can lack a dozen modules)."""
-    try:
-        return max(1, int(os.environ.get("HCAP", "60")))
-    except ValueError:
-        return 60
-
-
 def convert(ctx, app, key, fetched):
-    """AppImage to package: `convert`, then `doctor`; the libraries that nothing provides (`doctor` names all of them at once) are allowed by name and the conversion
-    runs again, as a packager would: normally twice (up to HCAP times, 60 by default). The permissions of the app are added once, at the end: they do not change what
-    `doctor` finds. `fetched` is what `fetch` returned. Returns (package path, notes)."""
+    """AppImage to package: `convert` (which works out by itself which libraries only modules ask for), then the permissions of the app. `fetched` is what `fetch`
+    returned. Returns (package path, notes)."""
     src, _digest, notes = fetched
     pkg = ctx.pkgs / f"{app.name}-{key}.panpak"
     base = ctx.pkgs / f"{app.name}-{key}.base"
-    allow = []
-    for _ in range(max_allow()):
-        cmd = [ctx.panpak, "convert", src, "--id", app.id, "--stub", ctx.stub, "--secret-file", ctx.keyfile, "-o", base] + app.convert_opts + [x for a in allow for x in ("--allow-missing", a)]
-        r = sh(cmd, env={**BASE_ENV, "HOME": str(ctx.work)})
-        if r.returncode != 0:
-            raise StepError("panpak convert failed: " + (r.stdout + r.stderr).strip()[-400:])
-        d = sh([ctx.panpak, "doctor", base], env={**BASE_ENV, "HOME": str(ctx.work)})
-        m = re.search(r"unresolved libraries: (.+?) missing on the host", d.stdout + d.stderr)
-        new = [n for n in (m.group(1).split(", ") if m else []) if n not in allow]
-        if not new:
-            break
-        allow.extend(new)
+    cmd = [ctx.panpak, "convert", src, "--id", app.id, "--stub", ctx.stub, "--secret-file", ctx.keyfile, "-o", base] + app.convert_opts
+    r = sh(cmd, env={**BASE_ENV, "HOME": str(ctx.work)})
+    if r.returncode != 0:
+        raise StepError("panpak convert failed: " + (r.stdout + r.stderr).strip()[-400:])
     add_permissions(base, pkg, app.permissions, ctx.seed())
     base.unlink(missing_ok=True)
-    if allow:
-        notes.append(f"allow_missing added by the harness: {', '.join(allow)}")
     return pkg, notes
 
 
@@ -203,7 +184,7 @@ def permissions_digest(ctx, pkg):
         if r.returncode != 0:
             return None
         man = tomllib.loads(out.read_text())
-    wanted = {"permissions": man.get("permissions", {}), "allow_missing": sorted(man.get("abi", {}).get("allow_missing", []))}
+    wanted = {"permissions": man.get("permissions", {})}
     return hashlib.sha256(json.dumps(wanted, sort_keys=True).encode()).hexdigest()[:12]
 
 

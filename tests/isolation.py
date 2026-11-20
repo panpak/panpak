@@ -68,7 +68,10 @@ def _inside(path, root):
 def require_isolated_home(home, work):
     # A test that does not exercise the daily background job keeps the stub from starting it (the job would outlive the test folder).
     os.environ.setdefault('PANPAK_NO_BACKGROUND', '1')
-    # The tests sign with keys they write by hand, which have no file `<key>.recovery` beside them (`panpak key new` makes it): the commitment comes from here.
+    # No test reaches the session bus of the person at the keyboard (a notification would arrive on the real desktop): the address that the test and what it starts
+    # inherit leads nowhere. A test that needs a bus gives itself one (tests/dbus_lab.py) in the environment it hands out. The runner `tests/with_timeout.py` also
+    # puts a canary in the runtime folder (`$XDG_RUNTIME_DIR/bus`) and fails the run if anything connects to it.
+    os.environ['DBUS_SESSION_BUS_ADDRESS'] = 'unix:path=/nonexistent/panpak-test-no-bus'
     os.environ.setdefault('PANPAK_RECOVERY', 'blake3:' + '5a' * 32)
     if os.environ.get(OVERRIDE) == '1':
         print(f'warning: {OVERRIDE}=1: HOME isolation check skipped for {home}', file=sys.stderr)

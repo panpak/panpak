@@ -238,16 +238,20 @@ fn tell(title: &str, body: &str) {
     }
 }
 
-/// The version that fixes the problem was put in place: when the one before it was in protected mode, the mark and the choice of the person are cleared and the
-/// person is told, in a notification and on the standard error (best effort). `old_revision` is the revision that was installed before.
-pub fn mode_ended(appdir: &Path, new: &Manifest, old_revision: u64) {
-    let was = release::protected_floor(appdir, old_revision).is_some() || release::is_marked_protected(appdir);
-    if !was || release::protected_floor(appdir, revision_of(new)).is_some() {
+/// The version that fixes the problem was put in place: when the app was in protected mode before (`was_marked`: its mark was there before the command that puts the new
+/// version in place saw the floor), the mark and the choice of the person are cleared and the person is told, in a notification and on the standard error (best
+/// effort). An ordinary update is never told this way, and neither is a package that is its own fix for an app that never ran in the mode.
+pub fn mode_ended(appdir: &Path, new: &Manifest, was_marked: bool) {
+    if release::protected_floor(appdir, revision_of(new)).is_some() {
         return;
     }
+    // Whatever the mode left (the mark that this command may have made when it saw the floor, the choice of the person, the record of the questions) goes away.
     let _ = release::set_internet_back_on(appdir, false);
     let _ = std::fs::remove_file(appdir.join(ASKED));
     let _ = release::sync_protected(appdir, revision_of(new));
+    if !was_marked {
+        return;
+    }
     let name = clean_name(new);
     let (title, body) = (fill(&tr(m::ENDED_TITLE), &[("name", name.clone())]), fill(&tr(m::ENDED_BODY), &[("name", name)]));
     eprintln!("panpak: {title}\n{body}");
@@ -596,7 +600,9 @@ pub fn trust_lines() -> Vec<String> {
         let url = std::fs::read_to_string(appdir.join("update.url")).ok().map(|u| u.trim().to_string());
         out.push(format!("{name} ({id}): {}", super::updates_line(url.as_deref())));
         if let Some(note) = panpak_core::trust::read(&appdir).and_then(|s| s.switch_note) {
-            out.push(fill(&tr(m::DOCTOR_SWITCH), &[("name", name), ("id", id), ("note", note)]));
+            out.push(fill(&tr(m::DOCTOR_SWITCH), &[("name", name)]));
+            // The details (the app and what was recorded) come after the sentence, not in it.
+            out.push(format!("  {id}: {note}"));
         }
     }
     out

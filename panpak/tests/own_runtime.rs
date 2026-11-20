@@ -73,6 +73,7 @@ impl Lab {
                 .env("XDG_DATA_HOME", self.home.join(".local/share"))
                 .env("XDG_CONFIG_HOME", self.home.join(".config"))
                 .env("XDG_RUNTIME_DIR", self.home.join("run"))
+                .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
                 .env_remove("PANPAK_SECRET_FILE")
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())

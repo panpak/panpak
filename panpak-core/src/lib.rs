@@ -7,6 +7,7 @@ pub mod dbus;
 pub mod desktop;
 pub mod frames;
 mod elfsym;
+pub mod modules;
 pub mod chooserhost;
 pub mod docshare;
 pub mod filechooser;
@@ -40,7 +41,7 @@ mod validate;
 #[cfg(test)]
 mod testutil;
 mod view;
-pub use elfsym::{glibc_needed, glibc_version_number, parse_syms, read_elf_info, sym_hash, version_number, ElfInfo, ElfSyms, Needed};
+pub use elfsym::{elf_soname, glibc_needed, glibc_version_number, parse_syms, read_elf_info, sym_hash, version_number, ElfInfo, ElfSyms, Needed};
 pub use openchan::{handle as handle_open_request, RateLimit, Target as OpenTarget, BURST, MAX_REQUEST, RATE_PER_SEC};
 pub use openurl::{check_mime_type, check_scheme_name, check_url, mime_types_from_desktop, UrlKind, MAX_MIME_TYPES, MAX_URL};
 pub use userdirs::{
@@ -155,6 +156,86 @@ pub struct Entry {
     pub path: PathBuf,
     pub mode: u32,
     pub kind: Kind,
+    /// What `pack` read from a file and signed with the index (PANPAK-FORMAT.md §4); empty for a folder and a link.
+    pub info: FileInfo,
+}
+
+/// The file is an ELF file.
+pub const FILE_ELF: u8 = 1;
+/// The file is a script that sets `LD_LIBRARY_PATH` itself.
+pub const FILE_SETS_LD_PATH: u8 = 2;
+/// The ELF file has a SONAME (it follows the flags).
+pub const FILE_HAS_SONAME: u8 = 4;
+const FILE_FLAGS_KNOWN: u8 = FILE_ELF | FILE_SETS_LD_PATH | FILE_HAS_SONAME;
+/// The largest extension area of a file.
+pub const MAX_FILE_EXT: usize = 1024;
+/// The longest SONAME.
+pub const MAX_SONAME_LEN: usize = 255;
+
+/// What the signed index says about the content of a file, so that a reader does not open the tree to know it (PANPAK-FORMAT.md §4).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileInfo {
+    /// `FILE_*` bits; the others are reserved and a reader refuses a package that sets one.
+    pub flags: u8,
+    /// The SONAME of an ELF file that has one.
+    pub soname: Option<String>,
+    /// The extension area: fields that a later version of the format may add for a file, as entries `u16 type, u16 length, data`. The top bit of the type
+    /// makes an entry critical: a reader that does not know a critical entry refuses the package ("update panpak"). None is defined yet.
+    pub ext: Vec<u8>,
+}
+
+impl FileInfo {
+    pub fn is_elf(&self) -> bool {
+        self.flags & FILE_ELF != 0
+    }
+    pub fn sets_library_path(&self) -> bool {
+        self.flags & FILE_SETS_LD_PATH != 0
+    }
+}
+
+/// Read the content-derived fields of a file entry: `u8 flags`, `u16 length` and the SONAME when bit 2 is set, `u16 length` and the extension area.
+fn parse_file_info(r: &mut Reader) -> Result<FileInfo> {
+    let flags = r.u8()?;
+    if flags & !FILE_FLAGS_KNOWN != 0 {
+        return Err(coded(ErrorCode::E0002, format!("a file entry sets the flag bits {:#x} that this panpak does not know: update panpak", flags & !FILE_FLAGS_KNOWN)));
+    }
+    ensure!(flags & FILE_HAS_SONAME == 0 || flags & FILE_ELF != 0, "a SONAME on a file that is not marked as ELF");
+    ensure!(flags & FILE_ELF == 0 || flags & FILE_SETS_LD_PATH == 0, "a file marked as ELF and as a script");
+    let soname = if flags & FILE_HAS_SONAME != 0 {
+        let l = r.u16()? as usize;
+        ensure!((1..=MAX_SONAME_LEN).contains(&l), "SONAME length out of range");
+        let t = std::str::from_utf8(r.take(l)?).context("non-UTF-8 SONAME")?;
+        ensure!(!t.chars().any(|c| c.is_control() || c == '/'), "unsafe SONAME");
+        Some(t.to_string())
+    } else {
+        None
+    };
+    let n = r.u16()? as usize;
+    ensure!(n <= MAX_FILE_EXT, "extension area of a file too large");
+    let ext = r.take(n)?.to_vec();
+    // The entries are checked for form, and a critical one that nothing here knows is refused.
+    let mut at = 0;
+    while at < ext.len() {
+        ensure!(ext.len() - at >= 4, "extension area: an entry is cut short");
+        let (ty, len) = (u16::from_le_bytes([ext[at], ext[at + 1]]), u16::from_le_bytes([ext[at + 2], ext[at + 3]]) as usize);
+        ensure!(ext.len() - at - 4 >= len, "extension area: an entry is longer than the area");
+        if ty & 0x8000 != 0 {
+            return Err(coded(ErrorCode::E0002, format!("a file entry has a critical extension of type {ty:#x} that this panpak does not know: update panpak")));
+        }
+        at += 4 + len;
+    }
+    Ok(FileInfo { flags, soname, ext })
+}
+
+fn encode_file_info(out: &mut Vec<u8>, info: &FileInfo) {
+    let flags = (info.flags & !FILE_HAS_SONAME) | if info.soname.is_some() { FILE_HAS_SONAME } else { 0 };
+    out.push(flags);
+    if let Some(s) = &info.soname {
+        out.extend_from_slice(&(s.len() as u16).to_le_bytes());
+        out.extend_from_slice(s.as_bytes());
+    }
+    out.extend_from_slice(&(info.ext.len() as u16).to_le_bytes());
+    out.extend_from_slice(&info.ext);
 }
 
 /// Schema manifest v1 (spec §3).
@@ -276,10 +357,9 @@ pub struct Abi {
     pub glibc_min: Option<String>,
     pub needs: Option<Vec<String>>,
     pub prefer_host: Option<Vec<String>>,
-    /// SONAMEs (globs like prefer_host) ignored by resolution: the app does not
-    /// load them at startup (dlopen plugins). If actually needed, the loader
-    /// fails explicitly. Only with an explicit declaration.
-    pub allow_missing: Option<Vec<String>>,
+    /// The BLAKE3 hash (64 hex characters) of `.panpak/modules`, the report that `pack` makes of which libraries the programs need and which only modules
+    /// need (PANPAK-FORMAT.md §7.2). Written by `pack`; an author does not give it.
+    pub modules: Option<String>,
 }
 /// Arguments put before the user's arguments and variables added to the
 /// environment of the app. Values may use the placeholders in `PLACEHOLDERS`.
@@ -521,7 +601,7 @@ pub const SECTIONS: &[(&str, bool)] = &[
 pub(crate) const TRUST_PATHS: &[&str] = &["root", "threshold", "recovery", "domain", "chain"];
 const RELEASE_KEYS: &[&str] = &["revision", "floor", "security", "channel", "history"];
 const FORMAT_KEYS: &[&str] = &["min_panpak", "critical", "compression", "chunking", "packed_by"];
-const ABI_KEYS: &[&str] = &["glibc_min", "needs", "prefer_host", "allow_missing"];
+const ABI_KEYS: &[&str] = &["glibc_min", "needs", "prefer_host", "modules"];
 const PERM_KEYS: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"];
 const LAUNCH_KEYS: &[&str] = &["args", "env"];
 const RUNTIME_KEYS: &[&str] = &["min_runtime", "stub_hash"];
@@ -1363,6 +1443,7 @@ pub fn parse_index(raw: &[u8]) -> Result<(Vec<Chunk>, Vec<Entry>)> {
         ensure!(seen.insert(path.clone()), "duplicate path in index: {path_s}");
         let kind = r.u8()?;
         let mode = r.u32()? & 0o777;
+        let mut info = FileInfo::default();
         let kind = match kind {
             0 => {
                 let size = r.u64()?;
@@ -1378,6 +1459,7 @@ pub fn parse_index(raw: &[u8]) -> Result<(Vec<Chunk>, Vec<Entry>)> {
                     ids.push(id);
                 }
                 ensure!(total == size, "size does not match the chunks");
+                info = parse_file_info(&mut r)?;
                 Kind::File { chunks: ids }
             }
             1 => Kind::Dir,
@@ -1390,7 +1472,7 @@ pub fn parse_index(raw: &[u8]) -> Result<(Vec<Chunk>, Vec<Entry>)> {
             }
             k => anyhow::bail!("unknown kind {k}"),
         };
-        entries.push(Entry { path, mode, kind });
+        entries.push(Entry { path, mode, kind, info });
     }
     r.finish()?;
     Ok((chunks, entries))
@@ -1421,6 +1503,7 @@ pub fn encode_index(chunks: &[Chunk], entries: &[Entry]) -> Vec<u8> {
                 for id in ids {
                     out.extend_from_slice(&id.to_le_bytes());
                 }
+                encode_file_info(&mut out, &e.info);
             }
             Kind::Dir => {
                 out.push(1);
@@ -1847,7 +1930,7 @@ mod tests {
         let one: Vec<String> = vec!["libaa.so.1".into()];
         let e = crate::abi::decide(&one, &[], &[], &host, &bundled).unwrap_err().to_string();
         assert!(e.starts_with("libaa.so.1 missing on the host and not included in the tree"), "{e}");
-        // `allow_missing` still takes some of them out of the list.
+        // A library that no program asks for is left out of the list.
         let e = crate::abi::decide(&needs, &[], &["libaa.so.1".to_string()], &host, &bundled).unwrap_err().to_string();
         assert!(!e.contains("libaa.so.1") && e.contains("Bb.so") && e.contains("libcc.so.3"), "{e}");
     }
@@ -1916,15 +1999,22 @@ mod tests {
     #[test]
     fn the_inventory_from_the_index_takes_files_with_so_in_the_name() {
         use crate::{Entry, Kind};
-        let e = |p: &str, kind| Entry { path: std::path::PathBuf::from(p), mode: 0o755, kind };
+        let e = |p: &str, kind| Entry { path: std::path::PathBuf::from(p), mode: 0o755, kind, info: Default::default() };
         let entries = vec![
             e("usr/lib/Mesh.so", Kind::File { chunks: vec![] }),
             e("usr/lib/libfoo.so.1", Kind::File { chunks: vec![] }),
             e("usr/share/data.txt", Kind::File { chunks: vec![] }),
+            e("usr/lib/plugin", Kind::File { chunks: vec![] }),
         ];
+        let mut entries = entries;
+        // The index says what is an ELF file and what its SONAME is: no file is opened.
+        entries[0].info = crate::FileInfo { flags: crate::FILE_ELF | crate::FILE_HAS_SONAME, soname: Some("Mesh.so".into()), ext: vec![] };
+        entries[3].info = crate::FileInfo { flags: crate::FILE_ELF | crate::FILE_HAS_SONAME, soname: Some("libplugin.so.2".into()), ext: vec![] };
         let m = crate::abi::bundled_libs_from_entries(&entries);
         assert_eq!(m.get("Mesh.so"), Some(&std::path::PathBuf::from("usr/lib/Mesh.so")));
         assert!(m.contains_key("libfoo.so.1") && !m.contains_key("data.txt"));
+        assert_eq!(m.get("libplugin.so.2"), Some(&std::path::PathBuf::from("usr/lib/plugin")), "a file is found by its SONAME");
+        assert!(m.contains_key("plugin"), "and by its name, when it is an ELF file");
     }
 
     /// A measurement, not a check: `PANPAK_BIG_TREE=<folder> cargo test --release -p panpak-core inventory_time -- --ignored --nocapture`.
@@ -2086,13 +2176,13 @@ mod tests {
                 Entry {
                     path: PathBuf::from("bin/hello"),
                     mode: 0o755,
-                    kind: Kind::File { chunks: vec![0, 1] },
+                    kind: Kind::File { chunks: vec![0, 1] }, info: Default::default(),
                 },
-                Entry { path: PathBuf::from("bin"), mode: 0o755, kind: Kind::Dir },
+                Entry { path: PathBuf::from("bin"), mode: 0o755, kind: Kind::Dir, info: Default::default() },
                 Entry {
                     path: PathBuf::from("latest"),
                     mode: 0o777,
-                    kind: Kind::Link("bin/hello".into()),
+                    kind: Kind::Link("bin/hello".into()), info: Default::default(),
                 },
             ],
         )
@@ -2169,8 +2259,8 @@ mod tests {
     fn index_rejects_duplicate_paths() {
         let chunks = vec![Chunk { hash: [1u8; 32], off: 0, comp: 10, raw: 20 }];
         let entries = vec![
-            Entry { path: PathBuf::from("x"), mode: 0o755, kind: Kind::Dir },
-            Entry { path: PathBuf::from("x"), mode: 0o755, kind: Kind::Dir },
+            Entry { path: PathBuf::from("x"), mode: 0o755, kind: Kind::Dir, info: Default::default() },
+            Entry { path: PathBuf::from("x"), mode: 0o755, kind: Kind::Dir, info: Default::default() },
         ];
         assert!(parse_index(&encode_index(&chunks, &entries)).is_err());
     }
@@ -2259,7 +2349,7 @@ mod tests {
             let entries = vec![Entry {
                 path: PathBuf::from(".panpak/licenses/NOTICE"),
                 mode: 0o644,
-                kind: Kind::File { chunks: vec![0] },
+                kind: Kind::File { chunks: vec![0] }, info: Default::default(),
             }];
             encode_index(&chunks, &entries)
         };
@@ -2516,7 +2606,7 @@ mod tests {
 /// Symbol versions are otherwise not compared: if the chosen library is incompatible the
 /// loader fails explicitly (fail-closed), never a silently wrong lib; `panpak doctor` reports it.
 pub mod abi {
-    use anyhow::{bail, ensure, Context, Result};
+    use anyhow::{bail, Context, Result};
     use std::{
         collections::{HashMap, HashSet},
         fs,
@@ -2701,13 +2791,13 @@ pub mod abi {
         map
     }
 
-    /// The same inventory as `bundled_libs`, from the entries of a package (its index) instead of a folder: for an app that has not been installed
-    /// or started yet, whose tree is not on disk. A link to a library is registered under its own name, as above.
+    /// The same inventory as `bundled_libs`, from the entries of a package (its signed index) instead of a folder: for an app that has not been installed
+    /// or started yet, whose tree is not on disk. The index says which files are ELF files and what their SONAME is, so no file is opened. A link to a library
+    /// is registered under its own name, as above.
     pub fn bundled_libs_from_entries(entries: &[crate::Entry]) -> HashMap<String, PathBuf> {
         use crate::Kind;
         let by_path: HashMap<&Path, &Kind> = entries.iter().map(|e| (e.path.as_path(), &e.kind)).collect();
-        // From the index only the names are known (not the content, so not the SONAME): `lib*.so*`, the loader, and any file with `.so` in its name (FreeCAD's `Mesh.so`).
-        let wanted = |name: &str| name.contains(".so") || name.starts_with("ld-linux") || name == "ld.so";
+        let is_lib_name = |name: &str| (name.starts_with("lib") && name.contains(".so")) || name.starts_with("ld-linux") || name == "ld.so";
         // Where a path ends up, following links inside the tree (a few steps).
         let resolve = |start: &Path| -> Option<PathBuf> {
             let mut cur = start.to_path_buf();
@@ -2738,21 +2828,43 @@ pub mod abi {
         let mut map = HashMap::new();
         let mut sorted: Vec<&crate::Entry> = entries.iter().collect();
         sorted.sort_by(|a, b| a.path.cmp(&b.path));
+        // The same order of precedence as the folder: libraries and the loader by name, then ELF files by name, then other links to a `.so`, then the SONAMEs.
+        let mut elfs: Vec<&crate::Entry> = Vec::new();
+        let mut other_links: Vec<(String, PathBuf)> = Vec::new();
         for e in sorted {
             let Some(name) = e.path.file_name().and_then(|n| n.to_str()) else { continue };
-            if !wanted(name) {
-                continue;
-            }
             match &e.kind {
                 Kind::File { .. } => {
-                    map.entry(name.to_string()).or_insert_with(|| e.path.clone());
-                }
-                Kind::Link(_) => {
-                    if let Some(real) = resolve(&e.path) {
-                        map.entry(name.to_string()).or_insert(real);
+                    if is_lib_name(name) {
+                        map.entry(name.to_string()).or_insert_with(|| e.path.clone());
+                    }
+                    if e.info.is_elf() {
+                        elfs.push(e);
                     }
                 }
-                Kind::Dir => {}
+                Kind::Link(_) if name.contains(".so") || is_lib_name(name) => {
+                    if let Some(real) = resolve(&e.path) {
+                        if is_lib_name(name) {
+                            map.entry(name.to_string()).or_insert(real);
+                        } else {
+                            other_links.push((name.to_string(), real));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        for e in &elfs {
+            if let Some(name) = e.path.file_name().and_then(|n| n.to_str()) {
+                map.entry(name.to_string()).or_insert_with(|| e.path.clone());
+            }
+        }
+        for (name, real) in other_links {
+            map.entry(name).or_insert(real);
+        }
+        for e in &elfs {
+            if let Some(so) = &e.info.soname {
+                map.entry(so.clone()).or_insert_with(|| e.path.clone());
             }
         }
         map
@@ -2766,7 +2878,7 @@ pub mod abi {
 
     /// For each SONAME in needs decide host vs bundle (spec §7).
     ///
-    /// The rule, in order: `allow_missing` skips the library; `prefer_host` takes the system
+    /// The rule, in order: `prefer_host` takes the system
     /// copy or is an error; with glibc in the bundle ("B-world") everything in the bundle comes
     /// from the bundle; the Qt/KF families are atomic; then, for a library that is in the bundle,
     /// the bundled copy is used, except for `SYSTEM_WINS` (the system copy when there is one),
@@ -2885,11 +2997,11 @@ pub mod abi {
     pub fn decide(
         needs: &[String],
         prefer_host: &[String],
-        allow_missing: &[String],
+        optional: &[String],
         host: &HashMap<String, PathBuf>,
         bundled: &HashMap<String, PathBuf>,
     ) -> Result<Vec<(String, Source)>> {
-        decide_with(needs, prefer_host, allow_missing, host, bundled, &HashMap::new())
+        decide_with(needs, prefer_host, optional, host, bundled, &HashMap::new())
     }
 
     /// `decide` with the choices made from the symbols (`cxx_runtime_prefs`, `resolve_consistent`):
@@ -2897,7 +3009,7 @@ pub mod abi {
     pub fn decide_with(
         needs: &[String],
         prefer_host: &[String],
-        allow_missing: &[String],
+        optional: &[String],
         host: &HashMap<String, PathBuf>,
         bundled: &HashMap<String, PathBuf>,
         prefs: &HashMap<String, bool>,
@@ -2931,16 +3043,6 @@ pub mod abi {
             }
             let preferred = prefer_host.iter().any(|g| glob_match(g, n));
             let in_family = GLIBC_FAMILY.iter().any(|g| g == n);
-            // allow_missing: explicitly declared (e.g. dlopen plugins
-            // missing from the bundle). If actually needed, the loader fails hard.
-            // Never for the glibc family (it would break the whole B-world).
-            if allow_missing.iter().any(|g| glob_match(g, n)) {
-                ensure!(!in_family, "{n} in allow_missing but part of glibc: refused");
-                if crate::debug_enabled() {
-                    eprintln!("panpak: {n} ignored by explicit allow_missing");
-                }
-                continue;
-            }
             // prefer_host: always host, never substituted. Period.
             if preferred {
                 match host.get(n) {
@@ -3002,7 +3104,13 @@ pub mod abi {
                 (_, Some(bp)) => out.push((n.clone(), Source::Bundled(bp.clone()))),
                 // Not included: the system copy.
                 (Some(hp), None) => out.push((n.clone(), Source::Host(hp.clone()))),
-                // Nothing provides it: kept, and said with every other one at the end (a packager used to find them one run at a time).
+                // Nothing provides it, and no program asks for it (it is for a plugin or a module that is loaded on demand): the module is not available here, the
+                // app starts. A library that a program asks for is an error.
+                (None, None) if optional.iter().any(|g| glob_match(g, n)) => {
+                    if crate::debug_enabled() {
+                        eprintln!("panpak: {n} is not available here; the modules that ask for it will not load");
+                    }
+                }
                 (None, None) => unresolved.push(n.as_str()),
             }
         }
@@ -3175,7 +3283,7 @@ pub mod abi {
 
     /// Read-only check: for the entry, the executables next to it and every chosen library, each
     /// non-weak undefined symbol must be defined by one of them (same version name when the
-    /// symbol is versioned; symbols asked of an `allow_missing` library are left out). `loader` is the
+    /// symbol is versioned; symbols asked of a library that only modules ask for (`optional`) are left out). `loader` is the
     /// dynamic loader in use. A report, not a decision: the loader has the last word.
     pub fn diagnose(
         tree: &Path,
@@ -3183,9 +3291,9 @@ pub mod abi {
         decisions: &[(String, Source)],
         loader: Option<&Path>,
         host: &HashMap<String, PathBuf>,
-        allow_missing: &[String],
+        optional: &[String],
     ) -> Diagnosis {
-        diagnose_cached(&mut InfoCache::default(), tree, entry, decisions, loader, host, allow_missing)
+        diagnose_cached(&mut InfoCache::default(), tree, entry, decisions, loader, host, optional)
     }
 
     /// `name` in the folder of `module` or in a folder directly below it.
@@ -3205,7 +3313,7 @@ pub mod abi {
         decisions: &[(String, Source)],
         loader: Option<&Path>,
         host: &HashMap<String, PathBuf>,
-        allow_missing: &[String],
+        optional: &[String],
     ) -> Diagnosis {
         // The dynamic loader defines symbols too (`__tls_get_addr`, `_dl_*`): it is not in the decisions.
         let mut modules = elf_modules(tree, entry, decisions);
@@ -3244,9 +3352,8 @@ pub mod abi {
         for (path, info) in &parsed {
             let shown = path.strip_prefix(tree).unwrap_or(path).display().to_string();
             for u in &info.syms.undefined {
-                // A versioned symbol asked of a library that the package declared `allow_missing`
-                // is expected to be undefined.
-                if u.version.as_ref().is_some_and(|(_, file)| allow_missing.iter().any(|g| glob_match(g, file))) {
+                // A versioned symbol asked of a library that only modules ask for is expected to be undefined.
+                if u.version.as_ref().is_some_and(|(_, file)| optional.iter().any(|g| glob_match(g, file))) {
                     continue;
                 }
                 let version = u.version.as_ref().map(|(v, _)| v.as_bytes());
@@ -3302,7 +3409,7 @@ pub mod abi {
     /// (and its whole atomic family) whose other copy defines it, and check again, until nothing is
     /// missing, nothing can be changed, or `MAX_CONSISTENCY_STEPS` steps. A step is kept only if it
     /// lowers the number of missing symbols. It never touches the libraries in `SYSTEM_WINS`, the
-    /// C++ runtime, `prefer_host` and `allow_missing` libraries, nor a bundle with its own glibc.
+    /// C++ runtime, `prefer_host` and `optional` libraries, nor a bundle with its own glibc.
     /// The symbols that remain are reported in `diagnosis`; the app still installs and starts.
     #[allow(clippy::too_many_arguments)]
     pub fn resolve_consistent(
@@ -3311,16 +3418,16 @@ pub mod abi {
         entry: &str,
         needs: &[String],
         prefer_host: &[String],
-        allow_missing: &[String],
+        optional: &[String],
         host: &HashMap<String, PathBuf>,
         bundled: &HashMap<String, PathBuf>,
     ) -> Result<Resolution> {
         let loader = loader_path(tree, host, bundled);
-        let first = decide(needs, prefer_host, allow_missing, host, bundled)?;
+        let first = decide(needs, prefer_host, optional, host, bundled)?;
         let modules = elf_modules(tree, entry, &first);
         let mut prefs = cxx_runtime_prefs(cache, &modules, host, bundled, tree);
-        let mut decisions = decide_with(needs, prefer_host, allow_missing, host, bundled, &prefs)?;
-        let mut diag = diagnose_cached(cache, tree, entry, &decisions, loader.as_deref(), host, allow_missing);
+        let mut decisions = decide_with(needs, prefer_host, optional, host, bundled, &prefs)?;
+        let mut diag = diagnose_cached(cache, tree, entry, &decisions, loader.as_deref(), host, optional);
         let (mut changed, mut blocked, mut steps) = (Vec::new(), HashSet::<String>::new(), 0usize);
         while !diag.missing.is_empty() && steps < MAX_CONSISTENCY_STEPS {
             steps += 1;
@@ -3331,9 +3438,9 @@ pub mod abi {
             let mut trial = prefs.clone();
             trial.extend(flips.iter().map(|(n, h)| (n.clone(), *h)));
             let names: Vec<String> = flips.keys().cloned().collect();
-            let next = decide_with(needs, prefer_host, allow_missing, host, bundled, &trial).ok();
+            let next = decide_with(needs, prefer_host, optional, host, bundled, &trial).ok();
             let checked = next.map(|d| {
-                let g = diagnose_cached(cache, tree, entry, &d, loader.as_deref(), host, allow_missing);
+                let g = diagnose_cached(cache, tree, entry, &d, loader.as_deref(), host, optional);
                 (d, g)
             });
             match checked {

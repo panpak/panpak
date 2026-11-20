@@ -26,6 +26,7 @@ ID = 'org.example.menu'
 DESK = f'panpak.{ID}.desktop'
 LOG = HOME / 'panpak-probe.log'
 APPS = HOME / '.local/share/applications'
+# A probe to run by hand on a real desktop, not a test: it uses the real session on purpose (it is not in the suite or in the CI).
 ENV = dict(os.environ, XDG_RUNTIME_DIR=f'/run/user/{os.getuid()}', DBUS_SESSION_BUS_ADDRESS=f'unix:path=/run/user/{os.getuid()}/bus')
 WAIT = 8.0
 

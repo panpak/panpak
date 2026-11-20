@@ -18,7 +18,7 @@ fn work(name: &str) -> PathBuf {
 }
 
 fn cli(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_panpak"))
+    Command::new(env!("CARGO_BIN_EXE_panpak")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
         .args(args)
         .current_dir(home)
         .env("HOME", home)
@@ -398,7 +398,7 @@ fn convert_without_a_key_makes_none_and_says_which_command_makes_one() {
     fs::write(&src, appimage(real_layout())).unwrap();
     let out = l.home.join("converted.panpak");
     let run = |extra: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_panpak"))
+        Command::new(env!("CARGO_BIN_EXE_panpak")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
             .args(["convert", src.to_str().unwrap(), "--id", ID, "--stub", l.stub.to_str().unwrap(), "-o", out.to_str().unwrap()])
             .args(extra)
             .current_dir(&l.home)
@@ -419,7 +419,7 @@ fn convert_without_a_key_makes_none_and_says_which_command_makes_one() {
     assert!(!o.status.success() && t.contains("PANPAK-E1000") && t.contains("panpak key new"), "{t}");
     assert!(!key.exists() && !l.home.join(".config/panpak").exists() && !out.exists(), "a key or a package was made without being asked for");
     // `key new` makes the key, the recovery commitment beside it and the words of the recovery key (shown once).
-    let o = Command::new(env!("CARGO_BIN_EXE_panpak")).args(["key", "new"]).env("HOME", &l.home).env("XDG_CONFIG_HOME", l.home.join(".config")).stdin(std::process::Stdio::null()).output().unwrap();
+    let o = Command::new(env!("CARGO_BIN_EXE_panpak")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus").args(["key", "new"]).env("HOME", &l.home).env("XDG_CONFIG_HOME", l.home.join(".config")).stdin(std::process::Stdio::null()).output().unwrap();
     let t = text(&o);
     assert!(o.status.success() && t.contains("RECOVERY PHRASE") && t.contains("key:    ed25519:"), "{t}");
     assert_eq!(fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
@@ -429,7 +429,7 @@ fn convert_without_a_key_makes_none_and_says_which_command_makes_one() {
     let words: Vec<&str> = t.lines().skip_while(|l| !l.contains("RECOVERY PHRASE")).filter(|l| l.starts_with("    ")).flat_map(|l| l.split_whitespace()).collect();
     assert_eq!(words.len(), 24, "{t}");
     assert!(!fs::read_to_string(&key).unwrap().contains(words[0]));
-    let again = Command::new(env!("CARGO_BIN_EXE_panpak")).args(["key", "new"]).env("HOME", &l.home).env("XDG_CONFIG_HOME", l.home.join(".config")).stdin(std::process::Stdio::null()).output().unwrap();
+    let again = Command::new(env!("CARGO_BIN_EXE_panpak")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus").args(["key", "new"]).env("HOME", &l.home).env("XDG_CONFIG_HOME", l.home.join(".config")).stdin(std::process::Stdio::null()).output().unwrap();
     assert!(!again.status.success() && text(&again).contains("must not exist"), "{}", text(&again));
     // With the key, convert works, and says nothing about a key.
     let first = fs::read_to_string(&key).unwrap();

@@ -31,7 +31,7 @@ def sign_ed25519(sk32: bytes, msg: bytes) -> bytes:
 # (PANPAK-FORMAT.md section 3.1.9). The independent verifier keeps its own copy of this table.
 CRITICAL_SECTIONS = {
     "release": {"revision", "floor", "security", "channel", "history"},
-    "abi": {"glibc_min", "needs", "prefer_host", "allow_missing"},
+    "abi": {"glibc_min", "needs", "prefer_host", "modules"},
     "permissions": {"x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs",
                     "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"},
     "launch": {"args", "env"},
@@ -111,6 +111,14 @@ def encode_index(chunks, entries) -> bytes:
             out += struct.pack("<I", len(e["chunks"]))
             for cid in e["chunks"]:
                 out += struct.pack("<I", cid)
+            # What pack read from the file: flags (bit 0 ELF, bit 1 sets LD_LIBRARY_PATH, bit 2 has a SONAME), the SONAME, the extension area.
+            flags = e.get("flags", 0) | (4 if e.get("soname") is not None else 0)
+            out += struct.pack("<B", flags)
+            if e.get("soname") is not None:
+                sn = e["soname"].encode()
+                out += struct.pack("<H", len(sn)) + sn
+            ext = e.get("ext", b"")
+            out += struct.pack("<H", len(ext)) + ext
         elif e["kind"] == "dir":
             out += b"\x01" + struct.pack("<I", e["mode"] & 0o777)
         elif e["kind"] == "symlink":

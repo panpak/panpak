@@ -8,7 +8,7 @@ use std::{
 };
 
 fn cli(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_panpak"))
+    Command::new(env!("CARGO_BIN_EXE_panpak")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
         .args(args)
         .current_dir(home)
         .env("HOME", home)
@@ -271,7 +271,7 @@ fn doctor_finds_a_module_that_has_no_lib_prefix() {
     // FreeCAD: `usr/lib/Mesh.so` is asked for as `Mesh.so`; the inventory used to take only `lib*.so*`.
     let l = lab("doctormodule");
     let app = ("bin/app", elf_needing("Mesh.so"));
-    let (o, pkg) = l.pack("withmodule", &[app.clone(), ("usr/lib/Mesh.so", b"\x7fELF-not-read".to_vec())], "");
+    let (o, pkg) = l.pack("withmodule", &[app.clone(), ("usr/lib/Mesh.so", elf_needing("libc.so.6"))], "");
     assert!(o.status.success(), "{}", text(&o));
     let t = text(&cli(&l.home, &["doctor", pkg.to_str().unwrap()]));
     assert!(t.contains("verified package") && !t.contains("unresolved libraries"), "{t}");
@@ -284,13 +284,36 @@ fn doctor_finds_a_module_that_has_no_lib_prefix() {
 
 #[test]
 fn doctor_names_every_unresolved_library_in_one_line() {
-    // Two files of the package ask for a library each, and nothing provides either: one run says both (a packager used to need one run for each).
+    // Two programs of the package ask for a library each, and nothing provides either: one run says both (a packager used to need one run for each).
     let l = lab("doctorall");
-    let (o, pkg) = l.pack("two", &[("bin/app", elf_needing("libfirst.so.1")), ("lib/plugin.so", elf_needing("Second.so"))], "");
+    let (o, pkg) = l.pack("two", &[("bin/app", elf_needing("libfirst.so.1")), ("bin/tool", elf_needing("Second.so"))], "");
     assert!(o.status.success(), "{}", text(&o));
     let t = text(&cli(&l.home, &["doctor", pkg.to_str().unwrap()]));
     let line = t.lines().find(|ln| ln.contains("unresolved libraries")).unwrap_or_else(|| panic!("{t}"));
     assert!(line.contains("libfirst.so.1") && line.contains("Second.so") && line.contains("missing on the host and not included in the tree"), "{line}");
+}
+
+#[test]
+fn a_library_that_only_a_module_asks_for_is_not_an_error_and_inspect_says_it_is_not_available() {
+    // The program is fine; a plugin asks for a library that nothing provides. Nobody declared anything: the signed report of the modules says that no program
+    // needs it, so the package installs, doctor has no error, and inspect lists the library.
+    let l = lab("moduleonly");
+    let (o, pkg) = l.pack("plug", &[("bin/app", elf_needing("libc.so.6")), ("lib/plugin.so", elf_needing("libplugin-only.so.5"))], "");
+    assert!(o.status.success(), "{}", text(&o));
+    let t = text(&cli(&l.home, &["doctor", pkg.to_str().unwrap()]));
+    assert!(!t.contains("unresolved libraries"), "{t}");
+    let t = text(&cli(&l.home, &["inspect", pkg.to_str().unwrap()]));
+    assert!(t.contains("not available on this system") && t.contains("libplugin-only.so.5: asked by lib/plugin.so"), "{t}");
+    // The manifest signs the hash of the report, and the report is in the package.
+    let man = l.manifest(&pkg);
+    assert!(man.contains("modules = \""), "{man}");
+    let json = text(&cli(&l.home, &["inspect", "--json", pkg.to_str().unwrap()]));
+    assert!(json.contains("\"modules_not_available\":[\"libplugin-only.so.5\"]"), "{json}");
+    // A program that asks for it makes it required: an error again.
+    let (o, pkg) = l.pack("prog", &[("bin/app", elf_needing("libplugin-only.so.5"))], "");
+    assert!(o.status.success(), "{}", text(&o));
+    let t = text(&cli(&l.home, &["doctor", pkg.to_str().unwrap()]));
+    assert!(t.contains("unresolved libraries: libplugin-only.so.5 missing"), "{t}");
 }
 
 #[test]
@@ -324,9 +347,10 @@ fn elf_needing(name: &str) -> Vec<u8> {
     let off = strtab.len() as u64;
     strtab.extend_from_slice(name.as_bytes());
     strtab.push(0);
-    // Layout: ELF header (64), one PT_LOAD and one PT_DYNAMIC program header (2 * 56), then the dynamic section and the strings.
+    // Layout: ELF header (64), a PT_LOAD, a PT_DYNAMIC and a PT_INTERP program header (3 * 56), then the dynamic section and the strings. The interpreter
+    // makes a file that is not named `.so` a program, whose libraries are required.
     let ph_off = 64u64;
-    let dyn_off = ph_off + 2 * 56;
+    let dyn_off = ph_off + 3 * 56;
     let dyn_size = 4 * 16u64; // NEEDED, STRTAB, STRSZ, NULL
     let str_off = dyn_off + dyn_size;
     let total = str_off + strtab.len() as u64;
@@ -341,7 +365,7 @@ fn elf_needing(name: &str) -> Vec<u8> {
     b.extend_from_slice(&0u32.to_le_bytes());
     b.extend_from_slice(&64u16.to_le_bytes());
     b.extend_from_slice(&56u16.to_le_bytes());
-    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&3u16.to_le_bytes());
     b.extend_from_slice(&64u16.to_le_bytes());
     b.extend_from_slice(&0u16.to_le_bytes());
     b.extend_from_slice(&0u16.to_le_bytes());
@@ -354,6 +378,7 @@ fn elf_needing(name: &str) -> Vec<u8> {
     };
     ph(&mut b, 1, 0, total); // PT_LOAD
     ph(&mut b, 2, dyn_off, dyn_size); // PT_DYNAMIC
+    ph(&mut b, 3, dyn_off, 1); // PT_INTERP
     for (tag, val) in [(1u64, off), (5, str_off), (10, strtab.len() as u64), (0, 0)] {
         b.extend_from_slice(&tag.to_le_bytes());
         b.extend_from_slice(&val.to_le_bytes());

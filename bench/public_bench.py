@@ -52,9 +52,7 @@ APPS = {
     'ail': dict(old='ail-2.2.0', new='ail-3.0.0-beta-3', id='org.example.ail', convert=['--entry', 'usr/bin/ail-cli'],
                 args=['--help'], env={}, what='ail-cli --help', expect='Usage'),
     'qownnotes': dict(old='qon-26.10.8', new='qon-26.10.9', id='org.example.qownnotes',
-                      convert=['--allow-missing', 'libQt6Quick*', '--allow-missing', 'libQt6Qml*', '--allow-missing', 'libQt6Sql*',
-                               '--allow-missing', 'libQt6WebSockets*', '--allow-missing', 'libQt6Xml*', '--allow-missing', 'libicu*',
-                               '--allow-missing', 'libpcre.so.3', '--allow-missing', 'libunistring.so.2'],
+                      convert=[],
                       args=['--version'], env={'QT_QPA_PLATFORM': 'offscreen'}, what='--version, QT_QPA_PLATFORM=offscreen',
                       expect='QOwnNotes 26.10.9'),
     # Simplenote is only used for the update size: it is an Electron app with no command that exits.

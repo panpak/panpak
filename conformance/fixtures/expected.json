@@ -141,6 +141,39 @@
   ],
   "ok": false
  },
+ "invalid-file-elf-and-script.panpak": {
+  "err": [
+   "ELF",
+   "script"
+  ],
+  "ok": false
+ },
+ "invalid-file-ext-critical.panpak": {
+  "err": [
+   "critical",
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-file-ext-cut.panpak": {
+  "err": [
+   "extension"
+  ],
+  "ok": false
+ },
+ "invalid-file-flag-unknown.panpak": {
+  "err": [
+   "flags",
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-file-soname-not-elf.panpak": {
+  "err": [
+   "SONAME"
+  ],
+  "ok": false
+ },
  "invalid-flags.panpak": {
   "err": [
    "nonzero flags"
@@ -707,6 +740,18 @@
   "ok": true
  },
  "valid-empty-tree.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-file-elf-soname.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-file-ext-noncritical.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-file-script-flag.panpak": {
   "err": [],
   "ok": true
  },

@@ -143,7 +143,7 @@ def main():
             v3c = pack('v3c', 'b', extra=['--previous', v3b])
             serving(v3c)
             p = update()
-            assert 'changed the signing key' in p.stderr + p.stdout, p.stdout + p.stderr
+            assert 'changed their signing key in the regular way' in p.stderr + p.stdout, p.stdout + p.stderr
             st = state()
             assert st['root'] == pub_b and st['recovery'] == rec_a, st
             print('a succession by the old key moves the pin, the recovery commitment stays, and later releases carry the chain with no option PASS')
@@ -165,7 +165,7 @@ def main():
             back = pack('v5', 'c', extra=['--previous', thief, '--recover-with', tmp / 'a.words'])
             serving(back)
             p = update()
-            assert 'recovery key' in p.stderr + p.stdout, p.stdout + p.stderr
+            assert 'took control of the app back' in p.stderr + p.stdout, p.stdout + p.stderr
             st = state()
             assert st['root'] == pub_c and st['recovery'] == rec_c, st
             # The thief is out: his next package has no succession from c, and his old key is not the pin.
@@ -191,7 +191,7 @@ def main():
             update(['--switch-channel'])
             assert 'switch_note=stable to beta at revision 8' in (appdir / 'trust').read_text(), (appdir / 'trust').read_text()
             doctor = run([BIN / 'panpak', 'doctor'], env).stdout
-            assert 'the same revision as the installed one and other bytes' in doctor and 'error of the author' in doctor, doctor
+            assert 'with the same number as the one you had' in doctor and 'error of the author' in doctor and 'stable to beta at revision' in doctor, doctor
             print('a change of channel with the same revision and other bytes is noted and doctor says so PASS')
         finally:
             server.terminate()

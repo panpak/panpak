@@ -349,9 +349,6 @@ msgstr ""
 msgid "{name} ({id}) is in protected mode: the author reported a serious problem in the installed version. It runs without internet and does not run programs that it downloads; your files are safe. The mode ends when the app is updated."
 msgstr ""
 
-msgid "{name} ({id}): the channel was changed to a release with the same revision as the installed one and other bytes ({note}). With one counter for every channel this should not happen: it is an error of the author; tell them."
-msgstr ""
-
 msgid "{name} asks for new permissions, but there is no window to show them to you. To update, open a terminal and type: panpak update {id}"
 msgstr ""
 
@@ -385,10 +382,13 @@ msgstr ""
 msgid "{name} was removed. Your settings and data are kept."
 msgstr ""
 
-msgid "{name}: the author changed the signing key, with a signature of the key that was trusted. The new key is {key}."
+msgid "{name}: after switching to another channel you received a version with the same number as the one you had, but with different content. It is not dangerous, but it is an error of the author: tell them."
 msgstr ""
 
-msgid "{name}: the author took the app back with the recovery key: the old signing key is no longer trusted. The new key is {key}."
+msgid "{name}: the author changed their signing key in the regular way. You do not need to do anything."
+msgstr ""
+
+msgid "{name}: the author took control of the app back after losing their key, or after it was stolen. Versions signed with the old key are no longer accepted. You do not need to do anything."
 msgstr ""
 
 msgid "{n} permission"
