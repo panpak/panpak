@@ -237,7 +237,7 @@ delta updates that are downloaded in the background and applied when the app is 
   they use their toolkit's own dialog on the folders they were granted. The clipboard is not mediated, and there is
   no keyring.
 - The seccomp filter is a deny list, and the internal sandbox of Electron and Chromium is not available.
-- The first key of a package is trusted on first use: you say whom to trust (`--expect-key`, `--trust-first-key` or the question); nothing confirms the author's domain yet.
+- The first key of a package is trusted on first use unless the author published a domain file (`https://<domain>/.well-known/panpak.toml`): then the client asks it before the first pin and at every succession, and a confirmed key needs only `--yes`. Without the file, with `--offline` or with `trust.confirm_domain` off, you say whom to trust (`--expect-key`, `--trust-first-key` or the question). A look-alike domain or a domain whose server is taken over is not covered (KL-17).
 - Panpak is not a store: there is no catalogue or review, and no shared runtime. You get a `.panpak` file from its
   author, and updates come from the URL in its manifest. Compatibility with AppImages that you convert yourself
   is in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
@@ -318,7 +318,7 @@ Make your key first, once: `panpak key new` (the signing key goes to `~/.config/
 never made by itself). Then nothing else is needed: `build` and `install` put the runtime that comes with `panpak` (the file
 `panpak-stub` beside it) in your home, one line each time. The first build also makes the build image (a few minutes and about
 1 GB; it needs network access to the registry and to the Debian snapshot service). `panpak install` shows the key and the permissions and asks;
-in a script, a first install says whom it trusts: `--expect-key <key>` (the key the author published) or `--trust-first-key`; `--yes` alone does not. `panpak doctor` shows
+in a script, a first install says whom it trusts: `--expect-key <key>` (the key the author published) or `--trust-first-key`; `--yes` alone does not, unless the domain of the author confirms the key. `panpak doctor` shows
 what the system lacks.
 
 To try Panpak with apps you already have, `panpak convert` turns an AppImage into a package signed by

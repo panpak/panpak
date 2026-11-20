@@ -37,6 +37,12 @@ msgstr ""
 msgid "Close and reopen {name} to use the internet."
 msgstr ""
 
+msgid "Confirmed: {domain} lists the new key of {app}."
+msgstr ""
+
+msgid "Confirmed: {domain} lists this key for {app} (https://{domain}/.well-known/panpak.toml)."
+msgstr ""
+
 msgid "Connect to the network on the ports {subject}"
 msgstr ""
 
@@ -44,6 +50,9 @@ msgid "Full isolation"
 msgstr ""
 
 msgid "Get the package for this architecture from the author."
+msgstr ""
+
+msgid "Going on because of --despite-domain-mismatch: the domain says otherwise."
 msgstr ""
 
 msgid "High risk"
@@ -130,10 +139,16 @@ msgstr ""
 msgid "Normal"
 msgstr ""
 
+msgid "Not confirmed: {why}. The key of the package is the only proof of who made it."
+msgstr ""
+
 msgid "Not now"
 msgstr ""
 
 msgid "Nothing was changed: this needs your answer, and there is no terminal and no dialog to ask it."
+msgstr ""
+
+msgid "Nothing was installed. If you know better, run the command again with --despite-domain-mismatch and say whom you trust (--trust-first-key or --expect-key)."
 msgstr ""
 
 msgid "Open and save the files you choose in the file window of your desktop"
@@ -170,6 +185,9 @@ msgid "Play sound and use the microphone"
 msgstr ""
 
 msgid "Programs that the app writes into its own folders (downloaded, unpacked or built) can be run. Without this, nothing it can write can be executed."
+msgstr ""
+
+msgid "Published by: {domain}"
 msgstr ""
 
 msgid "Put an icon in the notification area"
@@ -250,6 +268,9 @@ msgstr ""
 msgid "The internet is off again for {name}."
 msgstr ""
 
+msgid "The key is not shown because {domain} confirms it (--show-key shows it)."
+msgstr ""
+
 msgid "The links of this kind, in your browser or in other apps, are given to this app."
 msgstr ""
 
@@ -260,6 +281,9 @@ msgid "The shell of your desktop and the media keys of your keyboard can play, p
 msgstr ""
 
 msgid "The update of {name} is ready and applies the next time it starts. Close it and open it again."
+msgstr ""
+
+msgid "The update was not downloaded and the version you have stays."
 msgstr ""
 
 msgid "The whole home folder is open to it for reading: your documents, settings and everything other programs keep there."
@@ -287,6 +311,9 @@ msgid "This place holds passwords, keys, browser data or files that run at login
 msgstr ""
 
 msgid "This update asks for more than the version you have:"
+msgstr ""
+
+msgid "To confirm who stands behind {domain}, Panpak asks https://{domain}/.well-known/panpak.toml. That server sees your internet address and that someone is installing an app of {domain}; nothing else is sent. To never ask: panpak config set trust.confirm_domain off (or --offline for one command)."
 msgstr ""
 
 msgid "To install it anyway, give --force-host (it may not start)."
@@ -418,13 +445,28 @@ msgstr ""
 msgid "protected mode: you turned the internet back on; no downloaded programs until updated"
 msgstr ""
 
+msgid "the check is turned off (panpak config set trust.confirm_domain on)"
+msgstr ""
+
 msgid "the current session does not give what {app} needs: {line}"
 msgstr ""
 
 msgid "the display server {names}"
 msgstr ""
 
+msgid "the file of {domain} is not valid ({detail})"
+msgstr ""
+
+msgid "the file of {domain} is too large"
+msgstr ""
+
+msgid "the package names no domain"
+msgstr ""
+
 msgid "the {names} portal"
+msgstr ""
+
+msgid "this command was run with --offline"
 msgstr ""
 
 msgid "{app} cannot run in this session:"
@@ -437,6 +479,21 @@ msgid "{app} cannot run on this system:"
 msgstr ""
 
 msgid "{app} starts without a connection to your session bus, so what goes through it will not work (portals, notifications): {line}"
+msgstr ""
+
+msgid "{domain} could not be asked ({detail})"
+msgstr ""
+
+msgid "{domain} does not list {app}"
+msgstr ""
+
+msgid "{domain} says otherwise: it lists other keys for {app}, and this package is signed with none of them. Do not go on unless the author tells you, in another way, that the key changed."
+msgstr ""
+
+msgid "{domain} says otherwise: it lists the key of this package as replaced. Whoever holds that key is no longer the author of {app}."
+msgstr ""
+
+msgid "{domain} sent the request to another address"
 msgstr ""
 
 msgid "{name} ({id}) is in protected mode: the author reported a serious problem in the installed version. It runs without internet and does not run programs that it downloads; your files are safe. The mode ends when the app is updated."

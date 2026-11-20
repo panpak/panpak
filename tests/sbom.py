@@ -103,6 +103,34 @@ def main():
         assert run([BIN / 'panpak', 'sbom', '--export', tmp / 'one.panpak'], export_env).stdout == full.stdout, 'the export is not reproducible with SOURCE_DATE_EPOCH'
         assert 'serialNumber' not in doc and 'component' not in doc['metadata'], 'the file of the package carries an identity'
 
+        # Names that come from files that nobody here wrote (a SONAME, a file name) go into the document: a real JSON parser must get them back as they are.
+        hostile = tmp / 'hostile'
+        (hostile / 'bin').mkdir(parents=True)
+        (hostile / 'lib').mkdir()
+        (hostile / 'bin/hello').write_text('#!/bin/sh\nexit 0\n')
+        (hostile / 'bin/hello').chmod(0o755)
+        (hostile / 'panpak.toml').write_text(f'[app]\nid="{ID}"\nname="Hostile"\nversion="1"\nentry="bin/hello"\n')
+        names = ['libq"uote.so.1', 'libback\\slash.so.1', 'libuni\u00e9\u65e5\u672c\U0001F600.so.1', 'lib},{"injected":true.so.1', 'lib<script>.so.1']
+        made = {}
+        for i, soname in enumerate(names):
+            # The file name is the SONAME where the file system and `pack` take it; the SONAME is always the one in the ELF file.
+            fname = f'lib{i}-' + ''.join('_' if c in '/\t\n' else c for c in soname[3:])
+            made[soname] = fname
+            run(['gcc', '-shared', '-fPIC', '-Xlinker', '-soname', '-Xlinker', soname, '-o', hostile / 'lib' / fname, tmp / 'x.c'], env)
+        # A SONAME with a control character or a slash would make a package that its own reader refuses: `pack` says so and writes nothing.
+        for bad in ('libtab\there.so.1', 'libline\nbreak.so.1', 'lib</script>.so.1'):
+            run(['gcc', '-shared', '-fPIC', '-Xlinker', '-soname', '-Xlinker', bad, '-o', hostile / 'lib' / 'bad.so', tmp / 'x.c'], env)
+            refused = run([BIN / 'panpak', 'pack', hostile, '--stub', BIN / 'panpak-stub', '--secret-file', key, '-o', tmp / 'refused.panpak'], env, ok=False)
+            assert 'control character or a slash' in refused.stderr and not (tmp / 'refused.panpak').exists(), refused.stderr
+        (hostile / 'lib' / 'bad.so').unlink()
+        run([BIN / 'panpak', 'pack', hostile, '--stub', BIN / 'panpak-stub', '--secret-file', key, '-o', tmp / 'hostile.panpak'], env)
+        got = json.loads(run([BIN / 'panpak', 'sbom', tmp / 'hostile.panpak'], env).stdout)
+        found = {c['name']: next(p['value'] for p in c['properties'] if p['name'] == 'panpak:path') for c in got['components']}
+        assert set(found) == set(names), (sorted(found), names)
+        assert all(found[n] == 'lib/' + made[n] for n in names), found
+        full = json.loads(run([BIN / 'panpak', 'sbom', '--export', tmp / 'hostile.panpak'], env).stdout)
+        assert full['components'] == got['components']
+
         # 3. `inspect` says that there is one without reading the tree; the author cannot write the table.
         inspected = run([BIN / 'panpak', 'inspect', tmp / 'one.panpak'], env).stdout
         assert 'SBOM: best-effort coverage' in inspected, inspected

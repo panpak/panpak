@@ -40,6 +40,11 @@ pub fn coverage_of(man: &crate::Manifest) -> &'static str {
     }
 }
 
+/// A JSON string, escaped (RFC 8259): the quote, the backslash and every control character; any other text is written as it is.
+pub fn json_string(s: &str) -> String {
+    js(s)
+}
+
 /// A JSON string, escaped.
 fn js(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
@@ -331,6 +336,46 @@ mod tests {
         let man = manifest("");
         let (text, _) = make(&Input { manifest: &man, libs: vec![lib("lib/a\"b\\c.so.1", "a\"b\\c.so.1")] });
         assert!(text.contains("a\\\"b\\\\c.so.1"), "{text}");
+    }
+
+    /// A reader of one JSON string, written apart from the writer: only what RFC 8259 allows.
+    fn decode(s: &str) -> Option<String> {
+        let b = s.strip_prefix('"')?.strip_suffix('"')?;
+        let (mut out, mut it) = (String::new(), b.chars());
+        while let Some(c) = it.next() {
+            match c {
+                '"' => return None,
+                c if (c as u32) < 0x20 => return None,
+                '\\' => match it.next()? {
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    'u' => out.push(char::from_u32(u32::from_str_radix(&(0..4).map(|_| it.next()).collect::<Option<String>>()?, 16).ok()?)?),
+                    _ => return None,
+                },
+                c => out.push(c),
+            }
+        }
+        Some(out)
+    }
+
+    #[test]
+    fn hostile_names_are_written_so_that_a_json_reader_gets_them_back() {
+        let names = [
+            "plain.so.1", "a\"b", "a\\b", "a\\\"b\\", "tab\there", "line\nbreak", "cr\rhere", "\u{1}\u{1f}\u{7f}", "nul-free \u{8}\u{c}", "ünï\u{e9}", "日本語.so.1",
+            "emoji \u{1F600} and \u{10FFFF}", "\u{2028}\u{2029}", "</script>", "\"},{\"injected\":true", "{}[]:,",
+        ];
+        for n in names {
+            assert_eq!(decode(&js(n)).as_deref(), Some(n), "{n:?} written as {}", js(n));
+        }
+        // A whole document made of them has no raw control character except the ends of its lines.
+        let man = manifest("");
+        let libs = names.iter().map(|n| lib(&format!("lib/{n}"), n)).collect();
+        let (doc, _) = make(&Input { manifest: &man, libs });
+        assert!(doc.chars().all(|c| c == '\n' || (c as u32) >= 0x20));
+        assert_eq!(doc.matches("\"type\": \"library\"").count(), names.len());
     }
 
     #[test]

@@ -495,3 +495,60 @@ msgstr "controller di gioco"
 
 msgid "cameras"
 msgstr "fotocamere"
+
+msgid "Published by: {domain}"
+msgstr "Pubblicata da: {domain}"
+
+msgid "Confirmed: {domain} lists this key for {app} (https://{domain}/.well-known/panpak.toml)."
+msgstr "Confermato: {domain} elenca questa chiave per {app} (https://{domain}/.well-known/panpak.toml)."
+
+msgid "Confirmed: {domain} lists the new key of {app}."
+msgstr "Confermato: {domain} elenca la nuova chiave di {app}."
+
+msgid "Not confirmed: {why}. The key of the package is the only proof of who made it."
+msgstr "Non confermato: {why}. La chiave del pacchetto è l'unica prova di chi lo ha fatto."
+
+msgid "the package names no domain"
+msgstr "il pacchetto non indica nessun dominio"
+
+msgid "the check is turned off (panpak config set trust.confirm_domain on)"
+msgstr "il controllo è spento (panpak config set trust.confirm_domain on)"
+
+msgid "this command was run with --offline"
+msgstr "questo comando è stato eseguito con --offline"
+
+msgid "{domain} does not list {app}"
+msgstr "{domain} non elenca {app}"
+
+msgid "{domain} could not be asked ({detail})"
+msgstr "non è stato possibile interrogare {domain} ({detail})"
+
+msgid "the file of {domain} is not valid ({detail})"
+msgstr "il file di {domain} non è valido ({detail})"
+
+msgid "{domain} sent the request to another address"
+msgstr "{domain} ha mandato la richiesta a un altro indirizzo"
+
+msgid "the file of {domain} is too large"
+msgstr "il file di {domain} è troppo grande"
+
+msgid "{domain} says otherwise: it lists other keys for {app}, and this package is signed with none of them. Do not go on unless the author tells you, in another way, that the key changed."
+msgstr "{domain} dice il contrario: elenca altre chiavi per {app}, e questo pacchetto non è firmato con nessuna di esse. Non andare avanti, a meno che l'autore ti dica in un altro modo che la chiave è cambiata."
+
+msgid "{domain} says otherwise: it lists the key of this package as replaced. Whoever holds that key is no longer the author of {app}."
+msgstr "{domain} dice il contrario: elenca la chiave di questo pacchetto come sostituita. Chi ha quella chiave non è più l'autore di {app}."
+
+msgid "Nothing was installed. If you know better, run the command again with --despite-domain-mismatch and say whom you trust (--trust-first-key or --expect-key)."
+msgstr "Non è stato installato nulla. Se sai di più, esegui di nuovo il comando con --despite-domain-mismatch e di' di chi ti fidi (--trust-first-key oppure --expect-key)."
+
+msgid "The update was not downloaded and the version you have stays."
+msgstr "L'aggiornamento non è stato scaricato e la versione che hai resta."
+
+msgid "Going on because of --despite-domain-mismatch: the domain says otherwise."
+msgstr "Si va avanti per via di --despite-domain-mismatch: il dominio dice il contrario."
+
+msgid "To confirm who stands behind {domain}, Panpak asks https://{domain}/.well-known/panpak.toml. That server sees your internet address and that someone is installing an app of {domain}; nothing else is sent. To never ask: panpak config set trust.confirm_domain off (or --offline for one command)."
+msgstr "Per confermare chi c'è dietro {domain}, Panpak chiede https://{domain}/.well-known/panpak.toml. Quel server vede il tuo indirizzo internet e che qualcuno sta installando un'app di {domain}; non viene inviato altro. Per non chiedere mai: panpak config set trust.confirm_domain off (oppure --offline per un solo comando)."
+
+msgid "The key is not shown because {domain} confirms it (--show-key shows it)."
+msgstr "La chiave non viene mostrata perché {domain} la conferma (--show-key la mostra)."

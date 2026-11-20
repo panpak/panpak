@@ -368,6 +368,9 @@ jobs:
       - name: The SBOM (written by pack, signed through the manifest, the same bytes for the same tree, read from a package, an installed app and a URL by range)
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/sbom.py
+      - name: The confirmation of the domain of an author (a local HTTPS server and a test authority: confirmed, not confirmed, contradicted, redirect, size, time, off, a succession)
+        timeout-minutes: 5
+        run: python3 tests/with_timeout.py 300 tests/domain_confirm.py
       - name: No test reaches the session bus of the real user (the canary of the runner, and the address of a test run by hand)
         timeout-minutes: 2
         run: python3 tests/with_timeout.py 60 tests/bus_guard.py
@@ -607,6 +610,7 @@ jobs:
           - fuzz_pubkey
           - fuzz_rotation
           - fuzz_sigblock
+          - fuzz_sbom_escape
           - fuzz_path
           - fuzz_locks
           - fuzz_zstd

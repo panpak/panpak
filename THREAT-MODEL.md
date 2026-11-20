@@ -1,7 +1,8 @@
 # Panpak — threat model
 
-Status: v1 (runtime ABI 1). Empirically verified where stated (tests),
-assumed where explicitly marked.
+Status: v1 (runtime ABI 1), written for the outside review of the format and the trust layer
+(`PANPAK-FORMAT.md` §0.1 says what to read first; §1.1 here is the table of the attackers of the
+trust layer). Empirically verified where stated (tests), assumed where explicitly marked.
 
 Every limit known today is listed in one place, §5 "Known limitations", with
 its practical consequence and where it is described.
@@ -18,6 +19,28 @@ its practical consequence and where it is described.
 - **A4 — network and kernel**: out of model (no network filtering; the kernel
   is trusted except for the system calls that the seccomp filter of §2.5 refuses,
   see §3 and §5).
+
+### 1.1 The trust layer: who may sign, and what each attacker can do
+
+A3 (hostile update) is the attacker of the trust layer (`PANPAK-FORMAT.md` §3.0 and §3.2). This table is what a reviewer should try to make false. The keys are the **root**
+(signs packages; on the machine of the author or a token) and the **recovery key** (24 words on paper; only its commitment is in a package).
+
+| Attacker | Can | Cannot | Covered by |
+|---|---|---|---|
+| Whoever serves the package (a mirror, a CDN, a compromised distribution point) | freeze an app at an old version, hide a new one, serve a package that is not for you | make an installed app run code that its author did not sign; change the permissions of a signed version; replay an older version below the floor or a fork of one revision | signature on a labeled message that covers the manifest and the root of the index; the pin; the revision, the floor and the history (§3.1.10) |
+| A network attacker at an update | the same as above | the same as above | the same, and HTTPS for the downloads |
+| A network attacker, or a hostile page, at the **first** install | supply a package of their own key | make it look confirmed if the author published the domain file and the person (or script) is online and asks it | the domain confirmation (§3.2.1), `--expect-key`; **not** covered when the author has no file, the check is off, or the attacker controls the web server of the domain (KL-17) |
+| A thief of the root key | sign what the key signs: a package, or a succession to a key of the thief that keeps the commitment; the pin of every client that updates moves to the thief | change the recovery commitment; stop the author from taking the app back with the 24 words | succession rules: by the root, the commitment cannot change; by the recovery, it wins over the root (§3.2 rule 4); a visible notice at every succession |
+| A thief of the root key, **before** the author notices | reach the clients that update first, with no expiry to bound the window | | **not covered**: the mitigation is custody (a token, `--sign-command`); a delegation with an expiry is designed for the beta and only its names are reserved |
+| A thief of the recovery words | take the app back from the author (the same power as the author's own recovery) | | **not covered**: on paper, offline; lost together with the root they are lost for good |
+| The domain of the author contradicts, or is made to | refuse a first install or a succession (a denial of service by whoever controls the domain file) | accept a package that the checks of §3.0 and §3.2 refuse | `--despite-domain-mismatch`, which still asks whom to trust; a contradiction is never silent |
+| A look-alike domain | host a package whose `[trust].domain` names itself and confirm its own key | pass as the real domain: the name of the domain is the main text of the prompt, but a person who does not read it is not protected | **not covered** (KL-17) |
+| A coerced or malicious author | sign anything | | **not covered**: no human review, no transparency log (the signature block reserves a type for a proof; none is implemented) |
+| The same user, outside the sandbox | rewrite the store, the pin, the floor | | out of model (KL-18) |
+
+What the design gives up on purpose: no clock (no expiry, no delay before a recovered root is accepted: a clock is something to attack), no threshold of keys (the field is
+reserved at 1), no list of serials, no catalog that can block an app (a catalog may only put it in protected mode, later). Those are listed in the design notes as discarded,
+with the reason.
 
 The local store (`~/.local/share/panpak`) is considered **trusted**
 (same uid, non-hostile fs). Same-uid competitors are out of model.
@@ -551,10 +574,12 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   (default-deny). Good, but fragile: every new broad RW rule reopens.
 - **Local denial of service**: chunks up to 1 MiB, index up to 256
   MiB, manifest 1 MiB (anti-zip-bomb caps); beyond = refusal, not OOM.
-- **Initial TOFU**: the first pin is not authenticated. Whoever
-  distributes the first package over a hostile channel can pin the
-  wrong key. Mitigation: out-of-band fingerprint comparison (first 16
-  hex shown).
+- **Initial TOFU**: the first pin is authenticated only if the author
+  published a domain file and the client could ask for it (§1.1,
+  `PANPAK-FORMAT.md` §3.2.1). Otherwise whoever distributes the first
+  package over a hostile channel can pin the wrong key. Mitigation:
+  the domain confirmation, or out-of-band comparison of the key (shown whenever the
+  domain does not confirm it).
 
 ## 4. Known requirements and limits
 
@@ -587,8 +612,8 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
 - **Keys and succession** (spec §3.2): the root key signs the packages; the recovery key (24 words of BIP-39 on paper, only its commitment in the package, from the first release)
   takes the app back. A chain of at most 8 successions, each signed by the key that was and bound to the app id, moves the pin; a succession of the root cannot change
   the recovery commitment, and one of the recovery key wins over any of the root, so a thief of the signing key can move the pin (he signs what the key is for) but only until
-  the author uses the words. No delay is imposed (a clock is something to attack). The first install has to say whom it trusts (`--expect-key` or `--trust-first-key`;
-  `--yes` alone is refused), and updates are accepted from the author's own source only (`source=author` in `apps/<id>/trust`). Without a valid chain a key change =
+  the author uses the words. No delay is imposed (a clock is something to attack). The first install has to say whom it trusts (the domain of the author confirms the key, or `--expect-key`, or `--trust-first-key`;
+  `--yes` alone is refused unless the domain confirms; a domain that contradicts refuses it, §1.1), a new root is asked of the domain too, and updates are accepted from the author's own source only (`source=author` in `apps/<id>/trust`). Without a valid chain a key change =
   remove and install again.
 
 ## 5. Known limitations
@@ -707,9 +732,18 @@ Status of the project: pre-beta.
 
 **Trust and the store**
 
-- **KL-17 The first key is pinned without proof.** Trust on first use shows the
-  fingerprint once; a hostile channel at that moment can supply the wrong key. In practice:
-  compare the fingerprint with one published elsewhere. See §3 ("Initial TOFU").
+- **KL-17 The first key is pinned without proof, unless the author's domain confirms it.**
+  Trust on first use has no proof of identity in the package. Where the author
+  names a domain and publishes `/.well-known/panpak.toml`, the client asks for it before
+  the first pin and at every succession, and a domain that contradicts stops the install
+  (§1.1, `PANPAK-FORMAT.md` §3.2.1). What stays open: an author with no file, an offline
+  machine or one with the check turned off (the key is then the only proof, and it is
+  shown); a look-alike domain (the package names its own); a domain whose web server is
+  taken over, which confirms the thief's key as it would the author's; and a person who
+  does not read the domain. The request tells the server of the domain that an address
+  installs one of its apps (said once, before the first request). In practice: install
+  from the address of the author, read the domain that is shown in capitals, and compare
+  the key with one published elsewhere when it is not confirmed.
 - **KL-18 The local store is trusted.** The store is under the user's account, and a
   process of the same user outside the sandbox is out of the model. The tree is checked
   when it is built and not rehashed at every start, so a change between the check and the

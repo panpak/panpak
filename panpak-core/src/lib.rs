@@ -8,6 +8,7 @@ pub mod desktop;
 pub mod frames;
 mod elfsym;
 pub mod host;
+pub mod domain;
 pub mod modules;
 pub mod sbom;
 pub mod chooserhost;

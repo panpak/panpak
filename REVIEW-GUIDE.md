@@ -1,6 +1,8 @@
 # Guide for the external reviewer
 
 Status: format v1, runtime ABI 1, Landlock V8 on kernel 7.0.0-38.
+**Start with `PANPAK-FORMAT.md` §0.1 (three things: the signed message, the signature block, the chain of keys with recovery) and `THREAT-MODEL.md` §1.1 (what each
+attacker of the trust layer can and cannot do).** The rest of this guide is older and describes the sandbox and the store; its line counts are approximate.
 This guide says WHERE to look, not what to conclude. Measured facts
 live in `docs/BENCHMARKS.md`, `PILOT.md`, `INCREMENTAL-RESULTS.md`,
 `STARTUP-CACHE.md`; threats in `THREAT-MODEL.md`; the norm in

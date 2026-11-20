@@ -10,6 +10,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod background;
 mod dialog;
+mod domaincheck;
 mod gc;
 mod happy;
 mod icons;
@@ -35,8 +36,20 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak sbom [--export] <package | app id | https URL> [--allow-insecure-http] [--timeout <s>]   (the software bill of materials of a package, CycloneDX 1.6 JSON; --export completes it with the name, id and version, a serial number and the time, for a scanner; from a URL only the parts of the package that hold it are downloaded)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the key the author published, or the key of the file; --yes alone does not)\n  panpak update [--stage] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--show-key] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the domain of the author confirms the key, or the key the author published, or the key of the file; --yes alone does not, unless the domain confirms)\n  panpak update [--stage] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file|trust.confirm_domain> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
+}
+
+/// `network.ca_file` of the settings replaces the built-in list of authorities; a file that cannot be used stops the download (it never falls back to the list).
+fn settings_tls() -> Result<Option<ureq::tls::TlsConfig>> {
+    let Some(file) = panpak_core::config::load().ca_file else { return Ok(None) };
+    let pem = fs::read(&file).with_context(|| format!("network.ca_file: cannot read {file}"))?;
+    let certs: Vec<ureq::tls::Certificate<'static>> = ureq::tls::parse_pem(&pem).filter_map(|i| match i {
+        Ok(ureq::tls::PemItem::Certificate(c)) => Some(c),
+        _ => None,
+    }).collect();
+    ensure!(!certs.is_empty(), "network.ca_file: {file} holds no certificate");
+    Ok(Some(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::new_with_certs(&certs)).build()))
 }
 
 fn agent_for(url: &str, allow_insecure: bool, timeout_secs: u64) -> Result<ureq::Agent> {
@@ -45,15 +58,8 @@ fn agent_for(url: &str, allow_insecure: bool, timeout_secs: u64) -> Result<ureq:
         // Always HTTPS anyway; redirects stay in https (ureq) and max 3.
         Some("https") => {
             let mut builder = ureq::Agent::config_builder().https_only(true).max_redirects(3).timeout_global(Some(std::time::Duration::from_secs(timeout_secs)));
-            // `network.ca_file` of the settings replaces the built-in list of authorities; a file that cannot be used stops the download (it never falls back to the list).
-            if let Some(file) = panpak_core::config::load().ca_file {
-                let pem = fs::read(&file).with_context(|| format!("network.ca_file: cannot read {file}"))?;
-                let certs: Vec<ureq::tls::Certificate<'static>> = ureq::tls::parse_pem(&pem).filter_map(|i| match i {
-                    Ok(ureq::tls::PemItem::Certificate(c)) => Some(c),
-                    _ => None,
-                }).collect();
-                ensure!(!certs.is_empty(), "network.ca_file: {file} holds no certificate");
-                builder = builder.tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::new_with_certs(&certs)).build());
+            if let Some(tls) = settings_tls()? {
+                builder = builder.tls_config(tls);
             }
             let config = builder.build();
             // The address is chosen the way Happy Eyeballs does it: an unreachable IPv6 address does not stall the download (see `happy`).
@@ -245,7 +251,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
     // The pin only changes when the version is applied (`cmd_apply` checks the succession again).
     let new_trust = panpak_core::trust::require(&man)?;
     let new_key = new_trust.root.first().context("[trust] has no root")?.trim().to_string();
-    panpak_core::trust::follow(app_id, &pin, new_trust)?;
+    let followed = panpak_core::trust::follow(app_id, &pin, new_trust)?;
     ensure!(man.app.id == app_id, "remote id differs from the installed app");
     let (sig_b, sig_total) = http_range(&agent, &url, ft.man_off + ft.man_len, total - panpak_core::FOOTER_LEN - 1)?;
     ensure!(sig_total == total, "file changed during download");
@@ -256,6 +262,16 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
     panpak_core::check_format(&man)?;
     panpak_core::trust::check(&man)?;
     panpak_core::check_runtime(&man, panpak_core::RUNTIME_ABI)?;
+    // A new key (a succession) is asked of the domain of the author before any of the body is downloaded: a domain that says otherwise stops the update.
+    if followed > 0 {
+        use panpak_core::i18n::{fill, tr};
+        let vals = |d: &str| vec![("domain", d.to_string()), ("app", app_id.to_string())];
+        match confirm_domain(&store, &man, &new_key) {
+            DomainResult::Confirmed { domain } => println!("{}", fill(&tr(panpak_core::messages::DOMAIN_CONFIRMED_SUCCESSION), &vals(&domain))),
+            DomainResult::NotConfirmed { why } => println!("{}", fill(&tr(panpak_core::messages::DOMAIN_NOT_CONFIRMED), &[("why", why)])),
+            DomainResult::Contradicted { text } => refuse_contradiction(&text, panpak_core::messages::DOMAIN_CONTRA_REFUSED_UPDATE)?,
+        }
+    }
     // Old and new are told by the revision, never by the version text. The floor is kept even when the update goes no further.
     let rel = man.release.as_ref().context("the remote manifest has no [release]")?;
     panpak_core::release::note_release(&appdir, rel.floor, rel.revision)?;
@@ -1128,6 +1144,10 @@ fn add_license_entries(payload: &mut Vec<PayloadEntry>) -> Result<()> {
 fn file_info_of(path: &Path, mode: u32) -> Result<panpak_core::FileInfo> {
     use panpak_core::{FileInfo, FILE_ELF, FILE_SETS_LD_PATH};
     if let Some(soname) = panpak_core::elf_soname(path) {
+        // The index is read by every client: a SONAME that its reader refuses would make a package that nobody can open.
+        if let Some(n) = soname.as_deref().filter(|n| n.chars().any(|c| c.is_control() || c == '/')) {
+            bail!("{}: the SONAME {n:?} has a control character or a slash: make the library again with a plain SONAME", path.display());
+        }
         return Ok(FileInfo { flags: FILE_ELF, soname, ext: Vec::new() });
     }
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -3327,6 +3347,9 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
     println!("{} {} ({})", man.app.name, man.app.version, man.app.id);
     println!("signed with the key {fp}");
     println!("key: {key}");
+    if let Some(d) = man.trust.as_ref().and_then(|t| t.domain.as_deref()) {
+        println!("domain: {d} (named by the author; `panpak install` asks it to confirm the key)");
+    }
     if let Some(s) = &man.sbom {
         println!("SBOM: {} coverage (`panpak sbom --export {arg}` gives it to a scanner)", s.coverage);
     }
@@ -3415,11 +3438,80 @@ fn cmd_data(action: &str, app_id: &str, yes: bool) -> Result<()> {
     }
 }
 
+/// What the command was told about the domain check: `--offline` (do not ask) and `--despite-domain-mismatch` (go on when the domain contradicts the key).
+static DOMAIN_OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static DOMAIN_DESPITE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What asking the domain of the author came to.
+enum DomainResult {
+    Confirmed { domain: String },
+    NotConfirmed { why: String },
+    Contradicted { text: String },
+}
+
+/// The three outcomes of PANPAK-FORMAT.md §3.2.1 for `key` of the app in `man`. Asks only when the package names a domain, the settings and the command allow it,
+/// and the key is of the form of a key. Says (once, in the store) what the request tells the server.
+fn confirm_domain(store: &Path, man: &Manifest, key: &str) -> DomainResult {
+    use panpak_core::i18n::{fill, tr};
+    use panpak_core::messages as m;
+    use std::sync::atomic::Ordering;
+    let not = |why: String| DomainResult::NotConfirmed { why };
+    let Some(domain) = man.trust.as_ref().and_then(|t| t.domain.clone()) else { return not(tr(m::DOMAIN_WHY_NO_DOMAIN).into_owned()) };
+    if DOMAIN_OFFLINE.load(Ordering::Relaxed) {
+        return not(tr(m::DOMAIN_WHY_OFFLINE).into_owned());
+    }
+    if !panpak_core::config::load().confirm_domain {
+        return not(tr(m::DOMAIN_WHY_OFF).into_owned());
+    }
+    let vals = |detail: &str| vec![("domain", domain.clone()), ("app", man.app.id.clone()), ("detail", detail.to_string())];
+    let Ok(key) = panpak_core::domain::canonical_key(key) else { return not(fill(&tr(m::DOMAIN_WHY_MALFORMED), &vals("the key of the package"))) };
+    let noted = store.join("domain-check-noted");
+    if !noted.exists() {
+        println!("{}", fill(&tr(m::DOMAIN_PRIVACY), &vals("")));
+        let _ = fs::create_dir_all(store);
+        let _ = fs::write(&noted, b"");
+    }
+    let tls = match settings_tls() {
+        Ok(t) => t,
+        Err(e) => return not(fill(&tr(m::DOMAIN_WHY_UNREACHABLE), &vals(&format!("{e:#}")))),
+    };
+    let text = match domaincheck::fetch(&domain, tls) {
+        Ok(t) => t,
+        Err(domaincheck::Failure::Unreachable(d)) => return not(fill(&tr(m::DOMAIN_WHY_UNREACHABLE), &vals(&d))),
+        Err(domaincheck::Failure::Redirected) => return not(fill(&tr(m::DOMAIN_WHY_REDIRECT), &vals(""))),
+        Err(domaincheck::Failure::TooBig) => return not(fill(&tr(m::DOMAIN_WHY_TOO_BIG), &vals(""))),
+    };
+    let file = match panpak_core::domain::parse(&text, &domain) {
+        Ok(f) => f,
+        Err(e) => return not(fill(&tr(m::DOMAIN_WHY_MALFORMED), &vals(&format!("{e:#}")))),
+    };
+    use panpak_core::domain::Verdict;
+    match file.judge(&man.app.id, &key) {
+        Verdict::Confirmed => DomainResult::Confirmed { domain },
+        Verdict::NotListed => not(fill(&tr(m::DOMAIN_WHY_NOT_LISTED), &vals(""))),
+        Verdict::OtherKeys => DomainResult::Contradicted { text: fill(&tr(m::DOMAIN_CONTRADICTED_OTHER), &vals("")) },
+        Verdict::Replaced => DomainResult::Contradicted { text: fill(&tr(m::DOMAIN_CONTRADICTED_REPLACED), &vals("")) },
+    }
+}
+
+/// A contradiction stops the command (`PANPAK-E1006`) unless the person said `--despite-domain-mismatch`; `refused` says what did not happen.
+fn refuse_contradiction(text: &str, refused: &'static str) -> Result<()> {
+    use panpak_core::i18n::tr;
+    if DOMAIN_DESPITE.load(std::sync::atomic::Ordering::Relaxed) {
+        println!("{text}");
+        println!("{}", tr(panpak_core::messages::DOMAIN_CONTRA_FORCED));
+        return Ok(());
+    }
+    bail_code!(ErrorCode::E1006, "{text}\n{}", tr(refused))
+}
+
 /// What the person says about the key of a first install: the key they were told (`--expect-key`), or that they trust the one of this file (`--trust-first-key`).
 #[derive(Default, Clone, Copy)]
 pub struct FirstKey<'a> {
     pub expect: Option<&'a str>,
     pub trust_first: bool,
+    /// Show the key and its fingerprint even when the domain of the author confirms it.
+    pub show_key: bool,
 }
 
 /// The host that updates come from, as the author wrote it in `[update].url`.
@@ -3437,6 +3529,7 @@ fn updates_line(url: Option<&str>) -> String {
 }
 
 fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Path>, allow: panpak_core::release::Allow, first: FirstKey<'_>) -> Result<PathBuf> {
+    use panpak_core::i18n::{fill, tr};
     let t0 = std::time::Instant::now();
     let mark = |what: &str| {
         if panpak_core::debug_enabled() {
@@ -3541,10 +3634,37 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         }
     } else {
         println!("app: {} {} ({})", man.app.id, man.app.name, man.app.version);
+        // Who stands behind the key is asked of the domain before anything else is shown or done: the answer leads the prompt.
+        let domain = confirm_domain(&store, &man, key);
+        if let Some(d) = man.trust.as_ref().and_then(|t| t.domain.as_deref()) {
+            println!();
+            println!("    {}", fill(&tr(panpak_core::messages::DOMAIN_PUBLISHER), &[("domain", d.to_uppercase())]));
+        }
+        let vals = |d: &str| vec![("domain", d.to_string()), ("app", man.app.id.clone())];
+        let mut confirmed = false;
+        match &domain {
+            DomainResult::Confirmed { domain } => {
+                confirmed = true;
+                println!("    {}", fill(&tr(panpak_core::messages::DOMAIN_CONFIRMED), &vals(domain)));
+            }
+            DomainResult::NotConfirmed { why } => println!("    {}", fill(&tr(panpak_core::messages::DOMAIN_NOT_CONFIRMED), &[("why", why.clone())])),
+            DomainResult::Contradicted { text } => {
+                println!("    {text}");
+                refuse_contradiction(text, panpak_core::messages::DOMAIN_CONTRA_REFUSED_INSTALL)?;
+            }
+        }
+        println!();
         print_permissions(&man);
         print_xdg_dirs(&xdg_found, &xdg_problems);
-        println!("key: {key}");
-        println!("key fingerprint (TOFU, first 16 hex): {fp}");
+        // The key is for the details when the domain confirms it; without that confirmation it is the only thing that says who this is.
+        if confirmed && !first.show_key {
+            if let DomainResult::Confirmed { domain } = &domain {
+                println!("{}", fill(&tr(panpak_core::messages::DOMAIN_KEY_HIDDEN), &vals(domain)));
+            }
+        } else {
+            println!("key: {key}");
+            println!("key fingerprint (TOFU, first 16 hex): {fp}");
+        }
         println!("{}", updates_line(man.update.as_ref().and_then(|u| u.url.as_deref())));
         if let Some(o) = man.origin.as_ref() {
             println!("WARNING: THIRD-PARTY CONVERTED package, not verified by the upstream author:");
@@ -3555,7 +3675,18 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
         println!("pin: {}", appdir.join(panpak_core::trust::FILE).display());
         // Whom to trust is said by the person: the key they were told (checked above), or the key of this file. `--yes` is not that.
         let said = first.expect.is_some() || first.trust_first;
-        if !said {
+        if !said && confirmed {
+            // The domain stands behind the key: `--yes` is enough, and without it the person is asked.
+            if !yes {
+                ensure_code!(std::io::IsTerminal::is_terminal(&std::io::stdin()), ErrorCode::E5004, "non-interactive stdin: pass --yes (the domain confirms the key)");
+                print!("Install this app? [y/N] ");
+                use std::io::Write;
+                std::io::stdout().flush()?;
+                let mut ans = String::new();
+                std::io::stdin().read_line(&mut ans)?;
+                ensure_code!(tofu_confirmation(&ans), ErrorCode::E1003, "installation cancelled");
+            }
+        } else if !said {
             ensure_code!(
                 !yes,
                 ErrorCode::E1003,
@@ -4575,6 +4706,14 @@ fn real_main() -> Result<()> {
                         stage = true;
                         i += 1;
                     }
+                    "--offline" => {
+                        DOMAIN_OFFLINE.store(true, std::sync::atomic::Ordering::Relaxed);
+                        i += 1;
+                    }
+                    "--despite-domain-mismatch" => {
+                        DOMAIN_DESPITE.store(true, std::sync::atomic::Ordering::Relaxed);
+                        i += 1;
+                    }
                     "--allow-insecure-http" => {
                         insecure = true;
                         i += 1;
@@ -4680,7 +4819,7 @@ fn real_main() -> Result<()> {
                     println!("{}", panpak_core::config::render(&c).trim_end());
                     Ok(())
                 }
-                _ => bail_code!(ErrorCode::E5001, "config [show] | config set <background.updates|background.verify_mb|network.ca_file> <value>"),
+                _ => bail_code!(ErrorCode::E5001, "config [show] | config set <background.updates|background.verify_mb|network.ca_file|trust.confirm_domain> <value>"),
             }
         }
         Some("apply") => {
@@ -4789,6 +4928,7 @@ fn real_main() -> Result<()> {
             let mut switch_channel = false;
             let mut expect_key: Option<&str> = None;
             let mut trust_first = false;
+            let mut show_key = false;
             let mut runtime = None;
             let mut pkg = None;
             let mut i = 2;
@@ -4804,6 +4944,18 @@ fn real_main() -> Result<()> {
                     }
                     "--trust-first-key" => {
                         trust_first = true;
+                        i += 1;
+                    }
+                    "--show-key" => {
+                        show_key = true;
+                        i += 1;
+                    }
+                    "--offline" => {
+                        DOMAIN_OFFLINE.store(true, std::sync::atomic::Ordering::Relaxed);
+                        i += 1;
+                    }
+                    "--despite-domain-mismatch" => {
+                        DOMAIN_DESPITE.store(true, std::sync::atomic::Ordering::Relaxed);
                         i += 1;
                     }
                     "--accept-new-permissions" => {
@@ -4839,7 +4991,7 @@ fn real_main() -> Result<()> {
                 accept_new,
                 runtime.map(Path::new),
                 panpak_core::release::Allow { downgrade: allow_down, switch_channel, force_host },
-                FirstKey { expect: expect_key, trust_first },
+                FirstKey { expect: expect_key, trust_first, show_key },
             )?;
             Ok(())
         }

@@ -24,6 +24,34 @@ All byte comparisons are exact (no normalization).
 - **Previous format**: package without `[runtime].stub_hash`
   (pre-v1): a conforming Reader MUST reject it.
 
+### 0.1 What a reviewer should look at first [INFORMATIVE]
+
+Three things carry the trust of the whole system. If they are right, the rest (the sandbox, the store, the update flow) can fail without a package being accepted that its
+author did not sign; if one is wrong, nothing else helps. Read these before anything else, in this order. For each: where it is written, where it is done, how it is tested
+without the code that does it, and what to try to break.
+
+1. **The signed message** (§3.0; `package_message` in `panpak-core/src/lib.rs`). What is signed is `"panpak/package/v1\0" || version || flags || root_hash || manifest`: the
+   manifest (which holds the permissions, the stub hash and the list of critical fields) and the root of the index (which holds every file by hash). *Look for:* anything that
+   is read before the signature is checked (the order in `verify`: layout, signature, then the fields); anything outside the message that changes what runs (the signature
+   block is outside by construction: §3.0 says nothing may depend on it unless a signed datum requires it); two readings of the same bytes (the root comes before the manifest
+   because it has a fixed length); the stub, which is outside the index (`[runtime].stub_hash`, checked at every start). *Test without the code:* Appendix A (a complete package
+   as bytes, with the message spelled out), the fixtures of `conformance/` and `conformance/verify.py`, a second reader written in Python from this text only.
+2. **The signature block** (§3.0, §2.1). A list of typed entries that fill the block exactly, with a critical bit. *Look for:* an entry that a reader may skip and should not
+   (the rule: unknown and critical is a refusal), a block that is read differently by two readers (exact fill, one signature entry, at most 64 KiB), and what is reserved but
+   not defined (types 2, 3 and 4: a reader of this generation implements none, and must say "update panpak" for a critical one). *Test:* the `invalid-sig-*` fixtures.
+3. **The chain of keys, with recovery** (§3.2; `panpak-core/src/trust.rs`: `follow`, `succession_message`). The root signs the packages; the commitment to a recovery key is in
+   every package from the first one; a succession (at most 8 steps) is signed by the key that was and bound to the app id; a succession by the root cannot change the
+   commitment, and one by the recovery key wins over any by the root. *Look for:* a way for the holder of the root alone to change the commitment, or to make a step that
+   another app, another step or the other kind of key can reuse (the labeled message of §3.0 binds the app, the kind and the keys); a chain that ends somewhere other than the
+   root and commitment that the package names; a pin that moves before the version is complete; what a thief of the root can still do (move the pin until the author
+   recovers: `THREAT-MODEL.md` §1.1 says it is not covered, on purpose); and the first trust (§3.2 rule 1 and §3.2.1: the domain confirmation is only a confirmation, never a
+   substitute for the checks above). *Test:* `tests/trust_update.py` (the whole story over HTTP), `tests/domain_confirm.py` (the domain, with a real TLS server), the conformance
+   fixtures `valid-trust-chain` and `invalid-trust-*`.
+
+What is **not** covered, and is said so in `THREAT-MODEL.md` §1.1 and §5: a malicious or coerced author, the author's server at the first install, look-alike domains, a freeze
+with one source, the window between a theft and its discovery, mother and recovery keys lost together, the local store (KL-18), human review of apps, and any third-party
+review before this one.
+
 ## 1. File layout [NORMATIVE]
 
 ```
@@ -755,9 +783,12 @@ at least two labels: `example.org` for `org.example.app`). `[update].key` is not
 
 **Trust on first use.** The key lives in the self-signed manifest and alone proves nothing about the author's identity:
 
-1. At the first installation the client MUST show the key (the full key and its fingerprint, the first 16 hex characters) and MUST NOT go on unless the person
-   has said whom to trust: the key they were told (`--expect-key`; a package of another key is refused and nothing is pinned or made ready, whatever else was
-   said), or that they trust the first key they see (`--trust-first-key`), or an answer at a terminal. A bare `--yes` is not that.
+1. At the first installation the client MUST NOT go on unless someone has said whom to trust, and it asks the domain of the author first when the package names
+   one (§3.2.1). That someone is the domain (it **confirms** the key), or the person: the key they were told (`--expect-key`; a package of another key is refused and
+   nothing is pinned or made ready, whatever else was said), or that they trust the first key they see (`--trust-first-key`), or an answer at a terminal. A bare
+   `--yes` is not that, unless the domain confirms the key. A domain that **contradicts** the key stops the installation whatever else was said, unless the person
+   gave the explicit option for it (and still says whom they trust). The client MUST show the full key and its fingerprint (the first 16 hex characters) whenever the
+   domain does not confirm it; when it does, the name of the domain is the main text and the key MAY be left to the details.
 2. The client keeps the confirmed root and the recovery commitment in `apps/<id>/trust` (§6), with where updates come from (`source`, `author`: the
    `[update].url` the author named; other values are reserved for a catalog or a distribution) and the floor and the highest revision seen.
 3. Updates MUST have the pinned root and the pinned commitment, or a chain that leads to them (rule 4). The client shows where updates come from
@@ -768,7 +799,59 @@ at least two labels: `example.org` for `org.example.app`). `[update].key` is not
    the next commitment. A recovery step is valid from any pin that has that commitment, so it wins over a succession of the root that a thief made. The chain MUST end at the root and the
    commitment that the package names. No delay: a valid succession is accepted at once, and the client says so in one line. The pin changes atomically with the
    verified update (the record holds two `root` lines for the moment between the two links, and a start accepts either).
+   A new root (a succession) is asked of the domain of the author too, before any of the new version is downloaded (§3.2.1).
 5. Without a valid chain a key change means that the person removes the app and installs it again.
+
+### 3.2.1 Confirmation of the domain [NORMATIVE]
+
+An author who names a `[trust].domain` (the domain, read backwards, is the beginning of the app id, §3.2) can make the first trust something other than a leap of faith by
+publishing, at `https://<domain>/.well-known/panpak.toml`, the keys that may sign the apps of that domain. This is a confirmation and nothing more: it never makes a
+package acceptable that would not be without it (the signature, the pin and the chain are checked as always), and it never reaches the start of an app.
+
+```toml
+[[app]]
+id = "org.example.editor"       # an app id, or "org.example.*": every id that is "org.example." and at least one more label
+root = ["ed25519:<64 hex>"]     # the keys that may sign it now: 1 to 8, different
+replaces = ["ed25519:<64 hex>"] # the keys that no longer may: 0 to 16, different, none of them also a root
+```
+
+One file serves a whole domain. A Reader MUST read it as UTF-8 TOML of at most 65,536 bytes with at most 256 `[[app]]` entries, and MUST ignore a key or a table that it
+does not know. It MUST refuse the whole file if an entry's `id` (or the prefix before `.*`) is not an app id, or is not under the domain that the file was asked of (a
+domain speaks for its own apps only), if a key is not of the form of §3.2, if a list is out of the limits, or if a key repeats or is at once a root and replaced.
+
+**The request.** HTTPS only, the certificate checked against the trust of the system (or the authorities of the settings), one address, at most 3 redirects and **only
+inside the same host** (same scheme and authority: a redirect to another host, another port or plain HTTP ends the check as "not confirmed"), a body of at most 65,536
+bytes, and 5 seconds for all of it. Nothing but the request line and the usual headers is sent: no identifier of the person, the app or the version, other than the
+domain. The client MUST say what the server learns (that an address asks for the file of this domain, which says that someone is installing an app of it) before the first
+request it ever makes, and MAY say it only once.
+
+**The three outcomes.** Let *K* be `[trust].root[0]` of the package and *A* its app id. Among the entries that cover *A* (the id is the same, or the entry is `prefix.*`):
+
+- **Confirmed**: *K* is a `root` of at least one of them, and is the `replaces` of none.
+- **Contradicted**: there is such an entry, and *K* is a `root` of none of them, or *K* is in the `replaces` of one of them.
+- **Not confirmed**: everything else. The package names no domain; the check is off (a setting) or was not asked for (`--offline`); the network, the certificate or the
+  time failed; the status is not 200; the file is too big, not valid or redirects elsewhere; no entry covers *A*. The client MUST say why.
+
+A Reader MUST NOT treat "not confirmed" as a refusal or as a contradiction: a domain that is down, or an author with no file, leaves the trust as it was before this
+section. A contradiction is the only outcome with a consequence of its own:
+
+- **First install.** *Confirmed*: the client MAY take `--yes` as enough (no `--trust-first-key`, no `--expect-key`); without `--yes` it asks. *Not confirmed*: as in §3.2
+  rule 1. *Contradicted*: the client MUST refuse, with `PANPAK-E1006`, whatever else was said (`--yes`, `--trust-first-key` and `--expect-key` included), before
+  anything is made ready or pinned; it MAY have one explicit option (`--despite-domain-mismatch`) that goes on to the question of rule 1, and says so.
+- **Succession.** When the new package carries a root that the pin does not have (a chain that the pin signs, rule 4), the client asks about the new root, after the chain
+  and the signature are checked and before anything of the new version is downloaded. *Contradicted* refuses the update with `PANPAK-E1006` (the version that is
+  installed stays), unless the same option; *confirmed* and *not confirmed* are said in one line.
+- Not at an ordinary update (the key is the pin), not at `apply`, not at the start.
+
+What a confirmation is worth: it shows that, now, whoever controls the web server of the domain (and the certificate for it) lists this key for this app. It is no better than
+that: a look-alike domain is another domain (the client shows the domain that the package names, in capitals, as the main text); a domain whose server is taken over can
+confirm a key that the thief chose, which is the same loss as the author's; and an offline machine, or one with the check turned off, has nothing. What it adds is that a
+first key supplied by a hostile channel (a mirror, a forum, an e-mail) is no longer enough on its own where the author published the domain file, and that a succession that
+the pin signs is still stopped when the domain of the author says that it is not theirs. A domain can also stop an installation by contradicting (a denial by whoever controls it);
+that is why the option exists.
+
+The client keeps the check off and on in its settings (`trust.confirm_domain`) and for one command (`--offline`); in both cases the outcome is "not confirmed", and the
+message says which. The names of the options and of the setting are a client interface matter. The messages for the person are in the catalog (English and Italian).
 
 How the confirmation is requested (prompt text, accepted answers,
 non-interactive mode) is a client interface matter, not part of the format;

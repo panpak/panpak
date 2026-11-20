@@ -572,6 +572,7 @@ dependencies = [
  "landlock",
  "libc",
  "serde",
+ "sha2",
  "toml",
  "zstd 0.14.3",
 ]

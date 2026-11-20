@@ -95,6 +95,27 @@ pub const HOST_SESSION_NOTE: &str = "the current session does not give what {app
 pub const HOST_FORCED_NOTE: &str = "(installed with --force-host)";
 pub const HOST_FORCED_WARNING: &str = "{app} cannot run on this system (installed anyway because of --force-host):";
 
+// The confirmation of the domain of an author (PANPAK-FORMAT.md 3.2.1).
+pub const DOMAIN_PUBLISHER: &str = "Published by: {domain}";
+pub const DOMAIN_CONFIRMED: &str = "Confirmed: {domain} lists this key for {app} (https://{domain}/.well-known/panpak.toml).";
+pub const DOMAIN_CONFIRMED_SUCCESSION: &str = "Confirmed: {domain} lists the new key of {app}.";
+pub const DOMAIN_NOT_CONFIRMED: &str = "Not confirmed: {why}. The key of the package is the only proof of who made it.";
+pub const DOMAIN_WHY_NO_DOMAIN: &str = "the package names no domain";
+pub const DOMAIN_WHY_OFF: &str = "the check is turned off (panpak config set trust.confirm_domain on)";
+pub const DOMAIN_WHY_OFFLINE: &str = "this command was run with --offline";
+pub const DOMAIN_WHY_NOT_LISTED: &str = "{domain} does not list {app}";
+pub const DOMAIN_WHY_UNREACHABLE: &str = "{domain} could not be asked ({detail})";
+pub const DOMAIN_WHY_MALFORMED: &str = "the file of {domain} is not valid ({detail})";
+pub const DOMAIN_WHY_REDIRECT: &str = "{domain} sent the request to another address";
+pub const DOMAIN_WHY_TOO_BIG: &str = "the file of {domain} is too large";
+pub const DOMAIN_CONTRADICTED_OTHER: &str = "{domain} says otherwise: it lists other keys for {app}, and this package is signed with none of them. Do not go on unless the author tells you, in another way, that the key changed.";
+pub const DOMAIN_CONTRADICTED_REPLACED: &str = "{domain} says otherwise: it lists the key of this package as replaced. Whoever holds that key is no longer the author of {app}.";
+pub const DOMAIN_CONTRA_REFUSED_INSTALL: &str = "Nothing was installed. If you know better, run the command again with --despite-domain-mismatch and say whom you trust (--trust-first-key or --expect-key).";
+pub const DOMAIN_CONTRA_REFUSED_UPDATE: &str = "The update was not downloaded and the version you have stays.";
+pub const DOMAIN_CONTRA_FORCED: &str = "Going on because of --despite-domain-mismatch: the domain says otherwise.";
+pub const DOMAIN_PRIVACY: &str = "To confirm who stands behind {domain}, Panpak asks https://{domain}/.well-known/panpak.toml. That server sees your internet address and that someone is installing an app of {domain}; nothing else is sent. To never ask: panpak config set trust.confirm_domain off (or --offline for one command).";
+pub const DOMAIN_KEY_HIDDEN: &str = "The key is not shown because {domain} confirms it (--show-key shows it).";
+
 /// Every message above, for the template of the translations and its test.
 pub const ALL: &[&str] = &[
     REMOVE_TITLE,
@@ -186,4 +207,23 @@ pub const ALL: &[&str] = &[
     HOST_SESSION_NOTE,
     HOST_FORCED_NOTE,
     HOST_FORCED_WARNING,
+    DOMAIN_PUBLISHER,
+    DOMAIN_CONFIRMED,
+    DOMAIN_CONFIRMED_SUCCESSION,
+    DOMAIN_NOT_CONFIRMED,
+    DOMAIN_WHY_NO_DOMAIN,
+    DOMAIN_WHY_OFF,
+    DOMAIN_WHY_OFFLINE,
+    DOMAIN_WHY_NOT_LISTED,
+    DOMAIN_WHY_UNREACHABLE,
+    DOMAIN_WHY_MALFORMED,
+    DOMAIN_WHY_REDIRECT,
+    DOMAIN_WHY_TOO_BIG,
+    DOMAIN_CONTRADICTED_OTHER,
+    DOMAIN_CONTRADICTED_REPLACED,
+    DOMAIN_CONTRA_REFUSED_INSTALL,
+    DOMAIN_CONTRA_REFUSED_UPDATE,
+    DOMAIN_CONTRA_FORCED,
+    DOMAIN_PRIVACY,
+    DOMAIN_KEY_HIDDEN,
 ];
