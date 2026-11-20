@@ -268,7 +268,8 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
         let vals = |d: &str| vec![("domain", d.to_string()), ("app", app_id.to_string())];
         match confirm_domain(&store, &man, &new_key) {
             DomainResult::Confirmed { domain } => println!("{}", fill(&tr(panpak_core::messages::DOMAIN_CONFIRMED_SUCCESSION), &vals(&domain))),
-            DomainResult::NotConfirmed { why } => println!("{}", fill(&tr(panpak_core::messages::DOMAIN_NOT_CONFIRMED), &[("why", why)])),
+            // The chain is valid, so the update is; what the domain did not do is said in the words for a succession (not the ones for a first install), with the reason.
+            DomainResult::NotConfirmed { why } => println!("{} ({why})", tr(panpak_core::messages::DOMAIN_SUCCESSION_NOT_CONFIRMED)),
             DomainResult::Contradicted { text } => refuse_contradiction(&text, panpak_core::messages::DOMAIN_CONTRA_REFUSED_UPDATE)?,
         }
     }
@@ -1345,6 +1346,14 @@ pub enum Rotation {
     Recovery(String),
 }
 
+/// A domain as an author writes it, in the form that goes into the package: NFC, lowercase, NFC again (lowercasing can undo the first), then the labels that have other
+/// characters than ASCII as Punycode. Not NFKC: a fullwidth letter is another character, and it ends as `xn--`, which is how a reader sees that it is not plain.
+fn normalized_domain(d: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let nfc: String = d.trim().nfc().collect::<String>().to_lowercase().nfc().collect();
+    panpak_core::domain::ascii_form(&nfc)
+}
+
 fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Option<&Path>, extra_icons: Vec<IconInput>, previous: Previous<'_>) -> Result<PathBuf> {
     let input_toml = fs::read_to_string(dir.join("panpak.toml")).context("read <folder>/panpak.toml")?;
     // Strict schema in pack: future keys must not silently disappear.
@@ -1392,7 +1401,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
     }
     // The author gives the domain; the rest of [trust] is made here.
     // A domain that the author writes with other characters is kept in the form that a browser shows and that the id is checked against (`xn--...`).
-    let domain = man.trust.take().and_then(|t| t.domain).map(|d| panpak_core::domain::ascii_form(&d));
+    let domain = man.trust.take().and_then(|t| t.domain).map(|d| normalized_domain(&d));
     // The chain: the successions kept beside the key that lead to this key, and the one asked for now.
     let mut chain = match (&trust.chain_file, &trust.command) {
         (Some(f), None) => {
@@ -5038,6 +5047,18 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
+
+    #[test]
+    fn a_domain_is_written_in_one_form_whatever_the_author_typed() {
+        // Composed, decomposed (u and a combining diaeresis), in capitals: one domain, one form.
+        for typed in ["b\u{fc}cher.test", "bu\u{308}cher.test", "B\u{dc}CHER.TEST", "BU\u{308}CHER.Test", "  b\u{fc}cher.test "] {
+            assert_eq!(normalized_domain(typed), "xn--bcher-kva.test", "{typed:?}");
+        }
+        assert_eq!(normalized_domain("Example.ORG"), "example.org");
+        // A fullwidth letter is not folded to the plain one (NFC, not NFKC): it stays visibly different.
+        assert!(normalized_domain("\u{ff45}xample.org").starts_with("xn--"));
+        assert_ne!(normalized_domain("\u{ff45}xample.org"), "example.org");
+    }
 
     #[test]
     fn glibc_versions_are_read_from_ldd_output_and_compared() {

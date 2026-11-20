@@ -779,7 +779,10 @@ At parse time use `VerifyingKey::from_bytes` and for the signature
 appears in a package: the package carries only its commitment, from the first release on. It is shown once as 24 words (the 256 bits of its secret and the 8 bits of check of BIP-39, with the English word list of BIP-39), to be kept on paper away from the
 machine. A reader MUST refuse a package without `[trust]`, with more than one root, with a threshold other than 1, or with a step whose `by` it does not know
 ("update panpak": these are reserved), and MUST refuse a `domain` that does not fit the app id (the domain, read backwards, is the beginning of the id, with
-at least two labels: `example.org` for `org.example.app`). `[update].key` is not part of a package: a package that has it is refused.
+at least two labels: `example.org` for `org.example.app`). `[update].key` is not part of a package: a package that has it is refused. The domain in a package is ASCII, in lowercase,
+with every label that has other characters in its Punycode form (`xn--...`); a Reader refuses any other form. A Writer that takes the domain from a person MUST bring it to that form
+first: Unicode normalization form C, lowercase, normalization form C again (not a compatibility form: a fullwidth letter stays a different character, and is shown as `xn--`),
+then Punycode (RFC 3492) for each label with characters outside ASCII.
 
 **Trust on first use.** The key lives in the self-signed manifest and alone proves nothing about the author's identity:
 

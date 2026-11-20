@@ -123,6 +123,7 @@ def main():
         pub_a, rec_a = new_key('a')
         pub_b, _ = new_key('b')
         pub_x, _ = new_key('x')
+        pub_c, _ = new_key('c')
 
         def entry(app, roots, replaces=()):
             r = ', '.join(f'"{k}"' for k in roots)
@@ -273,6 +274,13 @@ def main():
             run([BIN / 'panpak', 'dump-manifest', idn, manifest], env)
             assert 'domain = "xn--bcher-kva.test"' in manifest.read_text() and '\u00fc' not in manifest.read_text(), manifest.read_text()
             assert 'domain: xn--bcher-kva.test' in run([BIN / 'panpak', 'inspect', idn], env).stdout
+            # The same domain written in capitals, or with the u and the diaeresis as two characters (not NFC), is the same domain: `pack` writes one form.
+            for variant in ('B\u00dcCHER.TEST', 'bu\u0308cher.test', 'BU\u0308CHER.test'):
+                (idn_tree / 'panpak.toml').write_text(f'[app]\nid="{IDN_ID}"\nname="Idn Lab"\nversion="1"\nentry="hello"\n[trust]\ndomain="{variant}"\n')
+                other = tmp / 'idn-variant.panpak'
+                run([BIN / 'panpak', 'pack', idn_tree, '--stub', BIN / 'panpak-stub', '--secret-file', tmp / 'a.key', '-o', other], env)
+                run([BIN / 'panpak', 'dump-manifest', other, manifest], env)
+                assert 'domain = "xn--bcher-kva.test"' in manifest.read_text(), (variant, manifest.read_text())
             idn_env = dict(env, PANPAK_TEST_RESOLVE=f'xn--bcher-kva.test=127.0.0.1:{tls_port}')
             say('file', entry(IDN_ID, [pub_a]))
             p = run([*install, '--yes', idn], idn_env)
@@ -297,11 +305,20 @@ def main():
                 p = run(update, env, ok=False)
                 assert 'PANPAK-E1006' in p.stderr and 'The update was not downloaded' in p.stderr, p.stderr
                 assert (appdir / 'current').readlink() == before
-                say('file', entry(ID, [pub_b], [pub_a]))
+                # Not confirmed (the domain has no file): the succession is valid, the update is made, and the person is told what that means.
+                say('notfound')
                 p = run(update, env)
-                assert 'Confirmed: example.test lists the new key of test.example.dlab' in p.stdout, p.stdout
+                assert 'The new key is signed by the one before it, so the update is valid. The author\'s site does not confirm it, though: if anything looks strange to you, ask the author.' in p.stdout, p.stdout
+                assert 'HTTP 404' in p.stdout and 'Install it only' not in p.stdout, p.stdout
                 assert pub_b in (appdir / 'trust').read_text()
-                print('a succession: contradicted before the body is downloaded, confirmed when the domain lists the new key PASS')
+                # Confirmed: the next succession (b to c) with the domain listing the new key.
+                v3 = pack('v3', 'c', extra=['--previous', v2, '--rotate-from-file', tmp / 'b.key', '--recovery', rec_a])
+                (serve / 'remote.panpak').write_bytes(v3.read_bytes())
+                say('file', entry(ID, [pub_c], [pub_b]))
+                p = run(update, env)
+                assert 'Confirmed: example.test lists the new key of test.example.dlab' in p.stdout and 'does not confirm it' not in p.stdout, p.stdout
+                assert pub_c in (appdir / 'trust').read_text()
+                print('a succession: contradicted before the body, not confirmed (valid, with the sentence), confirmed when the domain lists the new key PASS')
             finally:
                 rng.terminate()
                 rng.wait(timeout=5)

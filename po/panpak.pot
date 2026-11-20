@@ -277,6 +277,9 @@ msgstr ""
 msgid "The links of this kind, in your browser or in other apps, are given to this app."
 msgstr ""
 
+msgid "The new key is signed by the one before it, so the update is valid. The author's site does not confirm it, though: if anything looks strange to you, ask the author."
+msgstr ""
+
 msgid "The problem is fixed and the internet works again."
 msgstr ""
 
