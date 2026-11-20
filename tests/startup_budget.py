@@ -133,6 +133,7 @@ def main():
     ap.add_argument('--entry-budget-ms', type=float, default=0.3, help='what the check of the menu entry may cost when there is nothing to do')
     ap.add_argument('--entry-csv', help='append one row with the cost of the check of the menu entry to this file')
     ap.add_argument('--protected', action='store_true', help='measure a start in protected mode (a floor above the installed revision, the app marked): the network namespace, the question of the start and the notice are in the cost')
+    ap.add_argument('--host', action='store_true', help='the package names a display and a Landlock ABI in [host] (and the session has a display): the start looks at both')
     ap.add_argument('--advisory', action='store_true', help='report only; never fail on the budget')
     ap.add_argument('--bin-dir', default=str(REL), help='folder with panpak and panpak-stub')
     ap.add_argument('--csv', help='append one row to this file (the machine and the versions are written at the top of a new file)')
@@ -175,6 +176,9 @@ def main():
     script.write_text(APP)
     script.chmod(0o755)
     perms = '[permissions]\nnotifications = true\n' if a.dbus else ''
+    if a.host:
+        perms += '[host]\ndisplay = ["x11"]\nlandlock = 1\n'
+        env['DISPLAY'] = ':99'  # the session has an X display (the app does not use it)
     (tree / 'panpak.toml').write_text(f'[app]\nid = "{ID}"\nname = "Budget"\nversion = "1"\nentry = "bin/app"\n[update]\nkey = "{pub}"\n{perms}')
     pkg = work / 'budget.panpak'
     p = run(rel / 'panpak', 'pack', tree, '--stub', rel / 'panpak-stub', '--secret-file', key, '-o', pkg)
@@ -218,7 +222,7 @@ def main():
 
     md, ml = statistics.median(t_direct), statistics.median(t_launch)
     cost = ml - md
-    print(f'runs: {a.runs} each, interleaved; session bus layer: {"on" if a.dbus else "off"}; isolated view: {"yes" if view else "NO (start without the view)"}; protected mode: {"yes" if a.protected else "no"}')
+    print(f'runs: {a.runs} each, interleaved; [host] with a display and Landlock: {"yes" if a.host else "no"}; session bus layer: {"on" if a.dbus else "off"}; isolated view: {"yes" if view else "NO (start without the view)"}; protected mode: {"yes" if a.protected else "no"}')
     print(f'direct   (/bin/sh script):  median {md:6.1f} ms   p90 {pct(t_direct, 90):6.1f} ms')
     print(f'launcher (panpak):          median {ml:6.1f} ms   p90 {pct(t_launch, 90):6.1f} ms')
     if t_bare:

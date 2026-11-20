@@ -396,3 +396,93 @@ msgstr "Internet è di nuovo attivo per {name}, fino all'aggiornamento."
 
 msgid "{name} is in protected mode: links do not open until you update."
 msgstr "{name} è in modalità protetta: i link non si aprono finché non aggiorni."
+
+msgid "{app} cannot run on this system:"
+msgstr "{app} non può funzionare su questo sistema:"
+
+msgid "{app} cannot run in this session:"
+msgstr "{app} non può funzionare in questa sessione:"
+
+msgid "To install it anyway, give --force-host (it may not start)."
+msgstr "Per installarla lo stesso, usa --force-host (potrebbe non avviarsi)."
+
+msgid "needs {need}; found {have}. {todo}"
+msgstr "serve {need}; trovato {have}. {todo}"
+
+msgid "a {arch} machine"
+msgstr "una macchina {arch}"
+
+msgid "a {arch} machine"
+msgstr "una macchina {arch}"
+
+msgid "Get the package for this architecture from the author."
+msgstr "Chiedi all'autore il pacchetto per questa architettura."
+
+msgid "glibc {version} or newer (it uses symbols of that version)"
+msgstr "glibc {version} o più recente (usa simboli di quella versione)"
+
+msgid "glibc {version}"
+msgstr "glibc {version}"
+
+msgid "It cannot run here: install it on a newer distribution."
+msgstr "Qui non può funzionare: installala su una distribuzione più recente."
+
+msgid "Linux {version} or newer"
+msgstr "Linux {version} o più recente"
+
+msgid "Linux {version}"
+msgstr "Linux {version}"
+
+msgid "Update the kernel of the system, or run the app on a newer one."
+msgstr "Aggiorna il kernel del sistema, oppure usa l'app su un sistema più recente."
+
+msgid "Landlock ABI {version} or newer"
+msgstr "Landlock ABI {version} o più recente"
+
+msgid "Landlock ABI {version}"
+msgstr "Landlock ABI {version}"
+
+msgid "no Landlock"
+msgstr "nessun Landlock"
+
+msgid "Use a kernel with that Landlock ABI (Linux 5.13 has ABI 1, 6.7 has 4, 6.12 has 6)."
+msgstr "Usa un kernel con quell'ABI di Landlock (Linux 5.13 ha l'ABI 1, 6.7 il 4, 6.12 il 6)."
+
+msgid "the display server {names}"
+msgstr "il server grafico {names}"
+
+msgid "the display server {names}"
+msgstr "il server grafico {names}"
+
+msgid "no display server in this session"
+msgstr "nessun server grafico in questa sessione"
+
+msgid "Start it from a graphical session, or give a display to the one that you are in."
+msgstr "Avviala da una sessione grafica, oppure dai uno schermo a quella in cui sei."
+
+msgid "the {names} portal"
+msgstr "il portale {names}"
+
+msgid "no such portal in this session"
+msgstr "nessun portale di questo tipo in questa sessione"
+
+msgid "Install xdg-desktop-portal and the portal of your desktop, then start a new session."
+msgstr "Installa xdg-desktop-portal e il portale del tuo desktop, poi avvia una nuova sessione."
+
+msgid "a session bus and xdg-dbus-proxy (the filtered bus)"
+msgstr "un bus di sessione e xdg-dbus-proxy (il bus filtrato)"
+
+msgid "no session bus, or no xdg-dbus-proxy"
+msgstr "nessun bus di sessione, o nessun xdg-dbus-proxy"
+
+msgid "Install xdg-dbus-proxy and start it from a session that has a user bus."
+msgstr "Installa xdg-dbus-proxy e avviala da una sessione che ha un bus utente."
+
+msgid "the current session does not give what {app} needs: {line}"
+msgstr "la sessione corrente non dà ciò che serve a {app}: {line}"
+
+msgid "(installed with --force-host)"
+msgstr "(installata con --force-host)"
+
+msgid "{app} cannot run on this system (installed anyway because of --force-host):"
+msgstr "{app} non può funzionare su questo sistema (installata lo stesso per via di --force-host):"

@@ -139,16 +139,19 @@ fn pack_writes_the_architecture_and_nobody_may_give_it_or_the_old_glibc_key() {
 #[test]
 fn a_package_that_the_system_cannot_run_is_refused_with_what_is_needed_what_is_there_and_what_to_do_and_force_host_goes_on() {
     let l = lab("refuse");
+    // The display is the session's: it is not part of what an install checks, and the machine is what is refused.
     let pkg = l.pack_ok("1", "[host]\nkernel = \"99.1\"\ndisplay = [\"wayland\"]\nlandlock = 9\n", None);
     let o = l.install(&pkg, &[], &[]);
     let t = text(&o);
     assert!(!o.status.success() && t.contains("PANPAK-E2009"), "{t}");
-    assert!(t.contains("HostLab 1 cannot run on this system:") && t.contains("needs Linux 99.1 or newer; this system has Linux") && t.contains("Update the kernel"), "{t}");
-    assert!(t.contains("needs the display server wayland; this system has no display server in this session") && t.contains("--force-host"), "{t}");
+    assert!(t.contains("HostLab 1 cannot run on this system:") && t.contains("needs Linux 99.1 or newer; found Linux") && t.contains("Update the kernel"), "{t}");
+    assert!(!t.contains("display server"), "an install does not look at the display: {t}");
+    assert!(t.contains("--force-host"), "{t}");
     assert!(!l.appdir().join("trust").exists() && !l.appdir().join("current").exists(), "nothing was installed");
     // `doctor` on the package says the same.
     let d = text(&cli(&l.home, &["doctor", pkg.to_str().unwrap()]));
-    assert!(d.contains("host: needs Linux 99.1 or newer"), "{d}");
+    assert!(d.contains("HostLab (org.example.hostlab): needs Linux 99.1 or newer; found Linux"), "{d}");
+    assert!(d.contains("NOTE the current session does not give what HostLab needs: needs the display server wayland; found no display server in this session"), "{d}");
     // With --force-host it installs, says so, and the state keeps the choice; `doctor` keeps saying it.
     let o = l.install(&pkg, &["--force-host"], &[]);
     let t = text(&o);
@@ -168,25 +171,45 @@ fn a_package_that_the_system_cannot_run_is_refused_with_what_is_needed_what_is_t
 }
 
 #[test]
-fn the_display_of_the_session_is_what_the_package_names_and_the_start_looks_again() {
+fn an_install_without_a_display_works_and_the_start_without_one_refuses_with_the_message() {
     let l = lab("display");
-    let pkg = l.pack_ok("1", "[host]\ndisplay = [\"x11\"]\n", None);
-    // A session with an X display: installed.
-    let o = l.install(&pkg, &[], &[("DISPLAY", ":99")]);
+    let pkg = l.pack_ok("1", "[host]\ndisplay = [\"x11\"]\nportals = [\"document\"]\n", None);
+    // No display and no portal in this session (ssh, a script, the build of an image): installed.
+    let o = l.install(&pkg, &[], &[]);
     assert!(o.status.success(), "{}", text(&o));
-    // The same app started in a session without a display is refused at the start, with the same message, before anything else happens.
+    // `doctor` says that the session does not give it, as a note and not as a failure.
+    let d = text(&cli(&l.home, &["doctor"]));
+    assert!(d.contains("NOTE the current session does not give what HostLab needs: needs the display server x11; found no display server in this session"), "{d}");
+    assert!(!d.contains("KO   HostLab"), "{d}");
+    // The start without a display is refused, with what is needed, what is there and what to do, and nothing about forcing it.
     let launcher = l.home.join(".local/bin").join(ID);
-    let o = Command::new(&launcher)
-        .current_dir(&l.home)
-        .env("HOME", &l.home)
-        .env("XDG_DATA_HOME", l.home.join(".local/share"))
-        .env("XDG_RUNTIME_DIR", l.home.join("run"))
-        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
-        .env("PANPAK_NO_BACKGROUND", "1")
-        .env_remove("DISPLAY")
-        .env_remove("WAYLAND_DISPLAY")
-        .output()
-        .unwrap();
+    let start = |display: Option<&str>| {
+        let mut c = Command::new(&launcher);
+        c.current_dir(&l.home)
+            .env("HOME", &l.home)
+            .env("XDG_DATA_HOME", l.home.join(".local/share"))
+            .env("XDG_RUNTIME_DIR", l.home.join("run"))
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus")
+            .env("PANPAK_NO_BACKGROUND", "1")
+            .env("LC_ALL", "C")
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY");
+        if let Some(d) = display {
+            c.env("DISPLAY", d);
+        }
+        c.output().unwrap()
+    };
+    let o = start(None);
     let t = text(&o);
-    assert!(!o.status.success() && t.contains("cannot run on this system") && t.contains("the display server x11"), "{t}");
+    assert!(!o.status.success() && t.contains("HostLab 1 cannot run in this session:") && t.contains("needs the display server x11; found no display server in this session. Start it from a graphical session"), "{t}");
+    assert!(t.contains("needs the document portal; found no such portal in this session"), "{t}");
+    assert!(!t.contains("--force-host"), "{t}");
+    // The same texts in Italian, from the catalog.
+    let it = Command::new(&launcher).current_dir(&l.home).env("HOME", &l.home).env("XDG_DATA_HOME", l.home.join(".local/share")).env("XDG_RUNTIME_DIR", l.home.join("run")).env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/panpak-test-no-bus").env("PANPAK_NO_BACKGROUND", "1").env("LC_ALL", "it_IT.UTF-8").env("LANGUAGE", "it").env_remove("DISPLAY").env_remove("WAYLAND_DISPLAY").output().unwrap();
+    let t = text(&it);
+    assert!(t.contains("non può funzionare in questa sessione") && t.contains("serve il server grafico x11; trovato nessun server grafico in questa sessione"), "{t}");
+    // A session with the display and the portal starts the app far enough to pass the check (the document folder of the portal is a plain folder in this test).
+    fs::create_dir_all(l.home.join("run/doc/by-app")).unwrap();
+    let o = start(Some(":99"));
+    assert!(!text(&o).contains("cannot run in this session"), "{}", text(&o));
 }

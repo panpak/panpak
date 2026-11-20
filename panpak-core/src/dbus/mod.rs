@@ -12,7 +12,7 @@ mod wire;
 
 pub use auth::{ServerAuth, Step as AuthStep};
 pub use conn::{address_path, guard_real_bus, Connection, DbusError, Reply};
-pub use proxy::{find_proxy, parse_version, proxy_status, proxy_status_cached, proxy_version, session_bus_path, ProxyStatus, MIN_PROXY, PROXY_PATHS};
+pub use proxy::{find_proxy, parse_version, proxy_status, proxy_status_cached, proxy_version, session_bus_exists, session_bus_path, ProxyStatus, MIN_PROXY, PROXY_PATHS};
 pub use route::{mpris_alias, ClientId, Config as RouterConfig, Msg, Out, Router, MAX_MESSAGE as ROUTER_MAX_MESSAGE, MPRIS_PREFIX, OPENURI_IFACE, REGISTRY_IFACE};
 pub use rules::{a11y_proxy_args, check_dbus_own, id_own_problem, mpris_alias_for, own_name_problem, proxy_args, router_config, BusNeeds, MAX_OWN, PORTAL, TRAY_WATCHER};
 pub use systemd::{grant_document, portal_id_from_unit, scope_name, start_scope, DocumentGrant};

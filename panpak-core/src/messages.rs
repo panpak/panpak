@@ -61,6 +61,37 @@ pub const MENU_INTERNET_ON: &str = "Turn the internet back on…";
 pub const MENU_INTERNET_OFF: &str = "Turn the internet off again…";
 pub const NEEDS_CONFIRMATION: &str = "Nothing was changed: this needs your answer, and there is no terminal and no dialog to ask it.";
 
+pub const HOST_CANNOT_RUN: &str = "{app} cannot run on this system:";
+pub const HOST_CANNOT_RUN_SESSION: &str = "{app} cannot run in this session:";
+pub const HOST_FORCE_HINT: &str = "To install it anyway, give --force-host (it may not start).";
+pub const HOST_LINE: &str = "needs {need}; found {have}. {todo}";
+pub const HOST_ARCH_NEED: &str = "a {arch} machine";
+pub const HOST_ARCH_HAVE: &str = "a {arch} machine";
+pub const HOST_ARCH_TODO: &str = "Get the package for this architecture from the author.";
+pub const HOST_GLIBC_NEED: &str = "glibc {version} or newer (it uses symbols of that version)";
+pub const HOST_GLIBC_HAVE: &str = "glibc {version}";
+pub const HOST_GLIBC_TODO: &str = "It cannot run here: install it on a newer distribution.";
+pub const HOST_KERNEL_NEED: &str = "Linux {version} or newer";
+pub const HOST_KERNEL_HAVE: &str = "Linux {version}";
+pub const HOST_KERNEL_TODO: &str = "Update the kernel of the system, or run the app on a newer one.";
+pub const HOST_LANDLOCK_NEED: &str = "Landlock ABI {version} or newer";
+pub const HOST_LANDLOCK_HAVE: &str = "Landlock ABI {version}";
+pub const HOST_LANDLOCK_NONE: &str = "no Landlock";
+pub const HOST_LANDLOCK_TODO: &str = "Use a kernel with that Landlock ABI (Linux 5.13 has ABI 1, 6.7 has 4, 6.12 has 6).";
+pub const HOST_DISPLAY_NEED: &str = "the display server {names}";
+pub const HOST_DISPLAY_HAVE: &str = "the display server {names}";
+pub const HOST_DISPLAY_NONE: &str = "no display server in this session";
+pub const HOST_DISPLAY_TODO: &str = "Start it from a graphical session, or give a display to the one that you are in.";
+pub const HOST_PORTALS_NEED: &str = "the {names} portal";
+pub const HOST_PORTALS_HAVE: &str = "no such portal in this session";
+pub const HOST_PORTALS_TODO: &str = "Install xdg-desktop-portal and the portal of your desktop, then start a new session.";
+pub const HOST_BUS_NEED: &str = "a session bus and xdg-dbus-proxy (the filtered bus)";
+pub const HOST_BUS_HAVE: &str = "no session bus, or no xdg-dbus-proxy";
+pub const HOST_BUS_TODO: &str = "Install xdg-dbus-proxy and start it from a session that has a user bus.";
+pub const HOST_SESSION_NOTE: &str = "the current session does not give what {app} needs: {line}";
+pub const HOST_FORCED_NOTE: &str = "(installed with --force-host)";
+pub const HOST_FORCED_WARNING: &str = "{app} cannot run on this system (installed anyway because of --force-host):";
+
 /// Every message above, for the template of the translations and its test.
 pub const ALL: &[&str] = &[
     REMOVE_TITLE,
@@ -119,4 +150,34 @@ pub const ALL: &[&str] = &[
     MENU_INTERNET_ON,
     MENU_INTERNET_OFF,
     NEEDS_CONFIRMATION,
+    HOST_CANNOT_RUN,
+    HOST_CANNOT_RUN_SESSION,
+    HOST_FORCE_HINT,
+    HOST_LINE,
+    HOST_ARCH_NEED,
+    HOST_ARCH_HAVE,
+    HOST_ARCH_TODO,
+    HOST_GLIBC_NEED,
+    HOST_GLIBC_HAVE,
+    HOST_GLIBC_TODO,
+    HOST_KERNEL_NEED,
+    HOST_KERNEL_HAVE,
+    HOST_KERNEL_TODO,
+    HOST_LANDLOCK_NEED,
+    HOST_LANDLOCK_HAVE,
+    HOST_LANDLOCK_NONE,
+    HOST_LANDLOCK_TODO,
+    HOST_DISPLAY_NEED,
+    HOST_DISPLAY_HAVE,
+    HOST_DISPLAY_NONE,
+    HOST_DISPLAY_TODO,
+    HOST_PORTALS_NEED,
+    HOST_PORTALS_HAVE,
+    HOST_PORTALS_TODO,
+    HOST_BUS_NEED,
+    HOST_BUS_HAVE,
+    HOST_BUS_TODO,
+    HOST_SESSION_NOTE,
+    HOST_FORCED_NOTE,
+    HOST_FORCED_WARNING,
 ];

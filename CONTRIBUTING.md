@@ -8,6 +8,7 @@ Read the [guiding principles](docs/PRINCIPLES.md) first: they are what a change 
   `THREAT-MODEL.md` guarantees. When in doubt, fail-closed.
 - **One commit per goal**, clear message (what + why); never commit
   with broken tests or warnings.
+- **A test that fails once and then passes is written down** in `tests/UNSTABLE.md`; if it fails again it is investigated before anything else is merged.
 - **Green tests, zero warnings** (clean `cargo build/test`; `clippy`
   with no new warnings in the touched areas).
 - **Spec before code** for the format: format changes require updating

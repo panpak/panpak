@@ -3595,17 +3595,13 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         Some(ver) => line(true, &format!("libc host: glibc {ver}")),
         None => line(false, "host libc not detected (missing ldd?); host resolution may fail"),
     }
-    // What each installed app needs of the system (`[host]`): the ones that cannot run here, and whether the person installed them anyway.
-    let facts = panpak_core::host::Facts::detect(false);
+    // What each installed app needs of the system (`[host]`): what the machine lacks, whether the person installed the app anyway, and what this session lacks.
+    let facts = panpak_core::host::Facts::detect();
     for id in protected::installed_ids() {
-        let Ok(appdir) = store.join("apps").join(&id).canonicalize().or_else(|_| Ok::<_, std::io::Error>(store.join("apps").join(&id))) else { continue };
+        let appdir = store.join("apps").join(&id);
         let Some(m) = installed_manifest(&appdir) else { continue };
-        let Some(h) = &m.host else { continue };
-        let list = panpak_core::host::unmet(h, &facts, false);
         let forced = panpak_core::trust::read(&appdir).is_some_and(|t| t.forced_host);
-        for u in &list {
-            line(false, &format!("{} ({id}): {}{}", m.app.name, u.line(), if forced { " (installed with --force-host)" } else { "" }));
-        }
+        host_report(&m, forced, &facts, &mut line);
     }
     // Installed runtime.
     match best_runtime(&store) {
@@ -3659,15 +3655,13 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         match checked {
             Ok((ft, man, entries, report)) => {
                 line(true, &format!("verified package: {} {} (root {})", man.app.id, man.app.version, &panpak_core::hex(&ft.root)[..16]));
-                // What the package needs of the system (`[host]`): each requirement that this system does not meet, with what is there and what to do.
+                // What the package needs of the system (`[host]`).
                 if let Some(h) = &man.host {
-                    let list = panpak_core::host::unmet(h, &panpak_core::host::Facts::detect(false), false);
-                    if list.is_empty() {
-                        line(true, "host: this system has what the package needs");
+                    let facts = panpak_core::host::Facts::detect();
+                    if panpak_core::host::unmet(h, &facts, panpak_core::host::Scope::All).is_empty() {
+                        line(true, "host: this system and this session have what the package needs");
                     }
-                    for u in &list {
-                        line(false, &format!("host: {}", u.line()));
-                    }
+                    host_report(&man, false, &facts, &mut line);
                 }
                 if let Ok(locks) = panpak_core::stalelocks::find_for_app(&man.app.id) {
                     if !locks.is_empty() {
@@ -3883,19 +3877,39 @@ fn glibc_numbers(text: &str) -> Option<Vec<u32>> {
 /// What `[host]` of the package needs and this system lacks. Refuses (with every missing item, what is there and what to do) unless `force` (`--force-host`, or an
 /// app that was installed that way): then it only says so. Returns whether the system lacks something (so that `install` records the forced install).
 fn check_host(man: &panpak_core::Manifest, force: bool) -> Result<bool> {
+    use panpak_core::{host, i18n, messages as m};
     let Some(h) = &man.host else { return Ok(false) };
-    let list = panpak_core::host::unmet(h, &panpak_core::host::Facts::detect(false), false);
+    // Only what is a property of the machine: the display and the portals belong to the session, and an install over ssh, from a script or in the build of an image
+    // has none (the start looks at them).
+    let list = host::unmet(h, &host::Facts::detect(), host::Scope::Machine);
     if list.is_empty() {
         return Ok(false);
     }
+    let app = format!("{} {}", man.app.name, man.app.version);
     if force {
-        eprintln!("panpak: WARNING: {} {} cannot run on this system (installed anyway because of --force-host):", man.app.name, man.app.version);
+        eprintln!("panpak: WARNING: {}", i18n::fill(&i18n::tr(m::HOST_FORCED_WARNING), &[("app", app)]));
         for u in &list {
             eprintln!("  - {}", u.line());
         }
         return Ok(true);
     }
-    Err(panpak_core::host::refusal(&format!("{} {}", man.app.name, man.app.version), &list))
+    Err(host::refusal(&app, &list, false))
+}
+
+/// The lines of `doctor` for a manifest: what the machine lacks is a failure; what the current session lacks is a note (the app needs it when it starts, and the
+/// next session may have it).
+fn host_report(man: &panpak_core::Manifest, forced: bool, facts: &panpak_core::host::Facts, line: &mut dyn FnMut(bool, &str)) {
+    use panpak_core::{host, i18n, messages as m};
+    let Some(h) = &man.host else { return };
+    for u in host::unmet(h, facts, host::Scope::All) {
+        if u.is_session() {
+            let l = i18n::fill(&i18n::tr(m::HOST_SESSION_NOTE), &[("app", man.app.name.clone()), ("line", u.line())]);
+            println!("NOTE {l}");
+        } else {
+            let note = if forced { format!(" {}", i18n::tr(m::HOST_FORCED_NOTE)) } else { String::new() };
+            line(false, &format!("{} ({}): {}{note}", man.app.name, man.app.id, u.line()));
+        }
+    }
 }
 
 /// Generic code for errors that carry no specific one, by subcommand.
@@ -4653,7 +4667,7 @@ mod tests {
             toml::from_str(&format!("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n[host]\nglibc = \"{min}\"\n")).unwrap()
         };
         if panpak_core::host::glibc_of_system().is_some() {
-            assert!(check_host(&man("99.1"), false).is_err_and(|e| e.to_string().contains("needs glibc 99.1 or newer")));
+            assert!(check_host(&man("99.1"), false).is_err_and(|e| e.to_string().contains("99.1") && e.to_string().contains("--force-host")));
             // `--force-host` goes on, and says that the system lacks something.
             assert!(check_host(&man("99.1"), true).unwrap());
         }

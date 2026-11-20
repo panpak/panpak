@@ -4,6 +4,9 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
+msgid "(installed with --force-host)"
+msgstr ""
+
 msgid "A file you open with this app (Open with, a double click, the command line) is given to it, and only that file."
 msgstr ""
 
@@ -40,10 +43,19 @@ msgstr ""
 msgid "Full isolation"
 msgstr ""
 
+msgid "Get the package for this architecture from the author."
+msgstr ""
+
 msgid "High risk"
 msgstr ""
 
 msgid "If you do not accept, you stay on the current version."
+msgstr ""
+
+msgid "Install xdg-dbus-proxy and start it from a session that has a user bus."
+msgstr ""
+
+msgid "Install xdg-desktop-portal and the portal of your desktop, then start a new session."
 msgstr ""
 
 msgid "It asks for nothing beyond its own private folders."
@@ -82,6 +94,9 @@ msgstr ""
 msgid "It cannot record sound."
 msgstr ""
 
+msgid "It cannot run here: install it on a newer distribution."
+msgstr ""
+
 msgid "It cannot see your documents, photos or other personal files."
 msgstr ""
 
@@ -98,6 +113,18 @@ msgid "It has no settings or data."
 msgstr ""
 
 msgid "It receives the notices that the system sends about devices that come and go, with their names and numbers. It does not open the devices."
+msgstr ""
+
+msgid "Landlock ABI {version}"
+msgstr ""
+
+msgid "Landlock ABI {version} or newer"
+msgstr ""
+
+msgid "Linux {version}"
+msgstr ""
+
+msgid "Linux {version} or newer"
 msgstr ""
 
 msgid "Normal"
@@ -190,6 +217,9 @@ msgstr ""
 msgid "Show notifications"
 msgstr ""
 
+msgid "Start it from a graphical session, or give a display to the one that you are in."
+msgstr ""
+
 msgid "Talk to the local service {subject}"
 msgstr ""
 
@@ -259,6 +289,9 @@ msgstr ""
 msgid "This update asks for more than the version you have:"
 msgstr ""
 
+msgid "To install it anyway, give --force-host (it may not start)."
+msgstr ""
+
 msgid "To turn the internet back on for {name} you must confirm, but there is no window to ask you. Open a terminal and type: panpak allow-internet {id}"
 msgstr ""
 
@@ -292,6 +325,9 @@ msgstr ""
 msgid "Update now"
 msgstr ""
 
+msgid "Update the kernel of the system, or run the app on a newer one."
+msgstr ""
+
 msgid "Update {name}"
 msgstr ""
 
@@ -302,6 +338,9 @@ msgid "Update {name} now? [Y/n]"
 msgstr ""
 
 msgid "Updates: from {host}, named by the author."
+msgstr ""
+
+msgid "Use a kernel with that Landlock ABI (Linux 5.13 has ABI 1, 6.7 has 4, 6.12 has 6)."
 msgstr ""
 
 msgid "Use the message bus of your whole desktop"
@@ -325,6 +364,18 @@ msgstr ""
 msgid "Your settings and data are kept ({size}). If you install the app again, they are still there."
 msgstr ""
 
+msgid "a session bus and xdg-dbus-proxy (the filtered bus)"
+msgstr ""
+
+msgid "a {arch} machine"
+msgstr ""
+
+msgid "glibc {version}"
+msgstr ""
+
+msgid "glibc {version} or newer (it uses symbols of that version)"
+msgstr ""
+
 msgid "it can talk to every service of your desktop"
 msgstr ""
 
@@ -337,6 +388,21 @@ msgstr ""
 msgid "it reaches your whole home folder"
 msgstr ""
 
+msgid "needs {need}; found {have}. {todo}"
+msgstr ""
+
+msgid "no Landlock"
+msgstr ""
+
+msgid "no display server in this session"
+msgstr ""
+
+msgid "no session bus, or no xdg-dbus-proxy"
+msgstr ""
+
+msgid "no such portal in this session"
+msgstr ""
+
 msgid "none"
 msgstr ""
 
@@ -344,6 +410,24 @@ msgid "protected mode: no internet and no downloaded programs until updated"
 msgstr ""
 
 msgid "protected mode: you turned the internet back on; no downloaded programs until updated"
+msgstr ""
+
+msgid "the current session does not give what {app} needs: {line}"
+msgstr ""
+
+msgid "the display server {names}"
+msgstr ""
+
+msgid "the {names} portal"
+msgstr ""
+
+msgid "{app} cannot run in this session:"
+msgstr ""
+
+msgid "{app} cannot run on this system (installed anyway because of --force-host):"
+msgstr ""
+
+msgid "{app} cannot run on this system:"
 msgstr ""
 
 msgid "{name} ({id}) is in protected mode: the author reported a serious problem in the installed version. It runs without internet and does not run programs that it downloads; your files are safe. The mode ends when the app is updated."

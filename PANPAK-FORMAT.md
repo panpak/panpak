@@ -689,20 +689,29 @@ author gives and checks the forms.
 | `glibc` | a version of two to four numbers of at most four digits (`2.39`): the highest symbol version of the files, which an author may raise (§7) | `pack` | the glibc of the system is this or newer; a system whose glibc cannot be read (musl, no `ldd`) is not refused |
 | `kernel` | a version like `glibc` (`5.15`) | the author | the Linux kernel is this or newer (the digits of `uname -r` before the first other character) |
 | `landlock` | a number from 1 to 9 | the author | the Landlock ABI of the kernel is this or higher |
-| `display` | a list of one to eight different names of `x11` and `wayland`; one is enough | the author | the session that runs the command has one of them (`DISPLAY` is set for `x11`; `WAYLAND_DISPLAY` leads to a socket for `wayland`) |
-| `portals` | a list of one to eight different names; only `document` is defined | the author | the session has the portal (for `document`, `$XDG_RUNTIME_DIR/doc/by-app`) |
-| `bus` | `none` or `private` | the author | `none` asks nothing; `private` needs a session bus and `xdg-dbus-proxy` |
+| `display` | a list of one to eight different names of `x11` and `wayland`; one is enough | the author | (at the start) the session has one of them (`DISPLAY` is set for `x11`; `WAYLAND_DISPLAY` leads to a socket for `wayland`) |
+| `portals` | a list of one to eight different names; only `document` is defined | the author | (at the start) the session has the portal (for `document`, `$XDG_RUNTIME_DIR/doc/by-app`) |
+| `bus` | `none` or `private` | the author | (at the start) `none` asks nothing; `private` needs a session bus and `xdg-dbus-proxy` |
 
 A Reader MUST refuse a value that is not of the form (a malformed field), and MUST refuse with "update panpak" an `arch`, a display, a portal or a bus that it does not
 know: it cannot check it. An unknown key in the table is refused too. The name `host_contract` is reserved for a numbered promise by Panpak about what the view gives
 (the layout, the environment, the portals relayed); it has no meaning yet and a Reader that finds it refuses the package like any unknown key.
 
-`install` and `update` (the check is made before anything is downloaded or written, also for a version that is only staged) and `doctor <package>` compare the table with
-the system and MUST refuse a package that the system cannot run, with every requirement that is not met, each with what is needed, what is there and what to do
-(`PANPAK-E2009`; `PANPAK-E2005` for the glibc). The option `--force-host` of `install` and `update` goes on; it says what is missing, and the client keeps the choice
-(`forced_host=1` in the state of the app, §3.2): `doctor` reports the requirements that are still not met, an update of the app does not need the option again, and a
-version that the system can run clears the choice. The start of an installed app looks again at `display` and `landlock` only (they can change from one session to the
-next, and reading them costs nothing); an app that was forced is not refused by them. A package run directly from a file is checked for the same two.
+The keys are of two kinds. `arch`, `glibc`, `kernel` and `landlock` are properties of the **machine**; `display`, `portals` and `bus` are properties of the **session** that
+runs the command. An install over ssh, from a script or in the build of an image has no display, no portal and often no bus, and must work.
+
+- `install` and `update` (before anything is downloaded or written, also for a version that is only staged) and `doctor <package>` compare the keys of the machine with the
+  system and MUST refuse a package that the system cannot run, with every requirement that is not met, each with what is needed, what is there and what to do
+  (`PANPAK-E2009`; `PANPAK-E2005` for the glibc). They MUST NOT refuse for a key of the session. The option `--force-host` of `install` and `update` goes on; it says what is
+  missing, and the client keeps the choice (`forced_host=1` in the state of the app, §3.2): `doctor` reports the requirements of the machine that are still not met, an
+  update of the app does not need the option again, and a version that the system can run clears the choice.
+- The start of an app (installed, or run from a file) checks the keys of the session, and `landlock`, in the session that starts it, and MUST refuse with the same three
+  parts when one is not met. A key of the session is not forced: `--force-host` is for the machine. An app that was installed with `--force-host` is not refused for
+  `landlock`. A package that names none of these keys costs the start nothing.
+- `doctor` says, as a note and not as a failure, what the session that runs it lacks of what an installed app or a package needs.
+
+The messages for the person are in the catalog (English and Italian), like the other messages of the client; the names (`glibc`, `Linux`, `Landlock`, the display servers) are
+not translated.
 
 ### 3.2 Keys, trust on first use, and successions [NORMATIVE]
 

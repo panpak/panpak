@@ -115,16 +115,21 @@ pub fn proxy_status_cached(runtime: &Path) -> ProxyStatus {
 /// The user's session bus socket: `DBUS_SESSION_BUS_ADDRESS` if it is a `unix:path=`, else
 /// `$XDG_RUNTIME_DIR/bus`. Only a socket that exists.
 pub fn session_bus_path() -> Option<PathBuf> {
+    let found = session_bus_exists();
+    if let Some(p) = &found {
+        super::guard_real_bus(p);
+    }
+    found
+}
+
+/// The same socket, only looked for: nothing connects to it. `doctor` and the `[host]` check use this to know whether a bus is there.
+pub fn session_bus_exists() -> Option<PathBuf> {
     use std::os::unix::fs::FileTypeExt;
     let p = match std::env::var("DBUS_SESSION_BUS_ADDRESS") {
         Ok(a) if !a.is_empty() => super::address_path(&a).ok()?,
         _ => PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("bus"),
     };
-    let found = p.metadata().ok().filter(|m| m.file_type().is_socket()).map(|_| p);
-    if let Some(p) = &found {
-        super::guard_real_bus(p);
-    }
-    found
+    p.metadata().ok().filter(|m| m.file_type().is_socket()).map(|_| p)
 }
 
 #[cfg(test)]

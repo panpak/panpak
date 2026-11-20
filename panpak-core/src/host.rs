@@ -4,7 +4,8 @@
 //! The start of the app checks again only what costs nothing and can change from one session to the next: the display and the Landlock ABI.
 
 use crate::{coded, ErrorCode};
-use anyhow::{bail, Result};
+use crate::messages as M;
+use anyhow::Result;
 
 /// The keys of `[host]`, for the schema and for the list of critical paths.
 pub const KEYS: &[&str] = &["arch", "glibc", "kernel", "landlock", "display", "portals", "bus"];
@@ -116,31 +117,46 @@ pub struct Facts {
 }
 
 impl Facts {
-    /// What this machine and this session have. `start` is the cheap reading that the start of an app does (the display and the Landlock ABI); the whole reading runs
-    /// `ldd` and looks for `xdg-dbus-proxy`, which `install`, `update` and `doctor` can afford.
-    pub fn detect(start: bool) -> Facts {
+    /// What this machine and this session have: everything `[host]` can ask. `install`, `update` and `doctor` use it (they can afford `ldd` and the search for
+    /// `xdg-dbus-proxy`).
+    pub fn detect() -> Facts {
+        Facts::read(true, true, true, true, true)
+    }
+
+    /// What the start of an app needs to read for the package `h`: only what the table names (a package that names nothing reads nothing).
+    pub fn detect_for_start(h: Option<&Host>) -> Facts {
+        let h = h.cloned().unwrap_or_default();
+        Facts::read(false, h.landlock.is_some(), h.display.is_some(), h.portals.is_some(), h.bus.as_deref() == Some("private"))
+    }
+
+    fn read(machine: bool, landlock: bool, display: bool, portals: bool, bus: bool) -> Facts {
         let mut f = Facts { arch: std::env::consts::ARCH.to_string(), ..Facts::default() };
-        f.landlock = crate::detect_abi().ok().map(landlock_number);
-        let set = |v: &str| std::env::var_os(v).is_some_and(|x| !x.is_empty());
-        if set("DISPLAY") {
-            f.displays.push("x11".into());
+        if landlock {
+            f.landlock = crate::detect_abi().ok().map(landlock_number);
         }
-        if let Some(w) = std::env::var_os("WAYLAND_DISPLAY").filter(|w| !w.is_empty()) {
-            let path = std::path::Path::new(&w);
-            let socket = if path.is_absolute() { path.to_path_buf() } else { std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_default()).join(path) };
-            if std::fs::metadata(&socket).is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type())) {
-                f.displays.push("wayland".into());
+        if display {
+            let set = |v: &str| std::env::var_os(v).is_some_and(|x| !x.is_empty());
+            if set("DISPLAY") {
+                f.displays.push("x11".into());
+            }
+            if let Some(w) = std::env::var_os("WAYLAND_DISPLAY").filter(|w| !w.is_empty()) {
+                let path = std::path::Path::new(&w);
+                let socket = if path.is_absolute() { path.to_path_buf() } else { std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap_or_default()).join(path) };
+                if std::fs::metadata(&socket).is_ok_and(|m| std::os::unix::fs::FileTypeExt::is_socket(&m.file_type())) {
+                    f.displays.push("wayland".into());
+                }
             }
         }
-        if start {
-            return f;
+        if machine {
+            f.glibc = glibc_of_system();
+            f.kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok().map(|t| t.trim().chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect::<String>()).filter(|k| numbers(k).is_some());
         }
-        f.glibc = glibc_of_system();
-        f.kernel = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok().map(|t| t.trim().chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect::<String>()).filter(|k| numbers(k).is_some());
-        if crate::permissions::documents_available() {
+        if portals && crate::permissions::documents_available() {
             f.portals.push("document".into());
         }
-        f.private_bus = crate::dbus::session_bus_path().is_some() && crate::dbus::find_proxy().is_some();
+        if bus {
+            f.private_bus = crate::dbus::session_bus_exists().is_some() && crate::dbus::find_proxy().is_some();
+        }
         f
     }
 }
@@ -163,91 +179,128 @@ pub fn glibc_of_system() -> Option<String> {
     numbers(head.trim_matches('.')).map(|_| head.trim_matches('.').to_string())
 }
 
+/// A message of the catalog and what fills it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Msg(pub &'static str, pub Vec<(&'static str, String)>);
+
+impl Msg {
+    fn text(&self) -> String {
+        crate::i18n::fill(&crate::i18n::tr(self.0), &self.1)
+    }
+}
+
+fn msg(id: &'static str, vals: &[(&'static str, &str)]) -> Msg {
+    Msg(id, vals.iter().map(|(k, v)| (*k, v.to_string())).collect())
+}
+
 /// One requirement that the system does not meet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unmet {
     pub key: &'static str,
     pub code: ErrorCode,
-    pub need: String,
-    pub have: String,
-    pub todo: String,
+    pub need: Msg,
+    pub have: Msg,
+    pub todo: Msg,
 }
 
+/// The keys of `[host]` that are properties of the machine (checked at install and update, and again by `doctor`) and those that are properties of the session
+/// that runs the command (checked when the app starts: an install over ssh, from a script or in the build of an image has no display and must work).
+pub const MACHINE_KEYS: &[&str] = &["arch", "glibc", "kernel", "landlock"];
+pub const SESSION_KEYS: &[&str] = &["display", "portals", "bus"];
+
 impl Unmet {
-    /// One line: what the package needs, what the system has, what to do.
+    /// One line, in the language of the person: what the package needs, what the system has, what to do.
     pub fn line(&self) -> String {
-        format!("needs {}; this system has {}. {}", self.need, self.have, self.todo)
+        crate::i18n::fill(&crate::i18n::tr(crate::messages::HOST_LINE), &[("need", self.need.text()), ("have", self.have.text()), ("todo", self.todo.text())])
+    }
+    pub fn is_session(&self) -> bool {
+        SESSION_KEYS.contains(&self.key)
     }
 }
 
-/// The requirements of `h` that `f` does not meet, in the order of `KEYS`. `only_at_start` keeps the two that the start of the app checks again (`display`, `landlock`).
-pub fn unmet(h: &Host, f: &Facts, only_at_start: bool) -> Vec<Unmet> {
+/// Which requirements are looked at: the ones of the machine (`install`, `update`), the ones of the session and the Landlock ABI (the start of the app), or all
+/// of them (`doctor`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Machine,
+    Start,
+    All,
+}
+
+/// The requirements of `h` that `f` does not meet, in the order of `KEYS`.
+pub fn unmet(h: &Host, f: &Facts, scope: Scope) -> Vec<Unmet> {
     let mut out = Vec::new();
-    let at = |key: &str| !only_at_start || key == "display" || key == "landlock";
+    let at = |key: &str| match scope {
+        Scope::All => true,
+        Scope::Machine => MACHINE_KEYS.contains(&key),
+        Scope::Start => SESSION_KEYS.contains(&key) || key == "landlock",
+    };
     if let (true, Some(a)) = (at("arch"), &h.arch) {
         if *a != f.arch {
-            out.push(Unmet { key: "arch", code: ErrorCode::E2009, need: format!("a {a} machine"), have: format!("a {} machine", f.arch), todo: "Get the package for this architecture from the author.".into() });
+            out.push(Unmet { key: "arch", code: ErrorCode::E2009, need: msg(M::HOST_ARCH_NEED, &[("arch", a)]), have: msg(M::HOST_ARCH_HAVE, &[("arch", &f.arch)]), todo: msg(M::HOST_ARCH_TODO, &[]) });
         }
     }
     if let (true, Some(g), Some(have)) = (at("glibc"), &h.glibc, &f.glibc) {
         if numbers(have).zip(numbers(g)).is_some_and(|(h, n)| h < n) {
-            out.push(Unmet { key: "glibc", code: ErrorCode::E2005, need: format!("glibc {g} or newer (it uses symbols of that version)"), have: format!("glibc {have}"), todo: "It cannot run here: install it on a newer distribution.".into() });
+            out.push(Unmet { key: "glibc", code: ErrorCode::E2005, need: msg(M::HOST_GLIBC_NEED, &[("version", g)]), have: msg(M::HOST_GLIBC_HAVE, &[("version", have)]), todo: msg(M::HOST_GLIBC_TODO, &[]) });
         }
     }
     if let (true, Some(k), Some(have)) = (at("kernel"), &h.kernel, &f.kernel) {
         if numbers(have).zip(numbers(k)).is_some_and(|(h, n)| h < n) {
-            out.push(Unmet { key: "kernel", code: ErrorCode::E2009, need: format!("Linux {k} or newer"), have: format!("Linux {have}"), todo: "Update the kernel of the system, or run the app on a newer one.".into() });
+            out.push(Unmet { key: "kernel", code: ErrorCode::E2009, need: msg(M::HOST_KERNEL_NEED, &[("version", k)]), have: msg(M::HOST_KERNEL_HAVE, &[("version", have)]), todo: msg(M::HOST_KERNEL_TODO, &[]) });
         }
     }
     if let (true, Some(l)) = (at("landlock"), h.landlock) {
         if f.landlock.is_none_or(|have| have < l) {
-            let have = f.landlock.map_or("no Landlock".to_string(), |v| format!("Landlock ABI {v}"));
-            out.push(Unmet { key: "landlock", code: ErrorCode::E2009, need: format!("Landlock ABI {l} or newer"), have, todo: "Use a kernel with that Landlock ABI (Linux 5.13 has ABI 1, 6.7 has 4, 6.12 has 6).".into() });
+            let have = f.landlock.map_or_else(|| msg(M::HOST_LANDLOCK_NONE, &[]), |v| msg(M::HOST_LANDLOCK_HAVE, &[("version", &v.to_string())]));
+            out.push(Unmet { key: "landlock", code: ErrorCode::E2009, need: msg(M::HOST_LANDLOCK_NEED, &[("version", &l.to_string())]), have, todo: msg(M::HOST_LANDLOCK_TODO, &[]) });
         }
     }
     if let (true, Some(d)) = (at("display"), &h.display) {
         if !d.iter().any(|x| f.displays.contains(x)) {
-            let have = if f.displays.is_empty() { "no display server in this session".to_string() } else { format!("the display server {}", f.displays.join(" and ")) };
-            out.push(Unmet { key: "display", code: ErrorCode::E2009, need: format!("the display server {}", d.join(" or ")), have, todo: "Install it from a graphical session, or give a display to the one that you are in.".into() });
+            let have = if f.displays.is_empty() { msg(M::HOST_DISPLAY_NONE, &[]) } else { msg(M::HOST_DISPLAY_HAVE, &[("names", &f.displays.join(" / "))]) };
+            out.push(Unmet { key: "display", code: ErrorCode::E2009, need: msg(M::HOST_DISPLAY_NEED, &[("names", &d.join(" / "))]), have, todo: msg(M::HOST_DISPLAY_TODO, &[]) });
         }
     }
     if let (true, Some(p)) = (at("portals"), &h.portals) {
-        let missing: Vec<&String> = p.iter().filter(|x| !f.portals.contains(x)).collect();
+        let missing: Vec<&str> = p.iter().filter(|x| !f.portals.contains(x)).map(|s| s.as_str()).collect();
         if !missing.is_empty() {
-            let names: Vec<&str> = missing.iter().map(|s| s.as_str()).collect();
-            out.push(Unmet { key: "portals", code: ErrorCode::E2009, need: format!("the {} portal", names.join(" and the ")), have: "no such portal in this session".into(), todo: "Install xdg-desktop-portal and the portal of your desktop, then start a new session.".into() });
+            out.push(Unmet { key: "portals", code: ErrorCode::E2009, need: msg(M::HOST_PORTALS_NEED, &[("names", &missing.join(" / "))]), have: msg(M::HOST_PORTALS_HAVE, &[]), todo: msg(M::HOST_PORTALS_TODO, &[]) });
         }
     }
     if let (true, Some("private")) = (at("bus"), h.bus.as_deref()) {
         if !f.private_bus {
-            out.push(Unmet { key: "bus", code: ErrorCode::E2009, need: "a session bus and xdg-dbus-proxy (the filtered bus)".into(), have: "no session bus, or no xdg-dbus-proxy".into(), todo: "Install xdg-dbus-proxy and run from a session that has a user bus.".into() });
+            out.push(Unmet { key: "bus", code: ErrorCode::E2009, need: msg(M::HOST_BUS_NEED, &[]), have: msg(M::HOST_BUS_HAVE, &[]), todo: msg(M::HOST_BUS_TODO, &[]) });
         }
     }
     out
 }
 
-/// The error for a package that this system cannot run: every unmet requirement, each with what is needed, what is there and what to do, and the way to go on.
-pub fn refusal(what: &str, list: &[Unmet]) -> anyhow::Error {
+/// The error for a package that this system cannot run: every unmet requirement, each with what is needed, what is there and what to do, and, for a requirement of the
+/// machine, the way to go on. `session` is for the start of an app (a session requirement is not forced).
+pub fn refusal(app: &str, list: &[Unmet], session: bool) -> anyhow::Error {
+    use crate::i18n::{fill, tr};
     let Some(first) = list.first() else { return anyhow::anyhow!("no unmet requirement") };
-    let mut text = format!("{what} cannot run on this system:");
+    let head = if session { M::HOST_CANNOT_RUN_SESSION } else { M::HOST_CANNOT_RUN };
+    let mut text = fill(&tr(head), &[("app", app.to_string())]);
     for u in list {
         text.push_str(&format!("\n  - {}", u.line()));
     }
-    text.push_str("\nTo install it anyway, give --force-host (it may not start).");
+    if !session {
+        text.push('\n');
+        text.push_str(&tr(M::HOST_FORCE_HINT));
+    }
     coded(first.code, text)
 }
 
-/// Check the `[host]` of a manifest that has one.
-pub fn check_or_refuse(man: &crate::Manifest, f: &Facts, only_at_start: bool) -> Result<()> {
+/// Check the `[host]` of a manifest at the start of an app: the requirements of the session, and the Landlock ABI unless the app was installed with `--force-host`.
+pub fn check_start(man: &crate::Manifest, f: &Facts, forced: bool) -> Result<()> {
     let Some(h) = &man.host else { return Ok(()) };
-    let list = unmet(h, f, only_at_start);
+    let list: Vec<Unmet> = unmet(h, f, Scope::Start).into_iter().filter(|u| !(forced && u.key == "landlock")).collect();
     if list.is_empty() {
         return Ok(());
     }
-    if man.app.name.is_empty() {
-        bail!("host check without a name");
-    }
-    Err(refusal(&format!("{} {}", man.app.name, man.app.version), &list))
+    Err(refusal(&format!("{} {}", man.app.name, man.app.version), &list, true))
 }
 
 #[cfg(test)]
@@ -261,38 +314,60 @@ mod tests {
     #[test]
     fn a_package_that_the_system_can_run_has_nothing_unmet() {
         let h = Host { arch: Some("x86_64".into()), glibc: Some("2.31".into()), kernel: Some("5.15".into()), landlock: Some(3), display: Some(vec!["x11".into(), "wayland".into()]), portals: Some(vec!["document".into()]), bus: Some("private".into()) };
-        assert!(unmet(&h, &facts(), false).is_empty());
-        assert!(unmet(&Host::default(), &Facts::default(), false).is_empty());
+        assert!(unmet(&h, &facts(), Scope::All).is_empty());
+        assert!(unmet(&Host::default(), &Facts::default(), Scope::All).is_empty());
     }
 
     #[test]
     fn each_requirement_that_is_not_met_says_what_is_needed_what_is_there_and_what_to_do() {
         let h = Host { arch: Some("aarch64".into()), glibc: Some("2.40".into()), kernel: Some("6.9".into()), landlock: Some(6), display: Some(vec!["x11".into()]), portals: Some(vec!["document".into()]), bus: Some("private".into()) };
         let f = Facts { portals: vec![], private_bus: false, ..facts() };
-        let u = unmet(&h, &f, false);
+        let u = unmet(&h, &f, Scope::All);
         let keys: Vec<&str> = u.iter().map(|u| u.key).collect();
         assert_eq!(keys, ["arch", "glibc", "kernel", "landlock", "display", "portals", "bus"]);
+        // Each one has the three parts, from the catalog (the texts, in both languages, are checked by the tests of the catalog and of the command line).
         for x in &u {
-            assert!(!x.need.is_empty() && !x.have.is_empty() && x.todo.ends_with('.'), "{x:?}");
+            assert!(!x.need.0.is_empty() && !x.have.0.is_empty() && !x.todo.0.is_empty(), "{x:?}");
+            assert!(crate::messages::ALL.contains(&x.need.0) && crate::messages::ALL.contains(&x.have.0) && crate::messages::ALL.contains(&x.todo.0), "{x:?}");
         }
         assert_eq!(u[1].code, ErrorCode::E2005, "glibc keeps its code");
         assert_eq!(u[2].code, ErrorCode::E2009);
-        let e = refusal("App 1.0", &u).to_string();
-        assert!(e.contains("App 1.0 cannot run on this system:") && e.contains("needs glibc 2.40 or newer") && e.contains("this system has glibc 2.39") && e.contains("--force-host"), "{e}");
+        assert_eq!(u[1].need.1, [("version", "2.40".to_string())]);
+        assert_eq!(u[1].have.1, [("version", "2.39".to_string())]);
+        // The machine's refusal offers `--force-host`; at the start the message is about the session and offers no way to force it.
+        let e = refusal("App 1.0", &u, false).to_string();
+        assert!(e.contains("App 1.0") && e.contains("--force-host"), "{e}");
+        let e = refusal("App 1.0", &u[4..5], true).to_string();
+        assert!(e.contains("App 1.0") && !e.contains("--force-host"), "{e}");
     }
 
     #[test]
-    fn the_start_checks_only_the_display_and_the_landlock_abi() {
-        let h = Host { arch: Some("aarch64".into()), kernel: Some("9.0".into()), landlock: Some(9), display: Some(vec!["x11".into()]), ..Host::default() };
-        let keys: Vec<&str> = unmet(&h, &facts(), true).iter().map(|u| u.key).collect();
-        assert_eq!(keys, ["landlock", "display"]);
+    fn install_looks_at_the_machine_and_the_start_at_the_session() {
+        let h = Host { arch: Some("aarch64".into()), kernel: Some("9.0".into()), landlock: Some(9), display: Some(vec!["x11".into()]), portals: Some(vec!["document".into()]), bus: Some("private".into()), ..Host::default() };
+        let f = Facts { displays: vec![], portals: vec![], private_bus: false, ..facts() };
+        let keys = |s| unmet(&h, &f, s).iter().map(|u| u.key).collect::<Vec<_>>();
+        assert_eq!(keys(Scope::Machine), ["arch", "kernel", "landlock"], "no display, portal or bus is asked of the session of an install");
+        assert_eq!(keys(Scope::Start), ["landlock", "display", "portals", "bus"]);
+    }
+
+    #[test]
+    fn a_session_without_a_display_installs_and_does_not_start() {
+        let man: crate::Manifest = toml::from_str("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n[host]\ndisplay = [\"x11\"]\nlandlock = 9\n").unwrap();
+        let f = Facts { displays: vec![], ..facts() };
+        let e = check_start(&man, &f, false).unwrap_err().to_string();
+        assert!(e.contains("x11") && e.contains('9'), "{e}");
+        // An app that was installed with --force-host is not refused for the Landlock ABI, but the display is the session's.
+        let e = check_start(&man, &f, true).unwrap_err().to_string();
+        assert!(e.contains("x11") && !e.contains("Landlock") && !e.contains("9"), "{e}");
+        let ok = Facts { displays: vec!["x11".into()], landlock: Some(9), ..facts() };
+        assert!(check_start(&man, &ok, false).is_ok());
     }
 
     #[test]
     fn a_system_whose_glibc_or_kernel_cannot_be_read_is_not_refused_for_it() {
         let h = Host { glibc: Some("99.1".into()), kernel: Some("99.1".into()), ..Host::default() };
         let f = Facts { glibc: None, kernel: None, ..facts() };
-        assert!(unmet(&h, &f, false).is_empty());
+        assert!(unmet(&h, &f, Scope::All).is_empty());
     }
 
     #[test]

@@ -16,6 +16,9 @@ fn cli(home: &Path, args: &[&str]) -> Output {
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("XDG_RUNTIME_DIR", home.join("run"))
         .env_remove("PANPAK_SECRET_FILE")
+        // The texts that these tests read are the English ones, whatever the language of the person who runs them.
+        .env_remove("LANGUAGE")
+        .env("LC_ALL", "C")
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap()
@@ -141,7 +144,7 @@ fn pack_writes_the_glibc_the_files_need_and_install_checks_it() {
     assert_eq!(host_glibc_of(&l.manifest(&pkg)).as_deref(), Some("99.1"));
     let o = cli(&l.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]);
     let t = text(&o);
-    assert!(!o.status.success() && t.contains("PANPAK-E2005") && t.contains("needs glibc 99.1 or newer") && t.contains("this system has glibc"), "{t}");
+    assert!(!o.status.success() && t.contains("PANPAK-E2005") && t.contains("needs glibc 99.1 or newer") && t.contains("found glibc"), "{t}");
     // Nothing was installed.
     assert!(!l.home.join(".local/share/panpak/apps/org.example.raised").exists());
 

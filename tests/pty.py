@@ -81,7 +81,9 @@ os.write(fd, b'tty\n'); t = read(fd, '/dev/pts/', 5); out['tty'] = '/dev/pts/' i
 os.write(fd, b'sleep 30\n'); time.sleep(0.5); os.write(fd, b'\x1a')
 r = read(fd, 'Stopped', 5); out['stopped'] = 'Stopped' in r
 os.write(fd, b'jobs\n'); out['jobs'] = 'sleep 30' in read(fd, 'sleep 30', 5)
-os.write(fd, b'fg\n'); time.sleep(0.5); os.write(fd, b'\x03'); time.sleep(0.3)
+# `fg` prints the command when it puts the job in the foreground: Ctrl+C is sent after that, not after a fixed time (on a busy machine the shell may not have
+# resumed the job yet, and then the interrupt goes to the shell while the job goes on and takes the next line as its input).
+os.write(fd, b'fg\n'); read(fd, 'sleep 30', 5); time.sleep(0.3); os.write(fd, b'\x03'); time.sleep(0.3)
 os.write(fd, b'echo after-$((1+1))\n'); out['fg_ctrl_c'] = 'after-2' in read(fd, 'after-2', 5)
 os.write(fd, b'exit\n'); read(fd, None, 1)
 try:
