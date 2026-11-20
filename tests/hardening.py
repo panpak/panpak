@@ -185,26 +185,32 @@ def main():
     print('  EPERM for', ', '.join(k for k, v in WANT.items() if v == 'EPERM'))
     print('  EAFNOSUPPORT for', ', '.join(k for k, v in WANT.items() if v == 'EAFNOSUPPORT'), '(local, IPv4 and netlink-route sockets work)')
     print('  threads, fork+exec, pipes, memfd_create, ordinary ioctl and personality query keep working: ok')
-    # An app that declares `devices = true` may hear of devices that come and go (the uevent socket of netlink); every other protocol stays refused, and the app above never could.
+    # An app that declares `devices = ["gamepad"]` may hear of devices that come and go (the uevent socket of netlink); every other protocol stays refused, and the app above never could.
     need(errno.errorcode.get(res['netlink_uevent']) == 'EPROTONOSUPPORT', 'an app without `devices` opened the uevent socket')
     ID2 = ID + '2'
     tree2 = work / 'tree2'
     (tree2 / 'bin').mkdir(parents=True)
     (tree2 / 'bin/app').write_text(APP)
     (tree2 / 'bin/app').chmod(0o755)
-    (tree2 / 'panpak.toml').write_text(f'[app]\nid = "{ID2}"\nname = "Hardening 2"\nversion = "1"\nentry = "bin/app"\n[permissions]\ndevices = true\n[update]\nkey = "{pub}"\n')
+    (tree2 / 'panpak.toml').write_text(f'[app]\nid = "{ID2}"\nname = "Hardening 2"\nversion = "1"\nentry = "bin/app"\n[permissions]\ndevices = [\"gamepad\"]\n[update]\nkey = "{pub}"\n')
     pkg2 = work / 'hardening2.panpak'
     p = run(REL / 'panpak', 'pack', tree2, '--stub', REL / 'panpak-stub', '--secret-file', key, '-o', pkg2)
-    need(p.returncode == 0, 'a package with `devices = true`: ' + p.stderr)
+    need(p.returncode == 0, 'a package with `devices = ["gamepad"]`: ' + p.stderr)
     p = run(REL / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', REL / 'panpak-stub', pkg2)
     need(p.returncode == 0, p.stdout + p.stderr)
+    # The boolean of the test versions, a category that is reserved, one that nobody knows, an empty list and a repeat are refused by `pack`.
+    for bad, why in (('true', 'is a list of categories now'), ('["usb"]', 'reserved for a later version'), ('["joystick"]', 'is not a category that this panpak knows'), ('[]', 'one to four different'), ('["gamepad", "gamepad"]', 'one to four different')):
+        (tree2 / 'panpak.toml').write_text(f'[app]\nid = "{ID2}"\nname = "Hardening 2"\nversion = "1"\nentry = "bin/app"\n[permissions]\ndevices = {bad}\n[update]\nkey = "{pub}"\n')
+        p = run(REL / 'panpak', 'pack', tree2, '--stub', REL / 'panpak-stub', '--secret-file', key, '-o', work / 'devices-bad.panpak')
+        need(p.returncode != 0 and why in p.stderr, f'devices = {bad} must be refused ({why}): {p.returncode} {p.stderr[-300:]}')
+    print('  `devices`: the boolean, a reserved name, an unknown name, an empty list and a repeat are refused by pack')
     p = run(home / '.local/bin' / ID2)
     need(p.returncode == 0, f'the app with devices failed ({p.returncode}): {p.stdout}{p.stderr}')
     res2 = json.loads((home / f'.local/share/panpak/userdata/{ID2}/.local/share/result.json').read_text())
-    need(res2['netlink_uevent'] == 0, f'with `devices = true` the uevent socket is refused: errno {res2["netlink_uevent"]}')
-    need(errno.errorcode.get(res2['netlink_generic']) == 'EPROTONOSUPPORT', 'with `devices = true` the generic netlink socket is open')
-    need(errno.errorcode.get(res2['socket_vsock']) == 'EAFNOSUPPORT' and res2['netlink_route_ok'] is True, 'with `devices = true` another family changed')
-    print('  `devices = true`: the uevent socket of netlink is open, the other protocols and families stay refused; without it, refused')
+    need(res2['netlink_uevent'] == 0, f'with `devices = ["gamepad"]` the uevent socket is refused: errno {res2["netlink_uevent"]}')
+    need(errno.errorcode.get(res2['netlink_generic']) == 'EPROTONOSUPPORT', 'with `devices = ["gamepad"]` the generic netlink socket is open')
+    need(errno.errorcode.get(res2['socket_vsock']) == 'EAFNOSUPPORT' and res2['netlink_route_ok'] is True, 'with `devices = ["gamepad"]` another family changed')
+    print('  `devices = ["gamepad"]`: the uevent socket of netlink is open, the other protocols and families stay refused; without it, refused')
     run(REL / 'panpak', 'remove', ID2)
     run(REL / 'panpak', 'remove', ID)  # the trees are read-only: remove takes them away properly
     isolation.remove_owned(runtime, work)

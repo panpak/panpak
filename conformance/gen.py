@@ -376,6 +376,17 @@ def main():
     put("valid-trust-domain.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(trust_extra='domain = "example.org"\n'), blobs=std_index()[2]), True)
     put("valid-trust-chain.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(trust_extra=step() + step(by="recovery")), blobs=std_index()[2]), True)
 
+    # ---- permissions.devices, a list of categories (section 3.1.5) ----
+    def bad_devices(name, value, err):
+        put(name, assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=f"[permissions]\ndevices = {value}\n"), blobs=std_index()[2]), False, [err])
+
+    put("valid-devices-list.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra='[permissions]\ndevices = ["gamepad", "camera"]\n'), blobs=std_index()[2]), True)
+    bad_devices("invalid-devices-boolean.panpak", "true", "devices")
+    bad_devices("invalid-devices-unknown.panpak", '["joystick"]', "update panpak")
+    bad_devices("invalid-devices-reserved.panpak", '["usb"]', "update panpak")
+    bad_devices("invalid-devices-empty.panpak", "[]", "devices")
+    bad_devices("invalid-devices-repeat.panpak", '["gamepad", "gamepad"]', "devices")
+
     # ---- the [host] table (section 3.1.11) ----
     def bad_host(name, man, err):
         put(name, assemble(STUB, encode_index(*std_index()[:2]), man, blobs=std_index()[2]), False, [err])

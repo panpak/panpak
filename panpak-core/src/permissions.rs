@@ -95,7 +95,7 @@ pub static ROWS: &[Row] = &[
         "A place in your home folder that belongs to you, not to the app, is open to it for reading. The app cannot change it.", ""),
     row("socket", Level::Attention, "network-server-symbolic", "\u{2301}", "Talk to the local service {subject}",
         "It can connect to this Unix socket, and so to the program that listens on it.", ""),
-    row("devices", Level::Attention, "input-gaming-symbolic", "\u{2328}", "Be told when devices are plugged in or removed (game pads, USB devices, cameras, keyboards)",
+    row("devices", Level::Attention, "input-gaming-symbolic", "\u{2328}", "Be told when devices are plugged in or removed ({subject})",
         "It receives the notices that the system sends about devices that come and go, with their names and numbers. It does not open the devices.", ""),
     row("exec-written", Level::Attention, "system-run-symbolic", "\u{2699}", "Run programs that it downloads",
         "Programs that the app writes into its own folders (downloaded, unpacked or built) can be run. Without this, nothing it can write can be executed.", ""),
@@ -223,8 +223,10 @@ fn from_permissions(lang: Option<&Catalog>, p: &Permissions) -> Vec<Item> {
     if p.network == Some(true) && allow.is_empty() && bind.is_empty() {
         out.push(item(lang, "network-any", vec![]));
     }
-    if p.devices == Some(true) {
-        out.push(item(lang, "devices", vec![]));
+    if let Some(d) = p.devices.as_ref().filter(|d| !d.is_empty()) {
+        // What the app says it is for, in words: the notices are those of every device of the machine, so the row says so too.
+        let words: Vec<String> = d.iter().map(|c| tr_in(lang, if c == "camera" { crate::messages::DEVICE_CAMERA } else { crate::messages::DEVICE_GAMEPAD }).into_owned()).collect();
+        out.push(item(lang, "devices", words));
     }
     if p.exec_written == Some(true) {
         out.push(item(lang, "exec-written", vec![]));
@@ -597,11 +599,12 @@ mod tests {
 
     #[test]
     fn devices_is_a_row_with_its_own_sentence() {
-        let m = man("[permissions]\ndevices=true\n");
+        let m = man("[permissions]\ndevices=[\"gamepad\", \"camera\"]\n");
         let its = items_in(None, &m);
         assert_eq!(its.iter().map(|i| (i.id, i.level)).collect::<Vec<_>>(), [("devices", Level::Attention)]);
-        assert!(its[0].text.contains("plugged in") && its[0].text.contains("game pads"), "{}", its[0].text);
-        assert!(items_in(None, &man("[permissions]\ndevices=false\n")).is_empty());
+        assert!(its[0].text.contains("plugged in") && its[0].text.contains("game pads, cameras"), "{}", its[0].text);
+        assert!(items_in(None, &man("[permissions]\ndevices=[]\n")).is_empty(), "an empty list asks for nothing");
+        assert!(items_in(None, &man("[permissions]\nnetwork=false\n")).is_empty());
     }
 
     #[test]

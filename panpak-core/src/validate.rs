@@ -67,6 +67,25 @@ fn shown(s: &str) -> String {
     format!("{t:?}")
 }
 
+/// The categories of `permissions.devices` that this panpak implements (each gives the hot-plug notices of §3.1.5 and nothing else yet), and the names that are
+/// reserved for categories that give access to device files and are not implemented: a reader that finds one of them, or a name it does not know, says "update panpak".
+pub const DEVICE_CATEGORIES: &[&str] = &["gamepad", "camera"];
+pub const DEVICE_CATEGORIES_RESERVED: &[&str] = &["input", "usb"];
+
+/// `permissions.devices`: one to four different categories, all of them known.
+fn check_devices(list: &[String]) -> Result<()> {
+    if list.is_empty() || list.len() > 4 || list.iter().enumerate().any(|(i, x)| list[..i].contains(x)) {
+        return Err(bad_field("permissions.devices", "must be a list of one to four different categories (leave it out for none)"));
+    }
+    for c in list {
+        if !DEVICE_CATEGORIES.contains(&c.as_str()) {
+            let why = if DEVICE_CATEGORIES_RESERVED.contains(&c.as_str()) { "is reserved for a later version and does nothing in this one" } else { "is not a category that this panpak knows" };
+            return Err(coded(ErrorCode::E0002, format!("permissions.devices {c:?} {why}: update panpak to the latest version")));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn bad_field(field: &str, why: &str) -> anyhow::Error {
     coded(ErrorCode::E0007, format!("invalid manifest field {field}: {why}"))
 }
@@ -373,6 +392,9 @@ pub fn validate_manifest(man: &Manifest) -> Result<()> {
                 return Err(bad_field("permissions.sockets_allow", "empty, too long or with control characters"));
             }
         }
+        if let Some(d) = &p.devices {
+            check_devices(d)?;
+        }
         if let Err(e) = crate::dbus::check_dbus_own(p.dbus_own.as_deref().unwrap_or_default(), &man.app.id, &man.app.name, &man.app.entry) {
             return Err(bad_field("permissions.dbus_own", &format!("{e}")));
         }
@@ -405,6 +427,27 @@ pub fn validate_manifest(man: &Manifest) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn devices_is_a_list_of_known_categories() {
+        let man = |v: &str| -> Manifest { toml::from_str(&format!("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n[permissions]\ndevices = {v}\n")).unwrap() };
+        for ok in ["[\"gamepad\"]", "[\"camera\", \"gamepad\"]"] {
+            assert!(validate_manifest(&man(ok)).is_ok(), "{ok}");
+        }
+        for bad in ["[]", "[\"gamepad\", \"gamepad\"]", "[\"gamepad\", \"camera\", \"gamepad\", \"camera\", \"gamepad\"]"] {
+            let e = validate_manifest(&man(bad)).unwrap_err().to_string();
+            assert!(e.contains("permissions.devices"), "{bad}: {e}");
+        }
+        for newer in ["[\"usb\"]", "[\"input\"]", "[\"joystick\"]"] {
+            let e = validate_manifest(&man(newer)).unwrap_err().to_string();
+            assert!(e.contains("update panpak"), "{newer}: {e}");
+        }
+        // The boolean of the test versions does not parse at all.
+        assert!(toml::from_str::<Manifest>("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n[permissions]\ndevices = true\n").is_err());
+        // And `pack` says why before it gets there.
+        let e = crate::check_panpak_toml_schema("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n[permissions]\ndevices = true\n").unwrap_err().to_string();
+        assert!(e.contains("list of categories"), "{e}");
+    }
+
     use super::*;
     use crate::code_of;
 

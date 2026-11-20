@@ -404,9 +404,9 @@ pub struct Permissions {
     pub tray: Option<bool>,
     /// A media player the shell and the media keys can see (MPRIS): the app's `org.mpris.MediaPlayer2.*` name gets an alias with its id on the session bus.
     pub mpris: Option<bool>,
-    /// Devices that come and go (game pads, USB devices, cameras, input devices): the app may open the uevent socket of netlink and hear of them (PANPAK-FORMAT.md §3.1.6).
+    /// Categories of devices (`gamepad`, `camera`; PANPAK-FORMAT.md §3.1.5): the app may open the uevent socket of netlink and hear of them (PANPAK-FORMAT.md §3.1.6).
     /// It does not open the devices themselves. Default false.
-    pub devices: Option<bool>,
+    pub devices: Option<Vec<String>>,
     /// The app may run programs that it wrote itself (downloaded, unpacked, built) in the folders it can write. Default false: nothing the app can write can be executed (PANPAK-FORMAT.md §3.1.8).
     pub exec_written: Option<bool>,
     /// Extra names for the app on its private bus (at most 8, no wildcards). Since step 13p every name is the app's own on its private bus, so the list has no effect;
@@ -887,6 +887,12 @@ pub fn check_panpak_toml_schema(input: &str) -> Result<()> {
     }
     if toml::from_str::<toml::Value>(input).ok().and_then(|v| v.get("release")?.get("history").cloned()).is_some() {
         return Err(coded(ErrorCode::E0008, "panpak.toml: release.history is written by `panpak pack` (give the earlier package with --previous), remove it"));
+    }
+    // `permissions.devices` was a boolean in the test versions: it is a list of categories now.
+    if let Some(d) = toml::from_str::<toml::Value>(input).ok().and_then(|v| v.get("permissions")?.get("devices").cloned()) {
+        if d.is_bool() {
+            return Err(coded(ErrorCode::E0008, "panpak.toml: permissions.devices is a list of categories now (devices = [\"gamepad\"]), not true or false; leave it out for none"));
+        }
     }
     // `[trust]` is written by `panpak pack` from the signing key: an author gives the domain, nothing else.
     if let Some(t) = toml::from_str::<toml::Value>(input).ok().and_then(|v| v.get("trust").cloned()) {

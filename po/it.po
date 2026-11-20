@@ -26,8 +26,8 @@ msgstr "Attenzione"
 msgid "Be controlled by the media keys"
 msgstr "Essere controllata dai tasti multimediali"
 
-msgid "Be told when devices are plugged in or removed (game pads, USB devices, cameras, keyboards)"
-msgstr "Essere avvisata quando si collegano o si scollegano dispositivi (gamepad, dispositivi USB, fotocamere, tastiere)"
+msgid "Be told when devices are plugged in or removed ({subject})"
+msgstr "Essere avvisata quando si collegano o si scollegano dispositivi ({subject})"
 
 msgid "Cancel"
 msgstr "Annulla"
@@ -489,3 +489,9 @@ msgstr "{app} non può funzionare su questo sistema (installata lo stesso per vi
 
 msgid "{app} starts without a connection to your session bus, so what goes through it will not work (portals, notifications): {line}"
 msgstr "{app} parte senza collegamento al bus della tua sessione, quindi non funzionerà ciò che passa da lì (portali, notifiche): {line}"
+
+msgid "game pads"
+msgstr "controller di gioco"
+
+msgid "cameras"
+msgstr "fotocamere"

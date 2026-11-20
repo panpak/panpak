@@ -191,7 +191,7 @@ below is printed by `panpak permissions --markdown`, and a test fails when it is
 | \[!\] Attention | Read, change and delete *x* in your home folder | A place in your home folder that belongs to you, not to the app, is open to it for reading and writing. |
 | \[!\] Attention | Read *x* in your home folder | A place in your home folder that belongs to you, not to the app, is open to it for reading. The app cannot change it. |
 | \[!\] Attention | Talk to the local service *x* | It can connect to this Unix socket, and so to the program that listens on it. |
-| \[!\] Attention | Be told when devices are plugged in or removed (game pads, USB devices, cameras, keyboards) | It receives the notices that the system sends about devices that come and go, with their names and numbers. It does not open the devices. |
+| \[!\] Attention | Be told when devices are plugged in or removed (*x*) | It receives the notices that the system sends about devices that come and go, with their names and numbers. It does not open the devices. |
 | \[!\] Attention | Run programs that it downloads | Programs that the app writes into its own folders (downloaded, unpacked or built) can be run. Without this, nothing it can write can be executed. |
 | \[ \] Normal | Open and save the files you choose in the file window of your desktop | When the app asks to open or save a file, your desktop shows its own window. The app gets only the files and folders you pick there, and keeps them until it is removed. |
 | \[ \] Normal | Open the files you start it with | A file you open with this app (Open with, a double click, the command line) is given to it, and only that file. |

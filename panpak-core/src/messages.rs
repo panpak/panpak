@@ -61,6 +61,8 @@ pub const MENU_INTERNET_ON: &str = "Turn the internet back on…";
 pub const MENU_INTERNET_OFF: &str = "Turn the internet off again…";
 pub const NEEDS_CONFIRMATION: &str = "Nothing was changed: this needs your answer, and there is no terminal and no dialog to ask it.";
 
+pub const DEVICE_GAMEPAD: &str = "game pads";
+pub const DEVICE_CAMERA: &str = "cameras";
 pub const HOST_CANNOT_RUN: &str = "{app} cannot run on this system:";
 pub const HOST_CANNOT_RUN_SESSION: &str = "{app} cannot run in this session:";
 pub const HOST_FORCE_HINT: &str = "To install it anyway, give --force-host (it may not start).";
@@ -151,6 +153,8 @@ pub const ALL: &[&str] = &[
     MENU_INTERNET_ON,
     MENU_INTERNET_OFF,
     NEEDS_CONFIRMATION,
+    DEVICE_GAMEPAD,
+    DEVICE_CAMERA,
     HOST_CANNOT_RUN,
     HOST_CANNOT_RUN_SESSION,
     HOST_FORCE_HINT,

@@ -28,7 +28,7 @@ msgstr ""
 msgid "Be controlled by the media keys"
 msgstr ""
 
-msgid "Be told when devices are plugged in or removed (game pads, USB devices, cameras, keyboards)"
+msgid "Be told when devices are plugged in or removed ({subject})"
 msgstr ""
 
 msgid "Cancel"
@@ -368,6 +368,12 @@ msgid "a session bus and xdg-dbus-proxy (the filtered bus)"
 msgstr ""
 
 msgid "a {arch} machine"
+msgstr ""
+
+msgid "cameras"
+msgstr ""
+
+msgid "game pads"
 msgstr ""
 
 msgid "glibc {version}"

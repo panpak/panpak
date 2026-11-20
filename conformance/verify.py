@@ -343,6 +343,23 @@ def domain_fits_id(domain, app_id):
     return len(ident) >= len(labels) and list(reversed(labels)) == ident[: len(labels)]
 
 
+DEVICE_CATEGORIES = {"gamepad", "camera"}
+DEVICE_RESERVED = {"input", "usb"}
+
+
+def check_devices(man):
+    """`permissions.devices` (section 3.1.5): a list of one to four different categories; a name that this reader does not implement is "update panpak"."""
+    p = man.get("permissions", {})
+    if "devices" not in p:
+        return
+    d = p["devices"]
+    if not (isinstance(d, list) and 1 <= len(d) <= 4 and all(isinstance(x, str) for x in d) and len(set(d)) == len(d)):
+        raise Fail("invalid manifest field permissions.devices")
+    for x in d:
+        if x not in DEVICE_CATEGORIES:
+            raise Fail(f"permissions.devices {x!r} is not implemented by this reader: update panpak")
+
+
 HOST_ARCHS = {"x86_64", "aarch64"}
 HOST_DISPLAYS = {"x11", "wayland"}
 HOST_PORTALS = {"document"}
@@ -499,6 +516,7 @@ def check_fields(man):
     if mods is not None and not (isinstance(mods, str) and len(mods) == 64 and all(c in "0123456789abcdef" for c in mods)):
         raise Fail("invalid manifest field abi.modules")
     check_host(man)
+    check_devices(man)
     check_home_paths(man)
     check_xdg_dirs(man)
     check_desktop(man)

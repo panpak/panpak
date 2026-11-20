@@ -109,6 +109,36 @@
   ],
   "ok": false
  },
+ "invalid-devices-boolean.panpak": {
+  "err": [
+   "devices"
+  ],
+  "ok": false
+ },
+ "invalid-devices-empty.panpak": {
+  "err": [
+   "devices"
+  ],
+  "ok": false
+ },
+ "invalid-devices-repeat.panpak": {
+  "err": [
+   "devices"
+  ],
+  "ok": false
+ },
+ "invalid-devices-reserved.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
+ "invalid-devices-unknown.panpak": {
+  "err": [
+   "update panpak"
+  ],
+  "ok": false
+ },
  "invalid-dotdot.panpak": {
   "err": [
    "unsafe"
@@ -784,6 +814,10 @@
   "ok": true
  },
  "valid-bus-fields.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-devices-list.panpak": {
   "err": [],
   "ok": true
  },

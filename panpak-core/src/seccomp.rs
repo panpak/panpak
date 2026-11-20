@@ -206,7 +206,7 @@ pub fn build() -> Result<Vec<Insn>> {
     build_with(false)
 }
 
-/// The program for an app that may open the uevent socket of netlink (`uevent`: the manifest says `devices = true`) or not.
+/// The program for an app that may open the uevent socket of netlink (`uevent`: the manifest has a `devices` list) or not.
 pub fn build_with(uevent: bool) -> Result<Vec<Insn>> {
     build_options(uevent, true)
 }
@@ -356,7 +356,7 @@ pub fn install() -> Result<()> {
     install_with(false)
 }
 
-/// The same for an app that may open the uevent socket (`devices = true`).
+/// The same for an app that may open the uevent socket (`devices` names a category).
 pub fn install_with(uevent: bool) -> Result<()> {
     install_options(uevent, true)
 }

@@ -220,7 +220,7 @@ notifications = false           # opt-in, §3.1.5: desktop notifications
 tray = false                   # opt-in, §3.1.5: a tray icon
 dbus_own = []                  # §3.1.5: names of the app on its private bus (no effect since step 13p; kept for old packages)
 mpris = false                  # §3.1.5: a media player: one alias org.mpris.MediaPlayer2.panpak.<id> on the host bus
-devices = false                # §3.1.5: hear of devices that come and go (game pads, USB devices, cameras, input devices): the uevent socket of netlink
+devices = ["gamepad"]          # §3.1.5: categories of devices; hear of devices that come and go: the uevent socket of netlink
 exec_written = false           # §3.1.8: the app may run programs that it wrote itself (downloaded, unpacked, built)
 
 [[permissions.home_paths]]     # last resort, §3.1.2: a fixed path in the home folder
@@ -458,10 +458,15 @@ its connection (measured with Chromium and Qt 6), which the host can read and ac
 `org.mpris.MediaPlayer2.panpak.<id>` (the id with each `.` and `-` written `_`) on the host bus for it, and the media keys and the shell's media
 widget reach the player through it (§9.5). The app never owns a name on the host bus.
 
-**`permissions.devices`** (boolean, default false). Lets the app open the uevent socket of netlink (`socket(AF_NETLINK, ..., NETLINK_KOBJECT_UEVENT)`), the way
-libudev, SDL and Chromium hear of a game pad, a USB device, a camera or an input device that is plugged in or removed (§9.8). Without it the call returns `EPROTONOSUPPORT`
-and the app starts all the same, without hot-plug notices. The notices carry the names and the numbers of every device of the machine that comes or goes (disks and network
-cards too), so the permission is shown at the level Attention. It does not give access to any device file: the view and Landlock stay as they are.
+**`permissions.devices`** (list of one to four different strings; absent means none). The categories of devices that the app is for. The boolean of the test versions is gone: a
+Reader MUST refuse a package whose `devices` is not a list, an empty list and a repeat (a malformed field), and MUST refuse with "update panpak" a name that it does not
+implement, which includes the names `input` and `usb`, which are reserved for categories that will give access to device files and do nothing now. The categories defined are
+`gamepad` and `camera`. In this version each of them gives exactly one thing: it lets the app open the uevent socket of netlink (`socket(AF_NETLINK, ..., NETLINK_KOBJECT_UEVENT)`),
+the way libudev, SDL and Chromium hear of a game pad, a camera or another device that is plugged in or removed (§9.8). Without any category the call returns `EPROTONOSUPPORT` and
+the app starts all the same, without hot-plug notices. The notices carry the names and the numbers of every device of the machine that comes or goes (disks and network
+cards too), whatever the category, so the permission is shown at the level Attention, with the categories named in the sentence. **No category gives access to a device file**: the view and Landlock
+stay as they are. A category is implemented, and its access to the files of its type added, only when an app of the harness uses it for real; the camera of a window of a desktop
+goes through the portal (`portal.camera`), not through this field.
 
 **`permissions.dbus_own`** (list of strings, at most 8, each at most once). Before step 13p: names the app may own
 on the session bus besides its own `app.id`. Since 13p every name the app takes is on its private bus (§9.5) and none is on the host bus, so the

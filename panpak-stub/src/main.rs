@@ -2243,7 +2243,7 @@ fn real_main() -> Result<()> {
 /// path that starts an app goes through here, so the filter (and `no_new_privs`) is in place for the app and
 /// for everything it runs. Does not return on success.
 fn exec_filtered(cmd: &mut Command, man: &panpak_core::Manifest, inet: bool) -> Result<()> {
-    panpak_core::seccomp::install_options(man.permissions.as_ref().and_then(|p| p.devices) == Some(true), inet)?;
+    panpak_core::seccomp::install_options(man.permissions.as_ref().is_some_and(|p| p.devices.as_ref().is_some_and(|d| !d.is_empty())), inet)?;
     stage("seccomp installed, executing the app");
     let err = cmd.exec(); // Replaces the process.
     bail!("exec failed: {err}")
