@@ -101,6 +101,8 @@ Flatpak gives, as far as Panpak has an equivalent. The effective ones are record
 `input` of `permissions.devices` is a name that is reserved and not implemented, so a tablet has no way in); the system bus of UDisks2 (mounting a drive from Kdenlive); gvfs. These are the things the series will show, not
 things that were taken away to look more secure: there is no way yet in Panpak to give them.
 
+**The GIMP conversion starts from `AppRun`.** The AppImage of GIMP sets, in its `AppRun`, the environment its program needs (the modules of GIO, the loaders of images, the typelibs of its Python and gjs plug-ins, the bundled loader that starts the plug-ins). Started by itself, `usr/bin/gimp-3.2` lost all of it: its plug-ins did not run and an error window opened at the start (found on the first control start on the Panpak machine). The conversion takes `AppRun` as its entry (`convert` emulates the environment of the AppImage for a script entry), and the plug-ins, the icons and the image loaders work. What remains is the check for updates through GVfs (RESULTS.md, holes to close).
+
 **The glibc.** The conversions carry what the AppImages carry (GIMP its own glibc, which is why its package says nothing of the glibc of the system); qBittorrent, built in `debian-13`, says `[host].glibc = "2.39"`. The Text Editor of the test
 of section 6 is built in `debian-14` (2.43). The machines have 2.44. **The Flatpak does not have the limit of a glibc of the system**: it brings its own runtime; a package that needs a glibc newer than the machine's is refused by Panpak
 (`PANPAK-E2005`) and the same app runs under Flatpak. That is a limit of Panpak that the results page says next to the numbers, and it does not bite on these machines.

@@ -21,11 +21,11 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
 # (id, name, permissions file, [(version, file name, SHA-256 published by the author)], entry or None) oldest first. The entry is given when the AppImage names a link as its program
-# (GIMP: `usr/bin/org.gimp.GIMP.Stable` is a link to `gimp-3.2`), which `convert` does not take as an entry.
+# (GIMP: its AppRun sets the environment that the program needs (GIO_MODULE_DIR for TLS, the pixbuf loaders, the typelibs, the bundled loader for its plug-ins), so it is the entry: the program started by itself loses all of it).
 APPS = {
     'gimp': ('org.gimp.GIMP', 'GIMP', 'conversions/gimp.toml', [
         ('3.2.6', 'GIMP-3.2.6-x86_64.AppImage', '79ea41bc9b06f78fda181849a9ca8e42d83f1124dedb756f4d52352e2465010f'),
-        ('3.2.8', 'GIMP-3.2.8-x86_64.AppImage', '8b43dc23e58a1b66ace9dd6d4d5f7e8532f3398e6109f95a1ec0b6ad036aa250')], 'usr/bin/gimp-3.2'),
+        ('3.2.8', 'GIMP-3.2.8-x86_64.AppImage', '8b43dc23e58a1b66ace9dd6d4d5f7e8532f3398e6109f95a1ec0b6ad036aa250')], 'AppRun'),
     'kdenlive': ('org.kde.kdenlive', 'Kdenlive', 'conversions/kdenlive.toml', [
         ('26.08.2', 'kdenlive-26.08.2-x86_64.AppImage', '3194c0979bcfb7ec4a0b33ebc05178a51cffdf5b180c3a89bcf4da94e025bc78'),
         ('26.08.3', 'kdenlive-26.08.3-x86_64.AppImage', '2c8322edfc86605e4c98a78a019310d9b4fc46bb8e94e6fe313dc7dd987e7671')], None),

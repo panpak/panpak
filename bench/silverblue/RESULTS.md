@@ -25,6 +25,7 @@ A function that does not work with Panpak because the conversion lacks a permiss
 
 | App | Operation that fails with Panpak | Permission of the Flatpak that Panpak lacks | Status |
 |---|---|---|---|
+| GIMP | The check for updates at every start (`https://www.gimp.org/gimp_versions.json`, loaded through GIO, which asks GVfs) fails with the error "loading of https://www.gimp.org/gimp_versions.json failed: Operation not supported", shown in a "GIMP Message" window at every start | talk to GVfs on the session bus (`org.gtk.vfs.*`; the Flatpak of GIMP has it, with `xdg-run/gvfs`) | open; seen on the control start on 2026-11-21 (Fedora 45, GNOME 51) |
 | *(filled from the series: for example, opening a file by path outside the user folders; a graphics tablet in GIMP; a camera or capture device in Kdenlive; mounting a drive from Kdenlive; gvfs locations such as a network share)* | | `filesystem=host`, `device=all`, UDisks2, gvfs | open |
 
 ## Where Panpak loses (what the Flatpak gives and the conversion does not)
