@@ -202,6 +202,8 @@ One app, two systems, one list of things a person does with a document. On `silv
 
 **The files** for these operations are made on the host with `python3 make_ops_files.py ops` (two text files in one folder, a picture of 640 by 400 pixels, a document with one paragraph: the same bytes on both machines; the document opens in ONLYOFFICE): copy `ops/Documents` and `ops/Pictures` into the home of both machines.
 
+**A step that fails with Panpak because the conversion lacks a permission that the Flatpak has** (`filesystem=host`, `device=all`, UDisks2, gvfs) is written in `RESULTS.md` as a hole to close (principle 3), with the exact operation that fails: not only as a loss.
+
 **The real operations of the apps of the series** (done by a person in the session, on both machines, with the permissions of section 2; what is written is whether each step works, what the dialog was, and what failed):
 
 | App | Operations |

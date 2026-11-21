@@ -19,6 +19,14 @@ freedesktop 25.08), which are not the runtime of Fedora: nothing is shared with 
 
 *(the base: space of the system installation of Flatpak, its apps and runtimes, the list with sizes)*
 
+## Holes to close (principle 3)
+
+A function that does not work with Panpak because the conversion lacks a permission that the Flatpak has is not only written under "Where Panpak loses": it is a hole to close, because security is never bought by removing features. Each entry names the exact operation that fails, the missing permission, and the app. The list is filled from the series (the operations of `PROCEDURE.md` section 6), nothing is written from memory.
+
+| App | Operation that fails with Panpak | Permission of the Flatpak that Panpak lacks | Status |
+|---|---|---|---|
+| *(filled from the series: for example, opening a file by path outside the user folders; a graphics tablet in GIMP; a camera or capture device in Kdenlive; mounting a drive from Kdenlive; gvfs locations such as a network share)* | | `filesystem=host`, `device=all`, UDisks2, gvfs | open |
+
 ## Where Panpak loses (what the Flatpak gives and the conversion does not)
 
 Said before the numbers, as they were found, each with its reason. Nothing was taken away to look more secure: these are functions for which Panpak has no way yet.
@@ -30,7 +38,11 @@ Said before the numbers, as they were found, each with its reason. Nothing was t
 - **An app built on a base newer than the glibc of the machine is refused.** The Flatpak brings its runtime and its glibc; Panpak uses the glibc of the system and `panpak install` refuses a package that needs a newer one (`PANPAK-E2005`). The machines of the series have glibc 2.44 and it
   does not bite here; a reader with an older Fedora would meet it (a package built on an older base runs on more systems, and that is a choice of whoever builds the package).
 - **The update of a conversion depends on how the AppImage was rebuilt.** A rebuilt AppImage shares fewer chunks with the previous one than a Flatpak shares objects (measured on the host: Kdenlive 26.08.2 to 26.08.3 downloads 127 MB of a 255 MB package, 5,901 chunks fetched and 11,757 reused); it is a property of the conversion, not of the format, and the table says it.
-- *(more are added here as the series find them: the permissions that are not the same list on the two sides, the 3D that is off, the versions that differ, ...)*
+- *(more are added here, and each one that is a missing permission also goes in the table of holes above, as the series find them: the permissions that are not the same list on the two sides, the 3D that is off, the versions that differ, ...)*
+
+## To understand later
+
+- **Why the update of Kdenlive downloads 127 MB of a 255 MB package** (26.08.2 to 26.08.3, 5,901 chunks fetched and 11,757 reused, measured on the host). Is it how the AppImage was rebuilt (files that change in place shift the chunk boundaries), the chunking parameters, or the compression? Not explained yet: to be looked at before the format freeze, since the chunking parameters are one of the format gaps.
 
 ## Setup
 

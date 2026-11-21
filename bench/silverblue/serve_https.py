@@ -52,6 +52,10 @@ def main():
     a = ap.parse_args()
     state = Path(a.state)
     addresses = a.address or ['192.168.122.1', '127.0.0.1']
+    # Never on every interface: only on addresses of the host that the machines see.
+    for x in addresses:
+        if ipaddress.ip_address(x).is_unspecified:
+            sys.exit(f'refused: {x} would listen on every interface; give the address of the libvirt network (192.168.122.1)')
     make(state, addresses)
     print(f'authority: {state / "ca.pem"} (copy this file to the machine, with --ca); serving {a.folder} on port {a.port}, bound to {next((x for x in addresses if not x.startswith('127.')), '127.0.0.1')}, certificate for {", ".join(addresses)}', flush=True)
     import os
