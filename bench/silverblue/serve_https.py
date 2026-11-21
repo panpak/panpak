@@ -43,11 +43,29 @@ def make(state, addresses):
     (state / 'server.key').chmod(0o600)
 
 
+def need_keep(state, addresses):
+    """True if the files of `state` can be used again: they exist, are valid for at least 7 more days, and the certificate names every address asked for."""
+    try:
+        from cryptography import x509
+        leaf = x509.load_pem_x509_certificate((state / 'server.pem').read_bytes())
+        ca = x509.load_pem_x509_certificate((state / 'ca.pem').read_bytes())
+        if not (state / 'server.key').exists():
+            return False
+        limit = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=7)
+        if leaf.not_valid_after_utc < limit or ca.not_valid_after_utc < limit:
+            return False
+        names = {str(i) for i in leaf.extensions.get_extension_for_class(x509.SubjectAlternativeName).value.get_values_for_type(x509.IPAddress)}
+        return set(addresses) <= names
+    except Exception:
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('folder')
     ap.add_argument('--port', type=int, default=8443)
     ap.add_argument('--address', action='append', help='an address that the certificate is valid for (default: 192.168.122.1 and 127.0.0.1)')
+    ap.add_argument('--renew', action='store_true', help='make a new authority and certificate even if the ones in the state folder are still good (the machines then need the new ca.pem)')
     ap.add_argument('--state', default=str(Path.home() / '.cache/panpak-bench-server'))
     a = ap.parse_args()
     state = Path(a.state)
@@ -56,7 +74,9 @@ def main():
     for x in addresses:
         if ipaddress.ip_address(x).is_unspecified:
             sys.exit(f'refused: {x} would listen on every interface; give the address of the libvirt network (192.168.122.1)')
-    make(state, addresses)
+    # The authority is kept between runs (the machines hold a copy of ca.pem): it is made again only if it is missing, expires within a week, or `--renew` is given.
+    if a.renew or not need_keep(state, addresses):
+        make(state, addresses)
     print(f'authority: {state / "ca.pem"} (copy this file to the machine, with --ca); serving {a.folder} on port {a.port}, bound to {next((x for x in addresses if not x.startswith('127.')), '127.0.0.1')}, certificate for {", ".join(addresses)}', flush=True)
     import os
     # Bound to the first address that is not the loopback (the one of the virtual machines), not to every interface of the host.
