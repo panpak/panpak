@@ -60,8 +60,10 @@ Said before the numbers, as they were found, each with its reason. Nothing was t
 
 - **Why the update of Kdenlive downloads 127 MB of a 255 MB package** (26.08.2 to 26.08.3, 5,901 chunks fetched and 11,757 reused, measured on the host). Is it how the AppImage was rebuilt (files that change in place shift the chunk boundaries), the chunking parameters, or the compression? Not explained yet: to be looked at before the format freeze, since the chunking parameters are one of the format gaps.
 
-- **If the series confirm that GIMP and Kdenlive start more slowly with Panpak** (the control starts: GIMP 17.7 s against 12.4 s, Kdenlive 6.2 s against 4.5 s, one measure each), find the cause before the report (principle 6). The first hypothesis to check: GIMP waits for a time limit on GVfs, which is not there under Panpak
-  (the check for updates through GVfs fails). Measure what the app does in the extra seconds (a trace of its system calls with times, and the time between the screen of start and the main window), with and without the check for updates.
+- **The first start of GIMP with Panpak: the hypothesis of a wait on GVfs is not supported.** On the host (private Wayland display, the conversion in a home of its own, 3 starts each): with the default settings the screen of start is at 0.7 s and
+  the main window at 2.74 s on a later start (16.3 s on the first, which makes the profile); with the check for updates off the main window is at 2.74 s and 15.3 s. The check for updates only opens its error window; it does not delay the main window, and a later
+  start of the conversion (2.9 s median in series 3 on the machine) equals the control start of the Flatpak (3.0 s, one measure). What is slower is the first start, which makes the profile of GIMP (about 13 s of work, in the two formats): 15.9 s median in series 3 against 12.4 s in the control of
+  the Flatpak. The cause of the difference of about 3.5 s is not found yet; it is looked for with the series of the Flatpak machine (the same measure, repeated) before it is written as a result, and Kdenlive is looked at the same way (first start 4.4 s median, 3.7 to 10.2 s in series 3, against 4.45 s).
 
 ## Setup
 
