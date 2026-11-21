@@ -480,6 +480,7 @@ def cmd_update(args):
             for what, cmd in install_cmds('panpak', args.app, f'{args.pkg_base_url.rstrip("/")}/{a["panpak_id"]}.prev.panpak', None, keys, previous=True):
                 sh(cmd)
             update_cmd = [PANPAK, 'update', '--yes', '--timeout', '300', a['panpak_id']]
+        seed_first_run(args.system, args.app)  # the removal above took the data with it: the settings of the first start are written again, so that the starts that follow reach the main window
         quiet()
         space0, used0, rx0, t0 = space(args.system), fs_used(), rx_bytes(), time.time()
         p = sh(update_cmd)
