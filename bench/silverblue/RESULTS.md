@@ -64,6 +64,14 @@ Said before the numbers, as they were found, each with its reason. Nothing was t
 
 *(the permissions of each side as the system says them; the operations of `PROCEDURE.md` section 6 for each app and each system, and the Text Editor test against the one of Fedora: open from the file manager, save, save as, reopen from the recent files, and the second document of the same folder)*
 
+## Wayland and the desktop (a limit of GNOME, not of the formats)
+
+On GNOME the Wayland compositor (Mutter) does not support security contexts. An app of either format gets the normal socket of the session and so has the same powers over the desktop (reading what other windows show, sending input) with Panpak and with Flatpak. `panpak doctor` says it as a note. It is a limit of GNOME that applies equally to the two sides and does not change the comparison of the sandboxes.
+
+## Launcher and prerequisites (the runtime of Panpak)
+
+*(whether the first `panpak install` installed the `panpak-stub` by itself (`runtime_installed`), and its space and time, next to the runtimes of Flatpak. The user should never have to run `install-runtime` by hand (step 10a).)*
+
 ## The sandbox of an app with a browser engine (ONLYOFFICE)
 
 *(the table of `sandbox` for the two machines. A first reading on the host, 2026-11-21: in both, the editor and its six helpers are in one sandbox with a filter of system calls, no capability, `--no-sandbox` on every helper (the app turns off the Chromium sandbox itself), and the network and

@@ -154,6 +154,8 @@ for a in gimp kdenlive onlyoffice qb; do ./silverblue_bench.py cycle --system fl
 sudo systemctl reboot
 ```
 
+For Panpak, before the series, once: `./silverblue_bench.py prerequisites --system panpak --trials 5` (the launcher and its prerequisites: the time and space of `install-runtime`, in a private home, so that the machine stays as it is); `install` then records on the first app whether it installed the runtime by itself (`runtime_installed`, `runtime_bytes_before`/`after`).
+
 For Panpak the same with `--system panpak --pkg-base-url https://192.168.122.1:8443 --keys '*=<key of the converter>' --ca ~/ca.pem` for `scenario` and `update`, and `--pkg-url https://192.168.122.1:8443/<app id>.panpak` for `cycle`
 (the same `--keys` and `--ca`). The script installs with `panpak install --yes --expect-key <key>`: a package of another key is refused and nothing is pinned. It never uses `--trust-first-key`: the comparison shows the
 safe way (the key that the person was told), not the one that trusts what comes. The key is the one of the converter, written by whoever made the packages (read it from `panpak inspect <package>` on the host that made them, never on
@@ -200,18 +202,15 @@ One app, two systems, one list of things a person does with a document. On `silv
    thing that decides whether Ctrl+S works.
 3. What is written is the table above for each machine and the two files of permissions: no numbers of time or space.
 
-**The files** for these operations are made on the host with `python3 make_ops_files.py ops` (two text files in one folder, a picture of 640 by 400 pixels, a document with one paragraph: the same bytes on both machines; the document opens in ONLYOFFICE): copy `ops/Documents` and `ops/Pictures` into the home of both machines.
+**The files** for these operations are made on the host with `python3 make_ops_files.py ops` (two text files in one folder, a picture, a document, two 6 second test videos made with ffmpeg, and, in `ops/outside`, a picture, a document and a video in a folder that is not a user folder; the same bytes on both machines): copy `ops/Documents`, `ops/Pictures`, `ops/Videos` and `ops/outside` into the home of both machines. The test video of Kdenlive is `Videos/clip.mp4`; `outside/clip-outside.mp4` is the one for a clip by path outside the granted folders.
+
+**The checklist to print**: `python3 make_checklist.py checklist.html`, open it in a browser and print it. It has one row per operation, for each app and for each machine (what to do with the mouse, what must happen, boxes for worked and failed, a line for what was seen); the operations are the ones in that script (GIMP, Kdenlive, ONLYOFFICE, qBittorrent and the Text Editor of this section) and the sheet is the record of the manual part.
 
 **A step that fails with Panpak because the conversion lacks a permission that the Flatpak has** (`filesystem=host`, `device=all`, UDisks2, gvfs) is written in `RESULTS.md` as a hole to close (principle 3), with the exact operation that fails: not only as a loss.
 
-**The real operations of the apps of the series** (done by a person in the session, on both machines, with the permissions of section 2; what is written is whether each step works, what the dialog was, and what failed):
+**The prerequisites of Panpak.** The first `panpak install` on a machine may also install the `panpak-stub` that comes with the program (the runtime of the launcher): the script records, for the first install of a series, whether it did (`runtime_installed`), and measures it in every case as **launcher and prerequisites**, next to the runtimes of Flatpak: its space and the time it took. If `install` does not install it by itself, the first step of the procedure is `panpak install-runtime <stub> --allow-unsigned` and the same two numbers are taken for it. The user should never have to run it by hand (step 10a): in the procedure it is a recorded prerequisite, not a part of the test.
 
-| App | Operations |
-|---|---|
-| GIMP | open an image of `~/Pictures` from File, Open; change it (Colors, Invert); File, Export As a PNG in `~/Pictures`; close and open it again from the recent files; open an image from a folder outside the user folders (`/tmp` or a second disk) through the dialog; if there is a graphics tablet (or a virtual one), see if the pen is seen |
-| Kdenlive | new project; add a colour clip and a title to the timeline; render to MP4 in `~/Videos`; close and open the project again; open a project that points at a clip in another folder (the clip is found, or asked for); see if a camera or a capture device is offered |
-| ONLYOFFICE | open a `.docx` from `~/Documents`; type; Ctrl+S; Save as in `~/Documents` and in `~/Downloads`; reopen it from the recent files; insert a picture from `~/Pictures`; see if the cloud connectors can be reached (a Nextcloud address is not needed: only that the page loads) |
-| qBittorrent | add the magnet link of a small, legal file; the download starts and ends in `~/Downloads`; the tray icon and the notification at the end |
+**Wayland on GNOME.** The security contexts of Wayland are not there in GNOME (Mutter does not support them yet, `panpak doctor` says so): an app has on the desktop the same powers with Panpak as with Flatpak. It is a limit of GNOME, not of the formats, and the results page says it once, in the part about the sandbox.
 
 ## 7. The sandbox of an app with a browser engine (ONLYOFFICE, CEF)
 

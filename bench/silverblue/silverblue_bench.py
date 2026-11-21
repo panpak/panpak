@@ -25,16 +25,19 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 HOME = Path.home()
 RESULTS = Path(os.environ.get('BENCH_RESULTS', HOME / 'panpak-bench-results'))
 WINDOWS = HOME / '.cache/panpak-bench/windows.jsonl'
+RUNTIMES = HOME / '.local/share/panpak/runtimes'  # where the panpak-stub (the runtime of the launcher) is installed
 PANPAK = os.environ.get('PANPAK', str(HOME / '.local/bin/panpak'))
 
 # The apps of the series (PROCEDURE.md, section 2): daily-use apps that a person adds to Silverblue from Flathub, at the same upstream version as the official AppImage that the Panpak package is
@@ -228,6 +231,7 @@ def uninstall(system, app):
 def do_install(system, app, args, tag=None):
     steps = install_cmds(system, app, getattr(args, 'pkg_url', None), getattr(args, 'pkg_file', None), parse_keys(getattr(args, 'keys', None)))
     quiet()
+    rt0 = du(RUNTIMES) if system == 'panpak' else None
     space0, used0, rx0, t0 = space(system), fs_used(), rx_bytes(), time.time()
     times = {}
     for what, cmd in steps:
@@ -237,7 +241,12 @@ def do_install(system, app, args, tag=None):
     wall = time.time() - t0
     quiet()
     rx1, space1, used1 = rx_bytes(), space(system), fs_used()
-    return record(system, kind='install', app=app, tag=tag, wall_s=round(wall, 3), **times, rx_bytes=rx1 - rx0,
+    extra = {}
+    if system == 'panpak':
+        # Did this install put the runtime of the launcher (the panpak-stub) in place by itself? (step 10a: the user never has to run install-runtime by hand)
+        rt1 = du(RUNTIMES)
+        extra = {'runtime_bytes_before': rt0, 'runtime_bytes_after': rt1, 'runtime_installed': rt0 == 0 and rt1 > 0}
+    return record(system, kind='install', app=app, tag=tag, wall_s=round(wall, 3), **times, **extra, rx_bytes=rx1 - rx0,
                   space_bytes=sum(space1.values()) - sum(space0.values()), fs_used_bytes=used1 - used0,
                   space_dirs={k: space1[k] - space0[k] for k in space1})
 
@@ -479,6 +488,27 @@ def cmd_sandbox(args):
     record(args.system, kind='sandbox', app=args.app, window_pid=row['pid'], processes=facts, no_sandbox_flag=sum('--no-sandbox' in f['cmd'] for f in facts), seccomp_modes=sorted({f['seccomp'] for f in facts}))
 
 
+def cmd_prerequisites(args):
+    """The launcher and its prerequisites, measured in every case: `panpak install-runtime <stub> --allow-unsigned` in a private, empty home (nothing of the machine is touched), its time and the space it takes.
+    The user should never have to run it by hand (step 10a); here it is only the number that Flatpak's runtimes are put next to. Panpak only."""
+    if args.system != 'panpak':
+        raise SystemExit('prerequisites: Panpak only (the runtimes of Flatpak are in the install of each app)')
+    stub = Path(args.stub or HOME / '.local/bin/panpak-stub')
+    for i in range(args.trials):
+        home = Path(tempfile.mkdtemp(prefix='panpak-bench-prereq-', dir=HOME / '.cache'))
+        try:
+            env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'), XDG_DATA_HOME=str(home / '.local/share'), XDG_CACHE_HOME=str(home / '.cache'))
+            drop_caches()
+            t0 = time.time()
+            p = subprocess.run([PANPAK, 'install-runtime', str(stub), '--allow-unsigned'], env=env, capture_output=True, text=True)
+            wall = time.time() - t0
+            if p.returncode != 0:
+                raise SystemExit(f'install-runtime failed: {p.stdout}{p.stderr}')
+            record('panpak', kind='prerequisites', app='-', trial=i, wall_s=round(wall, 3), space_bytes=du(home / '.local/share/panpak'), stub_bytes=stub.stat().st_size)
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+
+
 def cmd_install(args):
     do_install(args.system, args.app, args)
 
@@ -650,6 +680,11 @@ def main():
     common(p)
     pkg(p)
     p.set_defaults(fn=cmd_install)
+    p = sub.add_parser('prerequisites')
+    common(p, apps=False)
+    p.add_argument('--stub', help='the panpak-stub (default: ~/.local/bin/panpak-stub)')
+    p.add_argument('--trials', type=int, default=5)
+    p.set_defaults(fn=cmd_prerequisites)
     p = sub.add_parser('sandbox')
     common(p)
     p.add_argument('--settle', type=float, default=8.0, help='seconds to wait after the window, so that the helpers of the browser engine are started')
