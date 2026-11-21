@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Writes one JSON line per window event to ~/.cache/panpak-bench/windows.jsonl:
 //   {"t": <seconds since 1970, real time>, "event": "created" | "first-frame" | "closed", "wm_class": "...", "app_id": "...", "title": "...", "pid": N}
-// "first-frame" is the moment the compositor has the first frame of the window on screen: the time to a usable window is that minus the time the command was started.
+// "first-frame" is the moment the compositor has the first frame of the window on screen ("via": "first-frame" if the signal of the window actor was seen, "map" if the window was mapped without it): the time to a usable window is that minus the time the command was started.
 // Nothing here changes what is shown. It needs GNOME Shell 45 or later (ES modules).
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
@@ -16,11 +16,16 @@ export default class WinWatch extends Extension {
         this._path = GLib.build_filenamev([dir, 'windows.jsonl']);
         this._ids = [];
         this._hooked = new Set();
+        this._framed = new Set();
         this._ids.push([global.display, global.display.connect('window-created', (_d, w) => this._watch(w))]);
         this._ids.push([global.window_manager, global.window_manager.connect('map', (_wm, actor) => {
             const w = actor.meta_window;
-            if (w && w.get_window_type() === Meta.WindowType.NORMAL)
-                this._hook(w);
+            if (!w || w.get_window_type() !== Meta.WindowType.NORMAL)
+                return;
+            this._hook(w);
+            // The window is shown right after its first frame, so a window that is mapped without a 'first-frame' seen (the actor did not exist yet when the window was created, or the signal came
+            // before it was connected) gets its first frame from here: the time is the moment of the map, the same moment to within a frame.
+            this._frame(w, 'map');
         })]);
         // Windows that exist already (the extension was enabled after them) are not reported: the measurements start apps after login.
         this._log({event: 'enabled', wm_class: '', app_id: '', title: '', pid: 0});
@@ -69,8 +74,16 @@ export default class WinWatch extends Extension {
         this._hooked.add(id);
         const first = actor.connect('first-frame', () => {
             actor.disconnect(first);
-            this._log(this._fields(w, 'first-frame'));
+            this._frame(w, 'first-frame');
         });
+    }
+
+    _frame(w, via) {
+        const id = w.get_id();
+        if (this._framed.has(id))
+            return;
+        this._framed.add(id);
+        this._log({...this._fields(w, 'first-frame'), via});
     }
 
     _watch(w) {
@@ -82,6 +95,7 @@ export default class WinWatch extends Extension {
             this._log(this._fields(w, 'closed'));
             w.disconnect(closed);
             this._hooked.delete(w.get_id());
+            this._framed.delete(w.get_id());
         });
     }
 }

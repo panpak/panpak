@@ -45,12 +45,12 @@ PANPAK = os.environ.get('PANPAK', str(HOME / '.local/bin/panpak'))
 # `te` is **not** in a series: it is the app of the test of permissions and operations (`permissions`), and on the Flatpak machine it is the Text Editor of Fedora that Silverblue already has.
 # `update`: the Flathub commit of the previous version (the history of Flathub keeps only a few commits, so a previous version may not be there: then there is no pair) and the versions.
 APPS = {
-    'gimp': {'name': 'GIMP', 'flatpak': 'org.gimp.GIMP', 'panpak_id': 'org.gimp.GIMP', 'window': r'(?i)org\.gimp\.GIMP|gimp', 'series': True, 'update': None},
-    'kdenlive': {'name': 'Kdenlive', 'flatpak': 'org.kde.kdenlive', 'panpak_id': 'org.kde.kdenlive', 'window': r'(?i)org\.kde\.kdenlive|kdenlive', 'series': True,
+    'gimp': {'name': 'GIMP', 'flatpak': 'org.gimp.GIMP', 'panpak_id': 'org.gimp.GIMP', 'window': r'(?i)org\.gimp\.GIMP|gimp', 'title': r'Image Manipulation Program', 'series': True, 'update': None},
+    'kdenlive': {'name': 'Kdenlive', 'flatpak': 'org.kde.kdenlive', 'panpak_id': 'org.kde.kdenlive', 'window': r'(?i)org\.kde\.kdenlive|kdenlive', 'title': r'^(?!Splash).+ \u2014 Kdenlive$', 'series': True,
                  'update': {'commit': 'b1fc34accc861c296d08863b01c65d9c32816bdf1d08414ee157de565e56199d', 'from': '26.08.2', 'to': '26.08.3'}},
-    'onlyoffice': {'name': 'ONLYOFFICE Desktop Editors', 'flatpak': 'org.onlyoffice.desktopeditors', 'panpak_id': 'org.onlyoffice.desktopeditors', 'window': r'(?i)onlyoffice|desktopeditors', 'series': True,
+    'onlyoffice': {'name': 'ONLYOFFICE Desktop Editors', 'flatpak': 'org.onlyoffice.desktopeditors', 'panpak_id': 'org.onlyoffice.desktopeditors', 'window': r'(?i)onlyoffice|desktopeditors', 'title': r'ONLYOFFICE', 'series': True,
                    'update': {'commit': '5806f4728bd3e2bc5314c2c0dfbc59d10dcac33516b5536ac12ceae2e79f98c1', 'from': '9.4.0', 'to': '10.0.0'}},
-    'qb': {'name': 'qBittorrent', 'flatpak': 'org.qbittorrent.qBittorrent', 'panpak_id': 'org.qbittorrent.qBittorrent', 'window': r'(?i)qbittorrent', 'series': True, 'update': None},
+    'qb': {'name': 'qBittorrent', 'flatpak': 'org.qbittorrent.qBittorrent', 'panpak_id': 'org.qbittorrent.qBittorrent', 'window': r'(?i)qbittorrent', 'title': r'qBittorrent', 'series': True, 'update': None},
     'te': {'name': 'GNOME Text Editor', 'flatpak': 'org.gnome.TextEditor', 'panpak_id': 'org.gnome.TextEditor', 'window': r'(?i)org\.gnome\.TextEditor|texteditor', 'series': False, 'update': None},
 }
 
@@ -219,6 +219,10 @@ def uninstall(system, app):
     if system == 'flatpak':
         sh(['flatpak', 'uninstall', '--user', '-y', '--noninteractive', '--delete-data', a['flatpak']], check=False)
         sh(['flatpak', 'uninstall', '--user', '-y', '--noninteractive', '--unused'], check=False)
+        # Some Flatpaks keep their settings outside ~/.var/app, in a folder of the home that the manifest asks for (GIMP: xdg-config/GIMP): `--delete-data` does not remove it, and a second trial would not
+        # be a first start. It is removed with the data (the machines of the series have no other use for it).
+        for rel in FLATPAK_HOME_DATA.get(app, []):
+            shutil.rmtree(HOME / rel, ignore_errors=True)
     else:
         sh([PANPAK, 'remove', '--purge-data', '--yes', a['panpak_id']], check=False)
         sh([PANPAK, 'gc'], check=False)
@@ -226,6 +230,42 @@ def uninstall(system, app):
             pkg = HOME / '.cache/panpak-bench' / name
             if pkg.exists():
                 pkg.unlink()
+
+
+# Folders of the home, outside ~/.var/app, where a Flatpak keeps the app's settings (a permission of its manifest).
+FLATPAK_HOME_DATA = {'gimp': ['.config/GIMP']}
+
+
+# What a person does once, at the very first start, and is not part of the start that is measured: qBittorrent shows a modal legal notice before its main window, until it is accepted (a setting of the
+# app, `LegalNotice\\Accepted`). It is written for the two systems in the place where each keeps the app's configuration, after the install has been measured and before the first start.
+FIRST_RUN_CONFIG = {
+    # app: (file in the configuration folder under Flatpak, file under Panpak, text added to it)
+    'qb': ('qBittorrent/qBittorrent.conf', 'qBittorrent/qBittorrent.conf', '[LegalNotice]\nAccepted=true\n'),
+    # GIMP shows a welcome window after the main one, at every start of a profile that has not set `show-welcome-dialog`; with no `config-version` in the file it takes the profile for a new one and shows it anyway,
+    # so the two lines go together. (Its Flatpak keeps this file in ~/.config/GIMP, a permission of its manifest; under Panpak it is in the private home of the app.)
+    'gimp': ('GIMP/3.2/gimprc', 'GIMP/3.2/gimprc', '(config-version "3.2.8")\n(show-welcome-dialog no)\n'),
+    # Kdenlive: a first start shows a window that is not the main one: the quick settings (when the group `[version]` is not in its file yet) and then the welcome page (`showWelcome`). What a confirmed
+    # first run writes is the text below (read from a real one); the Flatpak of KDE keeps the file as `kdenlive-flatpakrc`, with the paths of its own build under `[env]`. For Panpak the `[env]` paths are
+    # the ones that a confirmed first run writes under its view (see PROCEDURE.md): they are not guessed here.
+    'kdenlive': ('kdenlive-flatpakrc', 'kdenliverc', '[Recent Profiles]\nrecentProfileNames=HD 1080p 25 fps\nrecentProfiles=atsc_1080p_25\n\n'
+                 '[capture]\ndecklink_extension=mov\ngrab_extension=mov\ngrab_parameters=-crf 25 -vcodec libx264 -preset veryfast -threads 0\n\n'
+                 '[startup]\nshowWelcome=false\nlastSeenVersionMajor=26\nlastSeenVersionMicro=3\nlastSeenVersionMinor=8\n\n[version]\nversion=26.08.3\n'),
+}
+
+
+def seed_first_run(system, app):
+    if app not in FIRST_RUN_CONFIG:
+        return
+    flat, pan, text = FIRST_RUN_CONFIG[app]
+    if system == 'flatpak' and app in FLATPAK_HOME_DATA:
+        base = HOME / '.config'  # GIMP's Flatpak reads and writes ~/.config/GIMP (xdg-config/GIMP:create)
+    else:
+        base = HOME / '.var/app' / APPS[app]['flatpak'] / 'config' if system == 'flatpak' else HOME / '.local/share/panpak/userdata' / APPS[app]['panpak_id'] / '.config'
+    path = base / (flat if system == 'flatpak' else pan)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old = path.read_text() if path.exists() else ''
+    if text not in old:
+        path.write_text(old + ('\n' if old and not old.endswith('\n') else '') + text)
 
 
 def do_install(system, app, args, tag=None):
@@ -246,9 +286,11 @@ def do_install(system, app, args, tag=None):
         # Did this install put the runtime of the launcher (the panpak-stub) in place by itself? (step 10a: the user never has to run install-runtime by hand)
         rt1 = du(RUNTIMES)
         extra = {'runtime_bytes_before': rt0, 'runtime_bytes_after': rt1, 'runtime_installed': rt0 == 0 and rt1 > 0}
-    return record(system, kind='install', app=app, tag=tag, wall_s=round(wall, 3), **times, **extra, rx_bytes=rx1 - rx0,
+    row = record(system, kind='install', app=app, tag=tag, wall_s=round(wall, 3), **times, **extra, rx_bytes=rx1 - rx0,
                   space_bytes=sum(space1.values()) - sum(space0.values()), fs_used_bytes=used1 - used0,
                   space_dirs={k: space1[k] - space0[k] for k in space1})
+    seed_first_run(system, app)
+    return row
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------------- the windows
@@ -269,28 +311,32 @@ def extension_ready():
     return WINDOWS.exists() and any(r.get('event') == 'enabled' for r in window_events())
 
 
-def wait_frame(app, since, timeout):
-    """The time (seconds since 1970) of the first frame of a window of `app` that appeared after `since`, or None."""
-    pat = re.compile(APPS[app]['window'])
+def is_main_window(app, r):
+    """True if the line is the first frame of the main window of `app`: the window that the person works in, never a screen of start. The window is the one of the app (`window`: its class or id) and, where the
+    app opens a screen of start first, its title is the one of the main window (`title`). The same rule for Flatpak and for Panpak (PROCEDURE.md, "The window that counts")."""
+    a = APPS[app]
+    if r.get('event') != 'first-frame':
+        return False
+    if not (re.search(a['window'], r.get('wm_class', '')) or re.search(a['window'], r.get('app_id', ''))):
+        return False
+    return not a.get('title') or re.search(a['title'], r.get('title', '')) is not None
+
+
+def wait_frame_row(app, since, timeout):
+    """The whole line of the first frame of the main window of `app` after `since` (it has the process id of the client that owns the window), or None."""
     end = time.time() + timeout
     while time.time() < end:
         for r in window_events():
-            if r.get('t', 0) >= since and r.get('event') == 'first-frame' and (pat.search(r.get('wm_class', '')) or pat.search(r.get('app_id', ''))):
-                return r['t']
+            if r.get('t', 0) >= since and is_main_window(app, r):
+                return r
         time.sleep(0.02)
     return None
 
 
-def wait_frame_row(app, since, timeout):
-    """The whole line of the first frame of a window of `app` after `since` (it has the process id of the client that owns the window), or None."""
-    pat = re.compile(APPS[app]['window'])
-    end = time.time() + timeout
-    while time.time() < end:
-        for r in window_events():
-            if r.get('t', 0) >= since and r.get('event') == 'first-frame' and (pat.search(r.get('wm_class', '')) or pat.search(r.get('app_id', ''))):
-                return r
-        time.sleep(0.05)
-    return None
+def wait_frame(app, since, timeout):
+    """The time (seconds since 1970) of the first frame of the main window of `app` that appeared after `since`, or None."""
+    r = wait_frame_row(app, since, timeout)
+    return r['t'] if r else None
 
 
 def stop(system, app, unit):
@@ -301,7 +347,7 @@ def stop(system, app, unit):
     time.sleep(1.0)
 
 
-def one_start(system, app, kind, trial, timeout=60):
+def one_start(system, app, kind, trial, timeout=60, hold=0.0):
     """One start: the command is started inside a systemd scope (for both systems, so that the cost is the same) and stopped through it. The time is from just before the
     command to the first frame of the window that the compositor reports."""
     if not APPS[app]['series']:
@@ -312,7 +358,10 @@ def one_start(system, app, kind, trial, timeout=60):
     cmd = ['systemd-run', '--user', '--scope', '--quiet', f'--unit={unit}', '--', *launcher(system, app)]
     t0 = time.time()
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    t = wait_frame(app, t0, timeout)
+    row = wait_frame_row(app, t0, timeout)
+    t = row['t'] if row else None
+    if row and hold:
+        time.sleep(hold)  # for a person who watches: the window stays on the screen
     stop(system, app, unit)
     try:
         proc.wait(timeout=10)
@@ -320,12 +369,12 @@ def one_start(system, app, kind, trial, timeout=60):
         os.killpg(proc.pid, signal.SIGKILL)  # the group that this script made, never by a name
     if t is None:
         return record(system, kind=kind, app=app, trial=trial, ok=False, note='no window within %d s' % timeout)
-    return record(system, kind=kind, app=app, trial=trial, ok=True, window_s=round(t - t0, 4))
+    return record(system, kind=kind, app=app, trial=trial, ok=True, window_s=round(t - t0, 4), window_title=row.get('title', ''))
 
 
-def warm_starts(system, app, n, gap=3.0, kind='warm'):
+def warm_starts(system, app, n, gap=3.0, kind='warm', hold=0.0):
     for i in range(n):
-        one_start(system, app, kind, i)
+        one_start(system, app, kind, i, hold=hold)
         time.sleep(gap)
 
 
@@ -378,6 +427,16 @@ def cmd_permissions(args):
         text += f'## {title}\n{p.stdout}{p.stderr}\n'
     out.write_text(text)
     record(args.system, kind='permissions', app=args.app, file=out.name)
+
+
+def import_session_env():
+    """The display of the graphical session, for a script that is not started by it (ssh, a service): the apps that have only an X11 plugin (ONLYOFFICE) need DISPLAY and XAUTHORITY, and every app WAYLAND_DISPLAY.
+    GNOME puts them in the environment of the user manager; the ones already set are kept."""
+    p = sh(['systemctl', '--user', 'show-environment'], check=False)
+    for line in (p.stdout or '').splitlines():
+        k, _, v = line.partition('=')
+        if k in ('DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY', 'XDG_SESSION_TYPE', 'XDG_CURRENT_DESKTOP') and v and k not in os.environ:
+            os.environ[k] = v
 
 
 def apply_ca(args):
@@ -514,7 +573,7 @@ def cmd_install(args):
 
 
 def cmd_start(args):
-    warm_starts(args.system, args.app, args.trials, args.gap, args.kind)
+    warm_starts(args.system, args.app, args.trials, args.gap, args.kind, hold=args.hold)
 
 
 def cmd_cycle(args):
@@ -700,6 +759,7 @@ def main():
     p.add_argument('--kind', default='warm')
     p.add_argument('--trials', type=int, default=15)
     p.add_argument('--gap', type=float, default=3.0)
+    p.add_argument('--hold', type=float, default=0.0, help='seconds to leave the window on the screen after its first frame (for a person who watches; 0 in a series)')
     p.set_defaults(fn=cmd_start)
     p = sub.add_parser('cycle')
     common(p)
@@ -731,6 +791,7 @@ def main():
             ap.error('panpak: --pkg-base-url is needed')
     if args.cmd == 'reboot-series' and args.action == 'start' and not args.system:
         ap.error('--system is needed')
+    import_session_env()
     apply_ca(args)
     args.fn(args)
 

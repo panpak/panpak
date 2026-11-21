@@ -115,6 +115,26 @@ of section 6 is built in `debian-14` (2.43). The machines have 2.44. **The Flatp
 | **Time to the window** | From just before the command is started to the **first frame** of a window of the app, as GNOME Shell reports it (the extension writes the real-time clock when `first-frame` comes). The command is started inside a user scope (`systemd-run --user --scope`) for both systems, so that the cost of the scope is the same, and is stopped through it (and `flatpak kill` for Flatpak). A start that shows no window in 60 s is written down as a failure and is not left out. The first frame is the moment a person sees the window; it is not the moment the app is ready to be used (an image open, a project loaded). |
 | **An update** | `update --system S --app A`: for Flatpak the app is installed, taken back to the Flathub commit of the previous version (the version is checked), and `flatpak update` to the latest is measured; for Panpak the conversion of the previous version is installed and `panpak update` (the address in the manifest, by range requests: only the chunks that the installed version does not have) is measured. Bytes that came, space added (an update keeps the old version for the rollback), time; Panpak also says how many bytes it downloaded. `R = 3` times, each from a clean state. |
 
+**The window that counts.** The time to the window is the time to the first frame of the **main window** of the app, the one a person works in: never its screen of start, and never a dialog of the first start. It is
+recognised by the id of the app and by its title, with the same rule for Flatpak and for Panpak (`APPS` in the script, `is_main_window`, tested in the self-test):
+
+| App | Main window | Not counted |
+|---|---|---|
+| GIMP | the window titled "GNU Image Manipulation Program" (the id is `org.gimp.GIMP`) | the screen of start ("Starting GIMP", in the language of the machine); the welcome window |
+| Kdenlive | a title that ends with "— Kdenlive" ("Untitled / HD 1080p 25 fps — Kdenlive", in the language of the machine) | "Splash Screen — Kdenlive"; the welcome window "Welcome to Kdenlive" and the quick settings |
+| ONLYOFFICE | the window "ONLYOFFICE" (it has only one; class `ONLYOFFICE`) | nothing else is opened |
+| qBittorrent | the window whose title starts with "qBittorrent" | the legal notice ("Legal Notice") |
+
+The extension writes the first frame of every normal window (a dialog is not a normal window and is not in its file); a window that is mapped without its own `first-frame` signal gets its first frame at the map
+(`"via": "map"`), which is the same moment to within a frame. The title of the window that was taken is written in each start (`window_title`), so a wrong one is seen in the results.
+
+**The settings of the first start** are written before the first start, the same for both formats and after the install has been measured, because a person sees these dialogs once and a measure that waits for a click is not
+a measure: qBittorrent `[LegalNotice] Accepted=true`; GIMP `(config-version "3.2.8")` and `(show-welcome-dialog no)` in `GIMP/3.2/gimprc` (the Flatpak of GIMP keeps its settings in `~/.config/GIMP`, a permission of its manifest,
+which `--delete-data` does not remove, so the script removes that folder with the data of each trial); Kdenlive the groups `[startup]` (`showWelcome=false`, the version it has seen) and `[version]`, with the recent profile
+and the capture settings, in `kdenlive-flatpakrc` under Flatpak (the name that the KDE Flatpak gives) and in `kdenliverc` under Panpak, and under Flatpak the paths of its own build in `[env]`; ONLYOFFICE has no dialog at the first start.
+The text of each is in `FIRST_RUN_CONFIG` in the script, read from what a real first start wrote when the person confirmed the dialog, never guessed. **Under Panpak the `[env]` of Kdenlive is the one that a first start
+under its view writes** (the person confirms the quick settings once on the Panpak machine, and the file is read): it is not copied from the Flatpak.
+
 Three kinds of start:
 
 1. **First start after the install** (`first`). The install is the thing just before it: the page cache holds what the install just wrote. To have a number with some

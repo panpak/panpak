@@ -26,7 +26,7 @@ case "$1" in
   run) sleep 0.3
        python3 - <<PY
 import json, time
-open("{win}", "a").write(json.dumps({{"t": time.time(), "event": "first-frame", "wm_class": "org.gimp.GIMP", "app_id": "org.gimp.GIMP", "title": "x", "pid": __import__("os").getppid()}}) + "\\n")
+open("{win}", "a").write(json.dumps({{"t": time.time(), "event": "first-frame", "wm_class": "org.gimp.GIMP", "app_id": "org.gimp.GIMP", "title": "GNU Image Manipulation Program", "pid": __import__("os").getppid()}}) + "\\n")
 PY
        sleep 30 ;;
   install) sleep 0.2; mkdir -p "$HOME/.local/share/flatpak"; head -c 3000000 /dev/zero > "$HOME/.local/share/flatpak/blob" ;;
@@ -90,6 +90,20 @@ esac
         win.write_text('')
         p = run('start', '--system', 'flatpak', '--app', 'gimp', '--trials', '1')
         assert p.returncode != 0 and 'winwatch@panpak.bench' in (p.stdout + p.stderr), p.stdout + p.stderr
+    # The window that counts: the main window of the app, never its screen of start or a dialog of the first start.
+    sys.path.insert(0, str(HERE))
+    import silverblue_bench as sb
+    ff = lambda cls, title, app_id='': {'event': 'first-frame', 'wm_class': cls, 'app_id': app_id, 'title': title}
+    assert not sb.is_main_window('gimp', ff('org.gimp.GIMP', 'Starting GIMP', 'org.gimp.GIMP'))
+    assert sb.is_main_window('gimp', ff('org.gimp.GIMP', 'GNU Image Manipulation Program', 'org.gimp.GIMP'))
+    assert not sb.is_main_window('kdenlive', ff('org.kde.kdenlive', 'Splash Screen \u2014 Kdenlive'))
+    assert not sb.is_main_window('kdenlive', ff('org.kde.kdenlive', 'Welcome to Kdenlive'))
+    assert sb.is_main_window('kdenlive', ff('org.kde.kdenlive', 'Untitled / HD 1080p 25 fps \u2014 Kdenlive'))
+    assert sb.is_main_window('kdenlive', ff('org.kde.kdenlive', 'Untitled / HD 1080p 25 fps \u2014 Kdenlive'))
+    assert sb.is_main_window('onlyoffice', ff('ONLYOFFICE', 'ONLYOFFICE'))
+    assert not sb.is_main_window('qb', ff('org.qbittorrent.qBittorrent', 'Legal Notice', 'org.qbittorrent.qBittorrent'))
+    assert sb.is_main_window('qb', ff('org.qbittorrent.qBittorrent', 'qBittorrent v5.3.0', 'org.qbittorrent.qBittorrent'))
+    assert not sb.is_main_window('gimp', {'event': 'created', 'wm_class': 'org.gimp.GIMP', 'title': 'GNU Image Manipulation Program'})
     # The controlled peer of the qBittorrent operation: metadata by magnet and every piece, checked; and the checklist has its link.
     p = subprocess.run([sys.executable, str(HERE / 'seed_peer.py'), '--self-test'], capture_output=True, text=True, timeout=120)
     assert p.returncode == 0 and 'PASS' in p.stdout, p.stdout + p.stderr

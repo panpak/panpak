@@ -48,6 +48,12 @@ Said before the numbers, as they were found, each with its reason. Nothing was t
 
 *(machines, versions: `rpm-ostree status`, `ldd --version`, `gnome-shell --version`, `flatpak --version`, `panpak --version`, CPUs, memory, disk; 3D off on both; the date; the versions of the apps and what differs on purpose)*
 
+## What is measured as a window
+
+The time is the time to the first frame of the **main window** of each app, found by the id of the app and by its title, with the same rule for both formats; never the screen of start (GIMP, Kdenlive) and never a dialog of the first
+start (the legal notice of qBittorrent, the welcome and the quick settings of Kdenlive, the welcome of GIMP: written as already accepted before the first start, the same on both sides). The table of the main windows
+is in `PROCEDURE.md` (section 3), the title of the window taken is in every line of the results, and a person watched each app start on the machine and confirmed that the time matches the complete window.
+
 ## Bytes that came and space added
 
 *(the installs table of `summarize`, both orders; the first, second, third and fourth app; what the runtime costs in each system and what is shared)*
