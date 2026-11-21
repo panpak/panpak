@@ -11,8 +11,8 @@ the commands to run them again are in [docs/BENCHMARKS.md](../docs/BENCHMARKS.md
 
 `silverblue/` holds the procedure ([PROCEDURE.md](silverblue/PROCEDURE.md)), the script that is run inside the two virtual machines (`silverblue_bench.py`: bytes that came, space added, time
 to the first frame of the window, at the first start, after a reboot and at the following starts, with the median and the spread of each), the extension of GNOME Shell that reads
-the moment of the first frame, the recipes of GNOME Text Editor 51.0 and qBittorrent 5.3.0 (the versions that Flathub has), and `verify_sbom_build.py`, which makes a real `panpak build`
-of each recipe twice and checks that the SBOM says `coverage = "build"`, names what the recipe pins, and is the same bytes both times. `selftest.py` tests the script with fakes (no
+the moment of the first frame, `make_conversions.py` (the conversions of the official AppImages of GIMP, Kdenlive and ONLYOFFICE, with the permissions of `conversions/` and the SHA-256 check), `serve_https.py` (the packages over HTTPS with Range for the virtual machines), `make_ops_files.py` (the files of the operations), the recipes of qBittorrent 5.3.0 (the example of the build pipeline) and GNOME Text Editor 51.0 (the test of permissions and files), and `verify_sbom_build.py`, which makes a real `panpak build`
+of each recipe twice and checks that the SBOM says `coverage = "build"`, names what the recipe pins, and is the same bytes both times. The Panpak packages of the three apps from AppImages are conversions made by us, not packages of the authors. `selftest.py` tests the script with fakes (no
 virtual machine needed).
 
 ## Earlier scripts: environment variables

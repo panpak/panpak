@@ -1,0 +1,22 @@
+# What the converter declares for ONLYOFFICE Desktop Editors: what the Flatpak gives it (network, sound, X11 and Wayland) and the user folders where documents are. The app has only the xcb
+# plugin of Qt 5, so it runs on X11 (XWayland under GNOME). The network is given: the editors use it for the cloud connectors and the check of updates, and Flathub gives it; nothing is
+# taken away to look safer. Not given, because Panpak has no equivalent: `--filesystem=host` (every folder, by path).
+[permissions]
+x11 = true
+network = true
+audio = true
+
+[permissions.portal]
+files = "picker"
+
+[[permissions.xdg_dirs]]
+name = "documents"
+access = "rw"
+
+[[permissions.xdg_dirs]]
+name = "download"
+access = "rw"
+
+[[permissions.xdg_dirs]]
+name = "pictures"
+access = "rw"

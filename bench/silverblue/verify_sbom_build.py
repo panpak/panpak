@@ -43,6 +43,7 @@ def main():
     ap.add_argument('--panpak', default=str(ROOT / 'target/x86_64-unknown-linux-musl/release'), help='folder with panpak and panpak-stub')
     ap.add_argument('--cache', help='XDG_CACHE_HOME that holds the build image (it is made if it is not there; default: a folder of the work folder)')
     ap.add_argument('--work', default=str(Path.home() / '.cache/panpak-sbom-verify'))
+    ap.add_argument('--secret-file', help='the signing key (default: a key made in the work folder); the packages of the series are all signed with the one key of the converter')
     ap.add_argument('recipes', nargs='+')
     a = ap.parse_args()
     work = Path(a.work)
@@ -53,7 +54,7 @@ def main():
                XDG_RUNTIME_DIR=str(work / 'run'), DBUS_SESSION_BUS_ADDRESS='unix:path=/nonexistent/panpak-no-bus', LC_ALL='C', PANPAK_NO_BACKGROUND='1')
     (work / 'run').mkdir(mode=0o700, exist_ok=True)
     panpak, stub = Path(a.panpak) / 'panpak', Path(a.panpak) / 'panpak-stub'
-    key = work / 'verify.key'
+    key = Path(a.secret_file) if a.secret_file else work / 'verify.key'
     if not key.exists():
         run([panpak, 'keygen', '-o', key], env)
     for recipe in map(Path, a.recipes):

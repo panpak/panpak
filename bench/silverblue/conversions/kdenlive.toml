@@ -1,0 +1,30 @@
+# What the converter declares for Kdenlive: network, sound (the Flatpak has pulseaudio), the user folders where video, music, pictures and projects are, the file dialog of the portal.
+# Not given, because Panpak has no equivalent: `--device=all` (cameras and capture devices), `--filesystem=host` (every folder, by path), the system bus (UDisks2: mounting drives).
+[permissions]
+network = true
+audio = true
+# KDBusService registers the name of the app on the session bus (`org.kde.kdenlive`); without it Kdenlive says that there is no session bus and does not start.
+dbus_own = ["org.kde.kdenlive"]
+
+[permissions.portal]
+files = "picker"
+
+[[permissions.xdg_dirs]]
+name = "videos"
+access = "rw"
+
+[[permissions.xdg_dirs]]
+name = "music"
+access = "rw"
+
+[[permissions.xdg_dirs]]
+name = "pictures"
+access = "rw"
+
+[[permissions.xdg_dirs]]
+name = "documents"
+access = "rw"
+
+[[permissions.xdg_dirs]]
+name = "download"
+access = "rw"

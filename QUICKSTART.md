@@ -181,6 +181,10 @@ The manifest declares `[origin]` (file, version, SHA-256, never signed
 by upstream): `panpak install` reports it explicitly and `panpak
 doctor` shows it. See `distro-matrix.md` for the real cases tried.
 
+A conversion has no permissions unless the converter declares them (the one guess that `convert` makes is `x11` for an app that has only the xcb plugin of Qt). To declare them, give a file with
+the `[permissions]` tables (nothing else is read from it): `--permissions perms.toml`. To publish updates of the conversions, `--update-url https://example.org/app.panpak` writes `[update].url`, and
+`--previous old.panpak` makes the new conversion follow the old one (the revision goes up and the history continues, as with `pack --previous`).
+
 ## Reproducible builds
 
 Pinned toolchain in `rust-toolchain.toml` (Rust 1.99.1) and `Cargo.lock`

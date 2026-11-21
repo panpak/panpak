@@ -278,6 +278,48 @@ fn the_icon_option_replaces_what_the_appimage_has_and_is_read_from_outside_the_t
 }
 
 #[test]
+fn the_permissions_option_declares_what_the_converter_gives_the_app_and_reads_nothing_else() {
+    let l = lab("perms-option");
+    let file = l.home.join("perms.toml");
+    fs::write(&file, "[permissions]\nx11 = true\nnetwork = true\naudio = true\n[[permissions.xdg_dirs]]\nname = \"pictures\"\naccess = \"rw\"\n").unwrap();
+    let (o, pkg) = l.convert(&appimage(real_layout()), &["--permissions", file.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    let m = l.manifest(&pkg);
+    assert!(m.contains("network = true") && m.contains("audio = true") && m.contains("name = \"pictures\""), "{m}");
+    // Without the option the manifest has none of it.
+    let (o, plain) = l.convert(&appimage(real_layout()), &[]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!l.manifest(&plain).contains("network"), "{}", l.manifest(&plain));
+    // Another section in the file is not read: a converter gives permissions, not another table of the manifest.
+    fs::write(&file, "[permissions]\nnetwork = true\n[update]\nurl = \"https://e.org/x\"\n").unwrap();
+    let (o, _) = l.convert(&appimage(real_layout()), &["--permissions", file.to_str().unwrap()]);
+    assert!(!o.status.success() && text(&o).contains("only [permissions] tables"), "{}", text(&o));
+    // A permission that `pack` refuses is refused, and so is a file that is not there.
+    fs::write(&file, "[permissions]\nnetwork = \"yes\"\n").unwrap();
+    let (o, _) = l.convert(&appimage(real_layout()), &["--permissions", file.to_str().unwrap()]);
+    assert!(!o.status.success());
+    let (o, _) = l.convert(&appimage(real_layout()), &["--permissions", l.home.join("missing.toml").to_str().unwrap()]);
+    assert!(!o.status.success());
+}
+
+#[test]
+fn a_conversion_can_name_where_it_is_updated_from_and_follow_an_earlier_one() {
+    let l = lab("update-url");
+    let (o, v1) = l.convert(&appimage(real_layout()), &["--update-url", "https://example.org/conversions/app.panpak"]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(l.manifest(&v1).contains("url = \"https://example.org/conversions/app.panpak\"") && l.manifest(&v1).contains("revision = 1"), "{}", l.manifest(&v1));
+    // The second conversion follows the first one: the revision goes up (the helper writes every conversion to one file, so the first is kept under another name).
+    let first = l.home.join("first.panpak");
+    fs::copy(&v1, &first).unwrap();
+    let (o, v2) = l.convert(&appimage(real_layout()), &["--update-url", "https://example.org/conversions/app.panpak", "--previous", first.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(l.manifest(&v2).contains("revision = 2") && l.manifest(&v2).contains("history = "), "{}", l.manifest(&v2));
+    // An address that is not https is refused.
+    let (o, _) = l.convert(&appimage(real_layout()), &["--update-url", "http://example.org/app.panpak"]);
+    assert!(!o.status.success() && text(&o).contains("https://"), "{}", text(&o));
+}
+
+#[test]
 fn only_a_dir_icon_link_is_enough() {
     let l = lab("dir-icon");
     let image = appimage(vec![

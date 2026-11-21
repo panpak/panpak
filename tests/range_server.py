@@ -128,7 +128,8 @@ def main():
     ROOT = sys.argv[1]
     PORT = int(sys.argv[2])
     MODE = sys.argv[3] if len(sys.argv) > 3 else "normal"
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), H)
+    # 127.0.0.1 unless RANGE_SERVER_BIND names an address (bench/silverblue/serve_https.py serves the virtual machines on the address of the host that they see).
+    server = http.server.ThreadingHTTPServer((os.environ.get("RANGE_SERVER_BIND", "127.0.0.1"), PORT), H)
     # With a fourth argument `<certificate.pem>:<key.pem>` the server speaks TLS (a test authority signs the certificate).
     if len(sys.argv) > 4:
         import ssl

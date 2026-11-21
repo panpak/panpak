@@ -7,8 +7,10 @@ session). Python 3.9 or newer and nothing else (no module outside the standard l
 
   silverblue_bench.py check   --system flatpak|panpak
   silverblue_bench.py base    --system S                                                  what the system has before the series (the Fedora Flatpaks of Silverblue), versions
+  silverblue_bench.py update  --system S --app A --trials 3                                the update from the previous version (Flathub commit, or the .prev.panpak of the conversion)
+  silverblue_bench.py sandbox --system S --app onlyoffice                                  the processes of an app with a browser engine, as the system sandboxes them
   silverblue_bench.py permissions --system S --app te                                     the permissions of the Text Editor (the one of Fedora, or ours), as the system says them
-  silverblue_bench.py install --system S --app su|mj|qb [--pkg-url URL | --pkg-file F]     one install: bytes that came, space added, time
+  silverblue_bench.py install --system S --app gimp|kdenlive|onlyoffice|qb [--pkg-url URL | --pkg-file F]     one install: bytes that came, space added, time
   silverblue_bench.py start   --system S --app A --kind warm --trials N                  N starts, one after the other (a start, a stop, a pause)
   silverblue_bench.py cycle   --system S --app A --trials R                              R times: remove, drop the caches, install, first start
   silverblue_bench.py scenario --system S --order te,qb --warm N                         one app after the other: install, first start, N warm starts
@@ -35,14 +37,18 @@ RESULTS = Path(os.environ.get('BENCH_RESULTS', HOME / 'panpak-bench-results'))
 WINDOWS = HOME / '.cache/panpak-bench/windows.jsonl'
 PANPAK = os.environ.get('PANPAK', str(HOME / '.local/bin/panpak'))
 
-# The apps of the series: the same upstream version on both sides (PROCEDURE.md, section 2). `su` and `mj` are two GNOME apps on the same GNOME runtime (what Flatpak shares between
-# two apps, and what Panpak shares as chunks), `qb` is a KDE app on another runtime. `te` is **not** in a series: it is the app of the test of permissions and operations (`permissions`),
-# and on the Flatpak machine it is the Text Editor of Fedora that Silverblue already has, in the system installation.
+# The apps of the series (PROCEDURE.md, section 2): daily-use apps that a person adds to Silverblue from Flathub, at the same upstream version as the official AppImage that the Panpak package is
+# converted from (a conversion made by us, not a package of the author), and qBittorrent, built from source, as the example of the build pipeline (it shares the KDE 6.11 runtime of Kdenlive).
+# `te` is **not** in a series: it is the app of the test of permissions and operations (`permissions`), and on the Flatpak machine it is the Text Editor of Fedora that Silverblue already has.
+# `update`: the Flathub commit of the previous version (the history of Flathub keeps only a few commits, so a previous version may not be there: then there is no pair) and the versions.
 APPS = {
-    'su': {'name': 'GNOME Sudoku', 'flatpak': 'org.gnome.Sudoku', 'panpak_id': 'org.gnome.Sudoku', 'window': r'(?i)org\.gnome\.Sudoku|sudoku', 'series': True},
-    'mj': {'name': 'GNOME Mahjongg', 'flatpak': 'org.gnome.Mahjongg', 'panpak_id': 'org.gnome.Mahjongg', 'window': r'(?i)org\.gnome\.Mahjongg|mahjongg', 'series': True},
-    'qb': {'name': 'qBittorrent', 'flatpak': 'org.qbittorrent.qBittorrent', 'panpak_id': 'org.qbittorrent.qBittorrent', 'window': r'(?i)qbittorrent', 'series': True},
-    'te': {'name': 'GNOME Text Editor', 'flatpak': 'org.gnome.TextEditor', 'panpak_id': 'org.gnome.TextEditor', 'window': r'(?i)org\.gnome\.TextEditor|texteditor', 'series': False},
+    'gimp': {'name': 'GIMP', 'flatpak': 'org.gimp.GIMP', 'panpak_id': 'org.gimp.GIMP', 'window': r'(?i)org\.gimp\.GIMP|gimp', 'series': True, 'update': None},
+    'kdenlive': {'name': 'Kdenlive', 'flatpak': 'org.kde.kdenlive', 'panpak_id': 'org.kde.kdenlive', 'window': r'(?i)org\.kde\.kdenlive|kdenlive', 'series': True,
+                 'update': {'commit': 'b1fc34accc861c296d08863b01c65d9c32816bdf1d08414ee157de565e56199d', 'from': '26.08.2', 'to': '26.08.3'}},
+    'onlyoffice': {'name': 'ONLYOFFICE Desktop Editors', 'flatpak': 'org.onlyoffice.desktopeditors', 'panpak_id': 'org.onlyoffice.desktopeditors', 'window': r'(?i)onlyoffice|desktopeditors', 'series': True,
+                   'update': {'commit': '5806f4728bd3e2bc5314c2c0dfbc59d10dcac33516b5536ac12ceae2e79f98c1', 'from': '9.4.0', 'to': '10.0.0'}},
+    'qb': {'name': 'qBittorrent', 'flatpak': 'org.qbittorrent.qBittorrent', 'panpak_id': 'org.qbittorrent.qBittorrent', 'window': r'(?i)qbittorrent', 'series': True, 'update': None},
+    'te': {'name': 'GNOME Text Editor', 'flatpak': 'org.gnome.TextEditor', 'panpak_id': 'org.gnome.TextEditor', 'window': r'(?i)org\.gnome\.TextEditor|texteditor', 'series': False, 'update': None},
 }
 
 # What each system adds to the disk, for the measure of the space: the places that it writes to.
@@ -120,6 +126,9 @@ REBOOT = ['/usr/bin/systemctl', 'reboot']
 def drop_caches():
     """The page cache, the dentries and the inodes, so that the next start reads from the disk. Needs the sudoers rule of PROCEDURE.md (section 1)."""
     sh(['sync'])
+    if os.environ.get('BENCH_SKIP_DROP_CACHES') == '1':
+        say('NOTE: BENCH_SKIP_DROP_CACHES=1: the caches are not dropped (a rehearsal on a machine without the sudoers rule; times of a first start are not cold)')
+        return
     p = sh(['sudo', '-n', *SYSCTL_DROP], check=False)
     if p.returncode != 0:
         raise SystemExit('cannot drop the caches: the sudoers rule of PROCEDURE.md (section 1) is not there, or it does not name ' + ' '.join(SYSCTL_DROP))
@@ -160,7 +169,7 @@ def launcher(system, app):
     return [str(HOME / '.local/bin' / a['panpak_id'])]
 
 
-def install_cmds(system, app, pkg_url, pkg_file, keys=None):
+def install_cmds(system, app, pkg_url, pkg_file, keys=None, previous=False):
     """The steps of an install, in the order they run. A step is (what, command)."""
     a = APPS[app]
     if not a['series']:
@@ -171,9 +180,11 @@ def install_cmds(system, app, pkg_url, pkg_file, keys=None):
     steps = []
     f = pkg_file
     if pkg_url:
-        f = str(HOME / '.cache/panpak-bench' / f'{a["panpak_id"]}.panpak')
+        suffix = '.prev.panpak' if previous else '.panpak'
+        f = str(HOME / '.cache/panpak-bench' / f'{a["panpak_id"]}{suffix}')
         Path(f).parent.mkdir(parents=True, exist_ok=True)
-        steps.append(('download', ['curl', '-fsS', '-o', f, pkg_url]))
+        ca = os.environ.get('BENCH_CA')
+        steps.append(('download', ['curl', '-fsS', *(['--cacert', ca] if ca else []), '-o', f, pkg_url]))
     if not f:
         raise SystemExit('panpak: give --pkg-url (counted as bytes that come) or --pkg-file (a package that is already here)')
     # The key that the author published, given by the person (`--keys te=ed25519:...`): the install refuses a package of another key and pins this one. Never `--trust-first-key`: the
@@ -186,15 +197,17 @@ def install_cmds(system, app, pkg_url, pkg_file, keys=None):
 
 
 def parse_keys(text):
-    """`te=ed25519:<hex>,qb=ed25519:<hex>` as a dictionary; a key that does not have the form of a key is refused here, before anything is downloaded."""
+    """`gimp=ed25519:<hex>,qb=ed25519:<hex>` (or `*=ed25519:<hex>` for every app: the conversions are all signed with one key, the key of the converter) as a dictionary; a key that does
+    not have the form of a key is refused here, before anything is downloaded."""
     keys = {}
     for part in (text or '').split(','):
         if not part.strip():
             continue
         app, _, key = part.partition('=')
-        if app not in APPS or not re.fullmatch(r'ed25519:[0-9a-f]{64}', key):
-            raise SystemExit(f'--keys: {part!r} is not <app>=ed25519:<64 lowercase hex> with an app of {sorted(APPS)}')
-        keys[app] = key
+        if (app != '*' and app not in APPS) or not re.fullmatch(r'ed25519:[0-9a-f]{64}', key):
+            raise SystemExit(f'--keys: {part!r} is not <app>=ed25519:<64 lowercase hex> (an app of {sorted(APPS)}, or * for all)')
+        for name in (APPS if app == '*' else [app]):
+            keys[name] = key
     return keys
 
 
@@ -206,9 +219,10 @@ def uninstall(system, app):
     else:
         sh([PANPAK, 'remove', '--purge-data', '--yes', a['panpak_id']], check=False)
         sh([PANPAK, 'gc'], check=False)
-        pkg = HOME / '.cache/panpak-bench' / f'{a["panpak_id"]}.panpak'
-        if pkg.exists():
-            pkg.unlink()
+        for name in (f'{a["panpak_id"]}.panpak', f'{a["panpak_id"]}.prev.panpak'):
+            pkg = HOME / '.cache/panpak-bench' / name
+            if pkg.exists():
+                pkg.unlink()
 
 
 def do_install(system, app, args, tag=None):
@@ -255,6 +269,18 @@ def wait_frame(app, since, timeout):
             if r.get('t', 0) >= since and r.get('event') == 'first-frame' and (pat.search(r.get('wm_class', '')) or pat.search(r.get('app_id', ''))):
                 return r['t']
         time.sleep(0.02)
+    return None
+
+
+def wait_frame_row(app, since, timeout):
+    """The whole line of the first frame of a window of `app` after `since` (it has the process id of the client that owns the window), or None."""
+    pat = re.compile(APPS[app]['window'])
+    end = time.time() + timeout
+    while time.time() < end:
+        for r in window_events():
+            if r.get('t', 0) >= since and r.get('event') == 'first-frame' and (pat.search(r.get('wm_class', '')) or pat.search(r.get('app_id', ''))):
+                return r
+        time.sleep(0.05)
     return None
 
 
@@ -343,6 +369,114 @@ def cmd_permissions(args):
         text += f'## {title}\n{p.stdout}{p.stderr}\n'
     out.write_text(text)
     record(args.system, kind='permissions', app=args.app, file=out.name)
+
+
+def apply_ca(args):
+    """`--ca FILE`: the authority that signed the certificate of the host that serves the packages (`serve_https.py`). Used by `curl` for the download and, for Panpak, by `network.ca_file` of its settings
+    (the update that Panpak makes from the address in the manifest goes over HTTPS to the same host)."""
+    ca = getattr(args, 'ca', None)
+    if ca:
+        os.environ['BENCH_CA'] = str(Path(ca).resolve())
+        if getattr(args, 'system', None) == 'panpak':
+            sh([PANPAK, 'config', 'set', 'network.ca_file', os.environ['BENCH_CA']])
+
+
+def flatpak_installed(ref):
+    return sh(['flatpak', 'info', '--user', ref], check=False).returncode == 0
+
+
+def cmd_update(args):
+    """The update of an app from the previous version to the one of the series, measured as the person who gets it: for Flatpak, `flatpak update` from the commit of Flathub of the previous version to the
+    latest one; for Panpak, `panpak update` from the converted package of the previous version to the one at the address in its manifest (the chunks that the installed version does not have, by
+    range requests). The preparation (the previous version, installed) is not measured. A previous version that is not in both formats has no pair: it is refused, not invented."""
+    a = APPS[args.app]
+    u = a['update']
+    if not u:
+        raise SystemExit(f'{args.app}: there is no previous version in both formats (the history of Flathub does not keep it): no update is measured for it')
+    for i in range(args.trials):
+        uninstall(args.system, args.app)
+        drop_caches()
+        if args.system == 'flatpak':
+            ensure_flathub()
+            sh(['flatpak', 'install', '--user', '-y', '--noninteractive', 'flathub', a['flatpak']])
+            sh(['flatpak', 'update', '--user', '-y', '--noninteractive', f'--commit={u["commit"]}', a['flatpak']])
+            info = sh(['flatpak', 'info', '--user', a['flatpak']]).stdout
+            m = re.search(r'Version:\s*(\S+)', info)
+            if not m or not m.group(1).startswith(u['from']):
+                raise SystemExit(f'the Flathub commit {u["commit"][:12]} is version {m.group(1) if m else "?"}, not {u["from"]}: the pair is not the one of the procedure')
+            update_cmd = ['flatpak', 'update', '--user', '-y', '--noninteractive', a['flatpak']]
+        else:
+            keys = parse_keys(args.keys)
+            if not args.pkg_base_url:
+                raise SystemExit('panpak: --pkg-base-url is needed (the update comes from the address in the manifest, which is the same host)')
+            for what, cmd in install_cmds('panpak', args.app, f'{args.pkg_base_url.rstrip("/")}/{a["panpak_id"]}.prev.panpak', None, keys, previous=True):
+                sh(cmd)
+            update_cmd = [PANPAK, 'update', '--yes', '--timeout', '300', a['panpak_id']]
+        quiet()
+        space0, used0, rx0, t0 = space(args.system), fs_used(), rx_bytes(), time.time()
+        p = sh(update_cmd)
+        wall = time.time() - t0
+        quiet()
+        rx1, space1, used1 = rx_bytes(), space(args.system), fs_used()
+        record(args.system, kind='update', app=args.app, trial=i, from_version=u['from'], to_version=u['to'], wall_s=round(wall, 3), rx_bytes=rx1 - rx0,
+               space_bytes=sum(space1.values()) - sum(space0.values()), fs_used_bytes=used1 - used0, said=(p.stdout + p.stderr).strip().splitlines()[-4:],
+               reported_bytes=int(m2.group(1)) if (m2 := re.search(r'downloaded bytes: (\d+)', p.stdout + p.stderr)) else None)
+
+
+def descendants(pid):
+    """`pid` and every process below it, from /proc (the tree as the host sees it, whatever the namespaces of the sandbox are)."""
+    kids = {}
+    for d in os.listdir('/proc'):
+        if d.isdigit():
+            try:
+                ppid = int((Path('/proc') / d / 'stat').read_text().rsplit(')', 1)[1].split()[1])
+                kids.setdefault(ppid, []).append(int(d))
+            except (OSError, ValueError, IndexError):
+                pass
+    out, stack = [pid], [pid]
+    while stack:
+        for c in kids.get(stack.pop(), []):
+            out.append(c)
+            stack.append(c)
+    return out
+
+
+def proc_facts(pid):
+    p = Path('/proc') / str(pid)
+    st = dict(line.split(':\t', 1) for line in (p / 'status').read_text().splitlines() if ':\t' in line)
+    # The namespaces of this script are the ones of the session (the host side): /proc/1 is not readable by a user.
+    host = {n: os.readlink(f'/proc/self/ns/{n}') for n in ('user', 'pid', 'net', 'ipc', 'mnt')}
+    ns = {n: os.readlink(p / 'ns' / n) for n in host}
+    return {'pid': pid, 'cmd': (p / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')[:220], 'seccomp': st.get('Seccomp'), 'no_new_privs': st.get('NoNewPrivs'),
+            'cap_eff': st.get('CapEff'), 'shares_with_host': sorted(n for n in ns if host[n] and ns[n] == host[n]), 'user_ns': ns['user'], 'pid_ns': ns['pid']}
+
+
+def cmd_sandbox(args):
+    """How an app that embeds Chromium (CEF: ONLYOFFICE) is sandboxed by the system, seen from outside: the window of the app names its process, and every process below it is read: the filter of system calls,
+    `no_new_privs`, the capabilities, which namespaces it shares with the host, and whether its command line has `--no-sandbox` (the app turns off the sandbox of Chromium itself). The same command on the two
+    machines gives the two tables that are compared (PROCEDURE.md section 7)."""
+    if not extension_ready():
+        raise SystemExit('the window extension is not running: PROCEDURE.md, section 1')
+    unit = f'panpak-bench-sandbox-{os.getpid()}'
+    t0 = time.time()
+    proc = subprocess.Popen(['systemd-run', '--user', '--scope', '--quiet', f'--unit={unit}', '--', *launcher(args.system, args.app)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    row = wait_frame_row(args.app, t0, 90)
+    if not row:
+        stop(args.system, args.app, unit)
+        raise SystemExit('no window: nothing to read')
+    time.sleep(args.settle)
+    facts = []
+    for pid in descendants(row['pid']):
+        try:
+            facts.append(proc_facts(pid))
+        except OSError:
+            pass
+    stop(args.system, args.app, unit)
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+    record(args.system, kind='sandbox', app=args.app, window_pid=row['pid'], processes=facts, no_sandbox_flag=sum('--no-sandbox' in f['cmd'] for f in facts), seccomp_modes=sorted({f['seccomp'] for f in facts}))
 
 
 def cmd_install(args):
@@ -500,7 +634,8 @@ def main():
     def pkg(p):
         p.add_argument('--pkg-url', help='panpak: where the package is served (the bytes that come are counted)')
         p.add_argument('--pkg-file', help='panpak: a package that is here already (nothing is counted)')
-        p.add_argument('--keys', help='panpak: the key that the author of each app published, as te=ed25519:<hex>,qb=ed25519:<hex>; the install uses --expect-key with it')
+        p.add_argument('--keys', help='panpak: the key of each app as gimp=ed25519:<hex>,... or *=ed25519:<hex> for all (the converter signs every conversion with one key); the install uses --expect-key with it')
+        p.add_argument('--ca', help='panpak: the authority of the certificate of the host that serves the packages (https)')
 
     p = sub.add_parser('check')
     common(p, apps=False)
@@ -515,6 +650,16 @@ def main():
     common(p)
     pkg(p)
     p.set_defaults(fn=cmd_install)
+    p = sub.add_parser('sandbox')
+    common(p)
+    p.add_argument('--settle', type=float, default=8.0, help='seconds to wait after the window, so that the helpers of the browser engine are started')
+    p.set_defaults(fn=cmd_sandbox)
+    p = sub.add_parser('update')
+    common(p)
+    pkg(p)
+    p.add_argument('--pkg-base-url', help='panpak: the folder that serves <app id>.panpak and <app id>.prev.panpak')
+    p.add_argument('--trials', type=int, default=3)
+    p.set_defaults(fn=cmd_update)
     p = sub.add_parser('start')
     common(p)
     p.add_argument('--kind', default='warm')
@@ -528,16 +673,17 @@ def main():
     p.set_defaults(fn=cmd_cycle)
     p = sub.add_parser('scenario')
     common(p, apps=False)
-    p.add_argument('--order', required=True, help='the apps in the order they are installed: su,mj,qb or qb,mj,su (panpak needs --pkg-base-url and --keys)')
+    p.add_argument('--order', required=True, help='the apps in the order they are installed: gimp,kdenlive,onlyoffice,qb or the reverse (panpak needs --pkg-base-url, --keys and --ca)')
     p.add_argument('--warm', type=int, default=15)
     p.add_argument('--gap', type=float, default=3.0)
     p.add_argument('--pkg-base-url', help='panpak: the folder that serves <app id>.panpak')
-    p.add_argument('--keys', help='panpak: te=ed25519:<hex>,qb=ed25519:<hex> (the key that each author published; --expect-key)')
+    p.add_argument('--keys', help='panpak: gimp=ed25519:<hex>,... or *=ed25519:<hex> (--expect-key)')
+    p.add_argument('--ca', help='panpak: the authority of the certificate of the host that serves the packages (https)')
     p.set_defaults(fn=cmd_scenario)
     p = sub.add_parser('reboot-series')
     p.add_argument('action', choices=['start', 'step', 'cancel', 'status'])
     p.add_argument('--system', choices=['flatpak', 'panpak'])
-    p.add_argument('--apps', default='su,mj,qb')
+    p.add_argument('--apps', default='gimp,kdenlive,onlyoffice,qb')
     p.add_argument('--count', type=int, default=5, help='reboots per app')
     p.add_argument('--settle', type=int, default=45, help='seconds of quiet after the extension is up, before the start is measured')
     p.set_defaults(fn=cmd_reboot)
@@ -550,6 +696,7 @@ def main():
             ap.error('panpak: --pkg-base-url is needed')
     if args.cmd == 'reboot-series' and args.action == 'start' and not args.system:
         ap.error('--system is needed')
+    apply_ca(args)
     args.fn(args)
 
 

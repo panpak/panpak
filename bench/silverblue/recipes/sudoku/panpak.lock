@@ -1,5 +1,0 @@
-# Written by `panpak init` or `panpak build`; changed only by `panpak build --update-lock`.
-[image]
-name = "debian-14"
-manifest_digest = "sha256:27b88700aef98dd3dd0b32538f8e5d662a88237ec8fbf969254c8d3c93dfdab1"
-snapshot = "20261119T000000Z"
