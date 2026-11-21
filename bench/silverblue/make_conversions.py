@@ -20,18 +20,20 @@ import sys
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 
-# (id, name, permissions file, [(version, file name, SHA-256 published by the author)], entry or None) oldest first. The entry is given when the AppImage names a link as its program
+# (id, name, permissions file, [(version, file name, SHA-256 published by the author)], entry or None, window class) oldest first. The window class is the one the windows of the app have for the desktop
+# (the Wayland app id or the X11 class, read from a real start: the `first-frame` lines of the window extension); the desktop groups the windows under the entry of the menu and shows its icon by it, and the
+# one in the desktop file of an AppImage is often not it (GIMP's names `org.gimp.GIMP.Stable`, its windows are `gimp`). The entry is given when the AppImage names a link as its program
 # (GIMP: its AppRun sets the environment that the program needs (GIO_MODULE_DIR for TLS, the pixbuf loaders, the typelibs, the bundled loader for its plug-ins), so it is the entry: the program started by itself loses all of it).
 APPS = {
     'gimp': ('org.gimp.GIMP', 'GIMP', 'conversions/gimp.toml', [
         ('3.2.6', 'GIMP-3.2.6-x86_64.AppImage', '79ea41bc9b06f78fda181849a9ca8e42d83f1124dedb756f4d52352e2465010f'),
-        ('3.2.8', 'GIMP-3.2.8-x86_64.AppImage', '8b43dc23e58a1b66ace9dd6d4d5f7e8532f3398e6109f95a1ec0b6ad036aa250')], 'AppRun'),
+        ('3.2.8', 'GIMP-3.2.8-x86_64.AppImage', '8b43dc23e58a1b66ace9dd6d4d5f7e8532f3398e6109f95a1ec0b6ad036aa250')], 'AppRun', 'gimp'),
     'kdenlive': ('org.kde.kdenlive', 'Kdenlive', 'conversions/kdenlive.toml', [
         ('26.08.2', 'kdenlive-26.08.2-x86_64.AppImage', '3194c0979bcfb7ec4a0b33ebc05178a51cffdf5b180c3a89bcf4da94e025bc78'),
-        ('26.08.3', 'kdenlive-26.08.3-x86_64.AppImage', '2c8322edfc86605e4c98a78a019310d9b4fc46bb8e94e6fe313dc7dd987e7671')], None),
+        ('26.08.3', 'kdenlive-26.08.3-x86_64.AppImage', '2c8322edfc86605e4c98a78a019310d9b4fc46bb8e94e6fe313dc7dd987e7671')], None, 'org.kde.kdenlive'),
     'onlyoffice': ('org.onlyoffice.desktopeditors', 'ONLYOFFICE Desktop Editors', 'conversions/onlyoffice.toml', [
         ('9.4.0', 'DesktopEditors-9.4.0-x86_64.AppImage', 'f5faf24552665262fe94486a510b997d2e5a24bde14df94c802c79bf17f9254c'),
-        ('10.0.0', 'DesktopEditors-10.0.0-x86_64.AppImage', '3e4668d44f6881d1d8873b38ea9c9fd81b9c77132facdb735bfebfe960edb745')], None),
+        ('10.0.0', 'DesktopEditors-10.0.0-x86_64.AppImage', '3e4668d44f6881d1d8873b38ea9c9fd81b9c77132facdb735bfebfe960edb745')], None, 'ONLYOFFICE'),
 }
 
 
@@ -61,7 +63,7 @@ def main():
                DBUS_SESSION_BUS_ADDRESS='unix:path=/nonexistent/panpak-no-bus', LC_ALL='C', PANPAK_NO_BACKGROUND='1')
     panpak, stub = Path(a.panpak) / 'panpak', Path(a.panpak) / 'panpak-stub'
     for name in a.apps or sorted(APPS):
-        app_id, title, perms, versions, entry = APPS[name]
+        app_id, title, perms, versions, entry, wm_class = APPS[name]
         previous = None
         for i, (version, fname, want) in enumerate(versions):
             src = Path(a.appimages) / fname
@@ -69,7 +71,7 @@ def main():
             if got != want:
                 sys.exit(f'{src}: SHA-256 {got} is not the one the author publishes ({want}): refused')
             dest = out / (f'{app_id}.prev.panpak' if i == 0 else f'{app_id}.panpak')
-            cmd = [panpak, 'convert', src, '--id', app_id, '--name', title, '--version', version, '--stub', stub, '--secret-file', a.key, '--permissions', HERE / perms,
+            cmd = [panpak, 'convert', src, '--id', app_id, '--name', title, '--version', version, '--stub', stub, '--secret-file', a.key, '--permissions', HERE / perms, '--wm-class', wm_class,
                    '--update-url', f'{a.update_url_base.rstrip("/")}/{app_id}.panpak', '-o', dest]
             if entry:
                 cmd += ['--entry', entry]

@@ -303,6 +303,23 @@ fn the_permissions_option_declares_what_the_converter_gives_the_app_and_reads_no
 }
 
 #[test]
+fn the_wm_class_option_sets_the_window_class_that_the_desktop_groups_by() {
+    let l = lab("wm-class-option");
+    // Without the option the class is the one of the desktop file of the AppImage, if it has one.
+    let (o, plain) = l.convert(&appimage(real_layout()), &[]);
+    assert!(o.status.success(), "{}", text(&o));
+    let before = l.manifest(&plain);
+    // With it, the class that the converter gives is the one in the manifest, whatever the desktop file says.
+    let (o, pkg) = l.convert(&appimage(real_layout()), &["--wm-class", "org.example.Window"]);
+    assert!(o.status.success(), "{}", text(&o));
+    let m = l.manifest(&pkg);
+    assert!(m.contains("wm_class = \"org.example.Window\""), "{m}\n(without the option:)\n{before}");
+    // A class that is not a plain window class is refused.
+    let (o, _) = l.convert(&appimage(real_layout()), &["--wm-class", "bad class\nwith lines"]);
+    assert!(!o.status.success() && text(&o).contains("not a plain window class"), "{}", text(&o));
+}
+
+#[test]
 fn a_conversion_can_name_where_it_is_updated_from_and_follow_an_earlier_one() {
     let l = lab("update-url");
     let (o, v1) = l.convert(&appimage(real_layout()), &["--update-url", "https://example.org/conversions/app.panpak"]);

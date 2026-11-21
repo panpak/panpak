@@ -182,7 +182,7 @@ by upstream): `panpak install` reports it explicitly and `panpak
 doctor` shows it. See `distro-matrix.md` for the real cases tried.
 
 A conversion has no permissions unless the converter declares them (the one guess that `convert` makes is `x11` for an app that has only the xcb plugin of Qt). To declare them, give a file with
-the `[permissions]` tables (nothing else is read from it): `--permissions perms.toml`. To publish updates of the conversions, `--update-url https://example.org/app.panpak` writes `[update].url`, and
+the `[permissions]` tables (nothing else is read from it): `--permissions perms.toml`. The desktop shows the icon of an app in the task bar by the window class that its windows have, which is not always the one in the desktop file of the AppImage: if the task bar shows a gear, `--wm-class <class>` sets it (the class is the `app_id` or `WM_CLASS` of the window; `[desktop] wm_class` in the recipe of a `panpak build`). To publish updates of the conversions, `--update-url https://example.org/app.panpak` writes `[update].url`, and
 `--previous old.panpak` makes the new conversion follow the old one (the revision goes up and the history continues, as with `pack --previous`).
 
 ## Reproducible builds

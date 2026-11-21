@@ -37,6 +37,7 @@ configure = ["-DBUILD_SHARED_LIBS=OFF", "-DCMAKE_CXX_STANDARD=20", "-Ddeprecated
 toolkit = "qt6"
 
 [desktop]
+wm_class = "org.qbittorrent.qBittorrent"
 icon_svg = "share/icons/hicolor/scalable/apps/qbittorrent.svg"
 
 [permissions]

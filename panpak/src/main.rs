@@ -34,7 +34,7 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [--permissions <file.toml>] [--update-url <url>] [--previous <package>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak sbom [--export] <package | app id | https URL> [--allow-insecure-http] [--timeout <s>]   (the software bill of materials of a package, CycloneDX 1.6 JSON; --export completes it with the name, id and version, a serial number and the time, for a scanner; from a URL only the parts of the package that hold it are downloaded)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
+    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [--permissions <file.toml>] [--wm-class <window class>] [--update-url <url>] [--previous <package>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak sbom [--export] <package | app id | https URL> [--allow-insecure-http] [--timeout <s>]   (the software bill of materials of a package, CycloneDX 1.6 JSON; --export completes it with the name, id and version, a serial number and the time, for a scanner; from a URL only the parts of the package that hold it are downloaded)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--show-key] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the domain of the author confirms the key, or the key the author published, or the key of the file; --yes alone does not, unless the domain confirms)\n  panpak update [--stage] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file|trust.confirm_domain> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
@@ -2240,6 +2240,7 @@ struct ConvertArgs<'a> {
     icon_ov: Option<&'a Path>,
     /// A file with the `[permissions]` tables that the converter declares for the app (instead of the one guess that `convert` makes, `x11` for an app with only the xcb plugin).
     perms_ov: Option<&'a Path>,
+    wm_class_ov: Option<&'a str>,
     /// Where the updates of this conversion are published (`[update].url`): whoever distributes a conversion is the one who has to say it.
     update_url: Option<&'a str>,
     /// The earlier package of the same app, so that the revision goes up and the history continues (as `pack --previous`).
@@ -2272,7 +2273,7 @@ fn valid_squashfs_sb(b: &[u8]) -> bool {
 
 fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     use std::io::Read;
-    let ConvertArgs { src, id, stub, secret, trust, name_ov, version_ov, entry_ov, icon_ov, perms_ov, update_url, previous, out } = a;
+    let ConvertArgs { src, id, stub, secret, trust, name_ov, version_ov, entry_ov, icon_ov, perms_ov, wm_class_ov, update_url, previous, out } = a;
     panpak_core::validate_app_id(id)?;
     let mut f = File::open(src)?;
     // Look for the squashfs v4 magic ("hsqs") in the first 64 MiB, validating the
@@ -2493,6 +2494,11 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     }
     // The window class and the icons: the desktop groups windows by the class and shows the icon in the menu.
     let mut desktop_keys = String::new();
+    // `--wm-class`: the class that the converter knows the app's windows have, when the one in its desktop file is not it (the class that the desktop sees is the one the window sets).
+    if let Some(w) = wm_class_ov {
+        ensure_code!(panpak_core::valid_wm_class(w), ErrorCode::E5002, "convert: --wm-class {w:?} is not a plain window class (1 to 100 letters, digits, `.`, `_`, `+`, `-`)");
+        dwm = Some(w.to_string());
+    }
     match dwm.as_deref() {
         Some(w) if panpak_core::valid_wm_class(w) => {
             desktop_keys.push_str(&format!("wm_class = {}\n", q(w)));
@@ -4567,6 +4573,7 @@ fn real_main() -> Result<()> {
             let mut entry = None;
             let mut icon = None;
             let mut perms = None;
+            let mut wm_class = None;
             let mut update_url = None;
             let mut previous = None;
             let mut out = None;
@@ -4584,6 +4591,7 @@ fn real_main() -> Result<()> {
                     "--update-url" => { update_url = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--update-url <https address>"))?.as_str()); i += 2; }
                     "--previous" => { previous = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--previous <package>"))?.as_str()); i += 2; }
                     "--permissions" => { perms = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--permissions <file.toml>"))?.as_str()); i += 2; }
+                    "--wm-class" => { wm_class = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--wm-class <window class>"))?.as_str()); i += 2; }
                     "-o" => { out = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "-o <out>"))?.as_str()); i += 2; }
                     x => bail_code!(ErrorCode::E5001, "unknown flag {x}\n{usage}", usage = usage()),
                 }
@@ -4607,6 +4615,7 @@ fn real_main() -> Result<()> {
                 entry_ov: entry,
                 icon_ov: icon.map(Path::new),
                 perms_ov: perms.map(Path::new),
+                wm_class_ov: wm_class,
                 update_url,
                 previous: previous.map(Path::new),
                 out: out.map(PathBuf::from).as_deref(),

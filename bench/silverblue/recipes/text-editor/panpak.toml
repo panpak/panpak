@@ -29,6 +29,7 @@ toolkit = "gtk4"
 data = ["share/gtksourceview-5"]
 
 [desktop]
+wm_class = "org.gnome.TextEditor"
 icon_svg = "share/icons/hicolor/scalable/apps/org.gnome.TextEditor.svg"
 
 [permissions]

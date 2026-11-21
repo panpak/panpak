@@ -26,7 +26,19 @@ A function that does not work with Panpak because the conversion lacks a permiss
 | App | Operation that fails with Panpak | Permission of the Flatpak that Panpak lacks | Status |
 |---|---|---|---|
 | GIMP | The check for updates at every start (`https://www.gimp.org/gimp_versions.json`, loaded through GIO, which asks GVfs) fails with the error "loading of https://www.gimp.org/gimp_versions.json failed: Operation not supported", shown in a "GIMP Message" window at every start | talk to GVfs on the session bus (`org.gtk.vfs.*`; the Flatpak of GIMP has it, with `xdg-run/gvfs`) | open; seen on the control start on 2026-11-21 (Fedora 45, GNOME 51) |
+| Kdenlive, ONLYOFFICE | The dark mode of the system is not followed, and the file dialogs of Qt do not go through the portal (the converter warns: "a Qt app without the platform theme plugin `platformthemes/libqxdgdesktopportal.so`") | the platform theme plugin that the KDE runtime of the Flatpak brings, built for its Qt | open; the converter's warning on 2026-11-21, to be confirmed by the operations (the dialog, the theme) |
 | *(filled from the series: for example, opening a file by path outside the user folders; a graphics tablet in GIMP; a camera or capture device in Kdenlive; mounting a drive from Kdenlive; gvfs locations such as a network share)* | | `filesystem=host`, `device=all`, UDisks2, gvfs | open |
+
+**Direction for the Qt theme plugin hole (to study, no code yet).** How to give a converted app the platform theme plugin that is right for **its** version of Qt: a plugin per Qt version that Panpak (or the package) brings,
+chosen by the Qt that the converter finds in the tree (it already sees `libQt*` and the platform plugins), so that the app follows the dark mode and uses the portal for its dialogs without the app being rebuilt.
+
+**The cache of the icons of a conversion is measured as it is.** The converter warns that the icon theme folder of the AppImage has no `icon-theme.cache` (Qt then looks up each icon file by file at the start; the message says about 0.1 s). The pipeline of
+`panpak build` makes the cache with `gtk-update-icon-cache` in the build image; `convert` reads the tree in one pass from the squashfs and has no tool for it, and writing the format in the converter is not a small job. The conversions are measured without it, and the
+number is in the notes of the start times.
+
+**Direction for the GVfs hole (to study, no code yet).** Not opening the GVfs of the system to the app: that gives access to every file and to the shares of the person, a known weak point of the Flatpak. The direction
+is a GVfs **inside the sandbox of the app, on its own private bus**, with only the parts of it that the app needs (for the check for updates of GIMP, the network part: `http` and `https`), so the app gets the
+function and no more than the function. It keeps the function that the Flatpak gives and puts the protection in how it is made to work (principle 3).
 
 ## Where Panpak loses (what the Flatpak gives and the conversion does not)
 
@@ -38,12 +50,18 @@ Said before the numbers, as they were found, each with its reason. Nothing was t
 - **UDisks2 on the system bus** (Kdenlive mounting a drive), **gvfs**, and the **screenshot and file manager services** of the session that GIMP asks: no equivalent.
 - **An app built on a base newer than the glibc of the machine is refused.** The Flatpak brings its runtime and its glibc; Panpak uses the glibc of the system and `panpak install` refuses a package that needs a newer one (`PANPAK-E2005`). The machines of the series have glibc 2.44 and it
   does not bite here; a reader with an older Fedora would meet it (a package built on an older base runs on more systems, and that is a choice of whoever builds the package).
+- **The dark mode of the system and the file dialogs through the portal, in Qt apps (Kdenlive, ONLYOFFICE).** The AppImages bring their own Qt without the platform theme plugin `libqxdgdesktopportal`, which in the Flatpak comes with
+  the KDE runtime (built for its Qt): the app does not follow the dark mode of the system and its file dialogs do not use the portal (the converter says it for each conversion). The cause is in what the AppImage carries, and the loss is
+  Panpak's to close (principle 3): the plugin must match the version of the Qt of the app.
 - **The update of a conversion depends on how the AppImage was rebuilt.** A rebuilt AppImage shares fewer chunks with the previous one than a Flatpak shares objects (measured on the host: Kdenlive 26.08.2 to 26.08.3 downloads 127 MB of a 255 MB package, 5,901 chunks fetched and 11,757 reused); it is a property of the conversion, not of the format, and the table says it.
 - *(more are added here, and each one that is a missing permission also goes in the table of holes above, as the series find them: the permissions that are not the same list on the two sides, the 3D that is off, the versions that differ, ...)*
 
 ## To understand later
 
 - **Why the update of Kdenlive downloads 127 MB of a 255 MB package** (26.08.2 to 26.08.3, 5,901 chunks fetched and 11,757 reused, measured on the host). Is it how the AppImage was rebuilt (files that change in place shift the chunk boundaries), the chunking parameters, or the compression? Not explained yet: to be looked at before the format freeze, since the chunking parameters are one of the format gaps.
+
+- **If the series confirm that GIMP and Kdenlive start more slowly with Panpak** (the control starts: GIMP 17.7 s against 12.4 s, Kdenlive 6.2 s against 4.5 s, one measure each), find the cause before the report (principle 6). The first hypothesis to check: GIMP waits for a time limit on GVfs, which is not there under Panpak
+  (the check for updates through GVfs fails). Measure what the app does in the extra seconds (a trace of its system calls with times, and the time between the screen of start and the main window), with and without the check for updates.
 
 ## Setup
 
