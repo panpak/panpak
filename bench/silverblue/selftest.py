@@ -90,6 +90,13 @@ esac
         win.write_text('')
         p = run('start', '--system', 'flatpak', '--app', 'gimp', '--trials', '1')
         assert p.returncode != 0 and 'winwatch@panpak.bench' in (p.stdout + p.stderr), p.stdout + p.stderr
+    # A series of reboots needs the automatic login of GDM: without it the machine would stop at the login screen after the first reboot; nothing is armed.
+    envr = dict(os.environ, HOME=str(tempfile.mkdtemp()), BENCH_RESULTS=str(tempfile.mkdtemp()))
+    envr.pop('BENCH_SKIP_AUTOLOGIN_CHECK', None)
+    p = subprocess.run([sys.executable, str(HERE / 'silverblue_bench.py'), 'reboot-series', 'start', '--system', 'flatpak', '--apps', 'gimp', '--count', '1'], capture_output=True, text=True, env=envr)
+    if not Path('/etc/gdm/custom.conf').exists() or 'AutomaticLoginEnable' not in Path('/etc/gdm/custom.conf').read_text():
+        assert p.returncode != 0 and 'automatic login' in (p.stdout + p.stderr), p.stdout + p.stderr
+        assert not (Path(envr['HOME']) / '.config/systemd/user/panpak-bench-reboot.service').exists()
     # The window that counts: the main window of the app, never its screen of start or a dialog of the first start.
     sys.path.insert(0, str(HERE))
     import silverblue_bench as sb

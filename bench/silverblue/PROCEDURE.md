@@ -28,7 +28,7 @@ results say so).
 1. One image. Make `silverblue-flatpak` and `silverblue-panpak` as full clones of one Silverblue that is up to date and has been started once. Same number of CPUs and
    same memory in both (record them: `lscpu`, `free -m`), 3D off in both, same disk type. Use a virtual disk that is not shared with the host's disk cache for the measurements of the
    time (a "none" or "directsync" cache mode, or the host's disk cache dropped before a series: say which was used).
-2. A user with autologin to **GNOME on Wayland** (the default of Silverblue), automatic screen lock and screen blanking off (`gsettings set org.gnome.desktop.screensaver lock-enabled false`,
+2. A user with autologin to **GNOME on Wayland** (**it must really be on**: `AutomaticLoginEnable=True` in `/etc/gdm/custom.conf`, or Settings, System, Users, Automatic Login, which asks for the administrator's password; the series of reboots refuses to start without it, because after a reboot nobody is at the machine and a machine at the login screen measures nothing) (the default of Silverblue), automatic screen lock and screen blanking off (`gsettings set org.gnome.desktop.screensaver lock-enabled false`,
    `gsettings set org.gnome.desktop.session idle-delay 0`), and animations as they are. A resolution that is the same in both machines.
 3. Nothing that updates by itself, nothing that downloads in the background: `sudo systemctl disable --now rpm-ostreed-automatic.timer`, GNOME Software off
    (`gsettings set org.gnome.software download-updates false`, `gsettings set org.gnome.software allow-updates false`; it is also best to remove it from the autostart). Note that the bytes are counted on the network interface: while a series
@@ -175,6 +175,8 @@ for a in gimp kdenlive onlyoffice qb; do ./silverblue_bench.py cycle --system fl
 ./silverblue_bench.py reboot-series start --system flatpak --apps gimp,kdenlive,onlyoffice,qb --count 5
 sudo systemctl reboot
 ```
+
+`run_series.sh <flatpak|panpak> <folder name> <order> [<base url> <converter key> <ca.pem>]` runs everything of this block that comes before the reboots (the prerequisites for Panpak, `scenario`, the cycles of every app and the updates) in the environment of the graphical session, from ssh or from a terminal; the series of reboots is run after it, from the same results folder.
 
 For Panpak, before the series, once: `./silverblue_bench.py prerequisites --system panpak --trials 5` (the launcher and its prerequisites: the time and space of `install-runtime`, in a private home, so that the machine stays as it is); `install` then records on the first app whether it installed the runtime by itself (`runtime_installed`, `runtime_bytes_before`/`after`).
 

@@ -596,6 +596,15 @@ def cmd_scenario(args):
         warm_starts(args.system, app, args.warm, args.gap)
 
 
+def autologin_on():
+    """True if GDM logs the user in by itself (`AutomaticLoginEnable=True` or `AutomaticLogin=` in /etc/gdm/custom.conf)."""
+    try:
+        text = Path('/etc/gdm/custom.conf').read_text()
+    except OSError:
+        return False
+    return any(re.match(r'(?i)\s*AutomaticLoginEnable\s*=\s*(true|1|yes)', line) for line in text.splitlines())
+
+
 STATE = RESULTS / 'reboot-state.json'
 UNIT = HOME / '.config/systemd/user/panpak-bench-reboot.service'
 
@@ -609,12 +618,16 @@ def cmd_reboot(args):
         say(STATE.read_text() if STATE.exists() else 'no series is armed')
         return
     if args.action == 'start':
+        # After a reboot nobody is at the machine: without the automatic login of GDM the machine stops at the login screen, there is no session, no window extension, and the series never measures anything.
+        if os.environ.get('BENCH_SKIP_AUTOLOGIN_CHECK') != '1' and not autologin_on():
+            raise SystemExit('refused: the automatic login of GDM is not on (no `AutomaticLogin=true` in /etc/gdm/custom.conf): after the first reboot the machine would wait at the login screen. '
+                             'Turn it on (Settings, System, Users, Automatic Login) and run this again (PROCEDURE.md, section 1).')
         apps = args.apps.split(',')
         RESULTS.mkdir(parents=True, exist_ok=True)
         STATE.write_text(json.dumps({'system': args.system, 'apps': apps, 'total': args.count * len(apps), 'done': 0, 'settle': args.settle}))
         UNIT.parent.mkdir(parents=True, exist_ok=True)
         UNIT.write_text(f'[Unit]\nDescription=Measure one start after a reboot\nAfter=graphical-session.target\n\n[Service]\nType=oneshot\n'
-                        f'Environment=PYTHONUNBUFFERED=1\nExecStart={sys.executable} {os.path.abspath(__file__)} reboot-series step\n\n[Install]\nWantedBy=default.target\n')
+                        f'Environment=PYTHONUNBUFFERED=1\nEnvironment=BENCH_RESULTS={RESULTS}\nEnvironment=PATH={HOME}/.local/bin:/usr/local/bin:/usr/bin\nExecStart={sys.executable} {os.path.abspath(__file__)} reboot-series step\n\n[Install]\nWantedBy=default.target\n')
         sh(['systemctl', '--user', 'daemon-reload'])
         sh(['systemctl', '--user', 'enable', 'panpak-bench-reboot.service'])
         say('armed: the next login measures one start and reboots again until the series is done. Reboot now with `systemctl reboot`.')
@@ -629,6 +642,7 @@ def cmd_reboot(args):
         time.sleep(2)
     # Boot and login keep the machine busy for a while: the measure starts after a fixed time of quiet, the same in every series.
     time.sleep(st['settle'])
+    import_session_env()  # the shell has imported its display into the user manager by now
     app = st['apps'][st['done'] % len(st['apps'])]
     one_start(st['system'], app, 'after-reboot', st['done'])
     st['done'] += 1
@@ -689,8 +703,8 @@ def cmd_summarize(args):
     say('| order | system | app | kind | n | median | min | max | Q1 | Q3 | MAD (% of median) | failed |')
     say('|---|---|---|---|---|---|---|---|---|---|---|---|')
     for (order, system, app, kind), rs in sorted(groups.items()):
-        if kind == 'install':
-            continue
+        if kind not in ('first', 'warm', 'after-reboot', 'control'):
+            continue  # installs, updates and the rest have their own tables
         ok = [r['window_s'] for r in rs if r.get('ok')]
         bad = sum(1 for r in rs if not r.get('ok'))
         if not ok:
@@ -704,11 +718,27 @@ def cmd_summarize(args):
     inst = {}
     for r in rows:
         if r['kind'] == 'install':
-            inst.setdefault((r['order'], r['system'], r['app'], (r.get('tag') or '').rstrip('0123456789') or '-'), []).append(r)
+            inst.setdefault((r['order'], r['system'], r['app'], ((r.get('tag') or '-').rstrip('0123456789') if (r.get('tag') or '').startswith('cycle') else (r.get('tag') or '-'))), []).append(r)
     for (order, system, app, tag), rs in sorted(inst.items()):
         rx, sp, wall = stats([r['rx_bytes'] for r in rs]), stats([r['space_bytes'] for r in rs]), stats([r['wall_s'] for r in rs])
         say(f'| {order} | {system} | {app} | {tag} | {rx["n"]} | {mib(rx["median"])} | {mib(sp["median"])} | {mib(sp["min"])}-{mib(sp["max"])} | {wall["median"]:.1f} |')
-    say('\nThe tag `position0` is the first app of a scenario, `position1` the second: the second one shows what a system shares between two apps.')
+    say('\nThe tag `position0` is the first app of a scenario, `position1` the second: the second one shows what a system shares between two apps. `cycleN` is the Nth reinstall of one app on its own.')
+    ups = {}
+    for r in rows:
+        if r['kind'] == 'update':
+            ups.setdefault((r['order'], r['system'], r['app'], f"{r.get('from_version')} to {r.get('to_version')}"), []).append(r)
+    if ups:
+        say('\n### Updates: bytes that came, space added, time\n')
+        say('| order | system | app | versions | n | MiB that came (median) | MiB on disk added (median) | seconds (median) | seconds (min-max) |')
+        say('|---|---|---|---|---|---|---|---|---|')
+        for (order, system, app, vers), rs in sorted(ups.items()):
+            rx, sp, wall = stats([r['rx_bytes'] for r in rs]), stats([r['space_bytes'] for r in rs]), stats([r['wall_s'] for r in rs])
+            say(f'| {order} | {system} | {app} | {vers} | {rx["n"]} | {mib(rx["median"])} | {mib(sp["median"])} | {wall["median"]:.1f} | {wall["min"]:.1f}-{wall["max"]:.1f} |')
+    pre = [r for r in rows if r['kind'] == 'prerequisites']
+    if pre:
+        w, sp = stats([r['wall_s'] for r in pre]), stats([r['space_bytes'] for r in pre])
+        say('\n### Launcher and prerequisites (`install-runtime` in a private home)\n')
+        say(f'n = {w["n"]}, median {w["median"]*1000:.0f} ms, MiB on disk {mib(sp["median"])}. The first `install` of a series also records whether it installed the runtime by itself (`runtime_installed`).')
 
 
 def main():
