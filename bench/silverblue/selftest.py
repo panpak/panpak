@@ -90,6 +90,14 @@ esac
         win.write_text('')
         p = run('start', '--system', 'flatpak', '--app', 'gimp', '--trials', '1')
         assert p.returncode != 0 and 'winwatch@panpak.bench' in (p.stdout + p.stderr), p.stdout + p.stderr
+    # The controlled peer of the qBittorrent operation: metadata by magnet and every piece, checked; and the checklist has its link.
+    p = subprocess.run([sys.executable, str(HERE / 'seed_peer.py'), '--self-test'], capture_output=True, text=True, timeout=120)
+    assert p.returncode == 0 and 'PASS' in p.stdout, p.stdout + p.stderr
+    p = subprocess.run([sys.executable, str(HERE / 'seed_peer.py'), '--address', '0.0.0.0', '--print-magnet'], capture_output=True, text=True)
+    assert p.returncode != 0 and 'every interface' in p.stderr + p.stdout
+    out = Path(tempfile.mkdtemp()) / 'c.html'
+    subprocess.run([sys.executable, str(HERE / 'make_checklist.py'), str(out)], check=True, capture_output=True)
+    assert 'x.pe=192.168.122.1:6891' in out.read_text()
     print('selftest PASS')
 
 

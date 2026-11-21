@@ -5,10 +5,14 @@
 Usage: python3 make_checklist.py <out.html>
 
 Open the page in a browser and print it (A4, 100 %). Each row says what to do with the mouse, what must happen, and has boxes for "worked", "failed" and a line for what was seen.
-A row that fails with Panpak because a permission of the Flatpak is missing is a hole to close (principle 3): write the exact operation in RESULTS.md. The files are the ones of `make_ops_files.py`.
+A row that fails with Panpak because a permission of the Flatpak is missing is a hole to close (principle 3): write the exact operation in RESULTS.md. The files are the ones of `make_ops_files.py`; the magnet link is the one of `seed_peer.py`, which must be running on the host.
 """
 import html
 import sys
+
+import seed_peer
+
+MAGNET = seed_peer.magnet('192.168.122.1', 6891)
 
 APPS = [
     ('GIMP 3.2.8', [
@@ -45,8 +49,8 @@ APPS = [
     ]),
     ('qBittorrent 5.3.0', [
         ('Start qBittorrent from Activities.', 'The main window appears.'),
-        ('Add a torrent link (the chain-link icon). Paste the magnet link of a small, legal file, the same on both machines: write it here ______________________', 'The torrent is listed and starts.'),
-        ('Wait for the end of the download.', 'It is in Downloads (in Files). A notification may appear: write it.'),
+        ('Add a torrent link (the chain-link icon). Paste this magnet link, the one of the controlled peer on the host (seed_peer.py, 8 MiB): ' + MAGNET, 'The torrent is listed and starts from the peer 192.168.122.1.'),
+        ('Wait for the end of the download (a few seconds).', 'panpak-bench-testfile.bin is in Downloads (in Files). A notification may appear: write it.'),
         ('Look at the top bar of the desktop while it runs.', 'A tray icon, or none: write which.'),
     ]),
     ('Text Editor (the one of Fedora on the Flatpak machine, ours on the Panpak machine)', [

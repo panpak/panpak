@@ -204,6 +204,10 @@ One app, two systems, one list of things a person does with a document. On `silv
 
 **The files** for these operations are made on the host with `python3 make_ops_files.py ops` (two text files in one folder, a picture, a document, two 6 second test videos made with ffmpeg, and, in `ops/outside`, a picture, a document and a video in a folder that is not a user folder; the same bytes on both machines): copy `ops/Documents`, `ops/Pictures`, `ops/Videos` and `ops/outside` into the home of both machines. The test video of Kdenlive is `Videos/clip.mp4`; `outside/clip-outside.mp4` is the one for a clip by path outside the granted folders.
 
+**The torrent of qBittorrent is a controlled peer on the host, not a public one.** `python3 seed_peer.py` serves one file of 8 MiB, always the same bytes (`panpak-bench-testfile.bin`), from `192.168.122.1:6891`
+only (it refuses an address that listens on every interface), and prints the magnet link, which names the peer (`x.pe`), so no tracker and no DHT is needed and nothing is announced. Leave it running during the operations of qBittorrent on both machines
+(`python3 seed_peer.py --self-test` checks it: it takes the metadata and every piece with a client of its own). The magnet link is in the checklist.
+
 **The checklist to print**: `python3 make_checklist.py checklist.html`, open it in a browser and print it. It has one row per operation, for each app and for each machine (what to do with the mouse, what must happen, boxes for worked and failed, a line for what was seen); the operations are the ones in that script (GIMP, Kdenlive, ONLYOFFICE, qBittorrent and the Text Editor of this section) and the sheet is the record of the manual part.
 
 **A step that fails with Panpak because the conversion lacks a permission that the Flatpak has** (`filesystem=host`, `device=all`, UDisks2, gvfs) is written in `RESULTS.md` as a hole to close (principle 3), with the exact operation that fails: not only as a loss.
