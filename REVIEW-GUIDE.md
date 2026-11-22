@@ -1,6 +1,14 @@
 # Guide for the external reviewer
 
-Status: format v1, runtime ABI 1, Landlock V8 on kernel 7.0.0-38.
+Status: format v1, runtime ABI 1. Where it was run, as measured on **2026-11-22**:
+
+| Machine | Kernel | Landlock | What was run there |
+|---|---|---|---|
+| The development host (Ubuntu) | 7.0.0-43-generic | V8 (`panpak doctor`) | the whole test suite, the benchmarks of `docs/BENCHMARKS.md` (older ones were made on 7.0.0-38, written in each table) |
+| A Fedora Silverblue 45 virtual machine | 7.3.4-300.fc45 | **V9** (`panpak doctor`) | the sandbox tests of the stub, with **no known skip**: `sandbox_unix_allow_path` (path Unix sockets, which needs V9) and the other 8 sandbox tests pass; the comparison of step 9b |
+| The CI runner (Ubuntu 24.04 image) | its own | V8 | everything that does not need V9; `sandbox_unix_allow_path` is listed there as a known skip |
+
+A protection that needs V9 is therefore proved on the Fedora machine and skipped in CI; the list of known skips is in the summary of the `build-test` job.
 **Start with `PANPAK-FORMAT.md` §0.1 (three things: the signed message, the signature block, the chain of keys with recovery) and `THREAT-MODEL.md` §1.1 (what each
 attacker of the trust layer can and cannot do).** The rest of this guide is older and describes the sandbox and the store; its line counts are approximate.
 This guide says WHERE to look, not what to conclude. Measured facts
@@ -110,7 +118,9 @@ before trusting beyond the smoke.
 - Seccomp is a deny list (the calls of PANPAK-FORMAT §9.8); `/proc` `/sys` `/run` readable; shared `/tmp`.
 - Minimum kernel 5.13; degradation on old kernels (explicit refusal).
 - NEVER verified: real GPU beyond the shared render node, kernels
-  beyond 7.0.0-38, HTTPS on the internet, FUSE vs extraction beyond
+  other than 7.0.0-38 and 7.0.0-43 (Landlock V8) and 7.3.4 (V9, Fedora 45), the
+  kernels of other distributions, HTTPS on the internet beyond the tests and the
+  conversion server of step 9b (a test authority on a local network), FUSE vs extraction beyond
   libfuse2.
 - Honest measurements: Panpak slower on tiny CLIs (+36 ms AIL3 warm),
   faster where FUSE dominates (QON9 -67%); ~2x disk; Joplin GUI

@@ -322,7 +322,13 @@ in a script, a first install says whom it trusts: `--expect-key <key>` (the key 
 what the system lacks.
 
 To try Panpak with apps you already have, `panpak convert` turns an AppImage into a package signed by
-you: see [QUICKSTART.md](QUICKSTART.md).
+you. A conversion says what it is (`[origin]`: the file, its SHA-256, `signed_by_upstream = false`): it is the work of whoever converted it, not a package of the authors.
+The converter can declare the permissions and the window class (so that the task bar shows the icon), the address it is updated from, and the package that it follows:
+`--permissions`, `--wm-class`, `--update-url`, `--previous`; see [QUICKSTART.md](QUICKSTART.md).
+
+Everyday commands: `panpak update <app-id>` (only the chunks that the installed version does not have), `panpak rollback <app-id>` (back to the previous version),
+`panpak repair <app-id>` (the files right again), `panpak verify <app-id>`, `panpak gc` and, for a scanner of dependencies, `panpak sbom [--export] <package | app id | https URL>`
+(the software bill of materials, CycloneDX 1.6, of a package; with `--export` it has the name, id and version, a serial number and the time).
 
 ## License
 
