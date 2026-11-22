@@ -188,6 +188,10 @@ this machine). The series of reboots ends by itself (the log shows `series done`
 
 When a series is done: copy the folder out of the machine (`scp -r`), then revert the machine to `clean`.
 
+**The exit of Kdenlive after a person closes its window (outside the series, at the end of series 2 for Flatpak and of series 4 for Panpak).** `./silverblue_bench.py close-test --system S --app kdenlive --trials 3`: the app is started, the script says `CLOSE-NOW`
+and the person closes the window with the X (or Ctrl+Q); the time is from the moment the compositor reports the window as closed to the moment that no process is left in the scopes of the app (150 s at most), and the settings file (`kdenlive-flatpakrc` under Flatpak, `kdenliverc` under Panpak)
+is compared before and after to see whether the app wrote it at the exit. The row is `close-exit`; the results page gives it next to the starts. It does not use the signal of the series (Kdenlive does not leave on a signal: section 3).
+
 ## 5. The tables
 
 On the host, with the four folders copied (named `fp-gimp-first`, `fp-qb-first`, `pp-gimp-first`, `pp-qb-first`):

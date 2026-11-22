@@ -668,6 +668,68 @@ def cmd_prerequisites(args):
             shutil.rmtree(home, ignore_errors=True)
 
 
+def config_state(system, app):
+    """The main settings file of an app (what it writes when it leaves): its modification time and a hash, or None."""
+    if app == 'kdenlive':
+        path = HOME / '.var/app/org.kde.kdenlive/config/kdenlive-flatpakrc' if system == 'flatpak' else HOME / '.local/share/panpak/userdata/org.kde.kdenlive/.config/kdenliverc'
+    else:
+        raise SystemExit(f'close-test: no settings file is known for {app}')
+    if not path.exists():
+        return None
+    import hashlib
+    return {'path': str(path), 'mtime': path.stat().st_mtime, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def cmd_close_test(args):
+    """How long an app takes to leave when a PERSON closes its window, and whether it writes its settings then. The app is started and the person is asked (on the screen of this script) to close the window with the X
+    (or Ctrl+Q); the time is from the moment the compositor says that the window is closed to the moment that no process is left in the scopes of the app. Not a start measure: it does not use the signal of `stop`."""
+    if not extension_ready():
+        raise SystemExit('the window extension is not running: PROCEDURE.md, section 1')
+    for i in range(args.trials):
+        unit = f'panpak-bench-close-{os.getpid()}-{i}'
+        before = config_state(args.system, args.app)
+        n = len(window_events())
+        t0 = time.time()
+        proc = subprocess.Popen(['systemd-run', '--user', '--scope', '--quiet', f'--unit={unit}', '--', *launcher(args.system, args.app)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        row = wait_frame_row(args.app, t0, 90)
+        if not row:
+            stop(args.system, args.app, unit)
+            raise SystemExit('no window: nothing to close')
+        say(f'CLOSE-NOW trial {i}: the window of {args.app} is up; close it with the X (or Ctrl+Q) now (waiting {args.wait_close} s)')
+        tc = None
+        end = time.time() + args.wait_close
+        while time.time() < end and tc is None:
+            for r in window_events()[n:]:
+                if r.get('event') == 'closed' and r.get('pid') == row.get('pid'):
+                    tc = r['t']
+                    break
+            time.sleep(0.1)
+        scopes = scopes_of(args.system, args.app, unit)
+        if tc is None:
+            stop(args.system, args.app, unit)
+            record(args.system, kind='close-exit', app=args.app, trial=i, ok=False, note=f'the window was not closed within {args.wait_close} s')
+            continue
+        left = scopes
+        while time.time() - tc < args.limit:
+            left = [x for x in scopes if scope_active(x)]
+            if not left:
+                break
+            time.sleep(0.2)
+        exit_after = round(time.time() - tc, 2)
+        diag = exit_diag(left) if left else None
+        if left:
+            stop(args.system, args.app, unit)
+        time.sleep(1.0)
+        after = config_state(args.system, args.app)
+        record(args.system, kind='close-exit', app=args.app, trial=i, ok=True, exit_after_close_s=exit_after, exit_clean=not left, exit_diag=diag,
+               config_before=before, config_after=after, config_written=bool(after and (not before or after['sha256'] != before['sha256'] or after['mtime'] != before['mtime'])))
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+        time.sleep(args.gap)
+
+
 def cmd_install(args):
     do_install(args.system, args.app, args)
 
@@ -859,6 +921,20 @@ def cmd_summarize(args):
             bad = sum(1 for r in rs if r.get('exit_clean') is False)
             out_rows.append({'measure': 'exit_s', 'order': order, 'system': system, 'app': app, 'kind': 'all', 'not_clean': bad, **e})
             say(f'| {order} | {system} | {app} | {e["n"]} | {e["median"]:.2f} | {e["min"]:.2f} | {e["max"]:.2f} | {bad} |')
+    cl = {}
+    for r in rows:
+        if r['kind'] == 'close-exit' and r.get('ok'):
+            cl.setdefault((r['order'], r['system'], r['app']), []).append(r)
+    if cl:
+        say('\n### Exit after a person closes the window (seconds), and the settings\n')
+        say('| order | system | app | n | median | min | max | settings written at the exit | not clean after the limit |')
+        say('|---|---|---|---|---|---|---|---|---|')
+        for (order, system, app), rs in sorted(cl.items()):
+            e = stats([r['exit_after_close_s'] for r in rs])
+            w = sum(1 for r in rs if r.get('config_written'))
+            bad = sum(1 for r in rs if r.get('exit_clean') is False)
+            out_rows.append({'measure': 'exit_after_close_s', 'order': order, 'system': system, 'app': app, 'kind': 'close-exit', 'config_written': w, 'not_clean': bad, **e})
+            say(f'| {order} | {system} | {app} | {e["n"]} | {e["median"]:.2f} | {e["min"]:.2f} | {e["max"]:.2f} | {w} of {e["n"]} | {bad} |')
     if getattr(args, 'out', None):
         Path(args.out).write_text(json.dumps(out_rows, indent=1))
         say(f'\nevery measure with its median, minimum and maximum: {args.out}')
@@ -892,6 +968,13 @@ def main():
     common(p)
     pkg(p)
     p.set_defaults(fn=cmd_install)
+    p = sub.add_parser('close-test')
+    common(p)
+    p.add_argument('--trials', type=int, default=3)
+    p.add_argument('--wait-close', type=int, default=120, help='seconds that the person has to close the window')
+    p.add_argument('--limit', type=int, default=150, help='seconds to wait for the app to leave after the window is closed')
+    p.add_argument('--gap', type=float, default=5.0)
+    p.set_defaults(fn=cmd_close_test)
     p = sub.add_parser('prerequisites')
     common(p, apps=False)
     p.add_argument('--stub', help='the panpak-stub (default: ~/.local/bin/panpak-stub)')

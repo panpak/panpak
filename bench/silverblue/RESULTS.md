@@ -65,6 +65,10 @@ Said before the numbers, as they were found, each with its reason. Nothing was t
   start of the conversion (2.9 s median in series 3 on the machine) equals the control start of the Flatpak (3.0 s, one measure). What is slower is the first start, which makes the profile of GIMP (about 13 s of work, in the two formats): 15.9 s median in series 3 against 12.4 s in the control of
   the Flatpak. The cause of the difference of about 3.5 s is not found yet; it is looked for with the series of the Flatpak machine (the same measure, repeated) before it is written as a result, and Kdenlive is looked at the same way (first start 4.4 s median, 3.7 to 10.2 s in series 3, against 4.45 s).
 
+- **A known defect of Panpak in these series: the error window of GIMP.** Every start of the GIMP conversion opens a window "GIMP Message" with the error of the check for updates ("loading of https://www.gimp.org/gimp_versions.json failed: Operation not supported"), because GVfs is not there
+  (step 9e; the holes to close). The time of GIMP is always the one of its main window ("GNU Image Manipulation Program"): every GIMP start of series 3 and 4 (26 each) was measured on it, never on the error window. The error window is written here as it was seen, not hidden, and the settings of the first start do not turn the check off.
+- **Kdenlive does not leave on a signal.** In the series it is ended by force after 20 s (the results say "not clean" for every one of its starts); a person who closes its window sees it leave in about 43 s on the Flatpak machine, and only then it writes its settings. The starts after a forced exit have the same times as those after a normal exit (2.19 s against 2.27 s). The close of a window by a person is measured at the end of series 2 and 4 (`close-test`) and is next to the starts.
+
 ## Setup
 
 *(machines, versions: `rpm-ostree status`, `ldd --version`, `gnome-shell --version`, `flatpak --version`, `panpak --version`, CPUs, memory, disk; 3D off on both; the date; the versions of the apps and what differs on purpose)*
