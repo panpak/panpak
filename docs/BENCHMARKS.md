@@ -62,6 +62,29 @@ the same space and a time of 20.3 s and 24.6 s. The memory is lower because a la
 the files take 1.1 s with the files in the page cache and 3.6 s the first time after they were written, and the whole command 3.1 to 6.7 s. Reading each chunk of a blob with one call, instead of the few small reads that
 `read_to_end` on a `take` makes, took the same step from 12.2 s down to 1.1 s (warm) or 3.6 s (first time). This is the cost that `install` has now for a blob that it finds in the store (before, it linked it without reading it); the VM (btrfs) and a cold cache are not measured yet.
 
+## Requests of an update: neighbours in one request, six at once
+
+Measured on 2026-11-23 on the development host (kernel 7.0.0-43-generic, 16 threads, 14 GiB, ext4 on an SSD), release build (glibc), in an isolated home for each run. The update is `panpak update --yes <app id>`
+of the next version of the official AppImage conversion over the installed previous one (Kdenlive 26.08.3, ONLYOFFICE 10.0.0 over 9.4.0), from a Python server on the host (HTTPS, a test authority, `tests/range_server.py` with a delay
+before every answer, on the address of the virtual network, 192.168.122.1). The delay is 0 ms or 60 ms (a network with a latency of 60 ms for each request; the server answers many requests at once). "Before" is main at `f165767`
+(one request at a time, only neighbours that touch each other in one request); "after" is this change. Three runs of each, alternating before and after; the median, with the lowest and the highest in brackets.
+The time is the whole `update` (the download and the making of the tree, about 18 s on this machine). The peak memory is that of the program and its children. The requests are counted by the server, with the three that read the footer, the manifest and the signature and the index.
+
+| App | Delay | | Time of the update | Requests | Bytes that came | Peak memory |
+|---|---|---|---|---|---|---|
+| Kdenlive | 0 ms | before | 64.4 s (63.2 to 65.5) | 1,057 | 127.3 MB | 68 MiB |
+| Kdenlive | 0 ms | after | **24.2 s** (23.9 to 25.8) | 560 | 130.0 MB (+2.1%) | 129 MiB |
+| Kdenlive | 60 ms | before | 124.8 s (122.0 to 125.3) | 1,057 | 127.3 MB | 68 MiB |
+| Kdenlive | 60 ms | after | **30.9 s** (27.9 to 34.5) | 560 | 130.0 MB | 83 MiB |
+| ONLYOFFICE | 0 ms | before | 41.0 s (38.7 to 41.5) | 349 | 128.3 MB | 55 MiB |
+| ONLYOFFICE | 0 ms | after | **25.1 s** (22.5 to 26.5) | 224 | 129.2 MB (+0.7%) | 96 MiB |
+| ONLYOFFICE | 60 ms | before | 59.2 s (55.9 to 61.1) | 349 | 128.3 MB | 55 MiB |
+| ONLYOFFICE | 60 ms | after | **31.0 s** (30.0 to 32.9) | 224 | 129.2 MB | 78 MiB |
+
+The bytes in between that are fetched and dropped are +2.1% for Kdenlive and +0.7% for ONLYOFFICE, as the simulation on the indexes had said (547 and 205 requests for a gap of 16 KiB; the counts here
+are 13 and 19 higher because of the requests for the footer, the manifest, the signature and the index). The peak memory is higher: up to six responses of at most 4 MiB are held at once, and a part of the answers is held while the
+tree is made. Not measured: a real network (not a local server), a server that limits the connections, a cold disk, and the virtual machine (btrfs).
+
 ## Update size
 
 Method: two consecutive versions of an app are converted, the older one is installed, and
