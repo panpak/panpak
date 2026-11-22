@@ -1081,7 +1081,9 @@ The signed message is the one of §3.0 (label, `version`, `flags`, `root`, manif
 - `install` makes the app ready: `panpak-stub prepare` verifies, makes the tree and the resolution (the farm and its cache entry) with the code and
   the stub identity of a start, so that the first start is a cache hit. `update` downloads only the chunks that the installed version does not
   have into `staging/<id>/<root>/`, makes the new tree from the files of the old one and those chunks, checking every reused blob against the signed
-  index (`install` does it too, see 6.2), and only then moves `previous` and `current`.
+  index (`install` does it too, see 6.2), and only then moves `previous` and `current`. The chunks are asked for by ranges [INFORMATIVE]: neighbours with at most
+  16 KiB between them in one request (the bytes between are dropped), at most 4 MiB for each response, 6 requests at once; a server that answers 429 or 503 is waited for
+  as it asks (`Retry-After`) and the rest goes one request at a time. Nothing that comes is trusted: each chunk is checked by its hash when it is used.
 
 ### 6.4 Locks [NORMATIVE for the order; the mechanism is INFORMATIVE]
 

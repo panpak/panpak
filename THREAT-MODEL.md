@@ -532,7 +532,11 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   reads limited to `expected+1`; incoherent Content-Range or wrong
   bodies = error; confined staging. Tested against a hostile server
   (loop, slowloris, huge body, 200, lying Content-Range, corrupt/
-  truncated chunks).
+  truncated chunks). The chunks of an update are asked for by ranges: neighbours with up to 16 KiB between them
+  are one request (those bytes are dropped, never used; a chunk is checked by its hash when it is used), at most 4 MiB for each response and at most 6
+  requests at once, so a server cannot make the client take more than 6 x 4 MiB in memory, and at most 16 KiB more than asked for each range. A server that answers 429 or 503 is
+  waited for as it asks (`Retry-After`, in seconds or as a date, up to 300 s; a longer wait ends the update with the time it asked, and what came is kept), and the rest of
+  the download goes one request at a time; a range that is refused six times ends the update. Tested with a local server that answers busy (`panpak/src/ranges.rs`).
 - **Scope (ABI ≥ V6)**: signals and abstract sockets confined (tested:
   out-of-scope `kill` denied, abstract `connect()` denied). On ABI < V6
   not applicable (kernel too old).

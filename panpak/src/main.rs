@@ -15,6 +15,7 @@ mod gc;
 mod happy;
 mod icons;
 mod protected;
+mod ranges;
 mod remove;
 mod source;
 mod treewriter;
@@ -57,7 +58,7 @@ fn agent_for(url: &str, allow_insecure: bool, timeout_secs: u64) -> Result<ureq:
     match uri.scheme_str() {
         // Always HTTPS anyway; redirects stay in https (ureq) and max 3.
         Some("https") => {
-            let mut builder = ureq::Agent::config_builder().https_only(true).max_redirects(3).timeout_global(Some(std::time::Duration::from_secs(timeout_secs)));
+            let mut builder = ureq::Agent::config_builder().https_only(true).max_redirects(3).http_status_as_error(false).timeout_global(Some(std::time::Duration::from_secs(timeout_secs)));
             if let Some(tls) = settings_tls()? {
                 builder = builder.tls_config(tls);
             }
@@ -71,6 +72,7 @@ fn agent_for(url: &str, allow_insecure: bool, timeout_secs: u64) -> Result<ureq:
             Ok(ureq::Agent::config_builder()
                 .https_only(false)
                 .max_redirects(0)
+                .http_status_as_error(false)
                 .timeout_global(Some(std::time::Duration::from_secs(timeout_secs)))
                 .build()
                 .into())
@@ -101,9 +103,26 @@ fn net_err(op: &str, url: &str, e: ureq::Error) -> anyhow::Error {
     anyhow::anyhow!("{op} on {url} failed ({e}): check the connection and URL, then retry")
 }
 
+/// An answer that is an HTTP error: a busy server (429, 503) is a `ranges::Throttled` with its `Retry-After`, the others are the readable network error.
+fn http_failure(op: &str, url: &str, resp: &http::Response<ureq::Body>) -> Option<anyhow::Error> {
+    let status = resp.status().as_u16();
+    match status {
+        429 | 503 => {
+            let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|v| ranges::parse_retry_after(v, std::time::SystemTime::now()));
+            Some(anyhow::Error::new(ranges::Throttled { status, retry_after }).context(format!("{op} on {url}")))
+        }
+        400..=599 => Some(anyhow::anyhow!("{op} on {url} failed (http status: {status}): check the connection and URL, then retry")),
+        _ => None,
+    }
+}
+
 fn http_range(agent: &ureq::Agent, url: &str, start: u64, end: u64) -> Result<(Vec<u8>, u64)> {
     ensure!(end >= start, "empty or reversed range {start}-{end} (the remote file describes itself wrongly)");
-    let resp = agent.get(url).header("Range", &format!("bytes={start}-{end}")).call().map_err(|e| net_err(&format!("GET Range {start}-{end}"), url, e))?;
+    let op = format!("GET Range {start}-{end}");
+    let resp = agent.get(url).header("Range", &format!("bytes={start}-{end}")).call().map_err(|e| net_err(&op, url, e))?;
+    if let Some(e) = http_failure(&op, url, &resp) {
+        return Err(e);
+    }
     let (body, total) = check_range(resp, start, end, url)?;
     Ok((body, total))
 }
@@ -111,6 +130,9 @@ fn http_range(agent: &ureq::Agent, url: &str, start: u64, end: u64) -> Result<(V
 /// Suffix-range: last `n` bytes (for the footer).
 fn http_suffix(agent: &ureq::Agent, url: &str, n: u64) -> Result<(Vec<u8>, u64)> {
     let resp = agent.get(url).header("Range", &format!("bytes=-{n}")).call().map_err(|e| net_err("GET suffix", url, e))?;
+    if let Some(e) = http_failure("GET suffix", url, &resp) {
+        return Err(e);
+    }
     ensure!(resp.status() == 206, "server without Range support (status {}): the update URL must point to a Range-served file", resp.status());
     let cr = resp.headers().get("content-range").context("missing Content-Range")?.to_str().context("Content-Range")?.to_string();
     let (range, total) = cr.strip_prefix("bytes ").and_then(|r| r.split_once('/')).context("unreadable Content-Range")?;
@@ -132,68 +154,6 @@ fn check_range(resp: http::Response<ureq::Body>, start: u64, end: u64, url: &str
     let body = read_body(resp.into_body(), want)?;
     let total = panpak_core::check_range_parts(start, end, &cr, body.len()).with_context(|| format!("for {url}"))?;
     Ok((body, total))
-}
-
-/// Half-open intervals, 4 MiB max per response. Coalescing only
-/// of adjacent/overlapping intervals: never downloads already-available chunks
-/// even if they separate two very close missing chunks.
-fn coalesce_ranges(mut ranges: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
-    ranges.sort_unstable();
-    let mut out: Vec<(u64, u64)> = Vec::new();
-    for (mut start, end) in ranges {
-        while start < end {
-            if let Some(last) = out.last_mut() {
-                if start <= last.1 && end.saturating_sub(last.0) <= 4 << 20 {
-                    last.1 = last.1.max(end);
-                    break;
-                }
-            }
-            let stop = end.min(start.saturating_add(4 << 20));
-            out.push((start, stop));
-            start = stop;
-        }
-    }
-    out
-}
-
-/// Assemble the new .panpak: stub+chunks from remote (Range) and from the old
-/// local package (byte-identical), index/manifest/footer from remote.
-/// Only missing chunks travel the network. Full verification of the assembled
-/// file before publishing it; current stays intact on error.
-/// Download the chunks `needed` into `staging`, one file per chunk named by its hash (the compressed bytes as they are in the package; the
-/// stub checks each against its hash when it uses it, so nothing here is trusted). A file that is already there with the right size is kept: a
-/// download that was interrupted goes on from where it stopped. `fetch(start, end)` returns the bytes `start..end` of the package;
-/// neighbouring chunks are asked in one request. Returns how many chunks were fetched now and how many bytes came.
-fn fetch_chunks(staging: &Path, needed: &[panpak_core::Chunk], index_off: u64, fetch: &mut dyn FnMut(u64, u64) -> Result<Vec<u8>>) -> Result<(u64, u64)> {
-    fs::create_dir_all(staging)?;
-    let mut seen = std::collections::HashSet::new();
-    let mut todo: Vec<&panpak_core::Chunk> = Vec::new();
-    for c in needed {
-        let end = c.off.checked_add(c.comp as u64).context("chunk exceeds u64")?;
-        ensure!(end <= index_off, "chunk outside region: {c:?}");
-        if !seen.insert(c.hash) {
-            continue;
-        }
-        if fs::metadata(staging.join(panpak_core::hex(&c.hash))).is_ok_and(|m| m.len() == c.comp as u64) {
-            continue;
-        }
-        todo.push(c);
-    }
-    todo.sort_by_key(|c| c.off);
-    let mut bytes_in = 0u64;
-    for (start, end) in coalesce_ranges(todo.iter().map(|c| (c.off, c.off + c.comp as u64)).collect()) {
-        let bytes = fetch(start, end)?;
-        ensure!(bytes.len() as u64 == end - start, "a range came back with {} bytes instead of {}", bytes.len(), end - start);
-        bytes_in += bytes.len() as u64;
-        for c in todo.iter().filter(|c| c.off >= start && c.off + c.comp as u64 <= end) {
-            let part = &bytes[(c.off - start) as usize..(c.off - start) as usize + c.comp as usize];
-            let name = staging.join(panpak_core::hex(&c.hash));
-            let tmp = name.with_extension("part");
-            fs::write(&tmp, part)?;
-            fs::rename(&tmp, &name)?;
-        }
-    }
-    Ok((todo.len() as u64, bytes_in))
 }
 
 /// The installed release of an app as the checks of `panpak_core::release` need it: its revision, channel and signed hash, the highest floor
@@ -326,7 +286,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
         n_reused = (chunks.len() - needed.len()) as u64;
         let staging = store.join("staging").join(app_id).join(&root_hex);
         drop(first_lock.take());
-        let (nf, fetched_bytes) = fetch_chunks(&staging, &needed, ft.index_off, &mut |start, end| {
+        let (nf, fetched_bytes) = ranges::fetch_chunks(&staging, &needed, ft.index_off, ranges::Policy::default(), &|start, end| {
             let (bytes, range_total) = http_range(&agent, &url, start, end - 1)?;
             ensure!(range_total == total, "file changed during download");
             Ok(bytes)
@@ -784,7 +744,13 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
             ensure!(pft.root == rec.footer.root, "{} is not the installed version (another root hash): repair needs the package of the same version", pkg.display());
             // The same root hash means the same index, so the offsets of the chunks in the record's index are the offsets in this file.
             let _ = praw;
-            fetch_chunks(&staging, &needed, pft.index_off, &mut |start, end| panpak_core::read_at(&mut pf, start, end - start))?
+            // A file here: one read at a time, nothing in between.
+            use std::os::unix::fs::FileExt;
+            ranges::fetch_chunks(&staging, &needed, pft.index_off, ranges::Policy::local(), &|start, end| {
+                let mut v = vec![0u8; (end - start) as usize];
+                pf.read_exact_at(&mut v, start).context("read the package")?;
+                Ok(v)
+            })?
         }
         None => {
             let url = fs::read_to_string(appdir.join("update.url")).ok().map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
@@ -794,7 +760,7 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
             let rft = panpak_core::parse_footer(total, &foot)?;
             panpak_core::check_layout(total, &rft)?;
             ensure!(rft.root == rec.footer.root, "the update URL serves another version now (another root hash): run `panpak update {app_id}` instead, or give the package of the installed version with --from <package>");
-            fetch_chunks(&staging, &needed, rft.index_off, &mut |start, end| {
+            ranges::fetch_chunks(&staging, &needed, rft.index_off, ranges::Policy::default(), &|start, end| {
                 let (b, t) = http_range(&agent, &url, start, end - 1)?;
                 ensure!(t == total, "file changed during download");
                 Ok(b)
@@ -5184,13 +5150,6 @@ mod tests {
         fs::write(dir.join("AppRun"), b"#!/bin/sh\nexport QT_QPA_PLATFORM=xcb\n").unwrap();
         assert!(detects_xcb_only(&dir).unwrap());
         fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn range_coalescence_preserves_holes_and_caps_memory() {
-        assert_eq!(coalesce_ranges(vec![(20, 30), (0, 10), (10, 20), (40, 50)]), vec![(0, 30), (40, 50)]);
-        assert_eq!(coalesce_ranges(vec![(0, 9 << 20)]), vec![(0, 4 << 20), (4 << 20, 8 << 20), (8 << 20, 9 << 20)]);
-        assert!(coalesce_ranges(vec![(5, 5)]).is_empty());
     }
 
     /// Minimal hand-built ELF64 with DT_NEEDED libc.so.6.
