@@ -703,7 +703,8 @@ def cmd_close_test(args):
         end = time.time() + args.wait_close
         while time.time() < end and tc is None:
             for r in window_events()[n:]:
-                if r.get('event') == 'closed' and r.get('pid') == row.get('pid'):
+                # the MAIN window of this process, closed after it was shown: not the screen of start or the welcome window, which the app opens and closes by itself at the start
+                if r.get('event') == 'closed' and r.get('pid') == row.get('pid') and r.get('t', 0) > row['t'] and re.search(APPS[args.app].get('title') or '.', r.get('title', '')):
                     tc = r['t']
                     break
             time.sleep(0.1)

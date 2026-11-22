@@ -111,6 +111,13 @@ esac
     assert not sb.is_main_window('qb', ff('org.qbittorrent.qBittorrent', 'Legal Notice', 'org.qbittorrent.qBittorrent'))
     assert sb.is_main_window('qb', ff('org.qbittorrent.qBittorrent', 'qBittorrent v5.3.0', 'org.qbittorrent.qBittorrent'))
     assert not sb.is_main_window('gimp', {'event': 'created', 'wm_class': 'org.gimp.GIMP', 'title': 'GNU Image Manipulation Program'})
+    # The close test takes the closing of the MAIN window, not the screen of start that the app closes by itself.
+    sb.APPS['kdenlive']['title']
+    ev = [{'event': 'closed', 'pid': 7, 't': 100.0, 'title': 'Splash Screen \u2014 Kdenlive'}, {'event': 'closed', 'pid': 7, 't': 101.0, 'title': 'Welcome to Kdenlive'},
+          {'event': 'closed', 'pid': 7, 't': 150.0, 'title': 'Untitled / HD 1080p 25 fps \u2014 Kdenlive'}]
+    import re as _re
+    hit = [r for r in ev if r['event'] == 'closed' and r['pid'] == 7 and r['t'] > 99.0 and _re.search(sb.APPS['kdenlive']['title'], r['title'])]
+    assert [r['t'] for r in hit] == [150.0], hit
     # The end of an app: one signal for both formats, a wait until nothing is left, and "not clean" written when something stays; the second failed start of a series stops the series.
     import types
     calls = []
