@@ -12,16 +12,16 @@ cd "$(dirname "$0")"
 B=./silverblue_bench.py
 if [ "$S" = panpak ]; then
   [ -n "$BASE" ] && [ -n "$KEY" ] && [ -n "$CA" ] || { echo "panpak needs the base url, the key and the authority"; exit 2; }
-  echo "== prerequisites $(date +%T)"; $B prerequisites --system panpak --trials 5 || echo "prerequisites FAILED"
+  echo "== prerequisites $(date +%T)"; $B prerequisites --system panpak --trials 3 || echo "prerequisites FAILED"
   COMMON=(--pkg-base-url "$BASE" --keys "*=$KEY" --ca "$CA")
 else
   COMMON=()
 fi
-echo "== scenario $(date +%T)"; $B scenario --system $S --order $ORDER --warm 15 "${COMMON[@]}" || echo "scenario FAILED"
+echo "== scenario $(date +%T)"; $B scenario --system $S --order $ORDER --warm 10 "${COMMON[@]}" || echo "scenario FAILED"
 for a in ${ORDER//,/ }; do
   echo "== cycle $a $(date +%T)"
-  if [ "$S" = panpak ]; then $B cycle --system $S --app $a --trials 5 --pkg-url "$BASE/${ID[$a]}.panpak" --keys "*=$KEY" --ca "$CA" || echo "cycle $a FAILED"
-  else $B cycle --system $S --app $a --trials 5 || echo "cycle $a FAILED"; fi
+  if [ "$S" = panpak ]; then $B cycle --system $S --app $a --trials 3 --pkg-url "$BASE/${ID[$a]}.panpak" --keys "*=$KEY" --ca "$CA" || echo "cycle $a FAILED"
+  else $B cycle --system $S --app $a --trials 3 || echo "cycle $a FAILED"; fi
 done
 for a in kdenlive onlyoffice; do echo "== update $a $(date +%T)"; $B update --system $S --app $a --trials 3 "${COMMON[@]}" || echo "update $a FAILED"; done
 echo "== done $(date +%T)"

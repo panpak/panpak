@@ -145,8 +145,9 @@ Three kinds of start:
    fixed time of quiet (45 s after the extension is up), measures one start, and reboots again. One start per reboot, `R` reboots for each app.
 3. **Following starts** (`warm`). `N` starts one after the other, with a pause of 3 s, each ended through its scope.
 
-The numbers to use: `R = 5` for the installs and first starts, `R = 5` reboots per app, `N = 15` warm starts. They are the defaults. If the spread (MAD as a percent of the median) is above 10 %,
-run it again with more trials and say so; do not drop a trial because it looks wrong.
+The numbers to use: `R = 3` for the installs and first starts, `R = 3` reboots per app (12 reboots in a series), `N = 10` warm starts, `R = 3` for each update. They are the defaults, the same for both formats. The results give the median, the minimum and the maximum of each measure (and the quartiles and the MAD); if the spread (MAD as a percent of the median) is above 10 % for an app, the report says so, and no trial is added for that app alone;
+do not drop a trial because it looks wrong. A failed start is a row of the results with its diagnosis (the processes and the files left on the machine); the second failed start of a series stops the series and the owner is told before it goes on.
+An app is stopped the same way in both formats: it is left running for 4 s after the first frame of its main window, then every process of its scopes gets a SIGTERM (never `flatpak kill`), and the script waits until nothing is left (30 s at most; after that the exit is written as not clean and the rest is ended by force) before the next start.
 
 ## 4. The series
 
@@ -167,18 +168,18 @@ DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus`):
 export BENCH_RESULTS=~/panpak-bench-results/gimp-kdenlive-onlyoffice-qb          # the name of the folder is the order; one folder per series
 ./silverblue_bench.py check --system flatpak
 ./silverblue_bench.py base --system flatpak                # the space of what Silverblue brings, before anything is installed
-./silverblue_bench.py scenario --system flatpak --order gimp,kdenlive,onlyoffice,qb --warm 15
-for a in gimp kdenlive onlyoffice qb; do ./silverblue_bench.py cycle --system flatpak --app $a --trials 5; done     # repeated installs and first starts: the spread
+./silverblue_bench.py scenario --system flatpak --order gimp,kdenlive,onlyoffice,qb --warm 10
+for a in gimp kdenlive onlyoffice qb; do ./silverblue_bench.py cycle --system flatpak --app $a --trials 3; done     # repeated installs and first starts: the spread
 ./silverblue_bench.py update --system flatpak --app kdenlive --trials 3
 ./silverblue_bench.py update --system flatpak --app onlyoffice --trials 3
 # the apps are installed again by the last cycle; now the series of reboots (5 per app; the machine reboots by itself and logs in):
-./silverblue_bench.py reboot-series start --system flatpak --apps gimp,kdenlive,onlyoffice,qb --count 5
+./silverblue_bench.py reboot-series start --system flatpak --apps gimp,kdenlive,onlyoffice,qb --count 3
 sudo systemctl reboot
 ```
 
 `run_series.sh <flatpak|panpak> <folder name> <order> [<base url> <converter key> <ca.pem>]` runs everything of this block that comes before the reboots (the prerequisites for Panpak, `scenario`, the cycles of every app and the updates) in the environment of the graphical session, from ssh or from a terminal; the series of reboots is run after it, from the same results folder.
 
-For Panpak, before the series, once: `./silverblue_bench.py prerequisites --system panpak --trials 5` (the launcher and its prerequisites: the time and space of `install-runtime`, in a private home, so that the machine stays as it is); `install` then records on the first app whether it installed the runtime by itself (`runtime_installed`, `runtime_bytes_before`/`after`).
+For Panpak, before the series, once: `./silverblue_bench.py prerequisites --system panpak --trials 3` (the launcher and its prerequisites: the time and space of `install-runtime`, in a private home, so that the machine stays as it is); `install` then records on the first app whether it installed the runtime by itself (`runtime_installed`, `runtime_bytes_before`/`after`).
 
 For Panpak the same with `--system panpak --pkg-base-url https://192.168.122.1:8443 --keys '*=<key of the converter>' --ca ~/ca.pem` for `scenario` and `update`, and `--pkg-url https://192.168.122.1:8443/<app id>.panpak` for `cycle`
 (the same `--keys` and `--ca`). The script installs with `panpak install --yes --expect-key <key>`: a package of another key is refused and nothing is pinned. It never uses `--trust-first-key`: the comparison shows the

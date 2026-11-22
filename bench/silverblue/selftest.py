@@ -111,6 +111,25 @@ esac
     assert not sb.is_main_window('qb', ff('org.qbittorrent.qBittorrent', 'Legal Notice', 'org.qbittorrent.qBittorrent'))
     assert sb.is_main_window('qb', ff('org.qbittorrent.qBittorrent', 'qBittorrent v5.3.0', 'org.qbittorrent.qBittorrent'))
     assert not sb.is_main_window('gimp', {'event': 'created', 'wm_class': 'org.gimp.GIMP', 'title': 'GNU Image Manipulation Program'})
+    # The end of an app: one signal for both formats, a wait until nothing is left, and "not clean" written when something stays; the second failed start of a series stops the series.
+    import types
+    calls = []
+    sb.sh = lambda cmd, **k: (calls.append(cmd), subprocess.CompletedProcess(cmd, 0, '', ''))[1]
+    sb.scopes_of = lambda system, app, unit: [f'{unit}.scope']
+    sb.scope_active = lambda name: False
+    r = sb.stop('flatpak', 'gimp', 'u1', wait=2)
+    assert r['exit_clean'] and r['left'] == [] and any('SIGTERM' in ' '.join(c) for c in calls) and not any('SIGKILL' in ' '.join(c) or c[:2] == ['flatpak', 'kill'] for c in calls), (r, calls)
+    calls.clear()
+    sb.scope_active = lambda name: True
+    r = sb.stop('panpak', 'gimp', 'u2', wait=1)
+    assert not r['exit_clean'] and r['left'] == ['u2.scope'] and any('SIGKILL' in ' '.join(c) for c in calls), (r, calls)
+    sb.RESULTS = Path(tempfile.mkdtemp())
+    sb.count_failure({'app': 'gimp', 'kind': 'warm', 'trial': 0, 'note': 'x'})
+    try:
+        sb.count_failure({'app': 'gimp', 'kind': 'warm', 'trial': 1, 'note': 'x'})
+        raise AssertionError('the second failure did not stop the series')
+    except SystemExit as e:
+        assert 'STOP' in str(e), e
     # The controlled peer of the qBittorrent operation: metadata by magnet and every piece, checked; and the checklist has its link.
     p = subprocess.run([sys.executable, str(HERE / 'seed_peer.py'), '--self-test'], capture_output=True, text=True, timeout=120)
     assert p.returncode == 0 and 'PASS' in p.stdout, p.stdout + p.stderr

@@ -339,15 +339,76 @@ def wait_frame(app, since, timeout):
     return r['t'] if r else None
 
 
-def stop(system, app, unit):
-    """End the app and everything it started, and wait until its window is gone."""
+def scopes_of(system, app, unit):
+    """The systemd scopes that hold the processes of the app: the one that this script made and, for Flatpak, the one that Flatpak made for the instance."""
+    names = [f'{unit}.scope']
     if system == 'flatpak':
-        sh(['flatpak', 'kill', APPS[app]['flatpak']], check=False)
-    sh(['systemctl', '--user', 'stop', f'{unit}.scope'], check=False)
-    time.sleep(1.0)
+        p = sh(['systemctl', '--user', 'list-units', '--type=scope', '--no-legend', '--plain'], check=False)
+        for line in (p.stdout or '').splitlines():
+            name = line.split()[0] if line.split() else ''
+            if name.startswith(f'app-flatpak-{APPS[app]["flatpak"]}-'):
+                names.append(name)
+    return names
 
 
-def one_start(system, app, kind, trial, timeout=60, hold=0.0):
+def scope_active(name):
+    return sh(['systemctl', '--user', 'is-active', '--quiet', name], check=False).returncode == 0
+
+
+EXIT_WAIT = 30  # seconds that the app has to leave after the signal; after that the exit is written as not clean
+
+
+def stop(system, app, unit, wait=EXIT_WAIT):
+    """End the app the way a person does: a signal that it can answer (SIGTERM), the same for both formats, to every process in its scopes, and wait until nothing is left before the next start.
+    Never `flatpak kill` (SIGKILL): it left the lock and the socket of qBittorrent behind, and the next start found an instance that was not there. If something is still there after `wait` seconds the exit is
+    written as not clean, the rest is ended by force so that the series can go on, and the result says so. Returns {'exit_clean', 'exit_s', 'left'}."""
+    scopes = scopes_of(system, app, unit)
+    t0 = time.time()
+    for name in scopes:
+        sh(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGTERM', name], check=False)
+    left = scopes
+    while time.time() - t0 < wait:
+        left = [n for n in scopes if scope_active(n)]
+        if not left:
+            break
+        time.sleep(0.2)
+    else:
+        left = [n for n in scopes if scope_active(n)]
+    exit_s = round(time.time() - t0, 2)
+    if left:
+        for name in left:
+            sh(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGKILL', name], check=False)
+        time.sleep(1.0)
+    time.sleep(1.0)  # what the compositor and the session do after the windows are gone
+    return {'exit_clean': not left, 'exit_s': exit_s, 'left': left}
+
+
+def diagnose(system, app):
+    """What is on the machine for an app that did not show its window: its processes and scopes, and the files that an app leaves when it is ended badly (lock, socket)."""
+    a = APPS[app]
+    keys = {a['flatpak'], a['panpak_id'], a['name'].split()[0].lower()}
+    p = sh(['ps', '-eo', 'pid,etimes,stat,args'], check=False)
+    procs = [l[:170] for l in (p.stdout or '').splitlines() if any(k.lower() in l.lower() for k in keys) and 'silverblue_bench' not in l and 'ps -eo' not in l][:8]
+    base = HOME / '.var/app' / a['flatpak'] if system == 'flatpak' else HOME / '.local/share/panpak/userdata' / a['panpak_id']
+    leftovers = sorted(str(f.relative_to(base)) for pat in ('lockfile', 'ipc-socket', '*.lock', 'SingletonLock', '.lock') for f in base.rglob(pat))[:8] if base.exists() else []
+    return {'processes': procs, 'leftover_files': leftovers}
+
+
+FAIL_LIMIT = 2  # the second failed start of a series stops the series: the owner is told before it goes on
+
+
+def count_failure(row):
+    f = RESULTS / 'failures.json'
+    n = (json.loads(f.read_text()) if f.exists() else 0) + 1
+    f.write_text(json.dumps(n))
+    if n >= FAIL_LIMIT:
+        raise SystemExit(f'STOP: failed start number {n} in this series ({row.get("app")}, {row.get("kind")} {row.get("trial")}: {row.get("note")}); the rows have the diagnosis. Look at it before going on.')
+
+
+HOLD = 4.0  # seconds that the app is left running after the first frame of its main window, before it is stopped (see `stop`)
+
+
+def one_start(system, app, kind, trial, timeout=60, hold=HOLD):
     """One start: the command is started inside a systemd scope (for both systems, so that the cost is the same) and stopped through it. The time is from just before the
     command to the first frame of the window that the compositor reports."""
     if not APPS[app]['series']:
@@ -361,18 +422,24 @@ def one_start(system, app, kind, trial, timeout=60, hold=0.0):
     row = wait_frame_row(app, t0, timeout)
     t = row['t'] if row else None
     if row and hold:
-        time.sleep(hold)  # for a person who watches: the window stays on the screen
-    stop(system, app, unit)
+        time.sleep(hold)  # long enough for the app to finish its start (see HOLD)
+    diag = diagnose(system, app) if t is None else None
+    ended = stop(system, app, unit)
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)  # the group that this script made, never by a name
+    extra = {'exit_clean': ended['exit_clean'], 'exit_s': ended['exit_s']}
+    if not ended['exit_clean']:
+        extra.update(exit_note='unclean exit: still running %d s after the signal: %s' % (EXIT_WAIT, ', '.join(ended['left'])))
     if t is None:
-        return record(system, kind=kind, app=app, trial=trial, ok=False, note='no window within %d s' % timeout)
-    return record(system, kind=kind, app=app, trial=trial, ok=True, window_s=round(t - t0, 4), window_title=row.get('title', ''))
+        r = record(system, kind=kind, app=app, trial=trial, ok=False, note='no window within %d s' % timeout, diagnosis=diag, **extra)
+        count_failure(r)
+        return r
+    return record(system, kind=kind, app=app, trial=trial, ok=True, window_s=round(t - t0, 4), window_title=row.get('title', ''), hold_s=hold, **extra)
 
 
-def warm_starts(system, app, n, gap=3.0, kind='warm', hold=0.0):
+def warm_starts(system, app, n, gap=3.0, kind='warm', hold=HOLD):
     for i in range(n):
         one_start(system, app, kind, i, hold=hold)
         time.sleep(gap)
@@ -712,7 +779,7 @@ def cmd_summarize(args):
             say(f'| {order} | {system} | {app} | {kind} | 0 | | | | | | | {bad} |')
             continue
         s = stats(ok)
-        say(f'| {order} | {system} | {app} | {kind} | {s["n"]} | {s["median"]:.3f} | {s["min"]:.3f} | {s["max"]:.3f} | {s["q1"]:.3f} | {s["q3"]:.3f} | {s["mad_pct"]:.1f} | {bad} |')
+        say(f'| {order} | {system} | {app} | {kind} | {s["n"]} | {s["median"]:.3f} | {s["min"]:.3f} | {s["max"]:.3f} | {s["q1"]:.3f} | {s["q3"]:.3f} | {s["mad_pct"]:.1f}{" (large spread)" if s["mad_pct"] > 10 else ""} | {bad} |')
     say('\n### Installs: bytes that came, space added, time\n')
     say('| order | system | app | tag | n | MiB that came (median) | MiB on disk (median) | MiB on disk (min-max) | seconds (median) |')
     say('|---|---|---|---|---|---|---|---|---|')
@@ -790,7 +857,7 @@ def main():
     p.add_argument('--kind', default='warm')
     p.add_argument('--trials', type=int, default=15)
     p.add_argument('--gap', type=float, default=3.0)
-    p.add_argument('--hold', type=float, default=0.0, help='seconds to leave the window on the screen after its first frame (for a person who watches; 0 in a series)')
+    p.add_argument('--hold', type=float, default=HOLD, help='seconds to leave the app running after the first frame of its main window, before it is stopped: long enough for it to finish its start, so that it saves its settings and removes its lock file as it does when a person quits (the same in every series)')
     p.set_defaults(fn=cmd_start)
     p = sub.add_parser('cycle')
     common(p)
