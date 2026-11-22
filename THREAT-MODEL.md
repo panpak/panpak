@@ -247,9 +247,9 @@ then call `PermissionStore.DeletePermission` for the app and revoke its document
 - **What the store guarantees about the installed files, and what it does not.** (PANPAK-FORMAT.md 6.2 to 6.5.)
   *Guaranteed, and tested:* the signature and the pin are checked at every start; a version is never named (`current`, a tree, a blob) before what it leads to is on disk,
   so a crash or a power loss leaves the app on a whole version (`tests/interrupt_8a.py`, `tests/blob_visibility.py`, `tests/failpoints.py`: every step of every command stopped);
-  a blob in `blobs/` was complete and on disk when it got its name; two commands never change one app at once (the lock of the app); `update` and `repair` check every blob they reuse
-  against the signed index; `panpak doctor <app id>` compares the whole tree with the signed index; a start whose files are gone stops with a message and a command (`PANPAK-E2007`).
-  *Not guaranteed:* that the files are what they were at install. `install` does not hash a blob that is already in the store, and a start does not hash the tree, because **a program
+  a blob in `blobs/` was complete and on disk when it got its name; two commands never change one app at once (the lock of the app); `install`, `update` and `repair` check every blob they reuse
+  against the signed index, large or small (the file of a tree is a hard link to the blob, so a tree would inherit a damaged or altered file; this replaces the rule of step 8d that `install` did not hash a blob that was in the store, and costs one read of the file); `panpak doctor <app id>` compares the whole tree with the signed index; a start whose files are gone stops with a message and a command (`PANPAK-E2007`).
+  *Not guaranteed:* that the files are what they were at install. a start does not hash the tree, because **a program
   that can write the store of the user can change an installed tree** (and the launchers, the records, `panpak` itself): the signature cannot protect against what runs as the user outside the sandbox.
   The sandboxed app cannot write the store (the tree is read-only to it, and the folders outside its own are not granted). Bit rot is not guaranteed against either, except as below.
   *Built in step 8d (`PANPAK-FORMAT.md` 6.7):* the daily background job of each app also reads part of the installed files against the signed index: a budget of megabytes per day

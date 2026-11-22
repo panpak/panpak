@@ -1035,8 +1035,14 @@ One rule: **a link is made only after everything it leads to is written back to 
 1. the blobs that the tree needs and `blobs/` does not have are written into a work folder of this start (`blobs/.work-<pid>-<time>/`), the kernel is asked
    to write each back as it is written, and when all are written each is synced (several at a time), then renamed into `blobs/`, then `blobs/` is synced.
    **A blob is visible in `blobs/` only when it is on disk**: whoever finds a blob there, at any time, may link it without syncing it again. A start
-   that is killed leaves its work folder, which the next start removes when its process is gone. The large files, which are written in place in the tree,
-   are synced with it;
+   that is killed leaves its work folder, which the next start removes when its process is gone. Every file goes this way, whatever its size: a large file
+   is written into the work folder by several threads, each a part of it, and the memory of a start is a chunk for each thread, never a file;
+   **A blob that is already in `blobs/` is checked before it is linked**, by `install`, `update` and `repair` alike: every chunk of it, read from the
+   blob, MUST have the hash that the signed index gives, and a blob that does not is taken out of the store and made again from the chunks. The file of the
+   tree is that very file (a hard link), so a tree that took a damaged or altered blob on trust would inherit it. The cost is one read of the file and
+   BLAKE3 over it (see `docs/BENCHMARKS.md`). Before it writes anything, the runtime adds up the size of the blobs that the tree needs and `blobs/` does not have
+   (the index gives it) and stops when the free space of the store (what a user that is not root can use) is below that and a reserve of 16 MiB, with a message that says
+   so and that nothing was written; a file system that does not say how much is free is trusted;
 2. every folder of the tree (their entries are the hard links and links of the tree) and the mark `.complete`;
 3. the rename of `<root>.partial` to `<root>`, then `fsync` of `trees/`;
 4. the record: written to a temporary file, `fsync`, rename, `fsync` of `packages/`;
@@ -1075,7 +1081,7 @@ The signed message is the one of §3.0 (label, `version`, `flags`, `root`, manif
 - `install` makes the app ready: `panpak-stub prepare` verifies, makes the tree and the resolution (the farm and its cache entry) with the code and
   the stub identity of a start, so that the first start is a cache hit. `update` downloads only the chunks that the installed version does not
   have into `staging/<id>/<root>/`, makes the new tree from the files of the old one and those chunks, checking every reused blob against the signed
-  index, and only then moves `previous` and `current`.
+  index (`install` does it too, see 6.2), and only then moves `previous` and `current`.
 
 ### 6.4 Locks [NORMATIVE for the order; the mechanism is INFORMATIVE]
 

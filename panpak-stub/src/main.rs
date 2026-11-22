@@ -29,7 +29,7 @@ mod testutil;
 mod view;
 mod wxhint;
 
-/// Files past this threshold are assembled streaming, not in RAM.
+/// A file that is past this size is written by several threads at once, each a part of it (the others are one piece of work).
 const MAX_ASSEMBLE: u64 = 8 << 20;
 
 /// Create `base/rel` one level at a time, refusing symlinks or non-dirs
@@ -264,8 +264,6 @@ struct FileJob<'a> {
 }
 
 struct Made {
-    /// The large files, written in place in the tree: their data is made durable with the tree (the small ones go through the blobs).
-    fresh: Vec<PathBuf>,
     decode: std::time::Duration,
     write: std::time::Duration,
     threads: usize,
@@ -303,13 +301,13 @@ fn blob_name(chunks: &[Chunk], ids: &[u32], mode: u32) -> String {
 fn blob_matches(blob: &Path, chunks: &[Chunk], ids: &[u32]) -> bool {
     use std::io::Read;
     let Ok(mut f) = File::open(blob) else { return false };
-    let mut buf = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
     for &id in ids {
         let c = &chunks[id as usize];
-        buf.clear();
-        match (&mut f).take(c.raw as u64).read_to_end(&mut buf) {
-            Ok(n) if n == c.raw as usize && panpak_core::verify_chunk(c, &buf).is_ok() => {}
-            _ => return false,
+        // One read of the whole chunk (`read_to_end` on a `take` asks for a few bytes at a time and costs five calls for each chunk).
+        buf.resize(c.raw as usize, 0);
+        if f.read_exact(&mut buf).is_err() || panpak_core::verify_chunk(c, &buf).is_err() {
+            return false;
         }
     }
     // Nothing after the last chunk.
@@ -349,47 +347,91 @@ enum Work {
 /// The chunks of a large file that one piece of work takes.
 const PART_CHUNKS: usize = 16;
 
-/// Make the files of a tree.
-///
-/// **A blob is visible in `blobs/` only when it is on disk.** The blobs that this tree needs and the store does not have are written into a work
-/// folder of this start (`blobs/.work-<pid>-<time>/`), the kernel is asked to write each back as it is written, and when all are written they are
-/// synced (several at a time), moved into `blobs/` by rename, and `blobs/` is synced. So a blob that is in `blobs/` is a blob that was complete
-/// and written back when it got its name, whenever and by whichever start: another start links it without syncing it again, and no rule that
-/// depends on the clock is needed. Only then are the files of the tree linked to their blobs.
-fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: &Path, check_blobs: bool) -> Result<Made> {
+/// The free space, in bytes, of the filesystem that holds `p` (what a user that is not root can use).
+fn free_bytes(p: &Path) -> Option<u64> {
+    use std::ffi::CString;
+    let c = CString::new(p.as_os_str().as_encoded_bytes()).ok()?;
+    // SAFETY: statvfs(2) fills the struct that is passed, and nothing else.
+    unsafe {
+        let mut st: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c.as_ptr(), &mut st) != 0 {
+            return None;
+        }
+        (st.f_bavail as u64).checked_mul(st.f_frsize as u64)
+    }
+}
+
+/// Space that is left for the folders, the links and the records that a tree needs besides the files that are new.
+const SPACE_RESERVE: u64 = 16 << 20;
+
+/// Is there room in the store for the files that are new? They are known from the index (every file that has no blob in the store yet, once),
+/// so a start that cannot finish stops before it writes anything. A filesystem that does not say how much is free is trusted.
+fn ensure_room(blobs: &Path, need: u64) -> Result<()> {
+    if need == 0 {
+        return Ok(());
+    }
+    let Some(free) = free_bytes(blobs) else { return Ok(()) };
+    if free < need.saturating_add(SPACE_RESERVE) {
+        let mib = |b: u64| b.div_ceil(1 << 20);
+        let msg = format!(
+            "not enough free space in the store: the new files of this version need {} MiB and {} MiB are free (with a reserve of {} MiB); nothing was written. Free some space (`panpak gc` takes out what no installed version uses) and try again",
+            mib(need),
+            free >> 20,
+            SPACE_RESERVE >> 20
+        );
+        return Err(anyhow::Error::new(std::io::Error::new(std::io::ErrorKind::StorageFull, msg)));
+    }
+    Ok(())
+}
+
+/// Make the files of a tree. Every file, large or small, goes the same way: it is a blob of the store, named by the hashes of its chunks, and the
+/// file of the tree is a link to it. A blob that is in the store is checked against the index (every chunk, read from the blob, has the hash that
+/// the index gives) before it is linked, because the file of the tree is that very file. A blob that is not there is written into a work folder
+/// (a large one by several threads, each a part of it), made durable, and only then named.
+fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: &Path) -> Result<Made> {
     use std::os::unix::fs::FileExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let total_of = |job: &FileJob| -> u64 { job.ids.iter().map(|&id| chunks[id as usize].raw as u64).sum() };
-    // The work: large files by parts (they are the long pieces, first), then the blobs that have to be made, one per name.
+    // The names, and which blobs have to be made (once each): their size is the space that this start needs.
+    let names: Vec<String> = jobs.iter().map(|job| blob_name(chunks, job.ids, job.mode)).collect();
+    let mut first_of: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut unique: Vec<(usize, bool)> = Vec::new();
+    let mut need = 0u64;
+    for (i, job) in jobs.iter().enumerate() {
+        if !first_of.insert(names[i].as_str()) {
+            continue;
+        }
+        let missing = fs::symlink_metadata(blobs.join(&names[i])).is_err();
+        if missing {
+            need += total_of(job);
+        }
+        unique.push((i, missing));
+    }
+    ensure_room(blobs, need)?;
+    remove_stale_work_dirs(blobs);
+    let work_dir = blobs.join(format!(".work-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
+    fs::create_dir(&work_dir).with_context(|| format!("make {}", work_dir.display()))?;
+    // The work: the large files by parts (they are the long pieces, first), then the other blobs, one piece each.
     let mut work: Vec<Work> = Vec::new();
     let mut large: Vec<usize> = Vec::new();
-    let mut names: Vec<Option<String>> = vec![None; jobs.len()];
-    let mut first_of: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for (i, job) in jobs.iter().enumerate() {
-        let total = total_of(job);
-        if total > MAX_ASSEMBLE {
-            let f = File::create(&job.dst)?;
+    for &(i, missing) in &unique {
+        let total = total_of(&jobs[i]);
+        if missing && total > MAX_ASSEMBLE {
+            let f = File::create(work_dir.join(&names[i]))?;
             f.set_len(total)?;
             let mut off = 0u64;
-            for (n, group) in job.ids.chunks(PART_CHUNKS).enumerate() {
+            for (n, group) in jobs[i].ids.chunks(PART_CHUNKS).enumerate() {
                 work.push(Work::Part { job: i, from: n * PART_CHUNKS, to: n * PART_CHUNKS + group.len(), off });
                 off += group.iter().map(|&id| chunks[id as usize].raw as u64).sum::<u64>();
             }
             large.push(i);
-        } else {
-            names[i] = Some(blob_name(chunks, job.ids, job.mode));
         }
     }
-    for (i, name) in names.iter().enumerate() {
-        if let Some(name) = name {
-            if first_of.insert(name.clone()) {
-                work.push(Work::Blob(i));
-            }
+    for &(i, missing) in &unique {
+        if !(missing && total_of(&jobs[i]) > MAX_ASSEMBLE) {
+            work.push(Work::Blob(i));
         }
     }
-    remove_stale_work_dirs(blobs);
-    let work_dir = blobs.join(format!(".work-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
-    fs::create_dir(&work_dir).with_context(|| format!("make {}", work_dir.display()))?;
 
     let next = AtomicUsize::new(0);
     // The files of the tree that were linked already, while the other threads were still decoding (a blob that is in `blobs/` is linked at once).
@@ -405,7 +447,6 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
                 let run = (|| -> Result<()> {
                     let mut dec = ChunkDecoder::new()?;
                     let mut scratch = Vec::new();
-                    let mut buf: Vec<u8> = Vec::new();
                     loop {
                         let w = next.fetch_add(1, Ordering::Relaxed);
                         let Some(item) = work.get(w) else { return Ok(()) };
@@ -414,8 +455,9 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
                         }
                         let i = match item {
                             Work::Part { job, from, to, off } => {
-                                let job = &jobs[*job];
-                                let out = OpenOptions::new().write(true).open(&job.dst)?;
+                                let ji = *job;
+                                let job = &jobs[ji];
+                                let out = OpenOptions::new().write(true).open(work_dir.join(&names[ji]))?;
                                 let mut at = *off;
                                 for &id in &job.ids[*from..*to] {
                                     let t = std::time::Instant::now();
@@ -432,14 +474,14 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
                             Work::Blob(i) => *i,
                         };
                         let job = &jobs[i];
-                        let name = names[i].as_deref().unwrap_or_default();
+                        let name = names[i].as_str();
                         let blob = blobs.join(name);
                         let t = std::time::Instant::now();
                         if fs::symlink_metadata(&blob).is_ok() {
-                            // In `blobs/`, so on disk. An update or a repair does not take it on trust: a blob that is not what the signed index says is
-                            // taken out of the store (the other trees that hold it keep their copy of the inode, which `repair` of those apps finds)
-                            // and made again below.
-                            if !check_blobs || blob_matches(&blob, chunks, job.ids) {
+                            // In `blobs/`, so on disk. It is not taken on trust: the file of the tree is this very file, so a blob that is not what
+                            // the signed index says would be inherited by the tree. It is taken out of the store then (the other trees that hold it
+                            // keep their copy of the inode, which `repair` of those apps finds) and made again below.
+                            if blob_matches(&blob, chunks, job.ids) {
                                 ensure_blob_readonly(&blob)?;
                                 link_or_copy(&blob, &job.dst, None, job.mode)?;
                                 linked[i].store(true, Ordering::Relaxed);
@@ -448,15 +490,18 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
                             }
                             fs::remove_file(&blob)?;
                         }
-                        buf.clear();
-                        for &id in job.ids {
-                            buf.extend_from_slice(src.raw(&chunks[id as usize], &mut dec, &mut scratch)?);
-                        }
-                        t_decode += t.elapsed();
-                        let t = std::time::Instant::now();
+                        // Written one chunk after the other: the memory is a chunk, whatever the size of the file.
                         let path = work_dir.join(name);
                         let mut out = File::create(&path)?;
-                        out.write_all(&buf)?;
+                        for &id in job.ids {
+                            let t = std::time::Instant::now();
+                            let raw = src.raw(&chunks[id as usize], &mut dec, &mut scratch)?;
+                            t_decode += t.elapsed();
+                            let t = std::time::Instant::now();
+                            out.write_all(raw)?;
+                            t_write += t.elapsed();
+                        }
+                        let t = std::time::Instant::now();
                         panpak_core::durable::start_writeback(&out);
                         drop(out);
                         // Shared blob: never writable (defense in depth).
@@ -479,12 +524,17 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
     if let Some(e) = failed.into_inner().ok().flatten() {
         return Err(e);
     }
-    let mut made = Made { fresh: Vec::new(), decode: std::time::Duration::ZERO, write: std::time::Duration::ZERO, threads, blobs_written: 0 };
+    let mut made = Made { decode: std::time::Duration::ZERO, write: std::time::Duration::ZERO, threads, blobs_written: 0 };
     let mut written: Vec<String> = Vec::new();
     for (w, d, t) in results.into_inner().unwrap_or_default() {
         written.extend(w);
         made.decode += d;
         made.write += t;
+    }
+    // The large blobs were written by parts: now they are whole, and get their mode like the others.
+    for &i in &large {
+        fs::set_permissions(work_dir.join(&names[i]), fs::Permissions::from_mode(jobs[i].mode & !0o222))?;
+        written.push(names[i].clone());
     }
     made.blobs_written = written.len();
     // Publish the blobs: on disk first, then named.
@@ -510,23 +560,16 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
     fs::remove_dir(&work_dir).with_context(|| format!("remove {}", work_dir.display()))?;
     // The rest of the files of the tree, linked to their blobs (every one of them is in `blobs/` now).
     par_each(&(0..jobs.len()).collect::<Vec<_>>(), work_threads(), &|&i: &usize| {
-        let Some(name) = names[i].as_deref() else { return Ok(()) };
         if linked[i].load(Ordering::Relaxed) {
             return Ok(());
         }
         let job = &jobs[i];
-        let blob = blobs.join(name);
+        let blob = blobs.join(&names[i]);
         ensure_blob_readonly(&blob)?;
         link_or_copy(&blob, &job.dst, None, job.mode)
     })?;
     made.write += t.elapsed();
     panpak_core::failpoint!("prepare.files_linked");
-    // The large files were written in place: their data is made durable with the tree.
-    for i in large {
-        fs::set_permissions(&jobs[i].dst, fs::Permissions::from_mode(jobs[i].mode))?;
-        made.fresh.push(jobs[i].dst.clone());
-    }
-    made.fresh.sort();
     Ok(made)
 }
 
@@ -557,7 +600,7 @@ fn materialize(
     chunks: &[Chunk],
     entries: &[Entry],
 ) -> Result<PathBuf> {
-    materialize_from(&PackageChunks { f: &*f }, store, root, chunks, entries, false)
+    materialize_from(&PackageChunks { f: &*f }, store, root, chunks, entries)
 }
 
 /// Materialize the tree into the store; chunks are verified before use.
@@ -571,7 +614,6 @@ fn materialize_from(
     root: &[u8; 32],
     chunks: &[Chunk],
     entries: &[Entry],
-    check_blobs: bool,
 ) -> Result<PathBuf> {
     use std::collections::HashMap;
     let tree = store.join("trees").join(hex(root));
@@ -667,10 +709,9 @@ fn materialize_from(
     // and only then named in `blobs/` (see `make_files`).
     let t_folders = t_pass1.elapsed();
     let t_files_pass = std::time::Instant::now();
-    let made = make_files(src, chunks, &jobs, &blobs, check_blobs)?;
+    let made = make_files(src, chunks, &jobs, &blobs)?;
     let t_files_wall = t_files_pass.elapsed();
     let t_after = std::time::Instant::now();
-    let durable = made.fresh;
     let (t_decode, t_write) = (made.decode, made.write);
 
     // Pass 2: symlinks, checking the target RESOLVED against the
@@ -758,7 +799,6 @@ fn materialize_from(
     let t_sync = std::time::Instant::now();
     // Everything is made; now it is made durable, files first (each was asked to start its writeback as it was written, so the
     // `fsync`s here mostly wait for writes that are already under way), then the blobs folder, then every folder of the tree and the mark.
-    panpak_core::durable::fsync_files(&durable, sync_threads())?;
     let t_files = t_sync.elapsed();
     panpak_core::durable::fsync_file(&tmp.join(".complete"))?;
     panpak_core::durable::fsync_dir(&blobs)?;
@@ -1889,7 +1929,7 @@ fn cmd_prepare(args: &[String]) -> Result<()> {
                 (None, None) => None,
             };
             let src = StagedChunks::new(chunks_dir, old.as_ref().map(|(t, c, e)| (t.as_path(), c.as_slice(), e.as_slice())));
-            materialize_from(&src, &store, &ft.root, &chunks, &entries, true)?
+            materialize_from(&src, &store, &ft.root, &chunks, &entries)?
         }
     } else {
         let stub_len = chunks.iter().map(|c| c.off).min().unwrap_or(ft.index_off);
@@ -3557,13 +3597,63 @@ mod tests {
     }
 
     #[test]
+    fn a_large_file_is_a_blob_of_the_store_shared_by_trees_and_checked_when_it_is_reused() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tmpdir("large-shared");
+        let store = dir.join("store");
+        let numbers: Vec<u8> = (0..40).collect();
+        let (c1, e1, s1) = mem_package(&[("lib/big.so", 0o755, &numbers)], 300_000);
+        let t1 = materialize_from(&s1, &store, &[1u8; 32], &c1, &e1).unwrap();
+        // The same file under another name and in another tree, and a source that has no chunks: nothing is decoded, the inode is the same.
+        let (c2, e2, _s2) = mem_package(&[("other/dir/renamed.so", 0o755, &numbers)], 300_000);
+        let empty = MemChunks(std::collections::HashMap::new());
+        let t2 = materialize_from(&empty, &store, &[2u8; 32], &c2, &e2).unwrap();
+        let (a, b) = (fs::metadata(t1.join("lib/big.so")).unwrap(), fs::metadata(t2.join("other/dir/renamed.so")).unwrap());
+        assert_eq!(a.ino(), b.ino(), "one copy of the large file for both trees");
+        assert!(a.nlink() >= 3, "the blob and the two trees");
+        assert_eq!(a.permissions().mode() & 0o777, 0o555);
+        // No work folder is left in the store.
+        assert!(fs::read_dir(store.join("blobs")).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".work-")));
+        // A large blob that is damaged is not inherited: with the chunks it is made again, without them the start fails.
+        let blob = fs::read_dir(store.join("blobs")).unwrap().flatten().find(|e| e.metadata().unwrap().len() > 8 << 20).unwrap().path();
+        fs::set_permissions(&blob, fs::Permissions::from_mode(0o644)).unwrap();
+        let mut bad = fs::read(&blob).unwrap();
+        bad[1_000_000] ^= 0x01;
+        fs::write(&blob, &bad).unwrap();
+        assert!(materialize_from(&empty, &store, &[3u8; 32], &c2, &e2).is_err());
+        let t4 = materialize_from(&s1, &store, &[4u8; 32], &c2, &e2).unwrap();
+        let good = fs::read(t4.join("other/dir/renamed.so")).unwrap();
+        assert_ne!(good, bad);
+        assert_eq!(good.len(), 12_000_000);
+        assert_ne!(fs::metadata(t4.join("other/dir/renamed.so")).unwrap().ino(), a.ino(), "a new blob, not the damaged one");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_start_that_does_not_fit_stops_before_it_writes() {
+        let dir = tmpdir("room");
+        let (c, e, s) = mem_package(&[("x", 0o644, &[1, 2, 3])], 1000);
+        let store = dir.join("store");
+        // `ensure_room` is what `make_files` calls with the size of the blobs that are not in the store.
+        fs::create_dir_all(store.join("blobs")).unwrap();
+        let err = ensure_room(&store.join("blobs"), u64::MAX / 2).unwrap_err();
+        assert!(panpak_core::is_storage_full(&err), "{err:#}");
+        assert!(format!("{err:#}").contains("nothing was written"), "{err:#}");
+        assert!(ensure_room(&store.join("blobs"), 0).is_ok());
+        assert!(ensure_room(&store.join("blobs"), 1000).is_ok());
+        // And a start that fits makes its tree.
+        assert!(materialize_from(&s, &store, &[7u8; 32], &c, &e).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_large_file_is_made_by_several_threads_and_reads_back_whole() {
         let dir = tmpdir("large");
         // 40 chunks of 300,000 bytes: 12 MB, above the size that one thread assembles in memory; and a small file next to it.
         let numbers: Vec<u8> = (0..40).collect();
         let (chunks, entries, src) = mem_package(&[("big", 0o755, &numbers), ("small", 0o644, &[3, 4])], 300_000);
         let root = [9u8; 32];
-        let tree = materialize_from(&src, &dir.join("store"), &root, &chunks, &entries, false).unwrap();
+        let tree = materialize_from(&src, &dir.join("store"), &root, &chunks, &entries).unwrap();
         let mut want = Vec::new();
         for &id in match &entries[0].kind { Kind::File { chunks } => chunks, _ => unreachable!() } {
             want.extend_from_slice(src.0.get(&chunks[id as usize].hash).unwrap());
@@ -3584,24 +3674,23 @@ mod tests {
         let dir = tmpdir("blobs");
         let store = dir.join("store");
         let (c1, e1, s1) = mem_package(&[("lib", 0o644, &[1, 2, 3])], 4000);
-        let t1 = materialize_from(&s1, &store, &[1u8; 32], &c1, &e1, false).unwrap();
+        let t1 = materialize_from(&s1, &store, &[1u8; 32], &c1, &e1).unwrap();
         // A second tree with the same file (and one more): the file is the same inode, and nothing was decoded for it (a source that has no
         // chunks at all serves the file that is there).
         let (c2, e2, s2) = mem_package(&[("lib", 0o644, &[1, 2, 3])], 4000);
         let empty = MemChunks(std::collections::HashMap::new());
-        let t2 = materialize_from(&empty, &store, &[2u8; 32], &c2, &e2, false).unwrap();
+        let t2 = materialize_from(&empty, &store, &[2u8; 32], &c2, &e2).unwrap();
         use std::os::unix::fs::MetadataExt;
         assert_eq!(fs::metadata(t1.join("lib")).unwrap().ino(), fs::metadata(t2.join("lib")).unwrap().ino());
         assert_eq!(fs::read(t2.join("lib")).unwrap(), fs::read(t1.join("lib")).unwrap());
-        // A blob that is damaged is used as it is when nothing asks to check, and replaced when an update or a repair does.
+        // A blob that is damaged is never inherited by a tree: it is replaced when the chunks are there, and the start fails when they are not.
         let blob = fs::read_dir(store.join("blobs")).unwrap().next().unwrap().unwrap().path();
         fs::set_permissions(&blob, fs::Permissions::from_mode(0o644)).unwrap();
         let mut bad = fs::read(&blob).unwrap();
         bad[0] ^= 0xff;
         fs::write(&blob, &bad).unwrap();
-        let t3 = materialize_from(&empty, &store, &[3u8; 32], &c2, &e2, false).unwrap();
-        assert_eq!(fs::read(t3.join("lib")).unwrap(), bad, "unchecked: the blob that is there");
-        let t4 = materialize_from(&s2, &store, &[4u8; 32], &c2, &e2, true).unwrap();
+        assert!(materialize_from(&empty, &store, &[3u8; 32], &c2, &e2).is_err(), "a damaged blob and no chunks to make it again: nothing is linked");
+        let t4 = materialize_from(&s2, &store, &[4u8; 32], &c2, &e2).unwrap();
         assert_ne!(fs::read(t4.join("lib")).unwrap(), bad);
         assert_eq!(fs::read(t4.join("lib")).unwrap().len(), 12_000);
         assert_eq!(blake3::hash(&fs::read(t4.join("lib")).unwrap()), {
@@ -3620,7 +3709,7 @@ mod tests {
         let store = dir.join("store");
         // Version 1 has chunks 1 2 3 in one file and 4 in another. Version 2 keeps the first file but for chunk 2, which changes to 5.
         let (c1, e1, s1) = mem_package(&[("lib", 0o644, &[1, 2, 3]), ("other", 0o644, &[4])], 5000);
-        let old_tree = materialize_from(&s1, &store, &[1u8; 32], &c1, &e1, false).unwrap();
+        let old_tree = materialize_from(&s1, &store, &[1u8; 32], &c1, &e1).unwrap();
         let (c2, e2, s2) = mem_package(&[("lib", 0o644, &[1, 5, 3]), ("other", 0o644, &[4])], 5000);
         // The download folder holds the compressed chunk that the old tree does not have.
         let new_hash = *blake3::hash(s2.0.values().find(|v| v[0] == 5).unwrap()).as_bytes();
@@ -3635,13 +3724,13 @@ mod tests {
         fs::create_dir_all(&dl).unwrap();
         // Not there yet: an error that names the chunk.
         let staged = StagedChunks::new(Some(dl.clone()), Some((old_tree.as_path(), &c1, &e1)));
-        let err = materialize_from(&staged, &store, &[2u8; 32], &c2, &e2, true).unwrap_err();
+        let err = materialize_from(&staged, &store, &[2u8; 32], &c2, &e2).unwrap_err();
         assert!(format!("{err:#}").contains(&hex(&new_hash)), "{err:#}");
         // The chunk comes, but with the wrong size: refused.
         fs::write(dl.join(hex(&new_hash)), &comp[..comp.len() - 1]).unwrap();
-        assert!(materialize_from(&staged, &store, &[2u8; 32], &c2, &e2, true).is_err());
+        assert!(materialize_from(&staged, &store, &[2u8; 32], &c2, &e2).is_err());
         fs::write(dl.join(hex(&new_hash)), &comp).unwrap();
-        let new_tree = materialize_from(&staged, &store, &[2u8; 32], &c2, &e2, true).unwrap();
+        let new_tree = materialize_from(&staged, &store, &[2u8; 32], &c2, &e2).unwrap();
         let mut want = Vec::new();
         for n in [1u8, 5, 3] {
             want.extend_from_slice(s2.0.values().find(|v| v[0] == n).unwrap());
@@ -3654,7 +3743,7 @@ mod tests {
         fs::write(old_tree.join("other"), &damaged).unwrap();
         let (c4, e4, _s4) = mem_package(&[("again", 0o644, &[4, 9])], 5000);
         let staged = StagedChunks::new(Some(dl.clone()), Some((old_tree.as_path(), &c1, &e1)));
-        let err = materialize_from(&staged, &store, &[3u8; 32], &c4, &e4, true).unwrap_err();
+        let err = materialize_from(&staged, &store, &[3u8; 32], &c4, &e4).unwrap_err();
         assert!(format!("{err:#}").contains("neither in the installed files nor in"), "{err:#}");
         let _ = fs::remove_dir_all(&dir);
     }

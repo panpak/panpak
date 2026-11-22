@@ -39,6 +39,29 @@ The AppImages are converted with `panpak convert` into signed packages. QOwnNote
 libraries that the AppImage does not carry; since `pack` works out which libraries only modules ask for, no option is needed. The exact options are in
 `bench/public_bench.py`.
 
+## Time and space of an update, with every file a blob of the store
+
+Measured on 2026-11-22 on the development host (kernel 7.0.0-43-generic, ext4 on an SSD, 16 threads, 14 GiB), release build (glibc, `cargo build --release`), in an isolated home for each run.
+The update is `panpak install --yes --expect-key <key>` of the next version of the official AppImage conversion over the previous one (Kdenlive 26.08.3 over its previous version, ONLYOFFICE 9 over its previous one), from a file,
+so the time has no network in it. "Before" is the program of main at `a41b95e`, in which a file of more than 8 MiB was written in place in the tree and was not shared; "after" writes every file as a blob. Three runs of each, taken one
+after the other and alternating before and after; the median is shown, with the lowest and the highest in brackets. The peak memory is that of the program and its children.
+The page cache was not emptied (no root here), so a cold disk would show longer times for both.
+
+| App | | Time of the update | Space added to the store | Peak memory |
+|---|---|---|---|---|
+| Kdenlive | before | 22.3 s (21.8 to 25.6) | 518 MiB | 84 MiB |
+| Kdenlive | after | 18.8 s (18.4 to 20.1) | 518 MiB | 56 MiB |
+| ONLYOFFICE | before | 28.1 s (26.8 to 31.5) | 738 MiB | 77 MiB |
+| ONLYOFFICE | after | 22.0 s (20.9 to 22.5) | **588 MiB** | 45 MiB |
+
+ONLYOFFICE has 10 files of more than 8 MiB that are the same in both versions (150 MiB, in `dump-index`: same path, same chunks); they are now one file on the disk, linked in both trees, and the space that the update adds is 150 MiB less.
+Kdenlive has none (its 7 large files all change), so the space is the same and the control shows that the new way does not make it worse. The time is lower in both: the first run of the new code (3 runs, before the blob check was made faster) had
+the same space and a time of 20.3 s and 24.6 s. The memory is lower because a large file is no longer held whole while it is made.
+
+**What it costs to check every blob that is reused.** A tree whose 11,936 files (1.2 GB) are all in the store already, made again with `panpak repair --from` (no byte written, every blob read and hashed against the signed index, 8 threads):
+the files take 1.1 s with the files in the page cache and 3.6 s the first time after they were written, and the whole command 3.1 to 6.7 s. Reading each chunk of a blob with one call, instead of the few small reads that
+`read_to_end` on a `take` makes, took the same step from 12.2 s down to 1.1 s (warm) or 3.6 s (first time). This is the cost that `install` has now for a blob that it finds in the store (before, it linked it without reading it); the VM (btrfs) and a cold cache are not measured yet.
+
 ## Update size
 
 Method: two consecutive versions of an app are converted, the older one is installed, and
