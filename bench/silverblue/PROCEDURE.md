@@ -147,7 +147,7 @@ Three kinds of start:
 
 The numbers to use: `R = 3` for the installs and first starts, `R = 3` reboots per app (12 reboots in a series), `N = 10` warm starts, `R = 3` for each update. They are the defaults, the same for both formats. The results give the median, the minimum and the maximum of each measure (and the quartiles and the MAD); if the spread (MAD as a percent of the median) is above 10 % for an app, the report says so, and no trial is added for that app alone;
 do not drop a trial because it looks wrong. A failed start is a row of the results with its diagnosis (the processes and the files left on the machine); the second failed start of a series stops the series and the owner is told before it goes on.
-An app is stopped the same way in both formats: it is left running for 4 s after the first frame of its main window, then every process of its scopes gets a SIGTERM (never `flatpak kill`), and the script waits until nothing is left (30 s at most; after that the exit is written as not clean and the rest is ended by force) before the next start.
+An app is stopped the same way in both formats: it is left running for 4 s after the first frame of its main window, then every process of its scopes gets a SIGTERM (never `flatpak kill`), and the script waits until nothing is left (20 s at most; after that the exit is written as not clean and the rest is ended by force) before the next start.
 
 ## 4. The series
 

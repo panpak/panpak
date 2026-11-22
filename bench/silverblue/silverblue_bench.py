@@ -355,7 +355,36 @@ def scope_active(name):
     return sh(['systemctl', '--user', 'is-active', '--quiet', name], check=False).returncode == 0
 
 
-EXIT_WAIT = 30  # seconds that the app has to leave after the signal; after that the exit is written as not clean
+def exit_diag(scopes):
+    """What the processes that did not leave are doing, read from /proc without touching them: for each process its name, state and the kernel function it sleeps in (`wchan`) and, for its threads, how many sleep in each; and the system call of the main thread.
+    Taken 5 s after the signal, when an app that was going to leave has left. It is how the long exit of an app (Kdenlive: about 45 s) is looked at while a series runs."""
+    out = []
+    for sc in scopes:
+        cg = sh(['systemctl', '--user', 'show', '-p', 'ControlGroup', '--value', sc], check=False).stdout.strip()
+        procs = Path('/sys/fs/cgroup' + cg + '/cgroup.procs')
+        try:
+            pids = [int(x) for x in procs.read_text().split()]
+        except (OSError, ValueError):
+            continue
+        for pid in pids:
+            d = Path('/proc') / str(pid)
+            try:
+                st = dict(line.split(':\t', 1) for line in (d / 'status').read_text().splitlines() if ':\t' in line)
+                wch = {}
+                for t in (d / 'task').iterdir():
+                    w = (t / 'wchan').read_text().strip() or '-'
+                    wch[w] = wch.get(w, 0) + 1
+                try:
+                    sc_ = (d / 'syscall').read_text().split()[0]
+                except (OSError, IndexError):
+                    sc_ = None
+                out.append({'pid': pid, 'comm': (d / 'comm').read_text().strip(), 'state': st.get('State', '').split()[0] if st.get('State') else None, 'threads': int(st.get('Threads', 0)), 'wchan_of_threads': wch, 'syscall_main': sc_})
+            except OSError:
+                pass
+    return out
+
+
+EXIT_WAIT = 20  # seconds that the app has to leave after the signal; after that the exit is written as not clean (GIMP, ONLYOFFICE and qBittorrent leave in under 3 s; Kdenlive does not leave on a signal at all, even after 150 s, nor on the quit of its D-Bus interface: it leaves only when its window is closed, and then after about 45 s)
 
 
 def stop(system, app, unit, wait=EXIT_WAIT):
@@ -367,10 +396,13 @@ def stop(system, app, unit, wait=EXIT_WAIT):
     for name in scopes:
         sh(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGTERM', name], check=False)
     left = scopes
+    diag = None
     while time.time() - t0 < wait:
         left = [n for n in scopes if scope_active(n)]
         if not left:
             break
+        if diag is None and time.time() - t0 > 5:
+            diag = exit_diag(left)
         time.sleep(0.2)
     else:
         left = [n for n in scopes if scope_active(n)]
@@ -380,7 +412,7 @@ def stop(system, app, unit, wait=EXIT_WAIT):
             sh(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGKILL', name], check=False)
         time.sleep(1.0)
     time.sleep(1.0)  # what the compositor and the session do after the windows are gone
-    return {'exit_clean': not left, 'exit_s': exit_s, 'left': left}
+    return {'exit_clean': not left, 'exit_s': exit_s, 'left': left, 'diag': diag if left else None}
 
 
 def diagnose(system, app):
@@ -431,7 +463,7 @@ def one_start(system, app, kind, trial, timeout=60, hold=HOLD):
         os.killpg(proc.pid, signal.SIGKILL)  # the group that this script made, never by a name
     extra = {'exit_clean': ended['exit_clean'], 'exit_s': ended['exit_s']}
     if not ended['exit_clean']:
-        extra.update(exit_note='unclean exit: still running %d s after the signal: %s' % (EXIT_WAIT, ', '.join(ended['left'])))
+        extra.update(exit_note='unclean exit: still running %d s after the signal: %s' % (EXIT_WAIT, ', '.join(ended['left'])), exit_diag=ended['diag'])
     if t is None:
         r = record(system, kind=kind, app=app, trial=trial, ok=False, note='no window within %d s' % timeout, diagnosis=diag, **extra)
         count_failure(r)
@@ -763,6 +795,7 @@ def cmd_summarize(args):
     rows = load_rows(args.dir)
     if not rows:
         raise SystemExit(f'no results in {" ".join(args.dir)}')
+    out_rows = []  # everything that is measured, with the median, the minimum and the maximum: written to --out
     groups = {}
     for r in rows:
         key = (r['order'], r['system'], r['app'], r['kind'])
@@ -779,6 +812,7 @@ def cmd_summarize(args):
             say(f'| {order} | {system} | {app} | {kind} | 0 | | | | | | | {bad} |')
             continue
         s = stats(ok)
+        out_rows.append({'measure': 'window_s', 'order': order, 'system': system, 'app': app, 'kind': kind, 'failed': bad, **s})
         say(f'| {order} | {system} | {app} | {kind} | {s["n"]} | {s["median"]:.3f} | {s["min"]:.3f} | {s["max"]:.3f} | {s["q1"]:.3f} | {s["q3"]:.3f} | {s["mad_pct"]:.1f}{" (large spread)" if s["mad_pct"] > 10 else ""} | {bad} |')
     say('\n### Installs: bytes that came, space added, time\n')
     say('| order | system | app | tag | n | MiB that came (median) | MiB on disk (median) | MiB on disk (min-max) | seconds (median) |')
@@ -789,6 +823,8 @@ def cmd_summarize(args):
             inst.setdefault((r['order'], r['system'], r['app'], ((r.get('tag') or '-').rstrip('0123456789') if (r.get('tag') or '').startswith('cycle') else (r.get('tag') or '-'))), []).append(r)
     for (order, system, app, tag), rs in sorted(inst.items()):
         rx, sp, wall = stats([r['rx_bytes'] for r in rs]), stats([r['space_bytes'] for r in rs]), stats([r['wall_s'] for r in rs])
+        for m, v in (('rx_bytes', rx), ('space_bytes', sp), ('wall_s', wall)):
+            out_rows.append({'measure': 'install_' + m, 'order': order, 'system': system, 'app': app, 'kind': tag, **v})
         say(f'| {order} | {system} | {app} | {tag} | {rx["n"]} | {mib(rx["median"])} | {mib(sp["median"])} | {mib(sp["min"])}-{mib(sp["max"])} | {wall["median"]:.1f} |')
     say('\nThe tag `position0` is the first app of a scenario, `position1` the second: the second one shows what a system shares between two apps. `cycleN` is the Nth reinstall of one app on its own.')
     ups = {}
@@ -801,12 +837,31 @@ def cmd_summarize(args):
         say('|---|---|---|---|---|---|---|---|---|')
         for (order, system, app, vers), rs in sorted(ups.items()):
             rx, sp, wall = stats([r['rx_bytes'] for r in rs]), stats([r['space_bytes'] for r in rs]), stats([r['wall_s'] for r in rs])
+            for m, v in (('rx_bytes', rx), ('space_bytes', sp), ('wall_s', wall)):
+                out_rows.append({'measure': 'update_' + m, 'order': order, 'system': system, 'app': app, 'kind': vers, **v})
             say(f'| {order} | {system} | {app} | {vers} | {rx["n"]} | {mib(rx["median"])} | {mib(sp["median"])} | {wall["median"]:.1f} | {wall["min"]:.1f}-{wall["max"]:.1f} |')
     pre = [r for r in rows if r['kind'] == 'prerequisites']
     if pre:
         w, sp = stats([r['wall_s'] for r in pre]), stats([r['space_bytes'] for r in pre])
         say('\n### Launcher and prerequisites (`install-runtime` in a private home)\n')
         say(f'n = {w["n"]}, median {w["median"]*1000:.0f} ms, MiB on disk {mib(sp["median"])}. The first `install` of a series also records whether it installed the runtime by itself (`runtime_installed`).')
+
+    ex = {}
+    for r in rows:
+        if 'exit_s' in r:
+            ex.setdefault((r['order'], r['system'], r['app']), []).append(r)
+    if ex:
+        say('\n### Time from the signal to the exit of the app (seconds)\n')
+        say('| order | system | app | n | median | min | max | not clean (left after the wait) |')
+        say('|---|---|---|---|---|---|---|---|')
+        for (order, system, app), rs in sorted(ex.items()):
+            e = stats([r['exit_s'] for r in rs])
+            bad = sum(1 for r in rs if r.get('exit_clean') is False)
+            out_rows.append({'measure': 'exit_s', 'order': order, 'system': system, 'app': app, 'kind': 'all', 'not_clean': bad, **e})
+            say(f'| {order} | {system} | {app} | {e["n"]} | {e["median"]:.2f} | {e["min"]:.2f} | {e["max"]:.2f} | {bad} |')
+    if getattr(args, 'out', None):
+        Path(args.out).write_text(json.dumps(out_rows, indent=1))
+        say(f'\nevery measure with its median, minimum and maximum: {args.out}')
 
 
 def main():
@@ -882,6 +937,7 @@ def main():
     p.set_defaults(fn=cmd_reboot)
     p = sub.add_parser('summarize')
     p.add_argument('--dir', nargs='+', default=[str(RESULTS)], help='one folder per run; its name is shown as the order of the apps')
+    p.add_argument('--out', help='a JSON file with every measure, with its median, minimum, maximum, quartiles and MAD (the tables show the spread only where it is large)')
     p.set_defaults(fn=cmd_summarize)
     args = ap.parse_args()
     if args.cmd == 'scenario' and args.system == 'panpak':
