@@ -36,6 +36,12 @@ Read the [guiding principles](docs/PRINCIPLES.md) first: they are what a change 
 5. Update the docs touched by the change
    (`QUICKSTART.md`, `RELEASE.md`, `THREAT-MODEL.md`, etc.).
 
+## Documents go with the change
+
+A change that adds or changes a behavior updates, in the same pull request, the documents that speak of it: the specification (`PANPAK-FORMAT.md`), `docs/`, `THREAT-MODEL.md`, `docs/PRINCIPLES.md` when it applies, and the README if what a user or an author reads first changes. A pull request that changes a behavior without updating its documents is not finished.
+
+In the description of the pull request, say which documents you updated, or why none needed to be. If the change affects what the website says, name the page.
+
 ## Rules for tests and builds
 
 - A test that creates or deletes files runs in an isolated HOME inside its own work folder and uses
