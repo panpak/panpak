@@ -342,12 +342,14 @@ def wait_frame(app, since, timeout):
 def scopes_of(system, app, unit):
     """The systemd scopes that hold the processes of the app: the one that this script made and, for Flatpak, the one that Flatpak made for the instance."""
     names = [f'{unit}.scope']
-    if system == 'flatpak':
-        p = sh(['systemctl', '--user', 'list-units', '--type=scope', '--no-legend', '--plain'], check=False)
-        for line in (p.stdout or '').splitlines():
-            name = line.split()[0] if line.split() else ''
-            if name.startswith(f'app-flatpak-{APPS[app]["flatpak"]}-'):
-                names.append(name)
+    # Both launchers move the app out of the scope that this script made, into one of their own (Flatpak: `app-flatpak-<id>-<n>.scope`; Panpak: `app-panpak.<id>-<hash>.scope`): the signal must reach that one,
+    # because the scope of this script holds only the wrapper, and when the wrapper goes the app is killed by force (`--die-with-parent`), which is not the signal of a person closing the app.
+    prefix = f'app-flatpak-{APPS[app]["flatpak"]}-' if system == 'flatpak' else f'app-panpak.{APPS[app]["panpak_id"]}-'
+    p = sh(['systemctl', '--user', 'list-units', '--type=scope', '--no-legend', '--plain'], check=False)
+    for line in (p.stdout or '').splitlines():
+        name = line.split()[0] if line.split() else ''
+        if name.startswith(prefix):
+            names.append(name)
     return names
 
 
@@ -695,7 +697,8 @@ def cmd_close_test(args):
         if not row:
             stop(args.system, args.app, unit)
             raise SystemExit('no window: nothing to close')
-        say(f'CLOSE-NOW trial {i}: the window of {args.app} is up; close it with the X (or Ctrl+Q) now (waiting {args.wait_close} s)')
+        time.sleep(args.open_for)  # the person closes a window that has been up for a while, not one that is still loading
+        say(f'CLOSE-NOW trial {i}: the window of {args.app} has been up for {args.open_for} s; close it with the X (or Ctrl+Q) now (waiting {args.wait_close} s)')
         tc = None
         end = time.time() + args.wait_close
         while time.time() < end and tc is None:
@@ -971,6 +974,7 @@ def main():
     p = sub.add_parser('close-test')
     common(p)
     p.add_argument('--trials', type=int, default=3)
+    p.add_argument('--open-for', type=int, default=15, help='seconds that the window stays up before the person is asked to close it')
     p.add_argument('--wait-close', type=int, default=120, help='seconds that the person has to close the window')
     p.add_argument('--limit', type=int, default=150, help='seconds to wait for the app to leave after the window is closed')
     p.add_argument('--gap', type=float, default=5.0)

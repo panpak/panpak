@@ -69,6 +69,9 @@ Said before the numbers, as they were found, each with its reason. Nothing was t
   (step 9e; the holes to close). The time of GIMP is always the one of its main window ("GNU Image Manipulation Program"): every GIMP start of series 3 and 4 (26 each) was measured on it, never on the error window. The error window is written here as it was seen, not hidden, and the settings of the first start do not turn the check off.
 - **Kdenlive does not leave on a signal.** In the series it is ended by force after 20 s (the results say "not clean" for every one of its starts); a person who closes its window sees it leave in about 43 s on the Flatpak machine, and only then it writes its settings. The starts after a forced exit have the same times as those after a normal exit (2.19 s against 2.27 s). The close of a window by a person is measured at the end of series 2 and 4 (`close-test`) and is next to the starts.
 
+- **Series 3 and 4 (Panpak) have no GIMP, and their order is not the one of the Flatpak series.** They run Kdenlive, ONLYOFFICE and qBittorrent only (series 3 in that order, series 4 in the reverse order), where series 1 and 2 (Flatpak) have GIMP too and use the orders GIMP, Kdenlive, ONLYOFFICE, qBittorrent and its reverse.
+  GIMP is measured on Panpak alone, with the same method and the same number of trials, when the first start that is already done (the caches prepared) is ready: its first start was 15.9 s (older series) against 9.2 s with Flatpak, and 4.5 s with a prepared `pluginrc` (measured by hand, not a series).
+
 ## Setup
 
 *(machines, versions: `rpm-ostree status`, `ldd --version`, `gnome-shell --version`, `flatpak --version`, `panpak --version`, CPUs, memory, disk; 3D off on both; the date; the versions of the apps and what differs on purpose)*
