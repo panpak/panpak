@@ -32,7 +32,8 @@ Read the [guiding principles](docs/PRINCIPLES.md) first: they are what a change 
    `python3 conformance/run.py --rust`,
    `python3 -m unittest discover -s tests/apps -p 'test_*.py'` (the app harness),
    `./scripts/check-spdx.sh` and `./scripts/repro-build.sh` (if you touch build or toolchain files; a change
-   to the binaries needs new hashes in `REPRODUCIBLE-HASHES.md`, in a separate commit).
+   to the binaries needs new hashes in `REPRODUCIBLE-HASHES.md`, in a separate commit: when the pull request touches the code, run
+   `./scripts/repro-build.sh --update` on your machine and commit the file it writes; the CI only checks it, it never writes it).
 5. Update the docs touched by the change
    (`QUICKSTART.md`, `RELEASE.md`, `THREAT-MODEL.md`, etc.).
 

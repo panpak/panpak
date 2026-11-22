@@ -125,32 +125,54 @@ mod tests {
         assert!(interleave(&[]).is_empty());
     }
 
+    /// Run `f` on a thread of its own and fail with a message when it does not return in 60 s. The tests below do not read the clock: a
+    /// test that waits for a time (or a machine that stalls for some seconds) must not decide whether `race` is right, and a `race` that waits for
+    /// the wrong thing must end as a failure, not as a hang.
+    fn with_deadline<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(Duration::from_secs(60)).unwrap_or_else(|_| panic!("{what}: no answer in 60 s"))
+    }
+
     #[test]
     fn a_hung_ipv6_address_does_not_hold_back_the_working_ipv4_one() {
-        // The attempt at the IPv6 address takes 3 s and fails; the IPv4 one answers at once. The answer comes after the stagger, not after 3 s.
-        let t = Instant::now();
-        let got = race(&[a("[2001:db8::1]:443"), a("192.0.2.1:443")], Duration::from_millis(100), Duration::from_secs(5), |addr| {
-            if addr.is_ipv6() {
-                std::thread::sleep(Duration::from_secs(3));
-                Err(io::Error::new(io::ErrorKind::TimedOut, "no route"))
-            } else {
-                Ok(())
-            }
+        // The attempt at the IPv6 address waits until the attempt at the IPv4 address has been made (it is released by it, or gives up after 60 s)
+        // and then fails. The IPv4 attempt must be made while the IPv6 one is still waiting: the order of the events is checked, not a time.
+        let (release, wait) = mpsc::channel::<()>();
+        let wait = std::sync::Mutex::new(wait);
+        let v6_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let v4_saw_v6_waiting = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (d, saw) = (v6_done.clone(), v4_saw_v6_waiting.clone());
+        let got = with_deadline("a hung IPv6 address", move || {
+            race(&[a("[2001:db8::1]:443"), a("192.0.2.1:443")], Duration::from_millis(100), Duration::from_secs(120), move |addr| {
+                if addr.is_ipv6() {
+                    let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(60));
+                    d.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Err(io::Error::new(io::ErrorKind::TimedOut, "no route"))
+                } else {
+                    saw.store(!d.load(std::sync::atomic::Ordering::SeqCst), std::sync::atomic::Ordering::SeqCst);
+                    let _ = release.send(());
+                    Ok(())
+                }
+            })
         })
         .unwrap();
         assert_eq!(got, a("192.0.2.1:443"));
-        assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+        assert!(v4_saw_v6_waiting.load(std::sync::atomic::Ordering::SeqCst), "the IPv4 attempt was made only after the IPv6 one had ended");
     }
 
     #[test]
     fn a_failed_attempt_starts_the_next_at_once_and_a_host_with_one_family_works() {
-        let t = Instant::now();
-        let got = race(&[a("[2001:db8::1]:443"), a("192.0.2.1:443")], Duration::from_secs(10), Duration::from_secs(5), |addr| {
-            if addr.is_ipv6() { Err(io::Error::from(io::ErrorKind::ConnectionRefused)) } else { Ok(()) }
+        // A stagger of an hour: when the next attempt does not start at the failure of the first, but at the end of the stagger, the deadline ends the test.
+        let got = with_deadline("a failed attempt", || {
+            race(&[a("[2001:db8::1]:443"), a("192.0.2.1:443")], Duration::from_secs(3600), Duration::from_secs(5), |addr| {
+                if addr.is_ipv6() { Err(io::Error::from(io::ErrorKind::ConnectionRefused)) } else { Ok(()) }
+            })
         })
         .unwrap();
         assert_eq!(got, a("192.0.2.1:443"));
-        assert!(t.elapsed() < Duration::from_secs(1), "no waiting for the stagger when the first one failed: {:?}", t.elapsed());
         // Only IPv4 (a host with no AAAA record).
         assert_eq!(race(&[a("192.0.2.1:443")], STAGGER, CONNECT_TIMEOUT, |_| Ok(())).unwrap(), a("192.0.2.1:443"));
         // The first answer wins even if it comes late and the others fail.
@@ -162,24 +184,25 @@ mod tests {
 
     #[test]
     fn nothing_answers_is_an_error_not_a_hang() {
-        let t = Instant::now();
-        let e = race(&[a("[2001:db8::1]:443"), a("192.0.2.1:443")], Duration::from_millis(50), Duration::from_secs(5), |_| Err(io::Error::from(io::ErrorKind::ConnectionRefused))).unwrap_err();
+        let e = with_deadline("no answer at all", || {
+            race(&[a("[2001:db8::1]:443"), a("192.0.2.1:443")], Duration::from_millis(50), Duration::from_secs(5), |_| Err(io::Error::from(io::ErrorKind::ConnectionRefused))).unwrap_err()
+        });
         assert_eq!(e.kind(), io::ErrorKind::ConnectionRefused);
-        assert!(t.elapsed() < Duration::from_secs(1));
         assert!(race(&[], STAGGER, CONNECT_TIMEOUT, |_| Ok(())).is_err());
     }
 
     #[test]
     fn with_real_sockets_an_unreachable_ipv6_and_a_listening_ipv4() {
-        // 2001:db8::/32 is reserved for documentation: nothing answers there (or the system has no route and the attempt fails at once).
+        // 2001:db8::/32 is reserved for documentation: nothing answers there (or the system has no route and the attempt fails at once). The attempt at
+        // the IPv6 address may wait for 300 s: a `race` that waited for it would end at the deadline of the test.
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
-        let t = Instant::now();
-        let got = race(&[a(&format!("[2001:db8::1]:{port}")), a(&format!("127.0.0.1:{port}"))], Duration::from_millis(250), Duration::from_secs(4), |addr| {
-            TcpStream::connect_timeout(&addr, Duration::from_secs(4)).map(drop)
+        let got = with_deadline("an unreachable IPv6 address", move || {
+            race(&[a(&format!("[2001:db8::1]:{port}")), a(&format!("127.0.0.1:{port}"))], Duration::from_millis(250), Duration::from_secs(400), |addr| {
+                TcpStream::connect_timeout(&addr, Duration::from_secs(if addr.is_ipv6() { 300 } else { 4 })).map(drop)
+            })
         })
         .unwrap();
         assert_eq!(got, a(&format!("127.0.0.1:{port}")));
-        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
     }
 }
