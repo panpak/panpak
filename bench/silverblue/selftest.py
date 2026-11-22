@@ -90,6 +90,13 @@ esac
         win.write_text('')
         p = run('start', '--system', 'flatpak', '--app', 'gimp', '--trials', '1')
         assert p.returncode != 0 and 'winwatch@panpak.bench' in (p.stdout + p.stderr), p.stdout + p.stderr
+    # A series of reboots needs the automatic login of GDM: without it the machine would stop at the login screen after the first reboot; nothing is armed.
+    envr = dict(os.environ, HOME=str(tempfile.mkdtemp()), BENCH_RESULTS=str(tempfile.mkdtemp()))
+    envr.pop('BENCH_SKIP_AUTOLOGIN_CHECK', None)
+    p = subprocess.run([sys.executable, str(HERE / 'silverblue_bench.py'), 'reboot-series', 'start', '--system', 'flatpak', '--apps', 'gimp', '--count', '1'], capture_output=True, text=True, env=envr)
+    if not Path('/etc/gdm/custom.conf').exists() or 'AutomaticLoginEnable' not in Path('/etc/gdm/custom.conf').read_text():
+        assert p.returncode != 0 and 'automatic login' in (p.stdout + p.stderr), p.stdout + p.stderr
+        assert not (Path(envr['HOME']) / '.config/systemd/user/panpak-bench-reboot.service').exists()
     # The window that counts: the main window of the app, never its screen of start or a dialog of the first start.
     sys.path.insert(0, str(HERE))
     import silverblue_bench as sb
@@ -104,6 +111,32 @@ esac
     assert not sb.is_main_window('qb', ff('org.qbittorrent.qBittorrent', 'Legal Notice', 'org.qbittorrent.qBittorrent'))
     assert sb.is_main_window('qb', ff('org.qbittorrent.qBittorrent', 'qBittorrent v5.3.0', 'org.qbittorrent.qBittorrent'))
     assert not sb.is_main_window('gimp', {'event': 'created', 'wm_class': 'org.gimp.GIMP', 'title': 'GNU Image Manipulation Program'})
+    # The close test takes the closing of the MAIN window, not the screen of start that the app closes by itself.
+    sb.APPS['kdenlive']['title']
+    ev = [{'event': 'closed', 'pid': 7, 't': 100.0, 'title': 'Splash Screen \u2014 Kdenlive'}, {'event': 'closed', 'pid': 7, 't': 101.0, 'title': 'Welcome to Kdenlive'},
+          {'event': 'closed', 'pid': 7, 't': 150.0, 'title': 'Untitled / HD 1080p 25 fps \u2014 Kdenlive'}]
+    import re as _re
+    hit = [r for r in ev if r['event'] == 'closed' and r['pid'] == 7 and r['t'] > 99.0 and _re.search(sb.APPS['kdenlive']['title'], r['title'])]
+    assert [r['t'] for r in hit] == [150.0], hit
+    # The end of an app: one signal for both formats, a wait until nothing is left, and "not clean" written when something stays; the second failed start of a series stops the series.
+    import types
+    calls = []
+    sb.sh = lambda cmd, **k: (calls.append(cmd), subprocess.CompletedProcess(cmd, 0, '', ''))[1]
+    sb.scopes_of = lambda system, app, unit: [f'{unit}.scope']
+    sb.scope_active = lambda name: False
+    r = sb.stop('flatpak', 'gimp', 'u1', wait=2)
+    assert r['exit_clean'] and r['left'] == [] and any('SIGTERM' in ' '.join(c) for c in calls) and not any('SIGKILL' in ' '.join(c) or c[:2] == ['flatpak', 'kill'] for c in calls), (r, calls)
+    calls.clear()
+    sb.scope_active = lambda name: True
+    r = sb.stop('panpak', 'gimp', 'u2', wait=1)
+    assert not r['exit_clean'] and r['left'] == ['u2.scope'] and any('SIGKILL' in ' '.join(c) for c in calls), (r, calls)
+    sb.RESULTS = Path(tempfile.mkdtemp())
+    sb.count_failure({'app': 'gimp', 'kind': 'warm', 'trial': 0, 'note': 'x'})
+    try:
+        sb.count_failure({'app': 'gimp', 'kind': 'warm', 'trial': 1, 'note': 'x'})
+        raise AssertionError('the second failure did not stop the series')
+    except SystemExit as e:
+        assert 'STOP' in str(e), e
     # The controlled peer of the qBittorrent operation: metadata by magnet and every piece, checked; and the checklist has its link.
     p = subprocess.run([sys.executable, str(HERE / 'seed_peer.py'), '--self-test'], capture_output=True, text=True, timeout=120)
     assert p.returncode == 0 and 'PASS' in p.stdout, p.stdout + p.stderr

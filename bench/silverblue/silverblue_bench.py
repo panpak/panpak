@@ -339,15 +339,110 @@ def wait_frame(app, since, timeout):
     return r['t'] if r else None
 
 
-def stop(system, app, unit):
-    """End the app and everything it started, and wait until its window is gone."""
-    if system == 'flatpak':
-        sh(['flatpak', 'kill', APPS[app]['flatpak']], check=False)
-    sh(['systemctl', '--user', 'stop', f'{unit}.scope'], check=False)
-    time.sleep(1.0)
+def scopes_of(system, app, unit):
+    """The systemd scopes that hold the processes of the app: the one that this script made and, for Flatpak, the one that Flatpak made for the instance."""
+    names = [f'{unit}.scope']
+    # Both launchers move the app out of the scope that this script made, into one of their own (Flatpak: `app-flatpak-<id>-<n>.scope`; Panpak: `app-panpak.<id>-<hash>.scope`): the signal must reach that one,
+    # because the scope of this script holds only the wrapper, and when the wrapper goes the app is killed by force (`--die-with-parent`), which is not the signal of a person closing the app.
+    prefix = f'app-flatpak-{APPS[app]["flatpak"]}-' if system == 'flatpak' else f'app-panpak.{APPS[app]["panpak_id"]}-'
+    p = sh(['systemctl', '--user', 'list-units', '--type=scope', '--no-legend', '--plain'], check=False)
+    for line in (p.stdout or '').splitlines():
+        name = line.split()[0] if line.split() else ''
+        if name.startswith(prefix):
+            names.append(name)
+    return names
 
 
-def one_start(system, app, kind, trial, timeout=60, hold=0.0):
+def scope_active(name):
+    return sh(['systemctl', '--user', 'is-active', '--quiet', name], check=False).returncode == 0
+
+
+def exit_diag(scopes):
+    """What the processes that did not leave are doing, read from /proc without touching them: for each process its name, state and the kernel function it sleeps in (`wchan`) and, for its threads, how many sleep in each; and the system call of the main thread.
+    Taken 5 s after the signal, when an app that was going to leave has left. It is how the long exit of an app (Kdenlive: about 45 s) is looked at while a series runs."""
+    out = []
+    for sc in scopes:
+        cg = sh(['systemctl', '--user', 'show', '-p', 'ControlGroup', '--value', sc], check=False).stdout.strip()
+        procs = Path('/sys/fs/cgroup' + cg + '/cgroup.procs')
+        try:
+            pids = [int(x) for x in procs.read_text().split()]
+        except (OSError, ValueError):
+            continue
+        for pid in pids:
+            d = Path('/proc') / str(pid)
+            try:
+                st = dict(line.split(':\t', 1) for line in (d / 'status').read_text().splitlines() if ':\t' in line)
+                wch = {}
+                for t in (d / 'task').iterdir():
+                    w = (t / 'wchan').read_text().strip() or '-'
+                    wch[w] = wch.get(w, 0) + 1
+                try:
+                    sc_ = (d / 'syscall').read_text().split()[0]
+                except (OSError, IndexError):
+                    sc_ = None
+                out.append({'pid': pid, 'comm': (d / 'comm').read_text().strip(), 'state': st.get('State', '').split()[0] if st.get('State') else None, 'threads': int(st.get('Threads', 0)), 'wchan_of_threads': wch, 'syscall_main': sc_})
+            except OSError:
+                pass
+    return out
+
+
+EXIT_WAIT = 20  # seconds that the app has to leave after the signal; after that the exit is written as not clean (GIMP, ONLYOFFICE and qBittorrent leave in under 3 s; Kdenlive does not leave on a signal at all, even after 150 s, nor on the quit of its D-Bus interface: it leaves only when its window is closed, and then after about 45 s)
+
+
+def stop(system, app, unit, wait=EXIT_WAIT):
+    """End the app the way a person does: a signal that it can answer (SIGTERM), the same for both formats, to every process in its scopes, and wait until nothing is left before the next start.
+    Never `flatpak kill` (SIGKILL): it left the lock and the socket of qBittorrent behind, and the next start found an instance that was not there. If something is still there after `wait` seconds the exit is
+    written as not clean, the rest is ended by force so that the series can go on, and the result says so. Returns {'exit_clean', 'exit_s', 'left'}."""
+    scopes = scopes_of(system, app, unit)
+    t0 = time.time()
+    for name in scopes:
+        sh(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGTERM', name], check=False)
+    left = scopes
+    diag = None
+    while time.time() - t0 < wait:
+        left = [n for n in scopes if scope_active(n)]
+        if not left:
+            break
+        if diag is None and time.time() - t0 > 5:
+            diag = exit_diag(left)
+        time.sleep(0.2)
+    else:
+        left = [n for n in scopes if scope_active(n)]
+    exit_s = round(time.time() - t0, 2)
+    if left:
+        for name in left:
+            sh(['systemctl', '--user', 'kill', '--kill-whom=all', '--signal=SIGKILL', name], check=False)
+        time.sleep(1.0)
+    time.sleep(1.0)  # what the compositor and the session do after the windows are gone
+    return {'exit_clean': not left, 'exit_s': exit_s, 'left': left, 'diag': diag if left else None}
+
+
+def diagnose(system, app):
+    """What is on the machine for an app that did not show its window: its processes and scopes, and the files that an app leaves when it is ended badly (lock, socket)."""
+    a = APPS[app]
+    keys = {a['flatpak'], a['panpak_id'], a['name'].split()[0].lower()}
+    p = sh(['ps', '-eo', 'pid,etimes,stat,args'], check=False)
+    procs = [l[:170] for l in (p.stdout or '').splitlines() if any(k.lower() in l.lower() for k in keys) and 'silverblue_bench' not in l and 'ps -eo' not in l][:8]
+    base = HOME / '.var/app' / a['flatpak'] if system == 'flatpak' else HOME / '.local/share/panpak/userdata' / a['panpak_id']
+    leftovers = sorted(str(f.relative_to(base)) for pat in ('lockfile', 'ipc-socket', '*.lock', 'SingletonLock', '.lock') for f in base.rglob(pat))[:8] if base.exists() else []
+    return {'processes': procs, 'leftover_files': leftovers}
+
+
+FAIL_LIMIT = 2  # the second failed start of a series stops the series: the owner is told before it goes on
+
+
+def count_failure(row):
+    f = RESULTS / 'failures.json'
+    n = (json.loads(f.read_text()) if f.exists() else 0) + 1
+    f.write_text(json.dumps(n))
+    if n >= FAIL_LIMIT:
+        raise SystemExit(f'STOP: failed start number {n} in this series ({row.get("app")}, {row.get("kind")} {row.get("trial")}: {row.get("note")}); the rows have the diagnosis. Look at it before going on.')
+
+
+HOLD = 4.0  # seconds that the app is left running after the first frame of its main window, before it is stopped (see `stop`)
+
+
+def one_start(system, app, kind, trial, timeout=60, hold=HOLD):
     """One start: the command is started inside a systemd scope (for both systems, so that the cost is the same) and stopped through it. The time is from just before the
     command to the first frame of the window that the compositor reports."""
     if not APPS[app]['series']:
@@ -361,18 +456,24 @@ def one_start(system, app, kind, trial, timeout=60, hold=0.0):
     row = wait_frame_row(app, t0, timeout)
     t = row['t'] if row else None
     if row and hold:
-        time.sleep(hold)  # for a person who watches: the window stays on the screen
-    stop(system, app, unit)
+        time.sleep(hold)  # long enough for the app to finish its start (see HOLD)
+    diag = diagnose(system, app) if t is None else None
+    ended = stop(system, app, unit)
     try:
         proc.wait(timeout=10)
     except subprocess.TimeoutExpired:
         os.killpg(proc.pid, signal.SIGKILL)  # the group that this script made, never by a name
+    extra = {'exit_clean': ended['exit_clean'], 'exit_s': ended['exit_s']}
+    if not ended['exit_clean']:
+        extra.update(exit_note='unclean exit: still running %d s after the signal: %s' % (EXIT_WAIT, ', '.join(ended['left'])), exit_diag=ended['diag'])
     if t is None:
-        return record(system, kind=kind, app=app, trial=trial, ok=False, note='no window within %d s' % timeout)
-    return record(system, kind=kind, app=app, trial=trial, ok=True, window_s=round(t - t0, 4), window_title=row.get('title', ''))
+        r = record(system, kind=kind, app=app, trial=trial, ok=False, note='no window within %d s' % timeout, diagnosis=diag, **extra)
+        count_failure(r)
+        return r
+    return record(system, kind=kind, app=app, trial=trial, ok=True, window_s=round(t - t0, 4), window_title=row.get('title', ''), hold_s=hold, **extra)
 
 
-def warm_starts(system, app, n, gap=3.0, kind='warm', hold=0.0):
+def warm_starts(system, app, n, gap=3.0, kind='warm', hold=HOLD):
     for i in range(n):
         one_start(system, app, kind, i, hold=hold)
         time.sleep(gap)
@@ -480,6 +581,7 @@ def cmd_update(args):
             for what, cmd in install_cmds('panpak', args.app, f'{args.pkg_base_url.rstrip("/")}/{a["panpak_id"]}.prev.panpak', None, keys, previous=True):
                 sh(cmd)
             update_cmd = [PANPAK, 'update', '--yes', '--timeout', '300', a['panpak_id']]
+        seed_first_run(args.system, args.app)  # the removal above took the data with it: the settings of the first start are written again, so that the starts that follow reach the main window
         quiet()
         space0, used0, rx0, t0 = space(args.system), fs_used(), rx_bytes(), time.time()
         p = sh(update_cmd)
@@ -568,6 +670,70 @@ def cmd_prerequisites(args):
             shutil.rmtree(home, ignore_errors=True)
 
 
+def config_state(system, app):
+    """The main settings file of an app (what it writes when it leaves): its modification time and a hash, or None."""
+    if app == 'kdenlive':
+        path = HOME / '.var/app/org.kde.kdenlive/config/kdenlive-flatpakrc' if system == 'flatpak' else HOME / '.local/share/panpak/userdata/org.kde.kdenlive/.config/kdenliverc'
+    else:
+        raise SystemExit(f'close-test: no settings file is known for {app}')
+    if not path.exists():
+        return None
+    import hashlib
+    return {'path': str(path), 'mtime': path.stat().st_mtime, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def cmd_close_test(args):
+    """How long an app takes to leave when a PERSON closes its window, and whether it writes its settings then. The app is started and the person is asked (on the screen of this script) to close the window with the X
+    (or Ctrl+Q); the time is from the moment the compositor says that the window is closed to the moment that no process is left in the scopes of the app. Not a start measure: it does not use the signal of `stop`."""
+    if not extension_ready():
+        raise SystemExit('the window extension is not running: PROCEDURE.md, section 1')
+    for i in range(args.trials):
+        unit = f'panpak-bench-close-{os.getpid()}-{i}'
+        before = config_state(args.system, args.app)
+        n = len(window_events())
+        t0 = time.time()
+        proc = subprocess.Popen(['systemd-run', '--user', '--scope', '--quiet', f'--unit={unit}', '--', *launcher(args.system, args.app)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        row = wait_frame_row(args.app, t0, 90)
+        if not row:
+            stop(args.system, args.app, unit)
+            raise SystemExit('no window: nothing to close')
+        time.sleep(args.open_for)  # the person closes a window that has been up for a while, not one that is still loading
+        say(f'CLOSE-NOW trial {i}: the window of {args.app} has been up for {args.open_for} s; close it with the X (or Ctrl+Q) now (waiting {args.wait_close} s)')
+        tc = None
+        end = time.time() + args.wait_close
+        while time.time() < end and tc is None:
+            for r in window_events()[n:]:
+                # the MAIN window of this process, closed after it was shown: not the screen of start or the welcome window, which the app opens and closes by itself at the start
+                if r.get('event') == 'closed' and r.get('pid') == row.get('pid') and r.get('t', 0) > row['t'] and re.search(APPS[args.app].get('title') or '.', r.get('title', '')):
+                    tc = r['t']
+                    break
+            time.sleep(0.1)
+        scopes = scopes_of(args.system, args.app, unit)
+        if tc is None:
+            stop(args.system, args.app, unit)
+            record(args.system, kind='close-exit', app=args.app, trial=i, ok=False, note=f'the window was not closed within {args.wait_close} s')
+            continue
+        left = scopes
+        while time.time() - tc < args.limit:
+            left = [x for x in scopes if scope_active(x)]
+            if not left:
+                break
+            time.sleep(0.2)
+        exit_after = round(time.time() - tc, 2)
+        diag = exit_diag(left) if left else None
+        if left:
+            stop(args.system, args.app, unit)
+        time.sleep(1.0)
+        after = config_state(args.system, args.app)
+        record(args.system, kind='close-exit', app=args.app, trial=i, ok=True, exit_after_close_s=exit_after, exit_clean=not left, exit_diag=diag,
+               config_before=before, config_after=after, config_written=bool(after and (not before or after['sha256'] != before['sha256'] or after['mtime'] != before['mtime'])))
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+        time.sleep(args.gap)
+
+
 def cmd_install(args):
     do_install(args.system, args.app, args)
 
@@ -596,6 +762,15 @@ def cmd_scenario(args):
         warm_starts(args.system, app, args.warm, args.gap)
 
 
+def autologin_on():
+    """True if GDM logs the user in by itself (`AutomaticLoginEnable=True` or `AutomaticLogin=` in /etc/gdm/custom.conf)."""
+    try:
+        text = Path('/etc/gdm/custom.conf').read_text()
+    except OSError:
+        return False
+    return any(re.match(r'(?i)\s*AutomaticLoginEnable\s*=\s*(true|1|yes)', line) for line in text.splitlines())
+
+
 STATE = RESULTS / 'reboot-state.json'
 UNIT = HOME / '.config/systemd/user/panpak-bench-reboot.service'
 
@@ -609,12 +784,16 @@ def cmd_reboot(args):
         say(STATE.read_text() if STATE.exists() else 'no series is armed')
         return
     if args.action == 'start':
+        # After a reboot nobody is at the machine: without the automatic login of GDM the machine stops at the login screen, there is no session, no window extension, and the series never measures anything.
+        if os.environ.get('BENCH_SKIP_AUTOLOGIN_CHECK') != '1' and not autologin_on():
+            raise SystemExit('refused: the automatic login of GDM is not on (no `AutomaticLogin=true` in /etc/gdm/custom.conf): after the first reboot the machine would wait at the login screen. '
+                             'Turn it on (Settings, System, Users, Automatic Login) and run this again (PROCEDURE.md, section 1).')
         apps = args.apps.split(',')
         RESULTS.mkdir(parents=True, exist_ok=True)
         STATE.write_text(json.dumps({'system': args.system, 'apps': apps, 'total': args.count * len(apps), 'done': 0, 'settle': args.settle}))
         UNIT.parent.mkdir(parents=True, exist_ok=True)
         UNIT.write_text(f'[Unit]\nDescription=Measure one start after a reboot\nAfter=graphical-session.target\n\n[Service]\nType=oneshot\n'
-                        f'Environment=PYTHONUNBUFFERED=1\nExecStart={sys.executable} {os.path.abspath(__file__)} reboot-series step\n\n[Install]\nWantedBy=default.target\n')
+                        f'Environment=PYTHONUNBUFFERED=1\nEnvironment=BENCH_RESULTS={RESULTS}\nEnvironment=PATH={HOME}/.local/bin:/usr/local/bin:/usr/bin\nExecStart={sys.executable} {os.path.abspath(__file__)} reboot-series step\n\n[Install]\nWantedBy=default.target\n')
         sh(['systemctl', '--user', 'daemon-reload'])
         sh(['systemctl', '--user', 'enable', 'panpak-bench-reboot.service'])
         say('armed: the next login measures one start and reboots again until the series is done. Reboot now with `systemctl reboot`.')
@@ -629,6 +808,7 @@ def cmd_reboot(args):
         time.sleep(2)
     # Boot and login keep the machine busy for a while: the measure starts after a fixed time of quiet, the same in every series.
     time.sleep(st['settle'])
+    import_session_env()  # the shell has imported its display into the user manager by now
     app = st['apps'][st['done'] % len(st['apps'])]
     one_start(st['system'], app, 'after-reboot', st['done'])
     st['done'] += 1
@@ -681,6 +861,7 @@ def cmd_summarize(args):
     rows = load_rows(args.dir)
     if not rows:
         raise SystemExit(f'no results in {" ".join(args.dir)}')
+    out_rows = []  # everything that is measured, with the median, the minimum and the maximum: written to --out
     groups = {}
     for r in rows:
         key = (r['order'], r['system'], r['app'], r['kind'])
@@ -689,26 +870,78 @@ def cmd_summarize(args):
     say('| order | system | app | kind | n | median | min | max | Q1 | Q3 | MAD (% of median) | failed |')
     say('|---|---|---|---|---|---|---|---|---|---|---|---|')
     for (order, system, app, kind), rs in sorted(groups.items()):
-        if kind == 'install':
-            continue
+        if kind not in ('first', 'warm', 'after-reboot', 'control'):
+            continue  # installs, updates and the rest have their own tables
         ok = [r['window_s'] for r in rs if r.get('ok')]
         bad = sum(1 for r in rs if not r.get('ok'))
         if not ok:
             say(f'| {order} | {system} | {app} | {kind} | 0 | | | | | | | {bad} |')
             continue
         s = stats(ok)
-        say(f'| {order} | {system} | {app} | {kind} | {s["n"]} | {s["median"]:.3f} | {s["min"]:.3f} | {s["max"]:.3f} | {s["q1"]:.3f} | {s["q3"]:.3f} | {s["mad_pct"]:.1f} | {bad} |')
+        out_rows.append({'measure': 'window_s', 'order': order, 'system': system, 'app': app, 'kind': kind, 'failed': bad, **s})
+        say(f'| {order} | {system} | {app} | {kind} | {s["n"]} | {s["median"]:.3f} | {s["min"]:.3f} | {s["max"]:.3f} | {s["q1"]:.3f} | {s["q3"]:.3f} | {s["mad_pct"]:.1f}{" (large spread)" if s["mad_pct"] > 10 else ""} | {bad} |')
     say('\n### Installs: bytes that came, space added, time\n')
     say('| order | system | app | tag | n | MiB that came (median) | MiB on disk (median) | MiB on disk (min-max) | seconds (median) |')
     say('|---|---|---|---|---|---|---|---|---|')
     inst = {}
     for r in rows:
         if r['kind'] == 'install':
-            inst.setdefault((r['order'], r['system'], r['app'], (r.get('tag') or '').rstrip('0123456789') or '-'), []).append(r)
+            inst.setdefault((r['order'], r['system'], r['app'], ((r.get('tag') or '-').rstrip('0123456789') if (r.get('tag') or '').startswith('cycle') else (r.get('tag') or '-'))), []).append(r)
     for (order, system, app, tag), rs in sorted(inst.items()):
         rx, sp, wall = stats([r['rx_bytes'] for r in rs]), stats([r['space_bytes'] for r in rs]), stats([r['wall_s'] for r in rs])
+        for m, v in (('rx_bytes', rx), ('space_bytes', sp), ('wall_s', wall)):
+            out_rows.append({'measure': 'install_' + m, 'order': order, 'system': system, 'app': app, 'kind': tag, **v})
         say(f'| {order} | {system} | {app} | {tag} | {rx["n"]} | {mib(rx["median"])} | {mib(sp["median"])} | {mib(sp["min"])}-{mib(sp["max"])} | {wall["median"]:.1f} |')
-    say('\nThe tag `position0` is the first app of a scenario, `position1` the second: the second one shows what a system shares between two apps.')
+    say('\nThe tag `position0` is the first app of a scenario, `position1` the second: the second one shows what a system shares between two apps. `cycleN` is the Nth reinstall of one app on its own.')
+    ups = {}
+    for r in rows:
+        if r['kind'] == 'update':
+            ups.setdefault((r['order'], r['system'], r['app'], f"{r.get('from_version')} to {r.get('to_version')}"), []).append(r)
+    if ups:
+        say('\n### Updates: bytes that came, space added, time\n')
+        say('| order | system | app | versions | n | MiB that came (median) | MiB on disk added (median) | seconds (median) | seconds (min-max) |')
+        say('|---|---|---|---|---|---|---|---|---|')
+        for (order, system, app, vers), rs in sorted(ups.items()):
+            rx, sp, wall = stats([r['rx_bytes'] for r in rs]), stats([r['space_bytes'] for r in rs]), stats([r['wall_s'] for r in rs])
+            for m, v in (('rx_bytes', rx), ('space_bytes', sp), ('wall_s', wall)):
+                out_rows.append({'measure': 'update_' + m, 'order': order, 'system': system, 'app': app, 'kind': vers, **v})
+            say(f'| {order} | {system} | {app} | {vers} | {rx["n"]} | {mib(rx["median"])} | {mib(sp["median"])} | {wall["median"]:.1f} | {wall["min"]:.1f}-{wall["max"]:.1f} |')
+    pre = [r for r in rows if r['kind'] == 'prerequisites']
+    if pre:
+        w, sp = stats([r['wall_s'] for r in pre]), stats([r['space_bytes'] for r in pre])
+        say('\n### Launcher and prerequisites (`install-runtime` in a private home)\n')
+        say(f'n = {w["n"]}, median {w["median"]*1000:.0f} ms, MiB on disk {mib(sp["median"])}. The first `install` of a series also records whether it installed the runtime by itself (`runtime_installed`).')
+
+    ex = {}
+    for r in rows:
+        if 'exit_s' in r:
+            ex.setdefault((r['order'], r['system'], r['app']), []).append(r)
+    if ex:
+        say('\n### Time from the signal to the exit of the app (seconds)\n')
+        say('| order | system | app | n | median | min | max | not clean (left after the wait) |')
+        say('|---|---|---|---|---|---|---|---|')
+        for (order, system, app), rs in sorted(ex.items()):
+            e = stats([r['exit_s'] for r in rs])
+            bad = sum(1 for r in rs if r.get('exit_clean') is False)
+            out_rows.append({'measure': 'exit_s', 'order': order, 'system': system, 'app': app, 'kind': 'all', 'not_clean': bad, **e})
+            say(f'| {order} | {system} | {app} | {e["n"]} | {e["median"]:.2f} | {e["min"]:.2f} | {e["max"]:.2f} | {bad} |')
+    cl = {}
+    for r in rows:
+        if r['kind'] == 'close-exit' and r.get('ok'):
+            cl.setdefault((r['order'], r['system'], r['app']), []).append(r)
+    if cl:
+        say('\n### Exit after a person closes the window (seconds), and the settings\n')
+        say('| order | system | app | n | median | min | max | settings written at the exit | not clean after the limit |')
+        say('|---|---|---|---|---|---|---|---|---|')
+        for (order, system, app), rs in sorted(cl.items()):
+            e = stats([r['exit_after_close_s'] for r in rs])
+            w = sum(1 for r in rs if r.get('config_written'))
+            bad = sum(1 for r in rs if r.get('exit_clean') is False)
+            out_rows.append({'measure': 'exit_after_close_s', 'order': order, 'system': system, 'app': app, 'kind': 'close-exit', 'config_written': w, 'not_clean': bad, **e})
+            say(f'| {order} | {system} | {app} | {e["n"]} | {e["median"]:.2f} | {e["min"]:.2f} | {e["max"]:.2f} | {w} of {e["n"]} | {bad} |')
+    if getattr(args, 'out', None):
+        Path(args.out).write_text(json.dumps(out_rows, indent=1))
+        say(f'\nevery measure with its median, minimum and maximum: {args.out}')
 
 
 def main():
@@ -739,6 +972,14 @@ def main():
     common(p)
     pkg(p)
     p.set_defaults(fn=cmd_install)
+    p = sub.add_parser('close-test')
+    common(p)
+    p.add_argument('--trials', type=int, default=3)
+    p.add_argument('--open-for', type=int, default=15, help='seconds that the window stays up before the person is asked to close it')
+    p.add_argument('--wait-close', type=int, default=120, help='seconds that the person has to close the window')
+    p.add_argument('--limit', type=int, default=150, help='seconds to wait for the app to leave after the window is closed')
+    p.add_argument('--gap', type=float, default=5.0)
+    p.set_defaults(fn=cmd_close_test)
     p = sub.add_parser('prerequisites')
     common(p, apps=False)
     p.add_argument('--stub', help='the panpak-stub (default: ~/.local/bin/panpak-stub)')
@@ -759,7 +1000,7 @@ def main():
     p.add_argument('--kind', default='warm')
     p.add_argument('--trials', type=int, default=15)
     p.add_argument('--gap', type=float, default=3.0)
-    p.add_argument('--hold', type=float, default=0.0, help='seconds to leave the window on the screen after its first frame (for a person who watches; 0 in a series)')
+    p.add_argument('--hold', type=float, default=HOLD, help='seconds to leave the app running after the first frame of its main window, before it is stopped: long enough for it to finish its start, so that it saves its settings and removes its lock file as it does when a person quits (the same in every series)')
     p.set_defaults(fn=cmd_start)
     p = sub.add_parser('cycle')
     common(p)
@@ -784,6 +1025,7 @@ def main():
     p.set_defaults(fn=cmd_reboot)
     p = sub.add_parser('summarize')
     p.add_argument('--dir', nargs='+', default=[str(RESULTS)], help='one folder per run; its name is shown as the order of the apps')
+    p.add_argument('--out', help='a JSON file with every measure, with its median, minimum, maximum, quartiles and MAD (the tables show the spread only where it is large)')
     p.set_defaults(fn=cmd_summarize)
     args = ap.parse_args()
     if args.cmd == 'scenario' and args.system == 'panpak':

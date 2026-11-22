@@ -28,7 +28,7 @@ results say so).
 1. One image. Make `silverblue-flatpak` and `silverblue-panpak` as full clones of one Silverblue that is up to date and has been started once. Same number of CPUs and
    same memory in both (record them: `lscpu`, `free -m`), 3D off in both, same disk type. Use a virtual disk that is not shared with the host's disk cache for the measurements of the
    time (a "none" or "directsync" cache mode, or the host's disk cache dropped before a series: say which was used).
-2. A user with autologin to **GNOME on Wayland** (the default of Silverblue), automatic screen lock and screen blanking off (`gsettings set org.gnome.desktop.screensaver lock-enabled false`,
+2. A user with autologin to **GNOME on Wayland** (**it must really be on**: `AutomaticLoginEnable=True` in `/etc/gdm/custom.conf`, or Settings, System, Users, Automatic Login, which asks for the administrator's password; the series of reboots refuses to start without it, because after a reboot nobody is at the machine and a machine at the login screen measures nothing) (the default of Silverblue), automatic screen lock and screen blanking off (`gsettings set org.gnome.desktop.screensaver lock-enabled false`,
    `gsettings set org.gnome.desktop.session idle-delay 0`), and animations as they are. A resolution that is the same in both machines.
 3. Nothing that updates by itself, nothing that downloads in the background: `sudo systemctl disable --now rpm-ostreed-automatic.timer`, GNOME Software off
    (`gsettings set org.gnome.software download-updates false`, `gsettings set org.gnome.software allow-updates false`; it is also best to remove it from the autostart). Note that the bytes are counted on the network interface: while a series
@@ -145,8 +145,9 @@ Three kinds of start:
    fixed time of quiet (45 s after the extension is up), measures one start, and reboots again. One start per reboot, `R` reboots for each app.
 3. **Following starts** (`warm`). `N` starts one after the other, with a pause of 3 s, each ended through its scope.
 
-The numbers to use: `R = 5` for the installs and first starts, `R = 5` reboots per app, `N = 15` warm starts. They are the defaults. If the spread (MAD as a percent of the median) is above 10 %,
-run it again with more trials and say so; do not drop a trial because it looks wrong.
+The numbers to use: `R = 3` for the installs and first starts, `R = 3` reboots per app (12 reboots in a series), `N = 10` warm starts, `R = 3` for each update. They are the defaults, the same for both formats. The results give the median, the minimum and the maximum of each measure (and the quartiles and the MAD); if the spread (MAD as a percent of the median) is above 10 % for an app, the report says so, and no trial is added for that app alone;
+do not drop a trial because it looks wrong. A failed start is a row of the results with its diagnosis (the processes and the files left on the machine); the second failed start of a series stops the series and the owner is told before it goes on.
+An app is stopped the same way in both formats: it is left running for 4 s after the first frame of its main window, then every process of its scopes gets a SIGTERM (never `flatpak kill`), and the script waits until nothing is left (20 s at most; after that the exit is written as not clean and the rest is ended by force) before the next start.
 
 ## 4. The series
 
@@ -167,16 +168,18 @@ DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus`):
 export BENCH_RESULTS=~/panpak-bench-results/gimp-kdenlive-onlyoffice-qb          # the name of the folder is the order; one folder per series
 ./silverblue_bench.py check --system flatpak
 ./silverblue_bench.py base --system flatpak                # the space of what Silverblue brings, before anything is installed
-./silverblue_bench.py scenario --system flatpak --order gimp,kdenlive,onlyoffice,qb --warm 15
-for a in gimp kdenlive onlyoffice qb; do ./silverblue_bench.py cycle --system flatpak --app $a --trials 5; done     # repeated installs and first starts: the spread
+./silverblue_bench.py scenario --system flatpak --order gimp,kdenlive,onlyoffice,qb --warm 10
+for a in gimp kdenlive onlyoffice qb; do ./silverblue_bench.py cycle --system flatpak --app $a --trials 3; done     # repeated installs and first starts: the spread
 ./silverblue_bench.py update --system flatpak --app kdenlive --trials 3
 ./silverblue_bench.py update --system flatpak --app onlyoffice --trials 3
 # the apps are installed again by the last cycle; now the series of reboots (5 per app; the machine reboots by itself and logs in):
-./silverblue_bench.py reboot-series start --system flatpak --apps gimp,kdenlive,onlyoffice,qb --count 5
+./silverblue_bench.py reboot-series start --system flatpak --apps gimp,kdenlive,onlyoffice,qb --count 3
 sudo systemctl reboot
 ```
 
-For Panpak, before the series, once: `./silverblue_bench.py prerequisites --system panpak --trials 5` (the launcher and its prerequisites: the time and space of `install-runtime`, in a private home, so that the machine stays as it is); `install` then records on the first app whether it installed the runtime by itself (`runtime_installed`, `runtime_bytes_before`/`after`).
+`run_series.sh <flatpak|panpak> <folder name> <order> [<base url> <converter key> <ca.pem>]` runs everything of this block that comes before the reboots (the prerequisites for Panpak, `scenario`, the cycles of every app and the updates) in the environment of the graphical session, from ssh or from a terminal; the series of reboots is run after it, from the same results folder.
+
+For Panpak, before the series, once: `./silverblue_bench.py prerequisites --system panpak --trials 3` (the launcher and its prerequisites: the time and space of `install-runtime`, in a private home, so that the machine stays as it is); `install` then records on the first app whether it installed the runtime by itself (`runtime_installed`, `runtime_bytes_before`/`after`).
 
 For Panpak the same with `--system panpak --pkg-base-url https://192.168.122.1:8443 --keys '*=<key of the converter>' --ca ~/ca.pem` for `scenario` and `update`, and `--pkg-url https://192.168.122.1:8443/<app id>.panpak` for `cycle`
 (the same `--keys` and `--ca`). The script installs with `panpak install --yes --expect-key <key>`: a package of another key is refused and nothing is pinned. It never uses `--trust-first-key`: the comparison shows the
@@ -184,6 +187,10 @@ safe way (the key that the person was told), not the one that trusts what comes.
 this machine). The series of reboots ends by itself (the log shows `series done`; `reboot-series status` says where it is). The results are lines of JSON in `$BENCH_RESULTS/<system>.jsonl`.
 
 When a series is done: copy the folder out of the machine (`scp -r`), then revert the machine to `clean`.
+
+**The exit of Kdenlive after a person closes its window (outside the series, at the end of series 2 for Flatpak and of series 4 for Panpak).** `./silverblue_bench.py close-test --system S --app kdenlive --trials 3`: the app is started, the script says `CLOSE-NOW`
+and the person closes the window with the X (or Ctrl+Q); the time is from the moment the compositor reports the window as closed to the moment that no process is left in the scopes of the app (150 s at most), and the settings file (`kdenlive-flatpakrc` under Flatpak, `kdenliverc` under Panpak)
+is compared before and after to see whether the app wrote it at the exit. The row is `close-exit`; the results page gives it next to the starts. It does not use the signal of the series (Kdenlive does not leave on a signal: section 3).
 
 ## 5. The tables
 
