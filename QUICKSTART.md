@@ -134,6 +134,21 @@ behind `--show-key`. A domain that says the key is not the author's stops the in
 goes on, and you still say whom you trust). `--offline` (one command) and `panpak config set trust.confirm_domain off` do not ask; the key is then "not confirmed". The line "Updates: from <host>, named by the author" says where the new versions will come from. The rule itself
 (pin, rotation, atomic update) is specified in `PANPAK-FORMAT.md` §3.2.
 
+## Update, roll back, repair, and the software bill of materials
+
+```sh
+panpak update org.example.app      # downloads only the chunks that the installed version does not have, and moves `current` when all is on disk
+panpak rollback org.example.app    # back to the previous version (the one that was installed before the last update)
+panpak repair org.example.app      # the files right again, from the update URL or from `--from <package>`
+panpak verify org.example.app      # reads every file against the signed index now; changes nothing
+panpak gc                          # takes out of the store what no installed version reaches (`--dry-run` shows it)
+panpak sbom pkg.panpak             # the SBOM (CycloneDX 1.6): the way to give a package to a scanner of dependencies
+panpak sbom --export pkg.panpak    # the same, completed with the name, id and version, a serial number and the time
+```
+
+`panpak sbom` also takes an app id (the installed one) or an https address (only the parts of the package that hold the SBOM are downloaded).
+A rollback to a version below the floor that the author set is refused. A rollback does not undo what the newer version did to the data of the app.
+
 ## Open files (double click and `panpak open`)
 
 ```sh
