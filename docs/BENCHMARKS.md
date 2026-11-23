@@ -122,7 +122,7 @@ The two versions of an app converted with `panpak convert` in one run (`bench/si
 | 19 | 59.1 s, 1.7 GiB | 220,431,397 | 219,144,936 | 107.5 s, 1.8 GiB | 429,761,035 | 534,922,458 |
 
 Level 19 on one thread took 631 s for the two conversions of ONLYOFFICE (above); on all the cores it takes 107 s, about 6 times less,
-at a cost of 1.8 GiB of memory (one zstd context for each thread). Between levels 3 and 15 the packages shrink by 4 to 6% and the time grows by half; the big step is level 19 (the strategy and the 8 MiB window change there), 11.5% for ONLYOFFICE and 14% for Kdenlive, at 4 to 5 times the time of level 3. Levels 16 to 18 were not measured. `pack` uses 19 and `convert` uses 3 unless `--level` says another one.
+at a cost of 1.8 GiB of memory (one zstd context for each thread; the program uses fewer threads when the free memory does not hold one context for each: about 110 MiB per thread at level 19). Between levels 3 and 15 the packages shrink by 4 to 6% and the time grows by half; the big step is level 19 (the strategy and the 8 MiB window change there), 11.5% for ONLYOFFICE and 14% for Kdenlive, at 4 to 5 times the time of level 3. Levels 16 to 18 were not measured. `pack` uses 19 and `convert` uses 3 unless `--level` says another one.
 
 ## Update size
 

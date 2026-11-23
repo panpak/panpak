@@ -4255,6 +4255,41 @@ fn parse_level(v: Option<&String>) -> Result<i32> {
     }
 }
 
+/// What one compression thread holds at a level, in bytes: its zstd context and the batch share (measured: 16 threads peaked at 0.56 GiB at level 3, 0.7 at 9, 1.15 at 12, 1.5 at 15 and 1.8 at 19,
+/// all with the memory of the rest of the program in it). The numbers are a little above the measures.
+fn thread_cost(level: i32) -> u64 {
+    match level {
+        ..=9 => 48 << 20,
+        10..=15 => 112 << 20,
+        _ => 144 << 20,
+    }
+}
+
+/// How many threads compress: all the cores, fewer when the memory that is free does not hold a context for each (a person who publishes from a small machine must not end without memory).
+/// Half a GiB is left for the rest of the program and the system; at least one thread works.
+fn compression_threads(cores: usize, level: i32, available: Option<u64>) -> usize {
+    let Some(avail) = available else { return cores };
+    let room = avail.saturating_sub(512 << 20);
+    ((room / thread_cost(level)) as usize).clamp(1, cores)
+}
+
+/// The memory that this process can still use: what the system says is available, or less when the control group of the process has a limit (a scope, a container).
+fn available_memory() -> Option<u64> {
+    let kib = |s: &str, key: &str| -> Option<u64> { s.lines().find_map(|l| l.strip_prefix(key)).and_then(|r| r.trim().trim_end_matches("kB").trim().parse::<u64>().ok()).map(|k| k << 10) };
+    let sys = kib(&fs::read_to_string("/proc/meminfo").ok()?, "MemAvailable:");
+    let cg = fs::read_to_string("/proc/self/cgroup").ok().and_then(|c| {
+        let rel = c.lines().find_map(|l| l.strip_prefix("0::"))?.trim().to_string();
+        let dir = Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
+        let max = fs::read_to_string(dir.join("memory.max")).ok()?.trim().parse::<u64>().ok()?;
+        let cur = fs::read_to_string(dir.join("memory.current")).ok()?.trim().parse::<u64>().ok()?;
+        Some(max.saturating_sub(cur))
+    });
+    match (sys, cg) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
 /// One zstd context per thread; a batch of chunks is split between the threads and written in the order of the chunks.
 struct ChunkCompressor {
     encoders: Vec<panpak_core::ChunkEncoder>,
@@ -4262,7 +4297,8 @@ struct ChunkCompressor {
 
 impl ChunkCompressor {
     fn new(level: i32) -> Result<Self> {
-        let n = std::thread::available_parallelism().map_or(1, |n| n.get()).min(32);
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get()).min(32);
+        let n = compression_threads(cores, level, available_memory());
         let encoders = (0..n).map(|_| panpak_core::ChunkEncoder::new(level)).collect::<Result<Vec<_>>>()?;
         Ok(Self { encoders })
     }
@@ -5166,6 +5202,19 @@ fn real_main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_compression_threads_follow_the_free_memory() {
+        let gib = 1u64 << 30;
+        assert_eq!(compression_threads(16, 19, None), 16, "memory unknown: all the cores");
+        assert_eq!(compression_threads(16, 19, Some(64 * gib)), 16);
+        assert_eq!(compression_threads(16, 19, Some(4 * gib)), 16);
+        assert_eq!(compression_threads(16, 19, Some(gib)), 3);
+        assert_eq!(compression_threads(16, 19, Some(2 * gib)), 10, "2 GiB hold ten contexts of level 19");
+        assert_eq!(compression_threads(16, 19, Some(gib / 4)), 1, "never less than one");
+        assert_eq!(compression_threads(16, 3, Some(2 * gib)), 16, "level 3 is light");
+        assert_eq!(compression_threads(4, 19, Some(64 * gib)), 4);
+    }
+
     #[test]
     fn chunks_compressed_on_many_threads_are_written_as_one_thread_would_write_them() {
         let level = 3;
