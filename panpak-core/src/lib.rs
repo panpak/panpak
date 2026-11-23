@@ -15,6 +15,7 @@ pub mod chooserhost;
 pub mod docshare;
 pub mod filechooser;
 pub mod i18n;
+pub mod iconcache;
 pub mod applock;
 pub mod bgstate;
 pub mod config;
