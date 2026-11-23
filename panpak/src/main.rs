@@ -176,12 +176,30 @@ fn fetch_patches(
         return none;
     }
     let dir = staging.join("patches");
-    let wanted: Vec<panpak_core::Chunk> = plan.iter().map(|(_, p)| panpak_core::Chunk { hash: p.hash, off: p.off, comp: p.len, raw: 0 }).collect();
+    // A patch that is longer than one response (a chunk is never) is asked for in pieces and put together; the others go the way the chunks do.
+    const PIECE: u64 = 4 << 20;
+    let (large, small): (Vec<_>, Vec<_>) = plan.iter().partition(|(_, p)| p.len as u64 > PIECE);
+    let wanted: Vec<panpak_core::Chunk> = small.iter().map(|(_, p)| panpak_core::Chunk { hash: p.hash, off: p.off, comp: p.len, raw: 0 }).collect();
     let fetched = ranges::fetch_chunks(&dir, &wanted, u64::MAX, ranges::Policy::default(), &|start, end| Ok(http_range(agent, &purl, start, end - 1)?.0));
-    let Ok((_, bytes)) = fetched else {
+    let Ok((_, mut bytes)) = fetched else {
         let _ = fs::remove_dir_all(&dir);
         return none;
     };
+    for (_, p) in &large {
+        let file = dir.join(panpak_core::hex(&p.hash));
+        if fs::metadata(&file).is_ok_and(|m| m.len() == p.len as u64) {
+            continue;
+        }
+        let got = in_pieces(&|from, to| http_range(agent, &purl, from, to).map(|(b, _)| b), p.off, p.len as u64, PIECE);
+        let (ok, whole) = (got.is_some(), got.unwrap_or_default());
+        if ok {
+            bytes += whole.len() as u64;
+            let tmp = file.with_extension("part");
+            if fs::write(&tmp, &whole).and_then(|_| fs::rename(&tmp, &file)).is_err() {
+                let _ = fs::remove_file(&tmp);
+            }
+        }
+    }
     let mut used = std::collections::HashSet::new();
     for (i, p) in plan {
         let f = dir.join(panpak_core::hex(&p.hash));
@@ -195,6 +213,22 @@ fn fetch_patches(
         eprintln!("panpak: debug: patches: {} downloaded and checked, {} bytes came", used.len(), bytes);
     }
     (used, bytes)
+}
+
+/// The bytes `off..off+len` of a remote file, asked for in pieces of at most `piece` bytes (`get(first, last)` takes the first and the last byte, as an HTTP range does) and put
+/// together. `None` when a piece does not come, or comes short.
+fn in_pieces(get: &dyn Fn(u64, u64) -> Result<Vec<u8>>, off: u64, len: u64, piece: u64) -> Option<Vec<u8>> {
+    let mut whole: Vec<u8> = Vec::with_capacity(len as usize);
+    let (mut at, end) = (off, off + len);
+    while at < end {
+        let n = (end - at).min(piece);
+        match get(at, at + n - 1) {
+            Ok(b) if b.len() as u64 == n => whole.extend_from_slice(&b),
+            _ => return None,
+        }
+        at += n;
+    }
+    Some(whole)
 }
 
 /// The chunks that are not downloaded because a patch rebuilds the files that need them: the chunks of those files that no other file needs.
@@ -5825,6 +5859,19 @@ mod tests {
         let want = panpak_core::iconcache::build_from_files(&["48x48/apps/a.png".to_string(), "scalable/apps/a.svg".to_string()]).unwrap();
         assert_eq!(made.data.as_deref(), Some(want.as_slice()));
         assert!(paths.windows(2).all(|w| w[0] <= w[1]), "still sorted");
+    }
+
+    #[test]
+    fn a_patch_longer_than_one_response_is_asked_for_in_pieces_and_put_together() {
+        let data: Vec<u8> = (0..1000u32).map(|i| (i * 7) as u8).collect();
+        let get = |a: u64, b: u64| -> Result<Vec<u8>> { Ok(data[a as usize..=b as usize].to_vec()) };
+        assert_eq!(in_pieces(&get, 100, 650, 64).unwrap(), data[100..750].to_vec());
+        assert_eq!(in_pieces(&get, 0, 64, 64).unwrap(), data[..64].to_vec(), "exactly one piece");
+        // A piece that comes short, or not at all, gives nothing: the chunks are used.
+        let short = |a: u64, b: u64| -> Result<Vec<u8>> { Ok(data[a as usize..b as usize].to_vec()) };
+        assert!(in_pieces(&short, 0, 200, 64).is_none());
+        let err = |_: u64, _: u64| -> Result<Vec<u8>> { anyhow::bail!("down") };
+        assert!(in_pieces(&err, 0, 200, 64).is_none());
     }
 
     #[test]
