@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 pub const FILE: &str = "starts";
 /// The link to the record of the last version that worked.
 pub const LAST_GOOD: &str = "last_good";
+/// The file that the collection writes when it takes out a previous version that is below the floor of its author (`floor=<n>`): a rollback then says why there is none.
+pub const WITHDRAWN: &str = "withdrawn";
 /// The file whose presence says that the previous version is always kept (the setting of `panpak keep-previous`).
 pub const KEEP_PREVIOUS: &str = "keep_previous";
 /// A start that ends within this many seconds with a failure is a failed start; one that lasts longer is a good start.
@@ -139,6 +141,11 @@ pub fn read(appdir: &Path) -> State {
 
 pub fn write(appdir: &Path, s: &State) -> Result<()> {
     crate::durable::write_file(&appdir.join(FILE), s.text().as_bytes(), 0o644)
+}
+
+/// The floor that was in force when a previous version below it was taken out, if one was.
+pub fn withdrawn_floor(appdir: &Path) -> Option<u64> {
+    std::fs::read_to_string(appdir.join(WITHDRAWN)).ok()?.lines().find_map(|l| l.strip_prefix("floor=")?.trim().parse().ok())
 }
 
 /// Is the previous version always kept? (`panpak keep-previous`.)

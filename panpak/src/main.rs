@@ -839,6 +839,12 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
         Some(g) => (g, appdir.join(panpak_core::starts::LAST_GOOD)),
         None => (panpak_core::durable::resolve_link(&previous).context("missing previous: no update to roll back")?, previous.clone()),
     };
+    // The previous version was taken out because it is below the floor of its author: say that, not that a file is missing.
+    if fs::symlink_metadata(&prev_t).is_err() {
+        if let Some(floor) = panpak_core::starts::withdrawn_floor(&appdir) {
+            bail_code!(ErrorCode::E4003, "the previous version was withdrawn by the author (its revision is below the floor {floor} that the author set for this app) and is not kept: a rollback to it is refused");
+        }
+    }
     // The files of the version that comes back must still be there.
     let store = store_dir()?;
     let pft = {

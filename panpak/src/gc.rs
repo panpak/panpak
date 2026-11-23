@@ -197,7 +197,20 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
         for link in ["current", "previous", panpak_core::pending::LINK, panpak_core::starts::LAST_GOOD] {
             let path = appdir.join(link);
             let dropped = match link {
-                "previous" => proven_now && !panpak_core::starts::keeps_previous(&appdir),
+                "previous" => {
+                    // A previous version below the floor of its author is not kept (PANPAK-FORMAT.md section 6.10); the file `withdrawn` says why it is gone, so that
+                    // `panpak rollback` can tell the person that and not that a file is missing.
+                    let withdrawn = below_floor(&path);
+                    if !opts.dry_run {
+                        let mark = appdir.join(panpak_core::starts::WITHDRAWN);
+                        if withdrawn {
+                            let _ = panpak_core::durable::write_file(&mark, format!("floor={floor}\n").as_bytes(), 0o644);
+                        } else {
+                            let _ = fs::remove_file(&mark);
+                        }
+                    }
+                    withdrawn || (proven_now && !panpak_core::starts::keeps_previous(&appdir))
+                }
                 panpak_core::starts::LAST_GOOD => (pressure && good_rec != current_rec) || below_floor(&path),
                 _ => false,
             };
