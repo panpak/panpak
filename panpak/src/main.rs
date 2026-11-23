@@ -1661,7 +1661,9 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
         eprintln!("panpak: WARNING: [desktop] wm_class is not set: the task bar may not show the icon of the app (set it to the window class or application id the app uses; `panpak build` takes it from the recipe)");
     }
 
-    // An icon theme folder without its cache makes Qt look up each icon file by file at the start (tens of thousands of failed lookups).
+    // An icon theme folder without its cache makes Qt look up each icon file by file at the start (tens of thousands of failed lookups): the cache is made here,
+    // by panpak itself (`panpak_core::iconcache`, the same bytes as `gtk-update-icon-cache -f -t -i`), for every theme that has none. Nobody has to run a tool.
+    add_icon_caches(&mut payload);
     for note in icon_theme_notes(payload.iter().map(|p| p.entry.path.as_path())) {
         eprintln!("panpak: WARNING: {note}");
     }
@@ -4193,6 +4195,99 @@ fn disk_free(p: &Path) -> Option<u64> {
     }
 }
 
+/// Make the `icon-theme.cache` of every icon theme of the payload (`share/icons/<theme>/`, anywhere below the root, as `icon_theme_notes` finds them) that has icons and
+/// no cache. A link to a file of the same theme counts as that file, as it does for the tool. A theme that the validator of GTK refuses is left alone (the note says so).
+fn add_icon_caches(payload: &mut Vec<PayloadEntry>) {
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    let mut themes: BTreeMap<PathBuf, ()> = BTreeMap::new();
+    let mut cached: BTreeSet<PathBuf> = BTreeSet::new();
+    for p in payload.iter() {
+        let parts: Vec<&std::ffi::OsStr> = p.entry.path.iter().collect();
+        let Some(i) = parts.windows(2).position(|w| w[0] == "share" && w[1] == "icons") else { continue };
+        if parts.len() < i + 4 {
+            continue;
+        }
+        let theme: PathBuf = parts[..i + 3].iter().collect();
+        if parts.len() == i + 4 && parts[i + 3] == "icon-theme.cache" {
+            cached.insert(theme.clone());
+        }
+        themes.insert(theme, ());
+    }
+    let index: HashMap<&Path, usize> = payload.iter().enumerate().map(|(i, p)| (p.entry.path.as_path(), i)).collect();
+    let resolve = |from: &Path, target: &Path| -> Option<PathBuf> {
+        let mut out: Vec<std::ffi::OsString> = from.parent()?.iter().map(|c| c.to_os_string()).collect();
+        for c in target.components() {
+            match c {
+                std::path::Component::Normal(n) => out.push(n.to_os_string()),
+                std::path::Component::ParentDir => {
+                    out.pop()?;
+                }
+                _ => return None,
+            }
+        }
+        Some(out.iter().collect())
+    };
+    let mut new: Vec<PayloadEntry> = Vec::new();
+    for theme in themes.keys().filter(|t| !cached.contains(*t)) {
+        let mut files: Vec<String> = Vec::new();
+        for p in payload.iter().filter(|p| p.entry.path.starts_with(theme)) {
+            let is_file = match &p.entry.kind {
+                Kind::File { .. } => true,
+                Kind::Link(t) => {
+                    // A link is a file of the theme when, followed within the payload, it ends at a file.
+                    let mut cur = p.entry.path.clone();
+                    let mut target = t.clone();
+                    let mut ok = false;
+                    for _ in 0..8 {
+                        let Some(next) = resolve(&cur, Path::new(&target)) else { break };
+                        match index.get(next.as_path()).map(|&i| &payload[i].entry.kind) {
+                            Some(Kind::File { .. }) => {
+                                ok = true;
+                                break;
+                            }
+                            Some(Kind::Link(t2)) => {
+                                cur = next;
+                                target = t2.clone();
+                            }
+                            _ => break,
+                        }
+                    }
+                    ok
+                }
+                Kind::Dir => false,
+            };
+            if let (true, Ok(rel)) = (is_file, p.entry.path.strip_prefix(theme)) {
+                if let Some(s) = rel.to_str() {
+                    files.push(s.to_string());
+                }
+            }
+        }
+        let mut read = |rel: &str| -> Option<Vec<u8>> {
+            let &i = index.get(theme.join(rel).as_path())?;
+            let p = &payload[i];
+            match (&p.data, &p.source) {
+                (Some(d), _) => Some(d.clone()),
+                (None, Some(s)) => fs::read(s).ok(),
+                _ => None,
+            }
+        };
+        match panpak_core::iconcache::build_from_files_with(&files, &mut read) {
+            Ok(bytes) if !bytes.is_empty() => new.push(PayloadEntry {
+                entry: Entry { path: theme.join("icon-theme.cache"), mode: 0o644, kind: Kind::File { chunks: Vec::new() }, info: Default::default() },
+                source: None,
+                embedded: None,
+                data: Some(bytes),
+            }),
+            Ok(_) => {}
+            Err(e) => eprintln!("panpak: note: no icon-theme.cache for {}: {e:#}", theme.display()),
+        }
+    }
+    if !new.is_empty() {
+        payload.extend(new);
+        payload.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
+    }
+}
+
 /// The icon themes of a tree (`share/icons/<theme>/` with icons below) that have no `icon-theme.cache`. Qt that finds such a folder looks each icon up
 /// file by file (measured: 49,000 failed lookups at the start of qBittorrent, 0.1 s); `gtk-update-icon-cache -f -t -i <theme>` makes the cache.
 fn icon_theme_notes<'a>(paths: impl Iterator<Item = &'a Path>) -> Vec<String> {
@@ -5323,6 +5418,26 @@ mod tests {
         assert!(!check_host(&man("2.1"), false).unwrap());
         let none: panpak_core::Manifest = toml::from_str("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n").unwrap();
         assert!(!check_host(&none, false).unwrap());
+    }
+
+    #[test]
+    fn pack_makes_the_icon_cache_of_a_theme_that_has_none_and_leaves_one_that_is_there() {
+        let file = |p: &str| PayloadEntry { entry: Entry { path: PathBuf::from(p), mode: 0o644, kind: Kind::File { chunks: Vec::new() }, info: Default::default() }, source: None, embedded: None, data: Some(vec![1]) };
+        let mut payload = vec![
+            file("share/icons/hicolor/48x48/apps/a.png"),
+            file("share/icons/hicolor/scalable/apps/a.svg"),
+            file("share/icons/mine/16x16/b.png"),
+            file("share/icons/mine/icon-theme.cache"),
+            file("bin/app"),
+        ];
+        add_icon_caches(&mut payload);
+        let paths: Vec<String> = payload.iter().map(|p| p.entry.path.display().to_string()).collect();
+        assert!(paths.contains(&"share/icons/hicolor/icon-theme.cache".to_string()), "{paths:?}");
+        assert_eq!(paths.iter().filter(|p| p.ends_with("mine/icon-theme.cache")).count(), 1, "a cache that is there stays alone");
+        let made = payload.iter().find(|p| p.entry.path.ends_with("hicolor/icon-theme.cache")).unwrap();
+        let want = panpak_core::iconcache::build_from_files(&["48x48/apps/a.png".to_string(), "scalable/apps/a.svg".to_string()]).unwrap();
+        assert_eq!(made.data.as_deref(), Some(want.as_slice()));
+        assert!(paths.windows(2).all(|w| w[0] <= w[1]), "still sorted");
     }
 
     #[test]

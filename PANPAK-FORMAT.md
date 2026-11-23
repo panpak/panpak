@@ -944,6 +944,10 @@ duplicates, but still verifies them one by one). Overlapping chunk
 ranges are structurally allowed, but every chunk MUST be verified
 independently (§5 point 5).
 
+**Caches that the writer makes.** `panpak pack` writes the file `icon-theme.cache` into every icon theme folder (`share/icons/<theme>/`) that has icons and none, in the format that
+GTK 3 and Qt read (the bytes `gtk-update-icon-cache -f -t -i` writes: no image data, the index of the theme ignored). The file is data of the package like any other (it is in the index, chunked and hashed), and
+the reader gives it the time of §6.9 so that GTK and Qt keep it. A Reader does not need to know of it.
+
 **The compression level is not part of the identity of the content.** The hash of a chunk is the BLAKE3 of its raw bytes (§5 point 5), and the name of a file in the store
 is made of those hashes (§6), so the same file compressed at another level has the same chunks and the same name in the store: an update between a package made at one level and a package
 made at another fetches only the chunks that really differ, and a store never holds a file twice because of the level. Only the bytes of the package (the index, with the sizes and offsets of the compressed
