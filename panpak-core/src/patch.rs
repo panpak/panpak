@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Patches: a file of the new version written as a zstd frame that uses the same file of the previous version as its dictionary (PANPAK-FORMAT.md §4.1).
 //!
 //! The index of the new version signs the hash of the patch, the hash of the file it starts from and the place of the patch in the patches file, so the
