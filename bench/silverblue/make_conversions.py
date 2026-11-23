@@ -24,6 +24,12 @@ ROOT = HERE.parents[1]
 # (the Wayland app id or the X11 class, read from a real start: the `first-frame` lines of the window extension); the desktop groups the windows under the entry of the menu and shows its icon by it, and the
 # one in the desktop file of an AppImage is often not it (GIMP's names `org.gimp.GIMP.Stable`, its windows are `gimp`). The entry is given when the AppImage names a link as its program
 # (GIMP: its AppRun sets the environment that the program needs (GIO_MODULE_DIR for TLS, the pixbuf loaders, the typelibs, the bundled loader for its plug-ins), so it is the entry: the program started by itself loses all of it).
+# Text that the conversion adds at the end of a file of the program (`convert --append <path in the tree>=<file>`): GIMP's system gimprc, where its check for updates is turned off
+# (the updates come from Panpak, so the program does not ask a server of its own). The user's own gimprc is read after it and can say otherwise.
+APPENDS = {
+    'gimp': [('usr/etc/gimp/3.0/gimprc', 'conversions/gimp-gimprc.append')],
+}
+
 APPS = {
     'gimp': ('org.gimp.GIMP', 'GIMP', 'conversions/gimp.toml', [
         ('3.2.6', 'GIMP-3.2.6-x86_64.AppImage', '79ea41bc9b06f78fda181849a9ca8e42d83f1124dedb756f4d52352e2465010f'),
@@ -75,6 +81,8 @@ def main():
                    '--update-url', f'{a.update_url_base.rstrip("/")}/{app_id}.panpak', '-o', dest]
             if entry:
                 cmd += ['--entry', entry]
+            for path_in_tree, text_file in APPENDS.get(name, []):
+                cmd += ['--append', f'{path_in_tree}={HERE / text_file}']
             if previous:
                 cmd += ['--previous', previous]
             p = subprocess.run([str(c) for c in cmd], env=env, capture_output=True, text=True)
@@ -82,7 +90,7 @@ def main():
             if p.returncode != 0:
                 sys.exit(p.stdout + p.stderr)
             for line in (p.stdout + p.stderr).splitlines():
-                if 'WARNING' in line or 'note:' in line:
+                if 'WARNING' in line or 'note:' in line or 'appended' in line:
                     print('   ', line)
             previous = dest
     print('done: conversions made by us from the AppImages of the authors, signed with the key of the converter')

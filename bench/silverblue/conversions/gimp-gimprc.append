@@ -1,0 +1,2 @@
+# The check for updates is off: the updates of this app come from Panpak.
+(check-updates no)
