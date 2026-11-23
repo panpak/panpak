@@ -41,6 +41,55 @@ libraries that the AppImage does not carry; since `pack` works out which librari
 
 ## Time and space of an update, with every file a blob of the store
 
+Measured on 2026-11-22 on the development host (an external SSD, Samsung T7 over USB, LUKS, ext4; kernel 7.0.0-43-generic, 16 threads, 14 GiB), release build (glibc, `cargo build --release`), in an isolated home for each run.
+The update is `panpak install --yes --expect-key <key>` of the next version of the official AppImage conversion over the previous one (Kdenlive 26.08.3 over its previous version, ONLYOFFICE 9 over its previous one), from a file,
+so the time has no network in it. "Before" is the program of main at `a41b95e`, in which a file of more than 8 MiB was written in place in the tree and was not shared; "after" writes every file as a blob. Three runs of each, taken one
+after the other and alternating before and after; the median is shown, with the lowest and the highest in brackets. The peak memory is that of the program and its children.
+The page cache was not emptied (no root here), so a cold disk would show longer times for both. These runs were made before discard (TRIM) reached the external SSD (Samsung T7 over USB, LUKS, ext4): the writing of the tree was slow, and they are to be measured again.
+
+| App | | Time of the update | Space added to the store | Peak memory |
+|---|---|---|---|---|
+| Kdenlive | before | 22.3 s (21.8 to 25.6) | 518 MiB | 84 MiB |
+| Kdenlive | after | 18.8 s (18.4 to 20.1) | 518 MiB | 56 MiB |
+| ONLYOFFICE | before | 28.1 s (26.8 to 31.5) | 738 MiB | 77 MiB |
+| ONLYOFFICE | after | 22.0 s (20.9 to 22.5) | **588 MiB** | 45 MiB |
+
+ONLYOFFICE has 10 files of more than 8 MiB that are the same in both versions (150 MiB, in `dump-index`: same path, same chunks); they are now one file on the disk, linked in both trees, and the space that the update adds is 150 MiB less.
+Kdenlive has none (its 7 large files all change), so the space is the same and the control shows that the new way does not make it worse. The time is lower in both: the first run of the new code (3 runs, before the blob check was made faster) had
+the same space and a time of 20.3 s and 24.6 s. The memory is lower because a large file is no longer held whole while it is made.
+
+**What it costs to check every blob that is reused.** A tree whose 11,936 files (1.2 GB) are all in the store already, made again with `panpak repair --from` (no byte written, every blob read and hashed against the signed index, 8 threads):
+the files take 1.1 s with the files in the page cache and 3.6 s the first time after they were written, and the whole command 3.1 to 6.7 s. Reading each chunk of a blob with one call, instead of the few small reads that
+`read_to_end` on a `take` makes, took the same step from 12.2 s down to 1.1 s (warm) or 3.6 s (first time). This is the cost that `install` has now for a blob that it finds in the store (before, it linked it without reading it); the VM (btrfs) and a cold cache are not measured yet.
+
+## Requests of an update: neighbours in one request, six at once
+
+Measured on 2026-11-23 on the development host (an external SSD, Samsung T7 over USB, LUKS, ext4, with discard (TRIM) passing to the SSD; kernel 7.0.0-43-generic, 16 threads, 14 GiB), release build (glibc), in an isolated home for each run.
+The update is `panpak update --yes <app id>` of the next version of the official AppImage conversion over the installed previous one (Kdenlive 26.08.3, ONLYOFFICE 10.0.0 over 9.4.0), from a Python server on the host (HTTPS, a test
+authority, `tests/range_server.py` with a delay before every answer, on the address of the virtual network, 192.168.122.1). The delay is 0 ms or 60 ms (a network with a latency of 60 ms for each request; the server answers many
+requests at once). "Before" is main at `066bcb5` (one request at a time, only neighbours that touch each other in one request); "after" is this change. Three runs of each, alternating before and after; the median, with the lowest
+and the highest in brackets. The time is the whole `update` (the download and the making of the tree). The peak memory is that of the program and its children. The requests are counted by the server, with the three that read the footer,
+the manifest and the signature and the index.
+
+| App | Delay | | Time of the update | Requests | Bytes that came | Peak memory |
+|---|---|---|---|---|---|---|
+| Kdenlive | 0 ms | before | 42.5 s (42.0 to 52.0) | 1,057 | 127.3 MB | 67 MiB |
+| Kdenlive | 0 ms | after | **5.2 s** (5.1 to 14.5) | 560 | 130.0 MB (+2.1%) | 126 MiB |
+| Kdenlive | 60 ms | before | 105.5 s (104.9 to 105.8) | 1,057 | 127.3 MB | 67 MiB |
+| Kdenlive | 60 ms | after | **10.8 s** (10.7 to 10.9) | 560 | 130.0 MB | 100 MiB |
+| ONLYOFFICE | 0 ms | before | 15.5 s (14.4 to 22.4) | 349 | 128.3 MB | 55 MiB |
+| ONLYOFFICE | 0 ms | after | **5.2 s** (2.9 to 11.7) | 224 | 129.2 MB (+0.7%) | 131 MiB |
+| ONLYOFFICE | 60 ms | before | 34.8 s (34.5 to 35.0) | 349 | 128.3 MB | 55 MiB |
+| ONLYOFFICE | 60 ms | after | **5.3 s** (5.2 to 5.3) | 224 | 129.2 MB | 123 MiB |
+
+The bytes in between that are fetched and dropped are +2.1% for Kdenlive and +0.7% for ONLYOFFICE, as the simulation on the indexes had said (547 and 205 requests for a gap of 16 KiB; the counts here are 13 and 19 higher because of
+the requests for the footer, the manifest, the signature and the index). The peak memory is higher: up to six responses of at most 4 MiB are held at once, and a part of the answers is held while the tree is made. The widest
+ranges are the first run of each group (the files of the package were not yet in the page cache of the server). An earlier series of the same runs, made on the same disk before discard reached the SSD, took 64.4 s and 24.2 s
+(Kdenlive, 0 ms), 124.8 s and 30.9 s (Kdenlive, 60 ms), 41.0 s and 25.1 s (ONLYOFFICE, 0 ms), 59.2 s and 31.0 s (ONLYOFFICE, 60 ms) for before and after: the writing of the tree was then slow, which the numbers above no longer
+include. Not measured: a real network (not a local server), a server that limits the connections, a cold disk, and the virtual machine (btrfs).
+
+## Time and space of an update, with every file a blob of the store
+
 Measured on 2026-11-22 on the development host (kernel 7.0.0-43-generic, ext4 on an SSD, 16 threads, 14 GiB), release build (glibc, `cargo build --release`), in an isolated home for each run.
 The update is `panpak install --yes --expect-key <key>` of the next version of the official AppImage conversion over the previous one (Kdenlive 26.08.3 over its previous version, ONLYOFFICE 9 over its previous one), from a file,
 so the time has no network in it. "Before" is the program of main at `a41b95e`, in which a file of more than 8 MiB was written in place in the tree and was not shared; "after" writes every file as a blob. Three runs of each, taken one
