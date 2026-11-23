@@ -15,6 +15,7 @@ pub mod chooserhost;
 pub mod docshare;
 pub mod filechooser;
 pub mod i18n;
+pub mod iconcache;
 pub mod applock;
 pub mod bgstate;
 pub mod config;
@@ -39,6 +40,7 @@ pub mod safefs;
 pub mod seccomp;
 pub mod cachewipe;
 pub mod stalelocks;
+pub mod starts;
 pub mod unitname;
 pub mod wayland;
 mod userdirs;
@@ -2133,6 +2135,19 @@ mod tests {
         let t = std::time::Instant::now();
         let m2 = crate::abi::bundled_libs(&tree);
         eprintln!("second time: {:?}, {} names", t.elapsed(), m2.len());
+    }
+
+    /// The runner of cargo (`scripts/test-runner.sh`) takes the desktop out of the environment of every test: this fails when it does not run (a test run by hand
+    /// with another runner would otherwise reach the display and the session bus of the person at the keyboard).
+    #[test]
+    fn tests_run_without_the_desktop_of_the_person() {
+        for v in ["DISPLAY", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "XAUTHORITY"] {
+            assert!(std::env::var_os(v).is_none(), "{v} is set in a test: the runner of cargo (scripts/test-runner.sh) did not run");
+        }
+        let bus = std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_default();
+        assert!(bus.contains("/nonexistent/") || std::env::var_os("PANPAK_CANARY_BUS").is_some(), "the session bus of a test leads to {bus:?}");
+        let rt = std::env::var("XDG_RUNTIME_DIR").unwrap_or_default();
+        assert!(!rt.is_empty() && !rt.starts_with("/run/user/"), "XDG_RUNTIME_DIR of a test is {rt:?}");
     }
 
     #[test]

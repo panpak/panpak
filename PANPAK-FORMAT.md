@@ -973,6 +973,9 @@ have enough free memory (twice the two files together, and a margin); (3) downlo
 decompressor; (4) decompress with the file of (1) as the dictionary, a window limit of 2^28 and an output limit of the size that the index gives for the file, and refuse a frame that
 ends before or after that size or has bytes after it; (5) check the result against the chunks of the index like any file (§5 point 5). A Reader that finds any of this wrong MUST fall
 back to the chunks of the file. So only bytes with a signed hash reach the decompressor, and a patch cannot make a file that the index does not describe.
+**Caches that the writer makes.** `panpak pack` writes the file `icon-theme.cache` into every icon theme folder (`share/icons/<theme>/`) that has icons and none, in the format that
+GTK 3 and Qt read (the bytes `gtk-update-icon-cache -f -t -i` writes: no image data, the index of the theme ignored). The file is data of the package like any other (it is in the index, chunked and hashed), and
+the reader gives it the time of §6.9 so that GTK and Qt keep it. A Reader does not need to know of it.
 
 **The compression level is not part of the identity of the content.** The hash of a chunk is the BLAKE3 of its raw bytes (§5 point 5), and the name of a file in the store
 is made of those hashes (§6), so the same file compressed at another level has the same chunks and the same name in the store: an update between a package made at one level and a package
@@ -1214,6 +1217,27 @@ The cache folder of an app (the `XDG_CACHE_HOME` of the app, `$XDG_CACHE_HOME/pa
 - `panpak update`, `panpak repair` and `panpak rollback` empty the cache folder of the app when they have changed the installed version, unless a copy of the app is running (the lock of the copies, §6.4), in which case they leave it;
 - the first copy that starts alone (no other copy runs) compares the file `.panpak-cache-of` of the cache folder with the root hash of the tree that it starts; when it is another one, or the file is not there, it empties the folder and writes the file. This covers a copy that was running when the command ran, and a tree that came by any other way;
 - never emptied: `tmp` (the app's `TMPDIR`, which the runtime empties by its own rule, §9.4) and `.panpak-cache-of`. A link in the folder is removed itself and never followed. The data of the app (`data`, `config`, `state`, the folders that the user granted) are never touched.
+
+### 6.10 Kept versions and the outcome of starts [NORMATIVE for what is kept and when a person is asked; the mechanism is INFORMATIVE]
+
+A client keeps, for an installed app, the installed version, a staged version, and the *last good* version: the last version that worked, named by the link `apps/<id>/last_good`
+(the record, as `current` names one). The previous version (`previous`) is kept until the installed version has worked, and always when the person asked (the file
+`apps/<id>/keep_previous`, made by `panpak keep-previous`). A rollback goes to the last good version when there is one that is not the installed version, else to the previous one;
+it is refused for a version below the floor (§3.1.10). A client MUST NOT keep a previous or last good version that is below the floor; the collection takes it out and leaves a note (`apps/<id>/withdrawn`, `floor=<n>`), and a rollback when there is no version to go back to because of it MUST say that the author withdrew it (`PANPAK-E4003`), not that a file is missing. With free space under 2 GiB or under 5 percent the collection (§6.8) drops the last good version first (never
+the installed or staged one).
+
+*The outcome of a start.* The process that holds the app counts how each start ended, in `apps/<id>/starts` (lines `root=<hex>`, `good=<n>`, `failed=<n>`; the counters are of the
+version `root`, and a start of another version begins them again). A start is **good** when the app ran for 20 s or more and did not end by a signal that the person or the
+system sent; **failed** when it ended within 20 s with a non-zero status or a fatal signal of the program (SEGV, ABRT, BUS, ILL, FPE, SYS and the like); and counts **neither way**
+when it ended within 20 s with status 0 (a program that hands over to a copy that runs), by SIGKILL, by a stop signal that the client passed on (the end of the session, a window
+closed), or when the arguments were `--version` or `--help`. A good start sets `failed` to 0. After 3 good starts the version is *proven*: it becomes the last good version. After 2
+failed starts in a row a client MUST ask the person, in a window, whether to go back to the last good version, when there is one and it is not the installed one; it MUST NOT go back by itself.
+The question says the name of the app (not its id), the two versions, and that the documents stay as they are; the answers are "Go back to <version>" and "Try again". The line of
+`panpak rollback` says that the documents are not touched and that settings changed by the newer version may not work in the older one: a client cannot undo a migration of the
+data of the app, and it does not pretend to.
+
+*Privacy.* The outcomes never leave the computer: they are a few numbers in a file of the store, read by the client and the runtime, and no client sends them anywhere. The file
+is not trusted for anything but this question: a damaged or edited file can make the question appear or not appear, and it changes no version.
 
 ## 7. ABI resolution (`[abi]`) [NORMATIVE]
 

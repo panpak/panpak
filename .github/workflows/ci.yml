@@ -197,6 +197,9 @@ jobs:
       - name: Protected mode, the way it is shown (the notification and its button, the windows, the questions of the terminal; fakes of the tools and the service)
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/protected_ui.py
+      - name: Kept versions (three good starts, two failed ones ask, the rollback goes to the version that worked; debug build, a stand-in window tool)
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/kept_versions.py
       - name: The tests that cannot run on this runner (named, never silent)
         timeout-minutes: 3
         run: |
@@ -656,7 +659,8 @@ jobs:
             cargo install cargo-fuzz --locked --version 0.13.2
           fi
       - name: Fuzz smoke
-        timeout-minutes: 5
+        # The weekly run fuzzes for 300 s (FUZZ_SECONDS) and the step builds the target first: 5 minutes cut it off (the run of 2026-11-23). tests/ci-workflow-test.py checks it.
+        timeout-minutes: 12
         run: |
           cd fuzz
           cargo "+$FUZZ_NIGHTLY" fuzz run "${{ matrix.target }}" -- -max_total_time="$FUZZ_SECONDS" -print_final_stats=1

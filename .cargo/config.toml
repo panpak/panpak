@@ -13,3 +13,7 @@ AR_x86_64_unknown_linux_musl = { value = "scripts/zig-ar", relative = true }
 [target.x86_64-unknown-linux-musl]
 linker = "scripts/zig-cc"
 rustflags = ["-C", "link-self-contained=no"]
+
+# Test binaries run without the desktop of the person at the keyboard (see CONTRIBUTING.md): the runner takes the display and the session bus out of their environment.
+[target.'cfg(unix)']
+runner = ["scripts/test-runner.sh"]

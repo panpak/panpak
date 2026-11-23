@@ -21,6 +21,7 @@ file they create or delete MUST stay inside their own work directory:
   panpak. Scripts that start Joplin again on the same profile MUST remove
   that file first.
 """
+import atexit
 import os
 import pwd
 import shutil
@@ -47,6 +48,23 @@ def skip(reason):
     print(f'SKIP: {reason}')
     sys.exit(0)
 
+
+def _leave_the_desktop():
+    """Done when this module is imported, so every test script does it before it starts anything: the display, the Wayland socket, the session bus and the runtime
+    folder of the person at the keyboard are not in the environment of the test or of what it starts. The runner (`tests/with_timeout.py`) has done it already, and puts
+    a canary bus in place; a script that is run by hand gets an address that leads nowhere and a runtime folder of its own (empty, mode 0700, left for the system to clear).
+    A test that needs a display, a bus or a runtime folder makes its own and puts it in the environment it hands to the program."""
+    for name in ('DISPLAY', 'WAYLAND_DISPLAY', 'WAYLAND_SOCKET', 'XAUTHORITY'):
+        os.environ.pop(name, None)
+    if os.environ.get('PANPAK_CANARY_BUS') == '1':
+        return
+    os.environ['DBUS_SESSION_BUS_ADDRESS'] = 'unix:path=/nonexistent/panpak-test-no-bus'
+    os.environ['XDG_RUNTIME_DIR'] = tempfile.mkdtemp(prefix='panpak-test-run-')
+    os.chmod(os.environ['XDG_RUNTIME_DIR'], 0o700)
+    atexit.register(lambda d=os.environ['XDG_RUNTIME_DIR']: shutil.rmtree(d, ignore_errors=True))
+
+
+_leave_the_desktop()
 
 OVERRIDE = 'PANPAK_ALLOW_REAL_HOME'
 OWNED_MARK = '.panpak-test-owned'

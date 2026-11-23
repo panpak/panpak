@@ -668,7 +668,7 @@ What the build found while it was being written (all fixed): the peak memory in 
 Qt looked up each icon file by file, as it did for the user's `hicolor` in step 7b, because the folder `share/icons/hicolor` of the package has no `icon-theme.cache`
 (and no `index.theme`). **49,282 failed lookups** were under that folder alone. Two things were needed, not one:
 
-1. `collect` makes `icon-theme.cache` for every icon theme folder of the tree (`gtk-update-icon-cache -f -t -i`, run in the image after the icons are in place; `-t` because the tree has no `index.theme`, `-i` for no image data). The bytes of the cache do not
+1. `pack` (so `build` and `convert` too) makes `icon-theme.cache` for every icon theme folder that has none, in Rust (`panpak_core::iconcache`, the same bytes as `gtk-update-icon-cache -f -t -i`, which a test compares on real and generated themes; `-t` because the tree has no `index.theme`, `-i` for no image data). Nobody runs a tool. The bytes of the cache do not
    depend on the modification times of the folders (checked with two different sets of times), so the package stays reproducible (each recipe built twice: identical). The image gets `gtk-update-icon-cache` as a base tool.
 2. A cache that is **older than its folder is ignored** by Qt. The store made each entry with the time of its creation, and a folder gets a new time whenever an entry is created in it: `icon-theme.cache` sorts before `scalable`, so the cache was
    0.4 ms older than `hicolor` and Qt opened it and then ignored it (the strace shows the open and the 49,000 failed lookups after it). The store now gives every folder and link of a tree 2000-01-01T00:00:00Z and every file a time from that date on that is made from its content

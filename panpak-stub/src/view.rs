@@ -487,14 +487,24 @@ extern "C" fn forward_signal(sig: libc::c_int) {
     }
 }
 
+/// How the app ended: its status, whether a stop signal was passed on by this process, and how long it ran.
+#[derive(Debug, Clone, Copy)]
+pub struct EndInfo {
+    pub code: Option<i32>,
+    pub signal: Option<i32>,
+    pub forwarded: bool,
+    pub secs: f64,
+}
+
 /// Run `bwrap` as a child and stay until it ends, so that `keep` (the opener server) lives as long
 /// as the app. Termination signals go on to `bwrap`; its exit status becomes ours. `ended` is called with
-/// `keep` and whether the end was normal (exit status 0, or a signal that this process passed on) before
+/// `keep`, whether the end was normal (exit status 0, or a signal that this process passed on) and how it ended, before
 /// `keep` is dropped. Returns only on error.
-pub fn run_bwrap<K>(plan: &ViewPlan, keep: K, ended: impl FnOnce(&K, bool)) -> Result<std::convert::Infallible> {
+pub fn run_bwrap<K>(plan: &ViewPlan, keep: K, ended: impl FnOnce(&K, bool, EndInfo)) -> Result<std::convert::Infallible> {
     use std::os::unix::process::ExitStatusExt;
     let args = bwrap_args(plan);
     ensure!(args.iter().all(|a| !a.as_bytes().contains(&0)), "NUL in a bubblewrap argument");
+    let began = std::time::Instant::now();
     let mut child = Command::new(panpak_core::BWRAP).args(&args).spawn().with_context(|| format!("cannot run {}", panpak_core::BWRAP))?;
     CHILD.store(child.id() as i32, std::sync::atomic::Ordering::Relaxed);
     if let Some(app) = &plan.watch_tmp {
@@ -506,7 +516,8 @@ pub fn run_bwrap<K>(plan: &ViewPlan, keep: K, ended: impl FnOnce(&K, bool)) -> R
     }
     let status = child.wait()?;
     let forwarded = FORWARDED.load(std::sync::atomic::Ordering::Relaxed);
-    ended(&keep, status.code() == Some(0) || (forwarded && status.signal().is_some()));
+    let info = EndInfo { code: status.code(), signal: status.signal(), forwarded, secs: began.elapsed().as_secs_f64() };
+    ended(&keep, status.code() == Some(0) || (forwarded && status.signal().is_some()), info);
     drop(keep);
     std::process::exit(status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
 }

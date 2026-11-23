@@ -154,6 +154,13 @@ panpak sbom --export pkg.panpak    # the same, completed with the name, id and v
 `panpak sbom` also takes an app id (the installed one) or an https address (only the parts of the package that hold the SBOM are downloaded).
 A rollback to a version below the floor that the author set is refused. A rollback does not undo what the newer version did to the data of the app.
 
+## Kept versions: going back
+
+An app that fails to start twice in a row after an update opens a window ("<app> doesn't start") that offers to go back to the last version that worked, or to try again. A version
+is the one that worked after three good starts (each lasting 20 seconds or more). `panpak rollback <app-id>` does the same by hand. Your documents stay as they are; the settings
+that the newer version changed may not work in the older one, so copy anything important first. `panpak keep-previous <app-id>` keeps the previous version always (`--off` undoes it);
+by default it is kept until the installed one has worked. How the starts went never leaves your computer.
+
 ## Open files (double click and `panpak open`)
 
 ```sh

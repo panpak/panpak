@@ -37,7 +37,7 @@ use std::{
 fn usage() -> &'static str {
     "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [--level <1-22>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [--permissions <file.toml>] [--wm-class <window class>] [--append <path in the tree>=<file>] [--update-url <url>] [--previous <package>] [--level <1-22>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak sbom [--export] <package | app id | https URL> [--allow-insecure-http] [--timeout <s>]   (the software bill of materials of a package, CycloneDX 1.6 JSON; --export completes it with the name, id and version, a serial number and the time, for a scanner; from a URL only the parts of the package that hold it are downloaded)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
-  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--show-key] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the domain of the author confirms the key, or the key the author published, or the key of the file; --yes alone does not, unless the domain confirms)\n  panpak update [--stage] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file|trust.confirm_domain> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
+  panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--show-key] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the domain of the author confirms the key, or the key the author published, or the key of the file; --yes alone does not, unless the domain confirms)\n  panpak update [--stage] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file|trust.confirm_domain> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>   (back to the last version that worked; else to the previous one)\n  panpak keep-previous [--off] <app-id>   (always keep the previous version, not only until the current one has worked)\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
   panpak open <app-id> [file] [--read-only | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
@@ -918,7 +918,20 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     let current = appdir.join("current");
     let previous = appdir.join("previous");
     let cur_t = panpak_core::durable::resolve_link(&current).context("missing current")?;
-    let prev_t = panpak_core::durable::resolve_link(&previous).context("missing previous: no update to roll back")?;
+    // The version that came before and worked (`last_good`, PANPAK-FORMAT.md section 6.10) comes back when there is one that is not the installed one; else the
+    // previous version, as before.
+    let good = panpak_core::starts::last_good(&appdir).filter(|g| g != &cur_t && fs::symlink_metadata(g).is_ok());
+    // The link that names it: the identity of the record is checked through that link (it must be a record of this app).
+    let (prev_t, via) = match good {
+        Some(g) => (g, appdir.join(panpak_core::starts::LAST_GOOD)),
+        None => (panpak_core::durable::resolve_link(&previous).context("missing previous: no update to roll back")?, previous.clone()),
+    };
+    // The previous version was taken out because it is below the floor of its author: say that, not that a file is missing.
+    if fs::symlink_metadata(&prev_t).is_err() {
+        if let Some(floor) = panpak_core::starts::withdrawn_floor(&appdir) {
+            bail_code!(ErrorCode::E4003, "the previous version was withdrawn by the author (its revision is below the floor {floor} that the author set for this app) and is not kept: a rollback to it is refused");
+        }
+    }
     // The files of the version that comes back must still be there.
     let store = store_dir()?;
     let pft = {
@@ -931,10 +944,11 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
         panpak_core::release::check_rollback(panpak_core::release::seen_floor(&appdir).max(installed_floor), prev_rev)?;
         // `previous` must be a record of this app, as the start asks of `current` (PP-01): otherwise the swap would leave the app with a record that it cannot start.
         if is_record {
-            panpak_core::record::check_identity(&previous, &pman_for_floor.app.id, &pman_for_floor.app.version, &panpak_core::hex(&pft.root))?;
+            panpak_core::record::check_identity(&via, &pman_for_floor.app.id, &pman_for_floor.app.version, &panpak_core::hex(&pft.root))?;
         }
-        pft
+        (pft, pman_for_floor.app.name.clone(), pman_for_floor.app.version.clone())
     };
+    let (pft, back_name, back_version) = pft;
     ensure_code!(
         store.join("trees").join(panpak_core::hex(&pft.root)).join(".complete").exists(),
         ErrorCode::E2007,
@@ -948,8 +962,41 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     if let Err(e) = panpak_core::cachewipe::after_change(app_id) {
         eprintln!("panpak: the cache of {app_id} was not emptied: {}", panpak_core::err_text(&e));
     }
-    println!("rollback {app_id}: back to {}", prev_t.display());
+    {
+        use panpak_core::i18n::{fill, tr};
+        let name: String = back_name.chars().filter(|c| !c.is_control()).collect();
+        let old: String = back_version.chars().filter(|c| !c.is_control()).collect();
+        println!("{}", fill(&tr(panpak_core::messages::ROLLED_BACK), &[("name", name), ("old", old)]));
+    }
     Ok(prev_t)
+}
+
+/// `panpak rollback --ask <app-id>`: the window that the stub opens when the installed version failed to start twice in a row (`panpak_core::starts`) and an
+/// earlier version that worked is still there. "Go back" is `panpak rollback`; "Try again" starts the app again. No window tool, or no earlier version: nothing happens.
+fn cmd_rollback_ask(app_id: &str) -> Result<()> {
+    use panpak_core::i18n::{fill, tr};
+    use panpak_core::messages as m;
+    panpak_core::validate_app_id(app_id)?;
+    let store = store_dir()?;
+    let appdir = store.join("apps").join(app_id);
+    let cur = panpak_core::durable::resolve_link(&appdir.join("current")).context("missing current")?;
+    let good = panpak_core::starts::last_good(&appdir).filter(|g| g != &cur).context("no earlier version that worked")?;
+    let (now, before) = (panpak_core::record::open_verified(&cur)?.manifest, panpak_core::record::open_verified(&good)?.manifest);
+    let clean = |s: &str| -> String { s.chars().filter(|c| !c.is_control()).collect() };
+    let vals = vec![("name", clean(&now.app.name)), ("new", clean(&now.app.version)), ("old", clean(&before.app.version))];
+    match crate::dialog::ask(&fill(&tr(m::NO_START_TITLE), &vals), &fill(&tr(m::NO_START_BODY), &vals), &fill(&tr(m::NO_START_GO_BACK), &vals), &tr(m::NO_START_TRY_AGAIN)) {
+        crate::dialog::Answer::Yes => {
+            cmd_rollback(app_id)?;
+        }
+        crate::dialog::Answer::No => {
+            use std::os::unix::process::CommandExt;
+            let (_, runtime) = best_runtime(&store)?;
+            let err = std::process::Command::new(&runtime).arg("run").arg(appdir.join("current")).exec();
+            anyhow::bail!("exec failed: {err}");
+        }
+        crate::dialog::Answer::NoTool => {}
+    }
+    Ok(())
 }
 
 /// `panpak open <app> [file] [--read-only | --write-rename]`: open a file with the app, granting
@@ -1812,7 +1859,9 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
         eprintln!("panpak: WARNING: [desktop] wm_class is not set: the task bar may not show the icon of the app (set it to the window class or application id the app uses; `panpak build` takes it from the recipe)");
     }
 
-    // An icon theme folder without its cache makes Qt look up each icon file by file at the start (tens of thousands of failed lookups).
+    // An icon theme folder without its cache makes Qt look up each icon file by file at the start (tens of thousands of failed lookups): the cache is made here,
+    // by panpak itself (`panpak_core::iconcache`, the same bytes as `gtk-update-icon-cache -f -t -i`), for every theme that has none. Nobody has to run a tool.
+    add_icon_caches(&mut payload);
     for note in icon_theme_notes(payload.iter().map(|p| p.entry.path.as_path())) {
         eprintln!("panpak: WARNING: {note}");
     }
@@ -4424,6 +4473,99 @@ fn disk_free(p: &Path) -> Option<u64> {
     }
 }
 
+/// Make the `icon-theme.cache` of every icon theme of the payload (`share/icons/<theme>/`, anywhere below the root, as `icon_theme_notes` finds them) that has icons and
+/// no cache. A link to a file of the same theme counts as that file, as it does for the tool. A theme that the validator of GTK refuses is left alone (the note says so).
+fn add_icon_caches(payload: &mut Vec<PayloadEntry>) {
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    let mut themes: BTreeMap<PathBuf, ()> = BTreeMap::new();
+    let mut cached: BTreeSet<PathBuf> = BTreeSet::new();
+    for p in payload.iter() {
+        let parts: Vec<&std::ffi::OsStr> = p.entry.path.iter().collect();
+        let Some(i) = parts.windows(2).position(|w| w[0] == "share" && w[1] == "icons") else { continue };
+        if parts.len() < i + 4 {
+            continue;
+        }
+        let theme: PathBuf = parts[..i + 3].iter().collect();
+        if parts.len() == i + 4 && parts[i + 3] == "icon-theme.cache" {
+            cached.insert(theme.clone());
+        }
+        themes.insert(theme, ());
+    }
+    let index: HashMap<&Path, usize> = payload.iter().enumerate().map(|(i, p)| (p.entry.path.as_path(), i)).collect();
+    let resolve = |from: &Path, target: &Path| -> Option<PathBuf> {
+        let mut out: Vec<std::ffi::OsString> = from.parent()?.iter().map(|c| c.to_os_string()).collect();
+        for c in target.components() {
+            match c {
+                std::path::Component::Normal(n) => out.push(n.to_os_string()),
+                std::path::Component::ParentDir => {
+                    out.pop()?;
+                }
+                _ => return None,
+            }
+        }
+        Some(out.iter().collect())
+    };
+    let mut new: Vec<PayloadEntry> = Vec::new();
+    for theme in themes.keys().filter(|t| !cached.contains(*t)) {
+        let mut files: Vec<String> = Vec::new();
+        for p in payload.iter().filter(|p| p.entry.path.starts_with(theme)) {
+            let is_file = match &p.entry.kind {
+                Kind::File { .. } => true,
+                Kind::Link(t) => {
+                    // A link is a file of the theme when, followed within the payload, it ends at a file.
+                    let mut cur = p.entry.path.clone();
+                    let mut target = t.clone();
+                    let mut ok = false;
+                    for _ in 0..8 {
+                        let Some(next) = resolve(&cur, Path::new(&target)) else { break };
+                        match index.get(next.as_path()).map(|&i| &payload[i].entry.kind) {
+                            Some(Kind::File { .. }) => {
+                                ok = true;
+                                break;
+                            }
+                            Some(Kind::Link(t2)) => {
+                                cur = next;
+                                target = t2.clone();
+                            }
+                            _ => break,
+                        }
+                    }
+                    ok
+                }
+                Kind::Dir => false,
+            };
+            if let (true, Ok(rel)) = (is_file, p.entry.path.strip_prefix(theme)) {
+                if let Some(s) = rel.to_str() {
+                    files.push(s.to_string());
+                }
+            }
+        }
+        let mut read = |rel: &str| -> Option<Vec<u8>> {
+            let &i = index.get(theme.join(rel).as_path())?;
+            let p = &payload[i];
+            match (&p.data, &p.source) {
+                (Some(d), _) => Some(d.clone()),
+                (None, Some(s)) => fs::read(s).ok(),
+                _ => None,
+            }
+        };
+        match panpak_core::iconcache::build_from_files_with(&files, &mut read) {
+            Ok(bytes) if !bytes.is_empty() => new.push(PayloadEntry {
+                entry: Entry { path: theme.join("icon-theme.cache"), mode: 0o644, kind: Kind::File { chunks: Vec::new() }, info: Default::default() },
+                source: None,
+                embedded: None,
+                data: Some(bytes),
+            }),
+            Ok(_) => {}
+            Err(e) => eprintln!("panpak: note: no icon-theme.cache for {}: {e:#}", theme.display()),
+        }
+    }
+    if !new.is_empty() {
+        payload.extend(new);
+        payload.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
+    }
+}
+
 /// The icon themes of a tree (`share/icons/<theme>/` with icons below) that have no `icon-theme.cache`. Qt that finds such a folder looks each icon up
 /// file by file (measured: 49,000 failed lookups at the start of qBittorrent, 0.1 s); `gtk-update-icon-cache -f -t -i <theme>` makes the cache.
 fn icon_theme_notes<'a>(paths: impl Iterator<Item = &'a Path>) -> Vec<String> {
@@ -4850,8 +4992,25 @@ fn real_main() -> Result<()> {
             cmd_verify(&id, json)
         }
         Some("rollback") => {
+            if args.get(2).map(String::as_str) == Some("--ask") {
+                let id = args.get(3).ok_or_else(|| coded(ErrorCode::E5002, "rollback --ask <app-id>"))?;
+                return cmd_rollback_ask(id);
+            }
             let id = args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "rollback <app-id>"))?;
             cmd_rollback(id)?;
+            Ok(())
+        }
+        Some("keep-previous") => {
+            let (off, id) = match (args.get(2).map(String::as_str), args.get(3)) {
+                (Some("--off"), Some(id)) => (true, id),
+                (Some(id), None) if id != "--off" => (false, &id.to_string()),
+                _ => bail_code!(ErrorCode::E5002, "keep-previous [--off] <app-id>"),
+            };
+            panpak_core::validate_app_id(id)?;
+            let appdir = store_dir()?.join("apps").join(id);
+            ensure!(appdir.is_dir(), "{id} is not installed");
+            panpak_core::starts::set_keep_previous(&appdir, !off)?;
+            println!("{id}: {}", if off { "the previous version is kept only until the current one has worked (the default)" } else { "the previous version is always kept (`panpak keep-previous --off` undoes it)" });
             Ok(())
         }
         Some("open") => {
@@ -5541,6 +5700,26 @@ mod tests {
         assert!(!check_host(&man("2.1"), false).unwrap());
         let none: panpak_core::Manifest = toml::from_str("[app]\nid = \"org.example.a\"\nname = \"A\"\nversion = \"1\"\nentry = \"bin/a\"\n").unwrap();
         assert!(!check_host(&none, false).unwrap());
+    }
+
+    #[test]
+    fn pack_makes_the_icon_cache_of_a_theme_that_has_none_and_leaves_one_that_is_there() {
+        let file = |p: &str| PayloadEntry { entry: Entry { path: PathBuf::from(p), mode: 0o644, kind: Kind::File { chunks: Vec::new() }, info: Default::default() }, source: None, embedded: None, data: Some(vec![1]) };
+        let mut payload = vec![
+            file("share/icons/hicolor/48x48/apps/a.png"),
+            file("share/icons/hicolor/scalable/apps/a.svg"),
+            file("share/icons/mine/16x16/b.png"),
+            file("share/icons/mine/icon-theme.cache"),
+            file("bin/app"),
+        ];
+        add_icon_caches(&mut payload);
+        let paths: Vec<String> = payload.iter().map(|p| p.entry.path.display().to_string()).collect();
+        assert!(paths.contains(&"share/icons/hicolor/icon-theme.cache".to_string()), "{paths:?}");
+        assert_eq!(paths.iter().filter(|p| p.ends_with("mine/icon-theme.cache")).count(), 1, "a cache that is there stays alone");
+        let made = payload.iter().find(|p| p.entry.path.ends_with("hicolor/icon-theme.cache")).unwrap();
+        let want = panpak_core::iconcache::build_from_files(&["48x48/apps/a.png".to_string(), "scalable/apps/a.svg".to_string()]).unwrap();
+        assert_eq!(made.data.as_deref(), Some(want.as_slice()));
+        assert!(paths.windows(2).all(|w| w[0] <= w[1]), "still sorted");
     }
 
     #[test]

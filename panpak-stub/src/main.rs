@@ -1946,6 +1946,11 @@ fn exit_job(pkg: &Path) -> Option<(PathBuf, String)> {
     if std::env::var_os("PANPAK_NO_BACKGROUND").is_some() {
         return None;
     }
+    installed_panpak(pkg)
+}
+
+/// The same, whatever `PANPAK_NO_BACKGROUND` says: the start of an installed app is counted (`note_start_end`), which needs this process to stay until the app ends.
+fn installed_panpak(pkg: &Path) -> Option<(PathBuf, String)> {
     let (id, apps) = installed_app_id(pkg)?;
     let panpak = apps.parent()?.join("bin/panpak");
     panpak.exists().then_some((panpak, id))
@@ -1955,6 +1960,37 @@ fn exit_job(pkg: &Path) -> Option<(PathBuf, String)> {
 fn flock_try_exclusive(lock: &File) -> bool {
     // SAFETY: flock on a descriptor that `lock` owns.
     unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+}
+
+/// A start of an installed app ended: count how it went (PANPAK-FORMAT.md section 6.10) and, when the version failed to start twice in a row and an earlier
+/// version is known to work, ask the person in a window (`panpak rollback --ask`, detached). Nothing is rolled back here, and nothing leaves the computer.
+/// Any trouble is ignored: this must never change how the app ends.
+fn note_start_end(panpak: &Path, id: &str, root: &str, info: view::EndInfo) {
+    use panpak_core::starts;
+    let Some(store) = panpak.parent().and_then(|b| b.parent()) else { return };
+    let appdir = store.join("apps").join(id);
+    let a_start = !std::env::args_os().skip(1).any(|a| matches!(a.to_str(), Some("--version" | "--help" | "-h" | "-V")));
+    let outcome = starts::classify_after(info.code, info.signal, info.forwarded, info.secs, a_start, starts::quick_secs());
+    let Ok(ev) = starts::record_end(&appdir, root, outcome) else { return };
+    if ev != starts::Event::Ask {
+        return;
+    }
+    let current = panpak_core::durable::resolve_link(&appdir.join("current")).ok();
+    match (starts::last_good(&appdir), current) {
+        (Some(good), Some(cur)) if good != cur => {}
+        _ => return,
+    }
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new(panpak);
+    cmd.args(["rollback", "--ask", id]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    // SAFETY: setsid is async-signal-safe; the window outlives this process.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let _ = cmd.spawn();
 }
 
 /// The last copy of the app has ended: let go of the lock of the copies (the work needs it free) and start `panpak background --exit <id>`, detached, and go.
@@ -2430,7 +2466,7 @@ fn real_main() -> Result<()> {
         let mut store_paths = plan.ld_path.clone();
         store_paths.extend(plan.loader.clone());
         store_paths.push(PathBuf::from(cmd.get_program()));
-        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref(), early_lock: early.as_ref(), exit_job: exit_job(&pkg), store_paths, dbus: std::cell::Cell::new(dbus_early), theme: std::cell::Cell::new(theme_query) };
+        let ctx = ViewStart { tree: &tree, man: &man, access: &access, allow_unfiltered, open: open_file.as_ref(), runtime_dir: runtime_dir.as_deref(), early_lock: early.as_ref(), exit_job: exit_job(&pkg), watch: installed_panpak(&pkg), store_paths, dbus: std::cell::Cell::new(dbus_early), theme: std::cell::Cell::new(theme_query) };
         stage("entering the view");
         enter_view(&ctx, &mut cmd)?;
     }
@@ -2472,6 +2508,8 @@ struct ViewStart<'a> {
     early_lock: Option<&'a File>,
     /// The work to do when the last copy of the app ends: the `panpak` of the store and the app id (None for a package that is not installed, or when `PANPAK_NO_BACKGROUND` is set).
     exit_job: Option<(PathBuf, String)>,
+    /// The `panpak` of the store and the id of an installed app: its starts are counted.
+    watch: Option<(PathBuf, String)>,
     /// What the inner stub and the app read from the store: library folders and the loader.
     store_paths: Vec<PathBuf>,
     /// The D-Bus layer, being built on another thread since the package was verified (see `dbus_layer`).
@@ -2728,11 +2766,16 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     let fd = view::job_memfd(&job)?;
     let plan = view::ViewPlan { fd, ..plan };
     let exit = ctx.exit_job.clone();
+    let watch = ctx.watch.clone();
+    let root_name = ctx.tree.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let exit_lock = ctx.early_lock.and_then(|f| f.try_clone().ok());
     // The lock of the shared folders must outlive bwrap, so the outer stub stays whenever there is one, and whenever there is work for the end.
     match (opener_server, shared, dbus, wayland) {
-        (None, None, None, None) if exit.is_none() => match view::exec_bwrap(&plan)? {},
-        (server, shared, dbus, wayland) => match view::run_bwrap(&plan, (server, shared, dbus, wayland), move |(_, shared, _, _), clean| {
+        (None, None, None, None) if exit.is_none() && watch.is_none() => match view::exec_bwrap(&plan)? {},
+        (server, shared, dbus, wayland) => match view::run_bwrap(&plan, (server, shared, dbus, wayland), move |(_, shared, _, _), clean, info| {
+            if let Some((panpak, id)) = watch.as_ref() {
+                note_start_end(panpak, id, &root_name, info);
+            }
             if !clean && !exec_written {
                 let roots: Vec<&Path> = end_roots.iter().map(PathBuf::as_path).collect();
                 if let Some(m) = wxhint::message(&app_name, &wxhint::written_programs(&roots, started)) {

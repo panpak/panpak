@@ -25,6 +25,11 @@ import threading
 import time
 
 
+# The variables that lead to the desktop of the person at the keyboard. No test run starts with them: a window, a notification or a clipboard write of a test
+# must not be able to reach that desktop, even by mistake (a test that needs a display or a bus makes its own and puts it in the environment it hands out).
+DESKTOP_VARS = ('DISPLAY', 'WAYLAND_DISPLAY', 'WAYLAND_SOCKET', 'XAUTHORITY')
+
+
 class Canary:
     """A socket named `bus` in a folder of its own that counts the connections it gets: the stand-in for the session bus of the real user."""
 
@@ -87,6 +92,8 @@ def main(argv):
         cmd = [sys.executable, *cmd]
     canary = Canary()
     env = dict(os.environ, **canary.env())
+    for name in DESKTOP_VARS:
+        env.pop(name, None)
     p = subprocess.Popen(cmd, start_new_session=True, env=env)
     try:
         status = p.wait(timeout=limit)
