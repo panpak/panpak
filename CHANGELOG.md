@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **The conversion of Kdenlive tells Qt to use the portal theme.** The AppImage of Kdenlive (Qt 6.11.1) has the platform theme `xdgdesktopportal` and no `gtk2`, and its `linuxdeploy-plugin-qt-hook.sh` sets `QT_QPA_PLATFORMTHEME=gtk2` on GNOME and XFCE,
+  a plugin that is not there. The file of a conversion (`convert --permissions <file>`) may now carry `[launch.env]` besides the `[permissions]` tables (start arguments are still not read), and `bench/silverblue/conversions/kdenlive.toml` sets
+  `QT_QPA_PLATFORMTHEME = "xdgdesktopportal"`. Nothing for ONLYOFFICE (Qt 5.9.9, it calls the file portal itself). Test: `convert_icons.rs` (the variable is in the manifest; `args` is refused). To check on the VM: P12 (the file dialog on GNOME).
 - **`.pyc` files for a package that carries its own Python, made by `pack`.** A tree is read-only at run time, so the Python of an app (GIMP's, 3.13) cannot write its `__pycache__` and compiles the standard library and the
   plug-ins at every start (3.1 s at the first start of GIMP, measured). `pack`, so `convert` and `build` too, now runs the Python of the package (`bin/python3.N`, an ELF file, found in the files being packed) once, in
   `bubblewrap` with no network, the package read-only and a folder for the output, with `compileall --invalidation-mode unchecked-hash`, and adds the `.pyc` files to the package (no work for the author; a package that

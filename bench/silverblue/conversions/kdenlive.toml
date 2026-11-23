@@ -9,6 +9,11 @@ dbus_own = ["org.kde.kdenlive"]
 [permissions.portal]
 files = "picker"
 
+# The AppImage carries the Qt platform theme `xdgdesktopportal` (usr/plugins/platformthemes/libqxdgdesktopportal.so) and no `gtk2`, and its hook (apprun-hooks/linuxdeploy-plugin-qt-hook.sh) asks for `gtk2` on
+# GNOME and XFCE: Qt is told to use the portal theme (its file dialogs and settings come from the portal of the session). To check on the VM (P12).
+[launch.env]
+QT_QPA_PLATFORMTHEME = "xdgdesktopportal"
+
 [[permissions.xdg_dirs]]
 name = "videos"
 access = "rw"

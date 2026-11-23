@@ -2657,13 +2657,17 @@ struct ConvertArgs<'a> {
     out: Option<&'a Path>,
 }
 
-/// The permissions that a converter declares, read from a file: TOML with the `[permissions]` tables and nothing else (an app is not given anything through another section of
-/// the file). Returned as the text to put in `panpak.toml`; `pack` then checks it like any manifest.
+/// What a converter declares for the app, read from a file: TOML with the `[permissions]` tables and the environment of the launch (`[launch.env]`: a variable that the program needs
+/// to behave, as the platform theme of Qt), and nothing else (an app is not given anything through another section, and no start arguments). Returned as the text to put in
+/// `panpak.toml`; `pack` then checks it like any manifest.
 fn read_permissions_file(p: &Path) -> Result<String> {
     let text = fs::read_to_string(p).with_context(|| format!("read {}", p.display()))?;
     ensure!(text.len() <= 64 << 10, "{}: larger than 64 KiB", p.display());
     let t: toml::Table = text.parse().with_context(|| format!("{} is not TOML", p.display()))?;
-    ensure!(!t.is_empty() && t.keys().all(|k| k == "permissions"), "{}: only [permissions] tables are read from this file (found: {})", p.display(), t.keys().cloned().collect::<Vec<_>>().join(", "));
+    ensure!(!t.is_empty() && t.keys().all(|k| k == "permissions" || k == "launch"), "{}: only [permissions] tables and [launch.env] are read from this file (found: {})", p.display(), t.keys().cloned().collect::<Vec<_>>().join(", "));
+    if let Some(l) = t.get("launch") {
+        ensure!(l.as_table().is_some_and(|l| l.keys().all(|k| k == "env")), "{}: only [launch.env] is read from the table [launch], not start arguments", p.display());
+    }
     Ok(if text.ends_with('\n') { text } else { text + "\n" })
 }
 

@@ -293,7 +293,15 @@ fn the_permissions_option_declares_what_the_converter_gives_the_app_and_reads_no
     // Another section in the file is not read: a converter gives permissions, not another table of the manifest.
     fs::write(&file, "[permissions]\nnetwork = true\n[update]\nurl = \"https://e.org/x\"\n").unwrap();
     let (o, _) = l.convert(&appimage(real_layout()), &["--permissions", file.to_str().unwrap()]);
-    assert!(!o.status.success() && text(&o).contains("only [permissions] tables"), "{}", text(&o));
+    assert!(!o.status.success() && text(&o).contains("only [permissions] tables and [launch.env]"), "{}", text(&o));
+    // The environment of the launch is read (`[launch.env]`), the start arguments are not.
+    fs::write(&file, "[permissions]\nnetwork = true\n[launch.env]\nQT_QPA_PLATFORMTHEME = \"xdgdesktopportal\"\n").unwrap();
+    let (o, pkg) = l.convert(&appimage(real_layout()), &["--permissions", file.to_str().unwrap()]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(l.manifest(&pkg).contains("QT_QPA_PLATFORMTHEME = \"xdgdesktopportal\""), "{}", l.manifest(&pkg));
+    fs::write(&file, "[permissions]\nnetwork = true\n[launch]\nargs = [\"--x\"]\n").unwrap();
+    let (o, _) = l.convert(&appimage(real_layout()), &["--permissions", file.to_str().unwrap()]);
+    assert!(!o.status.success() && text(&o).contains("not start arguments"), "{}", text(&o));
     // A permission that `pack` refuses is refused, and so is a file that is not there.
     fs::write(&file, "[permissions]\nnetwork = \"yes\"\n").unwrap();
     let (o, _) = l.convert(&appimage(real_layout()), &["--permissions", file.to_str().unwrap()]);
