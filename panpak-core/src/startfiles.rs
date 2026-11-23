@@ -74,13 +74,14 @@ enum Item {
     New { parent: OwnedFd, name: Vec<u8>, as_uri: bool },
 }
 
-/// Share the files among `args` with the app `app_id` (`panpak.<id>`). `connect` opens the session bus (called once, only when there is something to share).
+/// Share the files among `args` with the app `app_id` (`panpak.<id>`). `want_write`: the app gets `write` where the user can write the file (a file opened with an app is for working on it); false gives `read` only. `connect` opens the session bus (called once, only when there is something to share).
 pub fn share(
     args: &[String],
     cwd: &Path,
     app_id: &str,
     runtime_dir: &str,
     writable_roots: &[PathBuf],
+    want_write: bool,
     connect: impl FnOnce() -> Result<Connection>,
 ) -> Shared {
     let mut dropped = Vec::new();
@@ -163,7 +164,7 @@ pub fn share(
         }
     };
     let mut docs = Docs { conn: &mut conn, version, app_id };
-    let ids = if opened.is_empty() { Ok(Vec::new()) } else { docs.share_existing(&opened, true) };
+    let ids = if opened.is_empty() { Ok(Vec::new()) } else { docs.share_existing(&opened, want_write) };
     let ids = match ids {
         Ok(v) => v,
         Err(e) => {
@@ -251,7 +252,7 @@ mod tests {
     fn no_file_no_bus() {
         let d = scratch("nobus");
         let args: Vec<String> = vec!["--new-window".into(), "https://example.org".into()];
-        let r = share(&args, &d, "panpak.x.y", "/run/user/1000", &[], || panic!("the bus must not be touched"));
+        let r = share(&args, &d, "panpak.x.y", "/run/user/1000", &[], true, || panic!("the bus must not be touched"));
         assert_eq!((r.args, r.dropped), (args, Vec::<String>::new()));
         std::fs::remove_dir_all(&d).unwrap();
     }
@@ -261,7 +262,7 @@ mod tests {
         let d = scratch("dropped");
         std::fs::write(d.join("a.txt"), "x").unwrap();
         let args: Vec<String> = vec!["--new-window".into(), "a.txt".into(), "nofile".into()];
-        let r = share(&args, &d, "panpak.x.y", "/run/user/1000", &[], || anyhow::bail!("no session bus"));
+        let r = share(&args, &d, "panpak.x.y", "/run/user/1000", &[], true, || anyhow::bail!("no session bus"));
         assert_eq!(r.args, ["--new-window", "nofile"]);
         assert!(r.dropped.iter().any(|m| m.contains("not shared") && m.contains("no session bus")), "{:?}", r.dropped);
         std::fs::remove_dir_all(&d).unwrap();
@@ -274,11 +275,11 @@ mod tests {
         std::os::unix::fs::symlink(d.join("a.txt"), d.join("ln")).unwrap();
         let real = std::fs::canonicalize(&d).unwrap();
         let args: Vec<String> = ["ln", "--flag", "./new.txt", &format!("file://{}/a.txt", d.display())].iter().map(|s| s.to_string()).collect();
-        let r = share(&args, &d, "panpak.x.y", "/run/user/1000", std::slice::from_ref(&d), || panic!("nothing to share, no bus"));
+        let r = share(&args, &d, "panpak.x.y", "/run/user/1000", std::slice::from_ref(&d), true, || panic!("nothing to share, no bus"));
         assert_eq!(r.args, [real.join("ln").to_string_lossy().into_owned(), "--flag".into(), real.join("new.txt").to_string_lossy().into_owned(), format!("file://{}/a.txt", real.display())]);
         assert!(r.dropped.is_empty());
         // In a folder the app cannot write the link is followed: the file is shared (here there is no bus, so it stays unshared with that reason).
-        let r = share(&["ln".to_string()], &d, "panpak.x.y", "/run/user/1000", &[], || anyhow::bail!("no session bus"));
+        let r = share(&["ln".to_string()], &d, "panpak.x.y", "/run/user/1000", &[], true, || anyhow::bail!("no session bus"));
         assert!(r.dropped.iter().any(|m| m.contains("not shared") && m.contains("no session bus")), "{:?}", r.dropped);
         std::fs::remove_dir_all(&d).unwrap();
     }

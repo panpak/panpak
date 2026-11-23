@@ -38,7 +38,7 @@ fn usage() -> &'static str {
     "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [--level <1-22>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [--permissions <file.toml>] [--wm-class <window class>] [--append <path in the tree>=<file>] [--update-url <url>] [--previous <package>] [--level <1-22>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak sbom [--export] <package | app id | https URL> [--allow-insecure-http] [--timeout <s>]   (the software bill of materials of a package, CycloneDX 1.6 JSON; --export completes it with the name, id and version, a serial number and the time, for a scanner; from a URL only the parts of the package that hold it are downloaded)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--show-key] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the domain of the author confirms the key, or the key the author published, or the key of the file; --yes alone does not, unless the domain confirms)\n  panpak update [--stage] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file|trust.confirm_domain> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
-  panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
+  panpak open <app-id> [file] [--read-only | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
 }
 
 /// `network.ca_file` of the settings replaces the built-in list of authorities; a file that cannot be used stops the download (it never falls back to the list).
@@ -952,10 +952,10 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     Ok(prev_t)
 }
 
-/// `panpak open <app> [file] [--write]`: open a file with the app, granting
-/// the sandbox ONLY that file (read; write only with --write).
+/// `panpak open <app> [file] [--read-only | --write-rename]`: open a file with the app, granting
+/// the sandbox ONLY that file (read and write; read only with --read-only).
 /// Without a file, ask the host picker (outside the sandbox).
-fn cmd_open(app_id: &str, file: Option<&str>, write: bool, rename: bool) -> Result<()> {
+fn cmd_open(app_id: &str, file: Option<&str>, readonly: bool, rename: bool) -> Result<()> {
     use std::os::unix::process::CommandExt;
     panpak_core::validate_app_id(app_id)?;
     let store = store_dir()?;
@@ -970,8 +970,8 @@ fn cmd_open(app_id: &str, file: Option<&str>, write: bool, rename: bool) -> Resu
     let _ = best_abi;
     let mut cmd = std::process::Command::new(&runtime);
     cmd.arg("run").arg(&pkg).arg("--panpak-open").arg(&target);
-    if write {
-        cmd.arg("--panpak-open-write");
+    if readonly {
+        cmd.arg("--panpak-open-readonly");
     }
     if rename {
         // The warning is the stub's, when it opens the folder (without the document portal); with the portal the flag is not used and the stub says so.
@@ -4855,15 +4855,16 @@ fn real_main() -> Result<()> {
             Ok(())
         }
         Some("open") => {
-            let mut write = false;
+            let mut readonly = false;
             let mut rename = false;
             let mut id = None;
             let mut file = None;
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--write" => {
-                        write = true;
+                    "--write" => bail_code!(ErrorCode::E5001, "--write is no longer needed: a file you open with an app can now be saved. Use --read-only to open it for reading only."),
+                    "--read-only" => {
+                        readonly = true;
                         i += 1;
                     }
                     "--write-rename" => {
@@ -4882,7 +4883,8 @@ fn real_main() -> Result<()> {
                     x => bail_code!(ErrorCode::E5001, "unexpected argument: {x}\n{usage}", usage = usage()),
                 }
             }
-            cmd_open(id.ok_or_else(|| coded(ErrorCode::E5002, "open <app-id> [file]"))?, file, write, rename)?;
+            ensure_code!(!(readonly && rename), ErrorCode::E5001, "--read-only and --write-rename cannot be used together.");
+            cmd_open(id.ok_or_else(|| coded(ErrorCode::E5002, "open <app-id> [file]"))?, file, readonly, rename)?;
             Ok(())
         }
         Some("init") => {

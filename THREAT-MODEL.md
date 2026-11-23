@@ -71,8 +71,14 @@ The local store (`~/.local/share/panpak`) is considered **trusted**
 - **Fail-closed ABI**: missing libs or incoherent B-world = error with
   a message, never a silently wrong lib (4-distro matrix).
 - **Explicit file open** (`panpak open <app> <file>`, double click):
-  the sandbox grants ONLY that file (read; write only with explicit
-  `--write`), before startup, without widening anything else.
+  the sandbox grants ONLY that file, for reading and writing (a person
+  who opens a file with an app means to work on it: principle 3 of
+  docs/PRINCIPLES.md; `--read-only` takes the write away), before startup,
+  without widening anything else: a program that saves by a temporary
+  file and a rename in the folder fails (fail-closed, tested), and the
+  folder is never opened but by `--write-rename`. Since 2026-11-23 the
+  write is the default; before it was opt-in with `--write`, and a save
+  with Ctrl+S ended in "Save as".
   The path is canonicalized (the rule covers the real target of
   symlinks); symlinks/hardlinks to NON-granted files stay denied,
   even in the same folder (fork tests: sibling, symlink, hardlink,

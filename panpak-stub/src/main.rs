@@ -1493,12 +1493,12 @@ fn build_ruleset(
             if grant.rename {
                 eprintln!("panpak: WARNING: WRITE access to {} + write, create, rename and remove anywhere below {} (neighbors cannot be read or listed, but can be overwritten/deleted)", path.display(), path.parent().map(|p| p.display().to_string()).unwrap_or_default());
             } else {
-                eprintln!("panpak: WRITE access to {}", path.display());
+                eprintln!("panpak: the app can read and save {} (only this file)", path.display());
             }
             // Truncate is part of writing (open O_TRUNC / fs::write).
             AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::Truncate
         } else {
-            eprintln!("panpak: the app may read {} (only that file; without the document portal there is no other way to give it)", path.display());
+            eprintln!("panpak: the app can read {} (only this file).", path.display());
             AccessFs::ReadFile.into()
         };
         rs = rs.add_rule(PathBeneath::new(fd, access))?;
@@ -1728,7 +1728,7 @@ const STARTUP_PLACES: &[&str] = &[
 /// or it lies inside one. `home` is the canonical home folder.
 fn rename_scope_refusal(file: &Path, home: Option<&Path>) -> Option<String> {
     let parent = file.parent()?;
-    let hint = "use --write (the file only), or put the file in a folder of its own";
+    let hint = "use the default (only the file), or move the file into a folder of its own";
     let home = home?;
     if home.starts_with(parent) {
         return Some(format!("--write-rename would let the app create and replace files anywhere below {}, which holds your home folder; {hint}", parent.display()));
@@ -1742,29 +1742,28 @@ fn rename_scope_refusal(file: &Path, home: Option<&Path>) -> Option<String> {
     None
 }
 
-/// What to say when `--panpak-open-write` or `--panpak-open-rename` was given and the document portal serves the file instead: the flags are for a start without the
-/// portal (the file is then a host path and Landlock opens that one path, and with `--panpak-open-rename` its folder). With the portal the app gets the file as a document, and
+/// What to say when `--panpak-open-rename` was given and the document portal serves the file instead: the flag is for a start without the
+/// portal (the file is then a host path and Landlock opens that one path for reading and writing, and with `--panpak-open-rename` its folder). With the portal the app gets the file as a document, and
 /// the portal lets it save by replacing the file (a temporary file and a rename in the document folder), so the folder of the file is never opened.
 fn open_flags_note(open: Option<&(PathBuf, OpenGrant)>) -> Option<String> {
     let (path, grant) = open?;
     if grant.rename {
         Some(format!("--write-rename is not used: the document portal gives {} to the app and lets it save by replacing the file; the folder is not opened", path.display()))
-    } else if grant.write {
-        Some(format!("--write is not used: the document portal gives {} to the app with the rights that you have on it", path.display()))
     } else {
         None
     }
 }
 
 /// Split the stub-consumed flags from the app arguments.
-/// `--network-unfiltered`, `--panpak-open <path>`, `--panpak-open-write` and
-/// `--panpak-open-rename` never reach the application. The path is
+/// `--network-unfiltered`, `--panpak-open <path>`, `--panpak-open-readonly` and
+/// `--panpak-open-rename` never reach the application. The file of `--panpak-open` is opened for reading and writing (and never its folder), unless
+/// `--panpak-open-readonly` says otherwise: whoever opens a file with an app means to work on it. The path is
 /// canonicalized here, so the Landlock rule always covers the real target.
 type StubFlags = (bool, Option<(PathBuf, OpenGrant)>, Vec<String>);
 fn split_stub_flags(args: Vec<String>) -> Result<StubFlags> {
     let mut allow_unfiltered = false;
     let mut open_path: Option<String> = None;
-    let mut open_write = false;
+    let mut open_readonly = false;
     let mut open_rename = false;
     let mut app_args = Vec::with_capacity(args.len());
     let mut it = args.into_iter();
@@ -1773,8 +1772,10 @@ fn split_stub_flags(args: Vec<String>) -> Result<StubFlags> {
             allow_unfiltered = true;
         } else if a == "--panpak-open" {
             open_path = Some(it.next().ok_or_else(|| coded(ErrorCode::E5002, "--panpak-open requires a path"))?);
+        } else if a == "--panpak-open-readonly" {
+            open_readonly = true;
         } else if a == "--panpak-open-write" {
-            open_write = true;
+            bail_code!(ErrorCode::E5001, "--panpak-open-write is no longer needed: a file given with --panpak-open can now be saved. Use --panpak-open-readonly to open it for reading only.");
         } else if a == "--panpak-open-rename" {
             open_rename = true;
         } else {
@@ -1790,12 +1791,15 @@ fn split_stub_flags(args: Vec<String>) -> Result<StubFlags> {
                     bail_code!(ErrorCode::E5001, "refused: {why}");
                 }
             }
-            Some((abs, OpenGrant { write: open_write || open_rename, rename: open_rename }))
+            Some((abs, OpenGrant { write: !open_readonly, rename: open_rename }))
         }
         None => None,
     };
-    if (open_write || open_rename) && open_file.is_none() {
-        bail_code!(ErrorCode::E5001, "--panpak-open-write/--panpak-open-rename without --panpak-open");
+    if (open_readonly || open_rename) && open_file.is_none() {
+        bail_code!(ErrorCode::E5001, "--panpak-open-readonly/--panpak-open-rename without --panpak-open");
+    }
+    if open_readonly && open_rename {
+        bail_code!(ErrorCode::E5001, "--panpak-open-readonly and --panpak-open-rename cannot be used together.");
     }
     Ok((allow_unfiltered, open_file, app_args))
 }
@@ -1808,12 +1812,12 @@ fn documents_served(runtime_dir: Option<&Path>) -> bool {
 /// Files and folders among the arguments (a double click, "Open with", the command line) are shared with the app through the document portal, and the
 /// document paths take their place (docs/FILE-CHOOSER.md, section 3.9). An argument that cannot be shared is dropped, with a line on standard error and a
 /// notification; the app starts with the others.
-fn share_start_files(args: Vec<String>, app_id: &str, runtime_dir: Option<&Path>, writable_roots: &[PathBuf]) -> Vec<String> {
+fn share_start_files(args: Vec<String>, app_id: &str, runtime_dir: Option<&Path>, writable_roots: &[PathBuf], want_write: bool) -> Vec<String> {
     let (Some(rt), Ok(cwd)) = (runtime_dir, std::env::current_dir()) else { return args };
     if !rt.join("doc/by-app").is_dir() || !panpak_core::startfiles::any_file(&args, &cwd) {
         return args;
     }
-    let shared = panpak_core::startfiles::share(&args, &cwd, &format!("panpak.{app_id}"), &rt.to_string_lossy(), writable_roots, || {
+    let shared = panpak_core::startfiles::share(&args, &cwd, &format!("panpak.{app_id}"), &rt.to_string_lossy(), writable_roots, want_write, || {
         panpak_core::dbus::Connection::session(std::time::Duration::from_secs(10))
     });
     for d in &shared.dropped {
@@ -2183,7 +2187,7 @@ fn real_main() -> Result<()> {
         return Ok(());
     }
     // Stub flags (never the app's), removed before exec:
-    // --network-unfiltered, --panpak-open <path> [--panpak-open-write|--panpak-open-rename].
+    // --network-unfiltered, --panpak-open <path> [--panpak-open-readonly|--panpak-open-rename].
     let (allow_unfiltered, open_file, app_args) = split_stub_flags(app_args)?;
     // The desktop's dark preference is asked of `gsettings` now and read at the end of the preparation: the
     // two programs run while this one verifies the package and builds the view. Before Landlock: `gsettings` and
@@ -2389,7 +2393,7 @@ fn real_main() -> Result<()> {
     if let Some(theme) = dark_theme {
         cmd.env("GTK_THEME", theme);
     }
-    let app_args = if layer_ok && installed_mode { share_start_files(app_args, &man.app.id, runtime_dir.as_deref(), access.rw.as_slice()) } else { app_args };
+    let app_args = if layer_ok && installed_mode { share_start_files(app_args, &man.app.id, runtime_dir.as_deref(), access.rw.as_slice(), open_file.as_ref().is_none_or(|(_, g)| g.write)) } else { app_args };
     // With the document portal served, the file the launcher names with `--panpak-open` is shared as a document with the other arguments (just above), so the older rule
     // of Landlock on the path of the host is not added: it would be a second, read-only grant to the same file, and a line on standard error that says so.
     let served = layer_ok && installed_mode && documents_served(runtime_dir.as_deref());
@@ -4517,22 +4521,26 @@ mod tests {
             "--network-unfiltered".to_string(),
             "--panpak-open".to_string(),
             file.to_string_lossy().into_owned(),
-            "--panpak-open-write".to_string(),
             "--".to_string(),
             "x".to_string(),
         ];
         let (unfiltered, open, app) = split_stub_flags(args).unwrap();
         assert!(unfiltered);
-        assert_eq!(open, Some((canon, OpenGrant { write: true, rename: false })));
+        assert_eq!(open, Some((canon.clone(), OpenGrant { write: true, rename: false })));
         assert_eq!(app, vec!["--".to_string(), "x".to_string()]);
         assert!(split_stub_flags(vec!["--panpak-open".to_string()]).is_err());
-        assert!(split_stub_flags(vec!["--panpak-open-write".to_string()]).is_err());
+        assert!(split_stub_flags(vec!["--panpak-open-readonly".to_string()]).is_err());
         assert!(split_stub_flags(vec!["--panpak-open-rename".to_string()]).is_err());
+        let ro = split_stub_flags(vec!["--panpak-open".to_string(), file.to_string_lossy().into_owned(), "--panpak-open-readonly".to_string()]).unwrap();
+        assert_eq!(ro.1, Some((canon.clone(), OpenGrant { write: false, rename: false })), "read only on request");
+        assert!(split_stub_flags(vec!["--panpak-open".to_string(), file.to_string_lossy().into_owned(), "--panpak-open-readonly".to_string(), "--panpak-open-rename".to_string()]).is_err());
+        let old = split_stub_flags(vec!["--panpak-open".to_string(), file.to_string_lossy().into_owned(), "--panpak-open-write".to_string()]).unwrap_err();
+        assert!(panpak_core::render(&old, ErrorCode::E2000).contains("--panpak-open-write is no longer needed"));
         // Usage messages: say what is missing, no internal traces.
         let e = split_stub_flags(vec!["--panpak-open".to_string()]).unwrap_err();
         assert_eq!(panpak_core::code_of(&e, ErrorCode::E2000), ErrorCode::E5002, "open");
-        let e = split_stub_flags(vec!["--panpak-open-write".to_string()]).unwrap_err();
-        assert_eq!(panpak_core::code_of(&e, ErrorCode::E2000), ErrorCode::E5001, "write");
+        let e = split_stub_flags(vec!["--panpak-open-readonly".to_string()]).unwrap_err();
+        assert_eq!(panpak_core::code_of(&e, ErrorCode::E2000), ErrorCode::E5001, "readonly");
         let m = panpak_core::render(&e, ErrorCode::E2000);
         assert!(!m.contains("Os {") && !m.contains("panicked"), "internal trace: {m}");
         let _ = fs::remove_dir_all(&dir);
@@ -4583,7 +4591,7 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_open_file_writable_with_flag() {
+    fn sandbox_open_file_is_saved_in_place_by_default_and_its_folder_stays_closed() {
         if !crate::testutil::alone() {
             return;
         }
@@ -4604,12 +4612,23 @@ mod tests {
                 std::fs::OpenOptions::new().write(true).truncate(true).open(&elsewhere).is_err();
             denied(res, "write_elsewhere", no_elsewhere);
             denied(res, "read_elsewhere", std::fs::read(&elsewhere).is_err());
+            // Save in place (what a program does with Ctrl+S): rewrite the file and flush it. The default grant is this file and no more.
+            let saved = std::fs::OpenOptions::new().write(true).truncate(true).open(&target).and_then(|mut o| o.write_all(b"v2\n").and_then(|_| o.sync_all())).is_ok();
+            res.push(format!("save_in_place={}\n", if saved { "ok" } else { "FAIL" }));
+            // A save by a temporary file and a rename needs the folder: not given (only `--write-rename` gives it).
+            denied(res, "temp_file_in_folder", std::fs::File::create(outside.join("written.txt.tmp")).is_err());
+            denied(res, "rename_over_file", std::fs::rename(&elsewhere, &target).is_err());
+            denied(res, "remove_file", std::fs::remove_file(&target).is_err());
             Ok(())
         });
         assert!(res.contains("write_granted=ok"), "granted write failed:\n{res}");
         assert!(res.contains("write_elsewhere=deny"), "write elsewhere allowed:\n{res}");
         assert!(res.contains("read_elsewhere=deny"), "read elsewhere allowed:\n{res}");
-        assert_eq!(std::fs::read(&target).unwrap(), b"v1\n");
+        assert!(res.contains("save_in_place=ok"), "the file could not be saved in place:\n{res}");
+        for op in ["temp_file_in_folder", "rename_over_file", "remove_file"] {
+            assert!(res.contains(&format!("{op}=deny")), "{op} NOT blocked:\n{res}");
+        }
+        assert_eq!(std::fs::read(&target).unwrap(), b"v2\n");
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&outside);
     }
@@ -5074,7 +5093,7 @@ mod tests {
         assert!(!refused("/home/u/.config/myapp/x.conf"), "a folder of its own below .config");
         assert!(!refused("/mnt/data/note.txt"), "outside the home");
         let why = rename_scope_refusal(Path::new("/home/u/doc.txt"), Some(home)).unwrap();
-        assert!(why.contains("--write") && why.contains("folder of its own"), "{why}");
+        assert!(why.contains("the default") && why.contains("folder of its own"), "{why}");
     }
 
     #[test]
@@ -5082,7 +5101,7 @@ mod tests {
         let p = PathBuf::from("/home/u/doc.txt");
         let rename = open_flags_note(Some(&(p.clone(), OpenGrant { write: true, rename: true }))).unwrap();
         assert!(rename.contains("--write-rename is not used") && rename.contains("/home/u/doc.txt") && rename.contains("folder is not opened"), "{rename}");
-        assert!(open_flags_note(Some(&(p.clone(), OpenGrant { write: true, rename: false }))).unwrap().contains("--write is not used"));
+        assert_eq!(open_flags_note(Some(&(p.clone(), OpenGrant { write: true, rename: false }))), None, "writing the file is the default: nothing to say");
         assert_eq!(open_flags_note(Some(&(p, OpenGrant { write: false, rename: false }))), None, "read only: nothing to say");
         assert_eq!(open_flags_note(None), None);
     }

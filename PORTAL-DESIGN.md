@@ -113,14 +113,14 @@ with actual `ResolveUnix` support (here: V8, unavailable).
 
 `panpak open <app> <file>` (and double click via launcher) solves the
 "open THIS known file" case: at startup the runtime grants the sandbox
-only that file (read; write only with explicit declaration).
+only that file, for reading and writing (opening a file with an app means to work on it: Ctrl+S saves in place); never its folder.
 The picker, when needed, runs outside the sandbox (host portal/picker)
 and the result comes back as an explicit path.
 
 Covers: opening known documents, attachments, files from
 terminal/file manager. Tested: the granted file reads (even with
 spaces/special characters), non-granted siblings/symlinks/hardlinks do
-not; `--write` enables writing only on the granted file.
+not; the write is on the granted file only, so a save by a temporary file and a rename is refused (opt-in `--write-rename`, without the document portal) and `--read-only` takes the write away.
 
 Left to the broker (c): everything born INSIDE the app — Save As,
 app-invoked file picker, drag&drop, recent-files, whole-directory
