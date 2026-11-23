@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`.pyc` files for a package that carries its own Python, made by `pack`.** A tree is read-only at run time, so the Python of an app (GIMP's, 3.13) cannot write its `__pycache__` and compiles the standard library and the
+  plug-ins at every start (3.1 s at the first start of GIMP, measured). `pack`, so `convert` and `build` too, now runs the Python of the package (`bin/python3.N`, an ELF file, found in the files being packed) once, in
+  `bubblewrap` with no network, the package read-only and a folder for the output, with `compileall --invalidation-mode unchecked-hash`, and adds the `.pyc` files to the package (no work for the author; a package that
+  has its own `.pyc` at a path keeps it; `PANPAK_NO_PYC=1` skips it). A package that carries its own glibc is run by its own loader with its libraries (the Python of GIMP asks for its loader by the relative path
+  `.//usr/lib64/ld-linux-x86-64.so.2`, so the working folder is the package). `PYTHONHASHSEED=0`, so the same source gives the same bytes (checked twice). GIMP 3.2.8: 2156 `.pyc` files, 33 MiB, made in 1.1 s; `convert` takes 1.5 s
+  longer (6.0 s -> 7.5 s) and the package is 15 MB larger at level 3 (282.2 -> 297.5 MB, +5.4%). PANPAK-FORMAT.md §4, THREAT-MODEL.md §4. Tests: `pyc.rs` (the path of a `.pyc`, the choice of the Python, a Python made into a
+  package: unchecked-hash header, same bytes twice, the standard library too).
 - **Patches: an update downloads the difference of a file whose chunks all changed.** Before, a program that was built again (every chunk different) was downloaded whole, and the
   update of a large app was nearly the size of the app. Now `panpak pack --previous` (and `convert`, `build`, which know the installed version) makes, for each file of at least 64 KiB that changed
   from the previous release, a zstd frame that uses the same file of the previous release as its dictionary, and publishes it when it weighs less than the chunks of the file that
