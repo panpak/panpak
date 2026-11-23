@@ -65,7 +65,7 @@ def main():
         mask = ['/usr/bin/bwrap', '--unshare-user', '--bind', '/', '/', '--dev-bind', '/dev', '/dev', '--proc', '/proc', '--ro-bind', '/dev/null', '/usr/bin/bwrap', '--']
 
         def opened(path, flag='--write-rename', landlock_only=False):
-            p = run([*(mask if landlock_only else []), BIN / 'panpak', 'open', flag, ID, path], env, ok=False)
+            p = run([*(mask if landlock_only else []), BIN / 'panpak', 'open', *([flag] if flag else []), ID, path], env, ok=False)
             return p, dict(line.split('=', 1) for line in p.stdout.split() if '=' in line)
 
         failures = []
@@ -97,15 +97,15 @@ def main():
             if got != {'bashrc': outside, 'autostart': 'denied', 'neighbour': 'ok'} or real_changed() != {'bashrc': False, 'autostart': False, 'neighbour': True}:
                 failures.append(f'{how}: Documents/note.txt: {got} {real_changed()} {p.stderr.strip()[-200:]}')
             reset()
-            # Without --write-rename nothing but the file is writable.
-            p, got = opened(home / 'doc.txt', '--write', landlock_only=only)
+            # Without --write-rename nothing but the file is writable (the file itself is, by default).
+            p, got = opened(home / 'doc.txt', None, landlock_only=only)
             if got != {'bashrc': outside, 'autostart': 'denied', 'neighbour': outside} or any(real_changed().values()):
-                failures.append(f'{how}: --write only: {got} {real_changed()} {p.stderr.strip()[-200:]}')
+                failures.append(f'{how}: no flag (the file only): {got} {real_changed()} {p.stderr.strip()[-200:]}')
             reset()
         assert not failures, 'FAILED:\n' + '\n'.join(failures)
         for f in (home / '.bashrc',):
             assert f.read_text() == '# mine\n', 'the file of the user was not touched'
-        print('--write-rename: a folder that holds the home, .config or another place that starts programs is refused with the reason; an ordinary folder works, the rest of the home is out of reach; --write grants the file only PASS')
+        print('--write-rename: a folder that holds the home, .config or another place that starts programs is refused with the reason; an ordinary folder works, the rest of the home is out of reach; the default grants the file only PASS')
         subprocess.run(['chmod', '-R', 'u+w', str(tmp)], check=False)
 
 

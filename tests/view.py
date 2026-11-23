@@ -590,12 +590,12 @@ def main():
         else:
             print('X11 test skipped (no Xvfb; set PANPAK_XVFB)')
 
-        # 6. A file opened with `panpak open`: read-only by default, writable with --write.
+        # 6. A file opened with `panpak open`: writable by default (that file only), read-only with --read-only.
         lab.env.pop('DISPLAY', None)
         lab.install('')
         doc = h / 'note.doc'
         doc.write_text('hello\n')
-        for flag, want in (([], 'err'), (['--write'], 'ok')):
+        for flag, want in ((['--read-only'], 'err'), ([], 'ok')):
             report = h / f'.local/share/panpak/userdata/{app_dirs.ID}/.local/share/report.txt'
             report.unlink(missing_ok=True)
             q = lab.cli('open', app_dirs.ID, str(doc), *flag, check=False)
@@ -604,7 +604,7 @@ def main():
             assert rep['open_read'] == 'ok'
             assert (rep['open_write'] == 'ok') == (want == 'ok'), (flag, rep['open_write'])
         assert doc.read_text() == 'hello\nmore\n', doc.read_text()
-        print('panpak open: read-only, then writable with --write: ok')
+        print('panpak open: read-only with --read-only, writable by default: ok')
 
         # 6b. User folders (xdg_dirs): the folder of user-dirs.dirs comes back into the empty home, nothing else.
         for rel in ('Music', 'Documents', 'Pictures'):

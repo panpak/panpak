@@ -241,7 +241,7 @@ fn the_dialog_shares_what_the_user_chose_and_only_that() {
     lab.take_log();
     let args: Vec<String> =
         ["--new-window", "a b.txt", "./new2.txt", &uri_of(&ro), "word", "https://example.org/x.txt", &ulink.to_string_lossy()].iter().map(|s| s.to_string()).collect();
-    let shared = panpak_core::startfiles::share(&args, &d, "panpak.org.example.App", "/run/user/1000", &[], || Connection::session(Duration::from_secs(10)));
+    let shared = panpak_core::startfiles::share(&args, &d, "panpak.org.example.App", "/run/user/1000", &[], true, || Connection::session(Duration::from_secs(10)));
     assert_eq!(shared.args.len(), 7, "{:?}", shared.args);
     assert_eq!((shared.args[0].as_str(), shared.args[4].as_str(), shared.args[5].as_str()), ("--new-window", "word", "https://example.org/x.txt"));
     assert!(shared.args[6].starts_with("/run/user/1000/doc/") && shared.args[6].ends_with("/a b.txt"), "a link the user could have put is followed: {:?}", shared.args);

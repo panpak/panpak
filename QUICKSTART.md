@@ -152,19 +152,19 @@ A rollback to a version below the floor that the author set is refused. A rollba
 ## Open files (double click and `panpak open`)
 
 ```sh
-panpak open org.example.hello ~/doc.txt              # read-only
-panpak open --write org.example.hello ~/doc.txt      # write to the file
+panpak open org.example.hello ~/doc.txt                 # the file can be read and written (Ctrl+S saves in place), nothing else
+panpak open --read-only org.example.hello ~/doc.txt     # the file can only be read
 panpak open --write-rename org.example.hello ~/doc.txt  # + atomic save
 ```
 
 With the document portal (a desktop session has one), the file is given to the app as a document, with the rights that you have on it (read, and write when you can
-write the file), and the portal lets the app save by replacing the file; `--write` and `--write-rename` are then not used, and the stub says so. Without the portal the sandbox
-grants only that file, and read-only unless `--write`. `--write-rename` (opt-in, only without the portal) also allows temp+rename in the folder (e.g. vim with backup,
+write the file), and the portal lets the app save by replacing the file; `--write-rename` is then not used, and the stub says so (`--read-only` gives the document for reading only). Without the portal the sandbox
+grants only that file, for reading and writing, and for reading only with `--read-only`. A program that saves by writing a temporary file next to the file and renaming it needs `--write-rename`. `--write-rename` (opt-in, only without the portal) also allows temp+rename in the folder (e.g. vim with backup,
 gedit), without reading/listing neighbors — but neighbors stay overwritable and deletable, and so is everything in the folders below
 it. For that reason it is refused for a folder that is your home or
 holds it, or that holds or lies in a place where a file is a way to
 run a program later (`~/.config`, `~/.local`, `~/.ssh`, the shell
-start files, `~/.config/autostart`, ...): use `--write`, or put the
+start files, `~/.config/autostart`, ...): use the default (the file only), or put the
 file in a folder of its own.
 
 ## Desktop integration (file type)
