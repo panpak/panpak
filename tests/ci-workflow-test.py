@@ -126,6 +126,35 @@ steps = re.findall(r'^      - (?:name|uses): .*(?:\n(?!      - ).*)*', jobs_text
 for st in steps:
     if 'timeout-minutes:' not in st:
         bad.append(f'a step has no timeout-minutes: {st.splitlines()[0].strip()}')
+# A test runs in a job that has built the programs it starts: a script that starts the debug build (`target/<triple>/debug`, the only one that takes a stand-in window tool) in a
+# job that builds only the release fails there with "read stub: No such file", and passes on a machine that has both. The same for the release. The step that builds comes before it.
+step_re = r'^      - (?:name|uses): .*(?:\n(?!      - ).*)*'
+for jname, jb in ((m.group(1), b) for b in blocks for m in [re.match(r'\n?  ([A-Za-z0-9_-]+):\n', b)] if m):
+    have_debug = have_release = False
+    for st in re.findall(step_re, jb, re.M):
+        for run_line in re.findall(r'cargo (?:build|test|clippy)[^\n]*', st):
+            if '--target x86_64-unknown-linux-musl' in run_line and '--release' not in run_line and 'target-dir' not in run_line and 'clippy' not in run_line:
+                have_debug = True
+            if '--release' in run_line and '--target-dir' not in run_line:
+                have_release = True
+        for m in re.finditer(r'with_timeout\.py \d+ (tests/[\w/.-]+\.py)', st):
+            f = root / m.group(1)
+            if not f.is_file():
+                continue
+            src = f.read_text()
+            if 'x86_64-unknown-linux-musl/debug' in src and not have_debug:
+                bad.append(f'{m.group(1)} starts the debug build, and no step before it in the job {jname} builds it (build it there, or run the test in the job that does)')
+            if re.search(r'from incremental import[^\n]*\bBIN\b', src) and 'x86_64-unknown-linux-musl/debug' not in src and not have_release:
+                bad.append(f'{m.group(1)} starts the release build, and no step before it in the job {jname} builds it')
+# A step that runs the fuzzer for FUZZ_SECONDS has a limit above them, with room for the build.
+for b in blocks:
+    if 'FUZZ_SECONDS' not in b:
+        continue
+    secs = [int(x) for x in re.findall(r"FUZZ_SECONDS: [^\n]*", b) for x in re.findall(r"'(\d+)'", x)]
+    for st in re.findall(step_re, b, re.M):
+        t = re.search(r'timeout-minutes: (\d+)', st)
+        if 'fuzz run' in st and t and secs and int(t.group(1)) * 60 < max(secs) + 180:
+            bad.append(f'the fuzz step has a limit of {t.group(1)} minutes and runs the fuzzer for {max(secs)} s: it needs at least {(max(secs) + 180 + 59) // 60} minutes with the build')
 if not any('ci-coverage' in b or 'runs in no workflow' in b for b in bad):
     print(f'ok   every test runs in a level of the CI or is listed with a reason ({len(listed)} listed)')
 for b in bad:

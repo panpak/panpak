@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`scripts/ci-local.sh`: the checks of the CI, in one command, before a push; and two more checks of the workflow itself.** The script runs the DCO check, SPDX headers, large files, copies of zstd, the rules of the workflow,
+  the date of `REPRODUCIBLE-HASHES.md`, formatting (when rustfmt is installed), clippy with `-D warnings`, cargo-deny, gitleaks, `cargo test` on musl through the runner of the CI, the scripts of `tests/` that the
+  workflow runs, and the double build of the reproducible hashes, under `nice` and `ionice` (`PANPAK_LOWRUN=<wrapper>`), and prints the time of every step (a full run took 11 min on the host). `--quick` stops after
+  clippy, cargo-deny and gitleaks. What it cannot repeat is written in the script and in CONTRIBUTING.md. `tests/ci-workflow-test.py` now also fails (1) a test that starts the debug build, or the release build, in a job
+  with no step before it that builds it (the CI of the kept-versions pull request failed that way and passed on a machine that has both) and (2) a fuzz step whose limit is not above `FUZZ_SECONDS` with room for the build:
+  the weekly run of 2026-11-23 failed all 21 `fuzz-smoke` jobs, `timeout-minutes: 5` for a fuzzer that runs 300 s since the step limits of 2026-11-19 (no crash or sanitizer message in any log); the limit is 12 minutes.
 - **Every test starts without the desktop of the person at the keyboard.** `scripts/test-runner.sh` (the `runner` of cargo for test binaries), `tests/with_timeout.py` and `tests/isolation.py` take `DISPLAY`,
   `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `XAUTHORITY` out of the environment, point the session bus at an address that leads nowhere (the CI keeps its canary) and give the test a runtime folder of its own; before,
   only the bus was covered and only for scripts that called `require_isolated_home`, so a test that opened a window could reach the real desktop. CONTRIBUTING.md; test `tests_run_without_the_desktop_of_the_person`.
