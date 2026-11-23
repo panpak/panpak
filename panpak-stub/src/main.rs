@@ -209,7 +209,7 @@ fn ensure_tree_readonly(tree: &Path) -> Result<()> {
 /// The modification time of every folder and link of a tree in the store, and the earliest of a file: 2000-01-01T00:00:00Z. A package does not carry times, and the
 /// time at which the store happened to create each entry is of no use: it made a cache file older than the folder that holds it (a folder gets a new time whenever an
 /// entry is created in it, and `icon-theme.cache` comes before the folders that sort after it), and Qt ignores an icon cache that is older than its folder.
-/// A folder never has a later time than any file, so such a cache is never older.
+/// A cache file that describes a folder (`icon-theme.cache`) takes the latest time of that folder and of the folders below it (`tree_times`), so it is never older than what it describes.
 pub const TREE_MTIME: i64 = 946_684_800;
 
 /// How far above `TREE_MTIME` the time of a file can be: 2^25 seconds, a little more than a year.
@@ -222,6 +222,67 @@ const FILE_TIME_SPAN: u64 = 1 << 25;
 pub fn content_mtime(blob: &str) -> i64 {
     let n = blob.get(..8).and_then(|h| u32::from_str_radix(h, 16).ok()).unwrap_or(0) as u64;
     TREE_MTIME + (n % FILE_TIME_SPAN) as i64
+}
+
+/// The time of every file and folder of a tree, made from what the package says and from nothing else (a store, a machine and a version give the same times):
+/// a file has the time of its content (`content_mtime` of its blob); a folder has the time of its list, a number of seconds made like that of a file from the hash of
+/// the names and the contents of its entries (a name, what it is, and the name of the blob, the target of the link or nothing for a folder), so a folder whose list changes has another
+/// time, and a folder whose list is the same has the same one in every version. A link has `TREE_MTIME`. A cache that says it describes a folder (a file named
+/// `icon-theme.cache`) is given the latest time of its folder and of the folders below, because GTK and Qt drop it when it is older than any of them.
+fn tree_times(entries: &[Entry], chunks: &[Chunk]) -> std::collections::HashMap<PathBuf, i64> {
+    use std::collections::{BTreeMap, HashMap};
+    let mut list: BTreeMap<PathBuf, BTreeMap<Vec<u8>, Vec<u8>>> = BTreeMap::new();
+    let mut times: HashMap<PathBuf, i64> = HashMap::new();
+    for e in entries {
+        let what: Vec<u8> = match &e.kind {
+            Kind::File { chunks: ids } => {
+                let name = blob_name(chunks, ids, e.mode);
+                times.insert(e.path.clone(), content_mtime(&name));
+                [b"f:".as_slice(), name.as_bytes()].concat()
+            }
+            Kind::Link(t) => [b"l:".as_slice(), t.as_bytes()].concat(),
+            Kind::Dir => b"d:".to_vec(),
+        };
+        let mut child = e.path.clone();
+        while let Some(parent) = child.parent() {
+            use std::os::unix::ffi::OsStrExt;
+            let name = child.file_name().map(|n| n.as_bytes().to_vec()).unwrap_or_default();
+            let w = if child == e.path { what.clone() } else { b"d:".to_vec() };
+            list.entry(parent.to_path_buf()).or_default().insert(name, w);
+            child = parent.to_path_buf();
+            if child.as_os_str().is_empty() {
+                break;
+            }
+        }
+    }
+    for (dir, items) in &list {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let mut h = blake3::Hasher::new();
+        h.update(b"panpak-folder-v1");
+        for (name, what) in items {
+            h.update(&(name.len() as u32).to_le_bytes());
+            h.update(name);
+            h.update(&(what.len() as u32).to_le_bytes());
+            h.update(what);
+        }
+        times.insert(dir.clone(), content_mtime(&hex(h.finalize().as_bytes())));
+    }
+    // Folders without entries are the ones that the package lists as folders: the time of an empty list.
+    for e in entries {
+        if matches!(e.kind, Kind::Dir) {
+            times.entry(e.path.clone()).or_insert_with(|| content_mtime(&hex(blake3::Hasher::new().update(b"panpak-folder-v1").finalize().as_bytes())));
+        }
+    }
+    let caches: Vec<PathBuf> = entries.iter().filter(|e| matches!(e.kind, Kind::File { .. }) && e.path.file_name().is_some_and(|n| n == "icon-theme.cache")).map(|e| e.path.clone()).collect();
+    let folders: Vec<&PathBuf> = list.keys().filter(|p| !p.as_os_str().is_empty()).chain(entries.iter().filter(|e| matches!(e.kind, Kind::Dir)).map(|e| &e.path)).collect();
+    for c in caches {
+        let dir = c.parent().map(Path::to_path_buf).unwrap_or_default();
+        let latest = folders.iter().filter(|p| p.starts_with(&dir)).filter_map(|p| times.get(*p)).copied().max().unwrap_or(TREE_MTIME);
+        times.insert(c, latest);
+    }
+    times
 }
 
 /// Give every entry of a tree the one time (`TREE_MTIME`) and take the write bits from the files and folders (a link has neither). The entries are
@@ -805,14 +866,8 @@ fn materialize_from(
     // One time for everything, and nothing writable, before the tree is published (defense in depth).
     let mut all: Vec<PathBuf> = made_dirs.iter().cloned().collect();
     all.extend(entries.iter().filter(|e| !matches!(e.kind, Kind::Dir)).map(|e| e.path.clone()));
-    // The time of each file comes from its content (see `content_mtime`); folders and links have `TREE_MTIME`.
-    let times: HashMap<PathBuf, i64> = entries
-        .iter()
-        .filter_map(|e| match &e.kind {
-            Kind::File { chunks: ids } => Some((e.path.clone(), content_mtime(&blob_name(chunks, ids, e.mode)))),
-            _ => None,
-        })
-        .collect();
+    // The time of each file comes from its content and the time of each folder from its list (see `tree_times`); links have `TREE_MTIME`.
+    let times = tree_times(entries, chunks);
     finalize_tree(&tmp, &all, &times)?;
     panpak_core::failpoint!("prepare.tree_complete");
     let t_meta = t_links.elapsed();
@@ -2495,6 +2550,15 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
             eprintln!("panpak: removed a stale lock file: {}", gone.display());
         }
     }
+    // The first copy that starts on another tree than the one the cache was made on (an update, a repair, a rollback) empties the cache: a file of the new tree may have an
+    // older time than the cache that was made from the old one, and some caches (ksycoca, the icon caches) only look for files that are newer (PANPAK-FORMAT.md section 6.9).
+    if let (Some(_), Some(dirs)) = (shared.as_ref().filter(|s| s.alone), app_dirs.as_ref()) {
+        if let Some(tree) = ctx.tree.file_name().and_then(|n| n.to_str()) {
+            if let Err(e) = panpak_core::cachewipe::at_start(&dirs.cache, tree) {
+                eprintln!("panpak: the cache of the app was not emptied: {}", panpak_core::err_text(&e));
+            }
+        }
+    }
     // The private folders searched for stale locks when the last copy ends.
     let end_roots: Vec<PathBuf> = app_dirs.as_ref().map(|d| panpak_core::stalelocks::roots_of(d).to_vec()).unwrap_or_default();
     // The permission exec_written, and the start: an app that ends with an error after it wrote a program file gets a line in the log.
@@ -3664,18 +3728,45 @@ mod tests {
         let m = |t: &Path, f: &str| fs::symlink_metadata(t.join(f)).unwrap().mtime();
         assert_eq!(m(&t1, "lib/keep"), m(&t2, "lib/keep"), "the same content, the same time");
         assert_ne!(m(&t1, "lib/change"), m(&t2, "lib/change"), "another content, another time");
-        assert_eq!(m(&t1, "lib"), TREE_MTIME);
-        for (t, f) in [(&t1, "lib/keep"), (&t1, "lib/change"), (&t2, "lib/change")] {
+        // A folder has the time of its list: another list, another time.
+        assert_ne!(m(&t1, "lib"), m(&t2, "lib"), "a folder whose list changed has another time");
+        for (t, f) in [(&t1, "lib/keep"), (&t1, "lib/change"), (&t2, "lib/change"), (&t1, "lib"), (&t2, "lib")] {
             let v = m(t, f);
             assert!((TREE_MTIME..TREE_MTIME + FILE_TIME_SPAN as i64).contains(&v), "{f}: {v}");
-            assert!(v >= m(t, "lib"), "a file is never older than its folder");
         }
+        // The same list in another version and another store gives the same time.
+        let (c3, e3, s3) = mem_package(&[("lib/keep", 0o644, &[1, 2]), ("lib/change", 0o644, &[3])], 1000);
+        let t3 = materialize_from(&s3, &dir.join("store3"), &[3u8; 32], &c3, &e3).unwrap();
+        assert_eq!(m(&t1, "lib"), m(&t3, "lib"), "the same list, the same time");
         // The time is the one of the name of the blob (so the same through the hard link), and it is the same on every run.
         assert_eq!(fs::metadata(t1.join("lib/keep")).unwrap().ino(), fs::metadata(t2.join("lib/keep")).unwrap().ino());
         assert_eq!(content_mtime("00000000aaaa-644"), TREE_MTIME);
         assert_eq!(content_mtime("00000001aaaa-644"), TREE_MTIME + 1);
         assert_eq!(content_mtime("ffffffffaaaa-644"), TREE_MTIME + (0xffff_ffffu64 % FILE_TIME_SPAN) as i64);
         assert_eq!(content_mtime("zz"), TREE_MTIME, "a name that is not a hash gives the earliest time");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_cache_of_a_folder_is_never_older_than_the_folder_or_any_folder_below() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tmpdir("cache-time");
+        let (c, e, s) = mem_package(
+            &[
+                ("icons/hicolor/icon-theme.cache", 0o644, &[9]),
+                ("icons/hicolor/16x16/apps/a.png", 0o644, &[1]),
+                ("icons/hicolor/32x32/apps/b.png", 0o644, &[2]),
+                ("icons/other/c.png", 0o644, &[3]),
+            ],
+            1000,
+        );
+        let tree = materialize_from(&s, &dir.join("store"), &[5u8; 32], &c, &e).unwrap();
+        let m = |f: &str| fs::symlink_metadata(tree.join(f)).unwrap().mtime();
+        let cache = m("icons/hicolor/icon-theme.cache");
+        for d in ["icons/hicolor", "icons/hicolor/16x16", "icons/hicolor/16x16/apps", "icons/hicolor/32x32", "icons/hicolor/32x32/apps"] {
+            assert!(cache >= m(d), "the cache is older than {d}");
+        }
+        assert_eq!(cache, ["icons/hicolor", "icons/hicolor/16x16", "icons/hicolor/16x16/apps", "icons/hicolor/32x32", "icons/hicolor/32x32/apps"].iter().map(|d| m(d)).max().unwrap());
         let _ = fs::remove_dir_all(&dir);
     }
 

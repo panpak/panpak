@@ -22,6 +22,8 @@ pub struct Shared {
     /// No other copy of the app was alive when this one started (it holds the exclusive lock first) and the
     /// last run left its mark "in use": it did not end normally, so its lock files may be stale.
     pub stale: bool,
+    /// No other copy was alive when this one started.
+    pub alone: bool,
     marker: PathBuf,
     lock: File,
 }
@@ -110,7 +112,7 @@ pub fn prepare(base: &Path, disk_tmp: &Path, shm: &Path, marker: &Path, early: O
     anyhow::ensure!(flock(&lock, libc::LOCK_SH), "cannot take the shared lock");
     // The mark is made after the shared lock, so that a copy that is leaving cannot remove it afterwards.
     OpenOptions::new().create(true).truncate(false).write(true).mode(0o600).open(marker).with_context(|| format!("create {}", marker.display()))?;
-    Ok(Shared { disk_tmp: tmp, shm, stale, marker: marker.to_path_buf(), lock })
+    Ok(Shared { disk_tmp: tmp, shm, stale, alone, marker: marker.to_path_buf(), lock })
 }
 
 impl Shared {
