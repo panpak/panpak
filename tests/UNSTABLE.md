@@ -16,4 +16,6 @@ A job that fails because of the machine or the network (apt locked, a download t
 
 | Job | Date | Symptom | Run again | Count |
 |---|---|---|---|---|
-| private-bus (pull request 95) | 2026-11-23 | `E: Could not get lock /var/lib/dpkg/lock` while installing packages; `apt-install.sh` tried 3 times, the last for 900 s | green | 1 |
+| private-bus (pull request 95, and main run 317) | 2026-11-23 | `E: Could not get lock /var/lib/dpkg/lock` while installing packages; `apt-install.sh` tried 3 times, the last for 900 s | green | 2 |
+
+Cause of the two: the first attempt of `apt-install.sh` stopped `apt-get install` after 180 s while dpkg was at its last triggers; dpkg went on with its lock and the other attempts failed on it. Fixed: only the update and the download have a limit, the installation is not stopped (`scripts/apt-install.sh`, `tests/apt_install_test.py`).

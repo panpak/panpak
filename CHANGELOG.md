@@ -14,6 +14,9 @@
   and is small; another size, another base, a cut or a longer frame are errors; the window), the index (written and read back), the stub (a patch with the wrong hash or the wrong
   installed file is refused and the chunk check stops a wrong index), `tests/patches.py` (a 10 MB file, larger than the 8 MiB that are made by parts, changed in every chunk: the update downloads a few KB instead of 10 MB; no patches
   file, a damaged one and a short one end in the chunks, and the update works).
+- **CI: `apt-install.sh` no longer stops the installation.** The job `private-bus` failed twice on 2026-11-23 (pull request 95, main run 317) with `Could not get lock /var/lib/dpkg/lock`: the first attempt killed `apt-get install` after 180 s while
+  dpkg was at its last triggers, dpkg went on with its lock, and the second and third attempts failed on it. Now only the update and the download (`--download-only`) have the limit and the second mirror; the installation itself is not stopped and waits for
+  the lock for 300 s (`-o DPkg::Lock::Timeout=300`). `tests/apt_install_test.py` has a case for an installation that is longer than the limit. `tests/UNSTABLE.md` has the cause.
 - **`scripts/ci-local.sh`: the checks of the CI, in one command, before a push; and two more checks of the workflow itself.** The script runs the DCO check, SPDX headers, large files, copies of zstd, the rules of the workflow,
   the date of `REPRODUCIBLE-HASHES.md`, formatting (when rustfmt is installed), clippy with `-D warnings`, cargo-deny, gitleaks, `cargo test` on musl through the runner of the CI, the scripts of `tests/` that the
   workflow runs, and the double build of the reproducible hashes, under `nice` and `ionice` (`PANPAK_LOWRUN=<wrapper>`), and prints the time of every step (a full run took 11 min on the host). `--quick` stops after
