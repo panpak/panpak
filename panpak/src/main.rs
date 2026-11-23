@@ -4512,7 +4512,7 @@ fn real_main() -> Result<()> {
             let mut i = 2;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--write" => bail_code!(ErrorCode::E5001, "--write is gone: the file that you open with an app can be written; --read-only opens it for reading only"),
+                    "--write" => bail_code!(ErrorCode::E5001, "--write is no longer needed: a file you open with an app can now be saved. Use --read-only to open it for reading only."),
                     "--read-only" => {
                         readonly = true;
                         i += 1;
@@ -4533,7 +4533,7 @@ fn real_main() -> Result<()> {
                     x => bail_code!(ErrorCode::E5001, "unexpected argument: {x}\n{usage}", usage = usage()),
                 }
             }
-            ensure_code!(!(readonly && rename), ErrorCode::E5001, "--read-only and --write-rename say the opposite");
+            ensure_code!(!(readonly && rename), ErrorCode::E5001, "--read-only and --write-rename cannot be used together.");
             cmd_open(id.ok_or_else(|| coded(ErrorCode::E5002, "open <app-id> [file]"))?, file, readonly, rename)?;
             Ok(())
         }

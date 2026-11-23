@@ -164,8 +164,8 @@ gedit), without reading/listing neighbors — but neighbors stay overwritable an
 it. For that reason it is refused for a folder that is your home or
 holds it, or that holds or lies in a place where a file is a way to
 run a program later (`~/.config`, `~/.local`, `~/.ssh`, the shell
-start files, `~/.config/autostart`, ...): use the default (the file only), or put the
-file in a folder of its own.
+start files, `~/.config/autostart`, ...): use the default (only the file), or move the
+file into a folder of its own.
 
 ## Desktop integration (file type)
 

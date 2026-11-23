@@ -1328,12 +1328,12 @@ fn build_ruleset(
             if grant.rename {
                 eprintln!("panpak: WARNING: WRITE access to {} + write, create, rename and remove anywhere below {} (neighbors cannot be read or listed, but can be overwritten/deleted)", path.display(), path.parent().map(|p| p.display().to_string()).unwrap_or_default());
             } else {
-                eprintln!("panpak: WRITE access to {}", path.display());
+                eprintln!("panpak: the app can read and save {} (only this file)", path.display());
             }
             // Truncate is part of writing (open O_TRUNC / fs::write).
             AccessFs::ReadFile | AccessFs::WriteFile | AccessFs::Truncate
         } else {
-            eprintln!("panpak: the app may read {} (only that file; without the document portal there is no other way to give it)", path.display());
+            eprintln!("panpak: the app can read {} (only this file).", path.display());
             AccessFs::ReadFile.into()
         };
         rs = rs.add_rule(PathBeneath::new(fd, access))?;
@@ -1563,7 +1563,7 @@ const STARTUP_PLACES: &[&str] = &[
 /// or it lies inside one. `home` is the canonical home folder.
 fn rename_scope_refusal(file: &Path, home: Option<&Path>) -> Option<String> {
     let parent = file.parent()?;
-    let hint = "use the default (the file only), or put the file in a folder of its own";
+    let hint = "use the default (only the file), or move the file into a folder of its own";
     let home = home?;
     if home.starts_with(parent) {
         return Some(format!("--write-rename would let the app create and replace files anywhere below {}, which holds your home folder; {hint}", parent.display()));
@@ -1610,7 +1610,7 @@ fn split_stub_flags(args: Vec<String>) -> Result<StubFlags> {
         } else if a == "--panpak-open-readonly" {
             open_readonly = true;
         } else if a == "--panpak-open-write" {
-            bail_code!(ErrorCode::E5001, "--panpak-open-write is gone: the file of --panpak-open can be written; --panpak-open-readonly opens it for reading only");
+            bail_code!(ErrorCode::E5001, "--panpak-open-write is no longer needed: a file given with --panpak-open can now be saved. Use --panpak-open-readonly to open it for reading only.");
         } else if a == "--panpak-open-rename" {
             open_rename = true;
         } else {
@@ -1634,7 +1634,7 @@ fn split_stub_flags(args: Vec<String>) -> Result<StubFlags> {
         bail_code!(ErrorCode::E5001, "--panpak-open-readonly/--panpak-open-rename without --panpak-open");
     }
     if open_readonly && open_rename {
-        bail_code!(ErrorCode::E5001, "--panpak-open-readonly and --panpak-open-rename say the opposite");
+        bail_code!(ErrorCode::E5001, "--panpak-open-readonly and --panpak-open-rename cannot be used together.");
     }
     Ok((allow_unfiltered, open_file, app_args))
 }
@@ -4252,7 +4252,7 @@ mod tests {
         assert_eq!(ro.1, Some((canon.clone(), OpenGrant { write: false, rename: false })), "read only on request");
         assert!(split_stub_flags(vec!["--panpak-open".to_string(), file.to_string_lossy().into_owned(), "--panpak-open-readonly".to_string(), "--panpak-open-rename".to_string()]).is_err());
         let old = split_stub_flags(vec!["--panpak-open".to_string(), file.to_string_lossy().into_owned(), "--panpak-open-write".to_string()]).unwrap_err();
-        assert!(panpak_core::render(&old, ErrorCode::E2000).contains("--panpak-open-write is gone"));
+        assert!(panpak_core::render(&old, ErrorCode::E2000).contains("--panpak-open-write is no longer needed"));
         // Usage messages: say what is missing, no internal traces.
         let e = split_stub_flags(vec!["--panpak-open".to_string()]).unwrap_err();
         assert_eq!(panpak_core::code_of(&e, ErrorCode::E2000), ErrorCode::E5002, "open");
