@@ -1115,14 +1115,14 @@ fn file_info_of(path: &Path, mode: u32) -> Result<panpak_core::FileInfo> {
         if let Some(n) = soname.as_deref().filter(|n| n.chars().any(|c| c.is_control() || c == '/')) {
             bail!("{}: the SONAME {n:?} has a control character or a slash: make the library again with a plain SONAME", path.display());
         }
-        return Ok(FileInfo { flags: FILE_ELF, soname, ext: Vec::new() });
+        return Ok(FileInfo { flags: FILE_ELF, soname, patch: None, ext: Vec::new() });
     }
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let size = fs::metadata(path)?.len();
     if mode & 0o111 != 0 && !name.contains(".so") && (4..=(64 << 10)).contains(&size) {
         let bytes = fs::read(path)?;
         if bytes.starts_with(b"#!") && std::str::from_utf8(&bytes).is_ok_and(panpak_core::libpath::sets_library_path) {
-            return Ok(FileInfo { flags: FILE_SETS_LD_PATH, soname: None, ext: Vec::new() });
+            return Ok(FileInfo { flags: FILE_SETS_LD_PATH, soname: None, patch: None, ext: Vec::new() });
         }
     }
     Ok(FileInfo::default())

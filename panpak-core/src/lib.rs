@@ -28,6 +28,7 @@ pub mod messages;
 pub mod startfiles;
 pub mod permissions;
 pub mod pending;
+pub mod patch;
 pub mod pkgenv;
 mod errors;
 mod layout;
@@ -171,7 +172,9 @@ pub const FILE_ELF: u8 = 1;
 pub const FILE_SETS_LD_PATH: u8 = 2;
 /// The ELF file has a SONAME (it follows the flags).
 pub const FILE_HAS_SONAME: u8 = 4;
-const FILE_FLAGS_KNOWN: u8 = FILE_ELF | FILE_SETS_LD_PATH | FILE_HAS_SONAME;
+/// The entry has a patch: the file of the previous version that it starts from and where the patch is (it follows the SONAME).
+pub const FILE_HAS_PATCH: u8 = 8;
+const FILE_FLAGS_KNOWN: u8 = FILE_ELF | FILE_SETS_LD_PATH | FILE_HAS_SONAME | FILE_HAS_PATCH;
 /// The largest extension area of a file.
 pub const MAX_FILE_EXT: usize = 1024;
 /// The longest SONAME.
@@ -184,6 +187,8 @@ pub struct FileInfo {
     pub flags: u8,
     /// The SONAME of an ELF file that has one.
     pub soname: Option<String>,
+    /// A patch that rebuilds the file from the same file of the previous version (PANPAK-FORMAT.md §4.1).
+    pub patch: Option<patch::PatchRef>,
     /// The extension area: fields that a later version of the format may add for a file, as entries `u16 type, u16 length, data`. The top bit of the type
     /// makes an entry critical: a reader that does not know a critical entry refuses the package ("update panpak"). None is defined yet.
     pub ext: Vec<u8>,
@@ -215,6 +220,17 @@ fn parse_file_info(r: &mut Reader) -> Result<FileInfo> {
     } else {
         None
     };
+    let patch = if flags & FILE_HAS_PATCH != 0 {
+        let base: [u8; 32] = r.take(32)?.try_into().context("patch base")?;
+        let off = r.u64()?;
+        let len = r.u32()?;
+        let hash: [u8; 32] = r.take(32)?.try_into().context("patch hash")?;
+        ensure!((1..=patch::MAX_PATCH_LEN).contains(&len), "patch length out of range");
+        ensure!(off.checked_add(len as u64).is_some(), "patch offset out of range");
+        Some(patch::PatchRef { base, off, len, hash })
+    } else {
+        None
+    };
     let n = r.u16()? as usize;
     ensure!(n <= MAX_FILE_EXT, "extension area of a file too large");
     let ext = r.take(n)?.to_vec();
@@ -229,15 +245,21 @@ fn parse_file_info(r: &mut Reader) -> Result<FileInfo> {
         }
         at += 4 + len;
     }
-    Ok(FileInfo { flags, soname, ext })
+    Ok(FileInfo { flags, soname, patch, ext })
 }
 
 fn encode_file_info(out: &mut Vec<u8>, info: &FileInfo) {
-    let flags = (info.flags & !FILE_HAS_SONAME) | if info.soname.is_some() { FILE_HAS_SONAME } else { 0 };
+    let flags = (info.flags & !(FILE_HAS_SONAME | FILE_HAS_PATCH)) | if info.soname.is_some() { FILE_HAS_SONAME } else { 0 } | if info.patch.is_some() { FILE_HAS_PATCH } else { 0 };
     out.push(flags);
     if let Some(s) = &info.soname {
         out.extend_from_slice(&(s.len() as u16).to_le_bytes());
         out.extend_from_slice(s.as_bytes());
+    }
+    if let Some(p) = &info.patch {
+        out.extend_from_slice(&p.base);
+        out.extend_from_slice(&p.off.to_le_bytes());
+        out.extend_from_slice(&p.len.to_le_bytes());
+        out.extend_from_slice(&p.hash);
     }
     out.extend_from_slice(&(info.ext.len() as u16).to_le_bytes());
     out.extend_from_slice(&info.ext);
@@ -2053,8 +2075,8 @@ mod tests {
         ];
         let mut entries = entries;
         // The index says what is an ELF file and what its SONAME is: no file is opened.
-        entries[0].info = crate::FileInfo { flags: crate::FILE_ELF | crate::FILE_HAS_SONAME, soname: Some("Mesh.so".into()), ext: vec![] };
-        entries[3].info = crate::FileInfo { flags: crate::FILE_ELF | crate::FILE_HAS_SONAME, soname: Some("libplugin.so.2".into()), ext: vec![] };
+        entries[0].info = crate::FileInfo { flags: crate::FILE_ELF | crate::FILE_HAS_SONAME, soname: Some("Mesh.so".into()), patch: None, ext: vec![] };
+        entries[3].info = crate::FileInfo { flags: crate::FILE_ELF | crate::FILE_HAS_SONAME, soname: Some("libplugin.so.2".into()), patch: None, ext: vec![] };
         let m = crate::abi::bundled_libs_from_entries(&entries);
         assert_eq!(m.get("Mesh.so"), Some(&std::path::PathBuf::from("usr/lib/Mesh.so")));
         assert!(m.contains_key("libfoo.so.1") && !m.contains_key("data.txt"));
