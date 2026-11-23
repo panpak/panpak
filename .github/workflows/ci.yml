@@ -380,6 +380,9 @@ jobs:
       - name: The folder that --write-rename opens (PP-07)
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/open_rename.py
+      - name: Kept versions (three good starts, two failed ones ask, the rollback goes to the version that worked; debug build, a stand-in window tool)
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/kept_versions.py
       - name: The collection keeps what it cannot read the links of (P2-04)
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/gc_unreadable.py

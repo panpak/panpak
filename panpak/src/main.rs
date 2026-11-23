@@ -834,9 +834,10 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     // The version that came before and worked (`last_good`, PANPAK-FORMAT.md section 6.10) comes back when there is one that is not the installed one; else the
     // previous version, as before.
     let good = panpak_core::starts::last_good(&appdir).filter(|g| g != &cur_t && fs::symlink_metadata(g).is_ok());
-    let prev_t = match good {
-        Some(g) => g,
-        None => panpak_core::durable::resolve_link(&previous).context("missing previous: no update to roll back")?,
+    // The link that names it: the identity of the record is checked through that link (it must be a record of this app).
+    let (prev_t, via) = match good {
+        Some(g) => (g, appdir.join(panpak_core::starts::LAST_GOOD)),
+        None => (panpak_core::durable::resolve_link(&previous).context("missing previous: no update to roll back")?, previous.clone()),
     };
     // The files of the version that comes back must still be there.
     let store = store_dir()?;
@@ -850,7 +851,7 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
         panpak_core::release::check_rollback(panpak_core::release::seen_floor(&appdir).max(installed_floor), prev_rev)?;
         // `previous` must be a record of this app, as the start asks of `current` (PP-01): otherwise the swap would leave the app with a record that it cannot start.
         if is_record {
-            panpak_core::record::check_identity(&prev_t, &pman_for_floor.app.id, &pman_for_floor.app.version, &panpak_core::hex(&pft.root))?;
+            panpak_core::record::check_identity(&via, &pman_for_floor.app.id, &pman_for_floor.app.version, &panpak_core::hex(&pft.root))?;
         }
         (pft, pman_for_floor.app.name.clone(), pman_for_floor.app.version.clone())
     };
