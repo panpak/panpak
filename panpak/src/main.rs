@@ -136,6 +136,7 @@ fn patches_url(url: &str) -> Option<String> {
 /// patch is used for a file only when the file that it starts from is in the installed tree (the hash of that file is the one the index gives) and
 /// there is memory for it. Anything that goes wrong (no patches file, a short answer, a hash that does not match) leaves the file to its chunks. Returns
 /// the paths of the files that will be rebuilt by a patch (their index in `entries`) and the bytes that came.
+#[allow(clippy::too_many_arguments)]
 fn fetch_patches(
     agent: &ureq::Agent,
     url: &str,
