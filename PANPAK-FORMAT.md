@@ -947,6 +947,17 @@ duplicates, but still verifies them one by one). Overlapping chunk
 ranges are structurally allowed, but every chunk MUST be verified
 independently (§5 point 5).
 
+**Caches that the writer makes.** `panpak pack` writes the file `icon-theme.cache` into every icon theme folder (`share/icons/<theme>/`) that has icons and none, in the format that
+GTK 3 and Qt read (the bytes `gtk-update-icon-cache -f -t -i` writes: no image data, the index of the theme ignored). The file is data of the package like any other (it is in the index, chunked and hashed), and
+the reader gives it the time of §6.9 so that GTK and Qt keep it. A Reader does not need to know of it.
+
+**The compression level is not part of the identity of the content.** The hash of a chunk is the BLAKE3 of its raw bytes (§5 point 5), and the name of a file in the store
+is made of those hashes (§6), so the same file compressed at another level has the same chunks and the same name in the store: an update between a package made at one level and a package
+made at another fetches only the chunks that really differ, and a store never holds a file twice because of the level. Only the bytes of the package (the index, with the sizes and offsets of the compressed
+chunks, and so the root hash and the signature) change with the level. A Writer MAY use any level (the reference `panpak pack` uses 19 since 2026-11-23, before it 3, and `panpak convert` uses 3; both take `--level`); a Reader MUST accept
+any level. A Writer SHOULD make frames whose window is at most 8 MiB (the window of level 19), and a Reader MAY refuse a frame that asks for a window of more than 128 MiB.
+Two publications of the same release at two levels are two different packages with two different root hashes, and a release is published once (the rule of the same revision, in the release checks of §3): the level is chosen when the release is made, never changed for a release that exists.
+
 ### 4.1 Patches [NORMATIVE]
 
 A file of a new release MAY carry a *patch*: the file written as one zstd frame that uses the same file of the immediately previous release as its dictionary (a
@@ -965,7 +976,7 @@ does not have the file, or does not answer, costs the client nothing but the chu
 
 *Making.* A Writer MAY make a patch only from the file at the same path in the immediately previous release, never from an older one, and only for a file of at least 64 KiB whose
 previous file and new file together are at most 2^28 bytes (the window of the frame is 2^28 at most; the Writer sets the window log to what the two files need, with long-distance matching).
-A Writer MUST NOT publish a patch that weighs more than half of the compressed chunks of the file that a client that has the previous release would download (the chunks the previous release does
+A Writer MUST NOT publish a patch that weighs as much as or more than the compressed chunks of the file that a client that has the previous release would download (the chunks the previous release does
 not have). The patch is made when the package is made, so it is signed with it.
 
 *Using.* A Reader that uses a patch MUST, in this order: (1) have the file of the previous release in the installed tree at the same path and check that its BLAKE3 is `base`; (2)
@@ -973,17 +984,6 @@ have enough free memory (twice the two files together, and a margin); (3) downlo
 decompressor; (4) decompress with the file of (1) as the dictionary, a window limit of 2^28 and an output limit of the size that the index gives for the file, and refuse a frame that
 ends before or after that size or has bytes after it; (5) check the result against the chunks of the index like any file (§5 point 5). A Reader that finds any of this wrong MUST fall
 back to the chunks of the file. So only bytes with a signed hash reach the decompressor, and a patch cannot make a file that the index does not describe.
-**Caches that the writer makes.** `panpak pack` writes the file `icon-theme.cache` into every icon theme folder (`share/icons/<theme>/`) that has icons and none, in the format that
-GTK 3 and Qt read (the bytes `gtk-update-icon-cache -f -t -i` writes: no image data, the index of the theme ignored). The file is data of the package like any other (it is in the index, chunked and hashed), and
-the reader gives it the time of §6.9 so that GTK and Qt keep it. A Reader does not need to know of it.
-
-**The compression level is not part of the identity of the content.** The hash of a chunk is the BLAKE3 of its raw bytes (§5 point 5), and the name of a file in the store
-is made of those hashes (§6), so the same file compressed at another level has the same chunks and the same name in the store: an update between a package made at one level and a package
-made at another fetches only the chunks that really differ, and a store never holds a file twice because of the level. Only the bytes of the package (the index, with the sizes and offsets of the compressed
-chunks, and so the root hash and the signature) change with the level. A Writer MAY use any level (the reference `panpak pack` uses 19 since 2026-11-23, before it 3, and `panpak convert` uses 3; both take `--level`); a Reader MUST accept
-any level. A Writer SHOULD make frames whose window is at most 8 MiB (the window of level 19), and a Reader MAY refuse a frame that asks for a window of more than 128 MiB.
-Two publications of the same release at two levels are two different packages with two different root hashes, and a release is published once (the rule of the same revision, in the release checks of §3): the level is chosen when the release is made, never changed for a release that exists.
-
 ## 5. Verification rules (mandatory) [NORMATIVE]
 
 A Reader MUST run these checks, in this order, and MUST reject the

@@ -2053,13 +2053,20 @@ fn payload_bytes(p: &PayloadEntry) -> Result<Option<Vec<u8>>> {
     })
 }
 
-/// A file that changed from the earlier release gets a patch when the patch weighs at most half of what the client would download for the file (the
-/// chunks that the earlier release does not have). Returns how many patches and how many bytes. The patches are written one after the other to `path`.
+/// A file that changed from the earlier release gets a patch when the patch weighs less than what the client would download for the file without it: the chunks of
+/// the file that the earlier release does not have (PANPAK-FORMAT.md section 4.1). Returns how many patches and how many bytes. The patches are made on several
+/// threads, as many as the cores and the free memory allow (each needs the two files, and the compressor needs a few times the window), and written one after the other
+/// to `path` in the order of the files, so the same input gives the same bytes.
 fn make_patches(payload: &mut [PayloadEntry], chunks: &[Chunk], prev: &PrevFiles, path: &Path) -> Result<(usize, u64)> {
     use panpak_core::patch;
-    let mut out: Option<File> = None;
-    let (mut n, mut off) = (0usize, 0u64);
-    for p in payload.iter_mut() {
+    use std::sync::{Condvar, Mutex};
+    struct Job {
+        at: usize,
+        weight: u64,
+        cost: u64,
+    }
+    let mut jobs: Vec<Job> = Vec::new();
+    for (at, p) in payload.iter().enumerate() {
         let Kind::File { chunks: ids } = &p.entry.kind else { continue };
         let Some(old_ids) = prev.ids.get(&p.entry.path) else { continue };
         let size: u64 = ids.iter().map(|&i| chunks[i as usize].raw as u64).sum();
@@ -2069,24 +2076,89 @@ fn make_patches(payload: &mut [PayloadEntry], chunks: &[Chunk], prev: &PrevFiles
         // What the client downloads without a patch: the chunks of the file that the earlier release does not have.
         let mut seen = std::collections::HashSet::new();
         let weight: u64 = ids.iter().filter(|&&i| seen.insert(i) && !prev.hashes.contains(&chunks[i as usize].hash)).map(|&i| chunks[i as usize].comp as u64).sum();
-        if weight < 16 << 10 {
+        if weight < 4 << 10 {
             continue;
         }
         let old_size: u64 = old_ids.iter().map(|&i| prev.chunks[i as usize].raw as u64).sum();
         if patch::window_log(old_size, size).is_none() {
             continue;
         }
-        // Memory: the two files, and the work of the compressor, which is a few times the window.
-        if available_memory().is_some_and(|a| a < patch::memory_needed(old_size, size).saturating_mul(3) + (512 << 20)) {
-            continue;
+        jobs.push(Job { at, weight, cost: patch::memory_needed(old_size, size).saturating_mul(3).saturating_add(128 << 20) });
+    }
+    if jobs.is_empty() {
+        return Ok((0, 0));
+    }
+    // The memory that the work may use: what is free, less a margin; with no figure, a share per core.
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get()).min(16);
+    let budget = available_memory().map_or(u64::MAX, |a| a.saturating_sub(512 << 20));
+    // (memory in use, jobs running)
+    let gate = (Mutex::new((0u64, 0usize)), Condvar::new());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    let made: Mutex<Vec<Option<(Vec<u8>, [u8; 32])>>> = Mutex::new((0..jobs.len()).map(|_| None).collect());
+    let shared: &[PayloadEntry] = payload;
+    std::thread::scope(|sc| {
+        for _ in 0..cores.min(jobs.len()) {
+            sc.spawn(|| loop {
+                let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(job) = jobs.get(k) else { return };
+                if failed.lock().map(|f| f.is_some()).unwrap_or(true) {
+                    return;
+                }
+                // Wait until the memory is there; a job alone that is above the budget does not run (the chunks are sent).
+                {
+                    let (m, cv) = &gate;
+                    let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+                    if job.cost > budget {
+                        continue;
+                    }
+                    while g.0.saturating_add(job.cost) > budget && g.1 > 0 {
+                        g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
+                    }
+                    g.0 += job.cost;
+                    g.1 += 1;
+                }
+                let one = || -> Result<Option<(Vec<u8>, [u8; 32])>> {
+                    let p = &shared[job.at];
+                    let Some(base) = prev.read(&p.entry.path) else { return Ok(None) };
+                    let Some(new) = payload_bytes(p)? else { return Ok(None) };
+                    let bytes = patch::make(&base, &new, ZSTD_LEVEL)?;
+                    Ok(Some((bytes, *blake3::hash(&base).as_bytes())))
+                };
+                let r = one();
+                {
+                    let (m, cv) = &gate;
+                    let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+                    g.0 -= job.cost;
+                    g.1 -= 1;
+                    cv.notify_all();
+                }
+                match r {
+                    Ok(v) => {
+                        if let Ok(mut m) = made.lock() {
+                            m[k] = v;
+                        }
+                    }
+                    Err(e) => {
+                        if let Ok(mut f) = failed.lock() {
+                            f.get_or_insert(e);
+                        }
+                        return;
+                    }
+                }
+            });
         }
-        let Some(base) = prev.read(&p.entry.path) else { continue };
-        let Some(new) = payload_bytes(p)? else { continue };
-        if new.len() as u64 != size {
-            continue;
-        }
-        let bytes = patch::make(&base, &new, ZSTD_LEVEL)?;
-        if bytes.len() as u64 * 2 > weight || bytes.len() as u64 > patch::MAX_PATCH_LEN as u64 {
+    });
+    if let Some(e) = failed.into_inner().ok().flatten() {
+        return Err(e);
+    }
+    let made = made.into_inner().unwrap_or_default();
+    let mut out: Option<File> = None;
+    let (mut n, mut off) = (0usize, 0u64);
+    for (job, m) in jobs.iter().zip(made) {
+        let Some((bytes, base)) = m else { continue };
+        // Published when it is smaller than what it replaces.
+        if bytes.len() as u64 >= job.weight || bytes.len() as u64 > patch::MAX_PATCH_LEN as u64 {
             continue;
         }
         let f = match &mut out {
@@ -2094,7 +2166,7 @@ fn make_patches(payload: &mut [PayloadEntry], chunks: &[Chunk], prev: &PrevFiles
             None => out.insert(File::create(path).with_context(|| format!("create {}", path.display()))?),
         };
         f.write_all(&bytes)?;
-        p.entry.info.patch = Some(patch::PatchRef { base: *blake3::hash(&base).as_bytes(), off, len: bytes.len() as u32, hash: *blake3::hash(&bytes).as_bytes() });
+        payload[job.at].entry.info.patch = Some(patch::PatchRef { base, off, len: bytes.len() as u32, hash: *blake3::hash(&bytes).as_bytes() });
         off += bytes.len() as u64;
         n += 1;
     }
