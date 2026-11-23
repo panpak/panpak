@@ -48,16 +48,22 @@ lowrun() {
 
 failed=()
 skipped=()
+timings=()
+started=$(date +%s)
 step() { # step "name" command...
 	local name="$1"
 	shift
 	printf '\n=== %s\n' "$name"
+	local t0 t1
+	t0=$(date +%s)
 	if "$@"; then
 		printf 'ok   %s\n' "$name"
 	else
 		printf 'FAIL %s\n' "$name"
 		failed+=("$name")
 	fi
+	t1=$(date +%s)
+	timings+=("$((t1 - t0)) s  $name")
 }
 skip() {
 	printf '\n=== %s\nskip %s\n' "$1" "$2"
@@ -113,6 +119,9 @@ if [ "$quick" = 0 ]; then
 fi
 
 printf '\n--------\n'
+printf 'times (seconds):\n'
+printf '  %s\n' "${timings[@]}"
+printf '  total %d s\n' "$(($(date +%s) - started))"
 for s in "${skipped[@]:-}"; do [ -n "$s" ] && printf 'skipped: %s\n' "$s"; done
 if [ "${#failed[@]}" -gt 0 ]; then
 	printf 'FAILED (%d):\n' "${#failed[@]}"
