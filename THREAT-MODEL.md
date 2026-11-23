@@ -611,6 +611,12 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   per-file grant); the "the app asks the user which file to open/save"
   case stays with the future broker (see PORTAL-DESIGN.md).
 - **Rollback**: `apps/<id>/previous` + `panpak rollback` (atomic swap).
+- **Kept versions and the outcome of starts** (spec §6.10): a version that fails to start twice in a row makes the client ask the person whether to go back to the last version
+  that worked; it never goes back by itself, because an attacker who can make an app fail (a hostile update that crashes, a file that is damaged) must not be able to choose the version that
+  runs. The question names the app and the versions only, so what it says is not data of the app. A rollback does not go below the floor of the author (§3.1.10), so a version that
+  the author withdrew for a serious problem does not come back this way. The outcome of the starts (counters in a file of the store) never leaves the computer. What is not solved: the
+  data of the app (its settings) can have been changed by the newer version in a way the older one cannot read; the client says so (the line of `panpak rollback`, the documents) and does not
+  try to undo it.
 - **A version below the floor of its author (protected mode, spec §3.1.10)**: it is not blocked. It runs with **no network but its own loopback**: in
   the isolated view this is the network namespace of an app with no network permission, so no TCP, UDP (DNS and QUIC too), IPv6 or other protocol
   leaves it (tested with datagrams that a socket of the test must not receive); **without the view** the filter of the system calls makes every IPv4 and

@@ -151,6 +151,8 @@ def main():
             assert isolation.read_floor(appdir) == 4
             r = run([BIN / 'panpak', 'rollback', ID], env, ok=False)
             assert 'PANPAK-E4003' in r.stderr and 'floor 4' in r.stderr, r.stderr
+            # The collection took the version below the floor out, and the rollback says why, not that a file is missing.
+            assert 'withdrawn by the author' in r.stderr and 'No such file' not in r.stderr, r.stderr
             installed = (appdir / 'current').resolve()
             serving(r3)
             r = update(['--allow-downgrade'], ok=False)

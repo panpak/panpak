@@ -118,6 +118,13 @@ pub const DOMAIN_CONTRA_FORCED: &str = "Going on because of --despite-domain-mis
 pub const DOMAIN_PRIVACY: &str = "To confirm who stands behind {domain}, Panpak asks https://{domain}/.well-known/panpak.toml. That server sees your internet address and that someone is installing an app of {domain}; nothing else is sent. To never ask: panpak config set trust.confirm_domain off (or --offline for one command).";
 pub const DOMAIN_KEY_HIDDEN: &str = "The key is not shown because {domain} confirms it (--show-key shows it).";
 
+// Kept versions: the question after two failed starts, and the line of `panpak rollback` (PANPAK-FORMAT.md 6.10).
+pub const NO_START_TITLE: &str = "{name} doesn't start";
+pub const NO_START_BODY: &str = "After the update to {new} it failed to start twice. You can go back to {old}, which worked.\nYour documents stay as they are.";
+pub const NO_START_GO_BACK: &str = "Go back to {old}";
+pub const NO_START_TRY_AGAIN: &str = "Try again";
+pub const ROLLED_BACK: &str = "Back to {name} {old}. Your documents are not touched; settings changed by the newer version may not work in this one.";
+
 /// Every message above, for the template of the translations and its test.
 pub const ALL: &[&str] = &[
     REMOVE_TITLE,
@@ -230,4 +237,9 @@ pub const ALL: &[&str] = &[
     DOMAIN_CONTRA_FORCED,
     DOMAIN_PRIVACY,
     DOMAIN_KEY_HIDDEN,
+    NO_START_TITLE,
+    NO_START_BODY,
+    NO_START_GO_BACK,
+    NO_START_TRY_AGAIN,
+    ROLLED_BACK,
 ];
