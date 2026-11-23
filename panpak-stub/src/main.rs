@@ -100,6 +100,9 @@ trait ChunkSource: Sync {
 struct PatchSource<'a> {
     dir: &'a Path,
     old_tree: &'a Path,
+    /// The files of the installed version, and its shared libraries by their name without version (where a renamed library's patch starts from).
+    old_files: &'a std::collections::HashSet<PathBuf>,
+    old_names: &'a std::collections::HashMap<String, Vec<PathBuf>>,
 }
 
 /// The chunks of an open package file.
@@ -126,6 +129,8 @@ struct StagedChunks {
     dir: Option<PathBuf>,
     /// The tree of the installed version (the files that patches start from).
     old_tree: Option<PathBuf>,
+    old_files: std::collections::HashSet<PathBuf>,
+    old_names: std::collections::HashMap<String, Vec<PathBuf>>,
     /// hash -> (file of the old tree, offset in it, raw length)
     old: std::collections::HashMap<[u8; 32], (PathBuf, u64, u32)>,
 }
@@ -145,7 +150,9 @@ impl StagedChunks {
                 }
             }
         }
-        Self { dir, old_tree: old.map(|(t, _, _)| t.to_path_buf()), old: map }
+        let old_files: std::collections::HashSet<PathBuf> = old.map(|(_, _, es)| es.iter().filter(|e| matches!(e.kind, Kind::File { .. })).map(|e| e.path.clone()).collect()).unwrap_or_default();
+        let old_names = panpak_core::patch::libraries_by_name(old_files.iter().map(|p| p.as_path()));
+        Self { dir, old_tree: old.map(|(t, _, _)| t.to_path_buf()), old_files, old_names, old: map }
     }
 }
 
@@ -155,7 +162,7 @@ impl ChunkSource for StagedChunks {
     }
 
     fn patches(&self) -> Option<PatchSource<'_>> {
-        Some(PatchSource { dir: self.dir.as_deref()?, old_tree: self.old_tree.as_deref()? })
+        Some(PatchSource { dir: self.dir.as_deref()?, old_tree: self.old_tree.as_deref()?, old_files: &self.old_files, old_names: &self.old_names })
     }
 
     fn raw<'a>(&self, c: &Chunk, dec: &mut ChunkDecoder, scratch: &'a mut Vec<u8>) -> Result<&'a [u8]> {
@@ -491,7 +498,8 @@ fn rebuild_by_patch(ps: &PatchSource, p: &panpak_core::patch::PatchRef, job: &Fi
     use panpak_core::patch;
     use std::io::Write;
     let size: u64 = job.ids.iter().map(|&id| chunks[id as usize].raw as u64).sum();
-    let base_path = ps.old_tree.join(job.rel);
+    let base_rel = patch::locate_base(job.rel, &|q| ps.old_files.contains(q), ps.old_names).context("no file of the installed version for the patch to start from")?;
+    let base_path = ps.old_tree.join(base_rel);
     let meta = fs::symlink_metadata(&base_path).context("the file of the installed version")?;
     ensure!(meta.file_type().is_file(), "the file of the installed version is not a file");
     ensure!(patch::window_log(meta.len(), size).is_some(), "the files are too large for a patch");
@@ -3845,13 +3853,21 @@ mod tests {
         let dl = dir.join("dl");
         fs::create_dir_all(dl.join("patches")).unwrap();
         fs::write(dl.join("patches").join(hex(&p.hash)), &comp).unwrap();
-        let ps = PatchSource { dir: &dl, old_tree: &old_tree };
+        let old_files: std::collections::HashSet<PathBuf> = [PathBuf::from("bin/app"), PathBuf::from("bin/libapp.so.1")].into_iter().collect();
+        let old_names = panpak_core::patch::libraries_by_name(old_files.iter().map(|p| p.as_path()));
+        let ps = PatchSource { dir: &dl, old_tree: &old_tree, old_files: &old_files, old_names: &old_names };
         let job = FileJob { dst: dir.join("x"), ids: &ids, mode: 0o755, rel: Path::new("bin/app"), patch: Some(p) };
         let run = |ps: &PatchSource, p: &panpak_core::patch::PatchRef| {
             let mut out = File::create(dir.join("out")).unwrap();
             rebuild_by_patch(ps, p, &job, &chunks, &mut out).map(|()| fs::read(dir.join("out")).unwrap())
         };
         assert_eq!(run(&ps, &p).unwrap(), new);
+        // A library that the new version renamed: the patch starts from the old name (the same file, found by its name without the version).
+        fs::write(old_tree.join("bin/libapp.so.1"), &base).unwrap();
+        let renamed = FileJob { dst: dir.join("y"), ids: &ids, mode: 0o755, rel: Path::new("bin/libapp.so.2"), patch: Some(p) };
+        let mut out = File::create(dir.join("out2")).unwrap();
+        rebuild_by_patch(&ps, &p, &renamed, &chunks, &mut out).unwrap();
+        assert_eq!(fs::read(dir.join("out2")).unwrap(), new);
         // A patch file that is not the one that the index signs: refused before the decompressor sees it.
         let mut bad = comp.clone();
         bad[comp.len() / 2] ^= 1;

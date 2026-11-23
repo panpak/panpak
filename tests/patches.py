@@ -49,6 +49,7 @@ def main():
         rnd = random.Random(7)
         big = bytearray(rnd.randbytes(10 << 20))
         small = rnd.randbytes(200_000)
+        lib = bytearray(rnd.randbytes(2 << 20))
         tree = tmp / 'tree'
         tree.mkdir()
         (tree / 'hello').write_text('#!/bin/sh\nexit 0\n')
@@ -61,14 +62,20 @@ def main():
         write_tree('1.0')
         (tree / 'big').write_bytes(big)
         (tree / 'small').write_bytes(small)
+        (tree / 'libx.so.1').write_bytes(lib)
         pack = [BIN / 'panpak', 'pack', tree, '--stub', BIN / 'panpak-stub', '--secret-file', tmp / 'secret.key']
         run([*pack, '-o', tmp / 'old.panpak'], env)
         assert not (tmp / 'old.panpak.patches').exists(), 'a first release has no patches'
         # The new version changes one byte in every 16 KiB of `big`: no chunk of it is the same, and the patch is tiny.
         for i in range(0, len(big), 16 << 10):
             big[i] ^= 0x5A
+        for i in range(0, len(lib), 16 << 10):
+            lib[i] ^= 0x33
         write_tree('1.1')
         (tree / 'big').write_bytes(big)
+        # A library that the new version renames: the patch starts from the old name.
+        (tree / 'libx.so.1').unlink()
+        (tree / 'libx.so.2').write_bytes(lib)
         out = run([*pack, '--previous', tmp / 'old.panpak', '-o', tmp / 'remote.panpak'], env).stdout
         patches = tmp / 'remote.panpak.patches'
         assert patches.exists() and 'patches from the earlier release' in out, out
@@ -100,6 +107,7 @@ def main():
             got = (store / 'trees' / new_root / 'big').read_bytes()
             assert got == bytes(big), 'the file is not the new one'
             assert (store / 'trees' / new_root / 'small').read_bytes() == small
+            assert (store / 'trees' / new_root / 'libx.so.2').read_bytes() == bytes(lib)
             return sum(r['bytes'] for r in rows), [r['path'] for r in rows], p
 
         with_patch, paths, p = update_with(original)

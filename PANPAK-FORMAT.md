@@ -974,12 +974,12 @@ a Reader that does not know bit 3 refuses the package like any other flag it doe
 range requests of §3.4. The file has no index, no footer and no signature of its own: each patch is identified, and checked, by the hash in the signed index. A server that
 does not have the file, or does not answer, costs the client nothing but the chunks.
 
-*Making.* A Writer MAY make a patch only from the file at the same path in the immediately previous release, never from an older one, and only for a file of at least 64 KiB whose
+*Making.* A Writer MAY make a patch only from the file at the same path in the immediately previous release, or, for a shared library that a new version renamed (`libQt6Core.so.6.12.0` and `libQt6Core.so.6.12.1`), from the one library of the same folder that has the same name without its version, in both releases (no guess between two); never from an older release, and only for a file of at least 64 KiB whose
 previous file and new file together are at most 2^28 bytes (the window of the frame is 2^28 at most; the Writer sets the window log to what the two files need, with long-distance matching).
 A Writer MUST NOT publish a patch that weighs as much as or more than the compressed chunks of the file that a client that has the previous release would download (the chunks the previous release does
 not have). The patch is made when the package is made, so it is signed with it.
 
-*Using.* A Reader that uses a patch MUST, in this order: (1) have the file of the previous release in the installed tree at the same path and check that its BLAKE3 is `base`; (2)
+*Using.* A Reader that uses a patch MUST, in this order: (1) have the file of the previous release in the installed tree, at the same path or found by the name without version as above, and check that its BLAKE3 is `base` (a file found wrongly costs only the patch: the hash does not match and the chunks are downloaded); (2)
 have enough free memory (twice the two files together, and a margin); (3) download the patch and check that its BLAKE3 is `patch_hash` **before** it gives a byte of it to the
 decompressor; (4) decompress with the file of (1) as the dictionary, a window limit of 2^28 and an output limit of the size that the index gives for the file, and refuse a frame that
 ends before or after that size or has bytes after it; (5) check the result against the chunks of the index like any file (§5 point 5). A Reader that finds any of this wrong MUST fall

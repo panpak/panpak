@@ -141,6 +141,7 @@ fn fetch_patches(
     url: &str,
     staging: &Path,
     old_tree: &Path,
+    old_entries: &[Entry],
     entries: &[Entry],
     chunks: &[panpak_core::Chunk],
     have: &std::collections::HashSet<([u8; 32], u32)>,
@@ -149,13 +150,16 @@ fn fetch_patches(
     let none = (std::collections::HashSet::new(), 0);
     let Some(purl) = patches_url(url) else { return none };
     let mut plan: Vec<(usize, patch::PatchRef)> = Vec::new();
+    let old_files: std::collections::HashSet<&Path> = old_entries.iter().filter(|e| matches!(e.kind, Kind::File { .. })).map(|e| e.path.as_path()).collect();
+    let old_names = patch::libraries_by_name(old_files.iter().copied());
     for (i, e) in entries.iter().enumerate() {
         let (Some(p), Kind::File { chunks: ids }) = (e.info.patch, &e.kind) else { continue };
         if !ids.iter().any(|&id| !have.contains(&(chunks[id as usize].hash, chunks[id as usize].raw))) {
             continue;
         }
         let size: u64 = ids.iter().map(|&id| chunks[id as usize].raw as u64).sum();
-        let base_path = old_tree.join(&e.path);
+        let Some(base_rel) = patch::locate_base(&e.path, &|q| old_files.contains(q), &old_names) else { continue };
+        let base_path = old_tree.join(base_rel);
         let Ok(meta) = fs::symlink_metadata(&base_path) else { continue };
         if !meta.file_type().is_file() || patch::window_log(meta.len(), size).is_none() || !patch::enough_memory(meta.len(), size, patch::available_memory()) {
             continue;
@@ -163,6 +167,10 @@ fn fetch_patches(
         if fs::read(&base_path).is_ok_and(|b| blake3::hash(&b).as_bytes() == &p.base) {
             plan.push((i, p));
         }
+    }
+    if panpak_core::debug_enabled() {
+        let with_patch = entries.iter().filter(|e| e.info.patch.is_some()).count();
+        eprintln!("panpak: debug: patches: {} files have one in the index, {} can be used here ({} bytes of patches)", with_patch, plan.len(), plan.iter().map(|(_, p)| p.len as u64).sum::<u64>());
     }
     if plan.is_empty() {
         return none;
@@ -182,6 +190,9 @@ fn fetch_patches(
         } else {
             let _ = fs::remove_file(&f);
         }
+    }
+    if panpak_core::debug_enabled() {
+        eprintln!("panpak: debug: patches: {} downloaded and checked, {} bytes came", used.len(), bytes);
     }
     (used, bytes)
 }
@@ -262,7 +273,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
     // The installed version is its record (the signed index and manifest) and its tree.
     let old = panpak_core::record::open_verified(&current_pkg).context("unreadable record of the installed version")?;
     let (old_ft, old_man, old_raw) = (old.footer, old.manifest, old.raw_index);
-    let (old_chunks0, _) = panpak_core::parse_index(&old_raw)?;
+    let (old_chunks0, old_entries0) = panpak_core::parse_index(&old_raw)?;
     let url = old_man.update.as_ref().and_then(|u| u.url.clone()).context("manifest without [update].url")?;
     let agent = agent_for(&url, allow_insecure, timeout_secs)?;
 
@@ -358,8 +369,12 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
         let staging = store.join("staging").join(app_id).join(&root_hex);
         drop(first_lock.take());
         // Files that changed and have a patch from the installed file: the patch is downloaded instead of the chunks that only that file needs.
-        let (patched_files, patch_bytes) = fetch_patches(&agent, &url, &staging, &old_tree, &entries, &chunks, &have);
+        let (patched_files, patch_bytes) = fetch_patches(&agent, &url, &staging, &old_tree, &old_entries0, &entries, &chunks, &have);
         let skip = chunks_replaced_by_patches(&entries, &patched_files);
+        if panpak_core::debug_enabled() {
+            let skipped: u64 = skip.iter().map(|&i| chunks[i as usize].comp as u64).sum();
+            eprintln!("panpak: debug: the chunks that the patches replace: {} chunks, {} bytes", skip.len(), skipped);
+        }
         let needed: Vec<panpak_core::Chunk> = chunks.iter().enumerate().filter(|(i, c)| !have.contains(&(c.hash, c.raw)) && !skip.contains(&(*i as u32))).map(|(_, c)| c.clone()).collect();
         n_reused = (chunks.len() - needed.len()) as u64;
         let fetch_package = |start: u64, end: u64| -> Result<Vec<u8>> {
@@ -2062,13 +2077,29 @@ fn make_patches(payload: &mut [PayloadEntry], chunks: &[Chunk], prev: &PrevFiles
     use std::sync::{Condvar, Mutex};
     struct Job {
         at: usize,
+        /// The file of the earlier release that the patch starts from.
+        base: PathBuf,
         weight: u64,
         cost: u64,
+    }
+    // A library that a new version renamed (`libQt6Core.so.6.12.0` -> `.6.12.1`) starts from the one it replaces: found by its name without the version, and only when that
+    // name is the one library of its folder in both releases (no guess between two).
+    let old_by_name = patch::libraries_by_name(prev.ids.keys().map(|p| p.as_path()));
+    let mut new_by_name: HashMap<String, usize> = HashMap::new();
+    for p in payload.iter() {
+        if matches!(p.entry.kind, Kind::File { .. }) {
+            if let Some(k) = patch::unversioned_library(&p.entry.path) {
+                *new_by_name.entry(k).or_default() += 1;
+            }
+        }
     }
     let mut jobs: Vec<Job> = Vec::new();
     for (at, p) in payload.iter().enumerate() {
         let Kind::File { chunks: ids } = &p.entry.kind else { continue };
-        let Some(old_ids) = prev.ids.get(&p.entry.path) else { continue };
+        // The same path, else the library it renames; the name must be that of one library of the new release too, so that two new files do not both start from the one old file.
+        let renamed_ok = patch::unversioned_library(&p.entry.path).is_none_or(|k| new_by_name.get(&k) == Some(&1));
+        let Some(base_path) = patch::locate_base(&p.entry.path, &|q| prev.ids.contains_key(q), &old_by_name).filter(|_| renamed_ok || prev.ids.contains_key(&p.entry.path)) else { continue };
+        let Some(old_ids) = prev.ids.get(&base_path) else { continue };
         let size: u64 = ids.iter().map(|&i| chunks[i as usize].raw as u64).sum();
         if size < patch::PATCH_MIN_FILE || ids.iter().map(|&i| chunks[i as usize].hash).eq(old_ids.iter().map(|&i| prev.chunks[i as usize].hash)) {
             continue;
@@ -2083,7 +2114,7 @@ fn make_patches(payload: &mut [PayloadEntry], chunks: &[Chunk], prev: &PrevFiles
         if patch::window_log(old_size, size).is_none() {
             continue;
         }
-        jobs.push(Job { at, weight, cost: patch::memory_needed(old_size, size).saturating_mul(3).saturating_add(128 << 20) });
+        jobs.push(Job { at, base: base_path, weight, cost: patch::memory_needed(old_size, size).saturating_mul(3).saturating_add(128 << 20) });
     }
     if jobs.is_empty() {
         return Ok((0, 0));
@@ -2122,7 +2153,7 @@ fn make_patches(payload: &mut [PayloadEntry], chunks: &[Chunk], prev: &PrevFiles
                 }
                 let one = || -> Result<Made> {
                     let p = &shared[job.at];
-                    let Some(base) = prev.read(&p.entry.path) else { return Ok(None) };
+                    let Some(base) = prev.read(&job.base) else { return Ok(None) };
                     let Some(new) = payload_bytes(p)? else { return Ok(None) };
                     let bytes = patch::make(&base, &new, ZSTD_LEVEL)?;
                     Ok(Some((bytes, *blake3::hash(&base).as_bytes())))

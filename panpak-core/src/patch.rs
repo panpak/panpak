@@ -5,6 +5,8 @@
 //! bytes that reach the decompressor have a signed hash. The rebuilt file is checked against the chunks of the index in any case.
 
 use anyhow::{ensure, Context, Result};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use zstd::stream::raw::{CParameter, DParameter, Decoder, Encoder, InBuffer, Operation, OutBuffer};
 
 /// A file smaller than this is not worth a patch.
@@ -58,6 +60,48 @@ pub fn enough_memory(base: u64, out: u64, available: Option<u64>) -> bool {
 /// The memory that making or using a patch needs, with a margin: the base, the output of the decoder and the window, twice over.
 pub fn memory_needed(base: u64, out: u64) -> u64 {
     (base + out).saturating_mul(2)
+}
+
+/// The name of a shared library without its version (`libQt6Core.so.6.12.0` and `libQt6Core.so.6.12.1` are `libQt6Core.so`; `libfoo-1.2.so` is `libfoo.so`), with its folder:
+/// what ties a library that was renamed by a new version to the one it replaces. `None` for a file that is not a shared library.
+pub fn unversioned_library(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let at = name.find(".so")?;
+    let (stem, tail) = name.split_at(at);
+    // `.so` followed only by `.<digits>` groups.
+    if !tail[3..].split('.').filter(|g| !g.is_empty()).all(|g| g.bytes().all(|b| b.is_ascii_digit())) || (!tail[3..].is_empty() && !tail[3..].starts_with('.')) {
+        return None;
+    }
+    // A version of the form `-1.2` before `.so`.
+    let stem = match stem.rfind('-') {
+        Some(d) if !stem[d + 1..].is_empty() && stem[d + 1..].bytes().all(|b| b.is_ascii_digit() || b == b'.') => &stem[..d],
+        _ => stem,
+    };
+    Some(format!("{}/{stem}.so", path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()))
+}
+
+/// Where the file that a patch starts from is in the previous release, for the file at `path` of the new one: the same path, else the one shared library of the folder that has
+/// the same name without its version. `by_name` maps the name without version to the files of the previous release that have it. The hash in the index
+/// (`PatchRef::base`) says whether the guess was right, so a wrong one costs nothing but the patch.
+pub fn locate_base(path: &Path, exists: &dyn Fn(&Path) -> bool, by_name: &HashMap<String, Vec<PathBuf>>) -> Option<PathBuf> {
+    if exists(path) {
+        return Some(path.to_path_buf());
+    }
+    match by_name.get(&unversioned_library(path)?) {
+        Some(o) if o.len() == 1 => Some(o[0].clone()),
+        _ => None,
+    }
+}
+
+/// The previous release's shared libraries by their name without version, from the paths of its files.
+pub fn libraries_by_name<'a>(paths: impl Iterator<Item = &'a Path>) -> HashMap<String, Vec<PathBuf>> {
+    let mut m: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for p in paths {
+        if let Some(k) = unversioned_library(p) {
+            m.entry(k).or_default().push(p.to_path_buf());
+        }
+    }
+    m
 }
 
 /// The patch that makes `new` from `base`.
@@ -126,6 +170,26 @@ pub fn apply(base: &[u8], patch: &[u8], out_len: u64, sink: &mut dyn FnMut(&[u8]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_renamed_library_is_found_by_its_name_without_the_version() {
+        let u = |s: &str| unversioned_library(Path::new(s));
+        assert_eq!(u("usr/lib/libQt6Core.so.6.12.0").as_deref(), Some("usr/lib/libQt6Core.so"));
+        assert_eq!(u("usr/lib/libQt6Core.so.6.12.1"), u("usr/lib/libQt6Core.so.6"));
+        assert_eq!(u("usr/lib/libicudata.so.78.3").as_deref(), Some("usr/lib/libicudata.so"));
+        assert_eq!(u("usr/lib/libfoo-1.2.so").as_deref(), Some("usr/lib/libfoo.so"));
+        assert_eq!(u("usr/lib/libfoo.so").as_deref(), Some("usr/lib/libfoo.so"));
+        assert_eq!(u("usr/bin/kdenlive"), None);
+        assert_eq!(u("usr/share/x.sock.d/a"), None);
+        assert_ne!(u("usr/lib/libz.so.1"), u("usr/lib64/libz.so.1"), "the folder counts");
+        let old = [Path::new("usr/lib/libQt6Core.so.6.12.0"), Path::new("usr/lib/libx.so.1"), Path::new("usr/lib/libx.so.2")];
+        let by = libraries_by_name(old.iter().copied());
+        let ex = |p: &Path| old.contains(&p);
+        assert_eq!(locate_base(Path::new("usr/lib/libQt6Core.so.6.12.1"), &ex, &by).as_deref(), Some(Path::new("usr/lib/libQt6Core.so.6.12.0")));
+        assert_eq!(locate_base(Path::new("usr/lib/libQt6Core.so.6.12.0"), &ex, &by).as_deref(), Some(Path::new("usr/lib/libQt6Core.so.6.12.0")), "the same path first");
+        assert_eq!(locate_base(Path::new("usr/lib/libx.so.3"), &ex, &by), None, "two libraries with that name: no guess");
+        assert_eq!(locate_base(Path::new("usr/bin/other"), &ex, &by), None);
+    }
 
     fn data(n: usize, seed: u64) -> Vec<u8> {
         let mut s = seed;
