@@ -39,6 +39,7 @@ pub mod safefs;
 pub mod seccomp;
 pub mod cachewipe;
 pub mod stalelocks;
+pub mod starts;
 pub mod unitname;
 pub mod wayland;
 mod userdirs;

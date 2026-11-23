@@ -558,3 +558,18 @@ msgstr "Per confermare chi c'è dietro {domain}, Panpak chiede https://{domain}/
 
 msgid "The key is not shown because {domain} confirms it (--show-key shows it)."
 msgstr "La chiave non viene mostrata perché {domain} la conferma (--show-key la mostra)."
+
+msgid "{name} doesn't start"
+msgstr "{name} non si avvia"
+
+msgid "After the update to {new} it failed to start twice. You can go back to {old}, which worked.\nYour documents stay as they are."
+msgstr "Dopo l'aggiornamento alla versione {new} non si è avviata per due volte. Puoi tornare alla versione {old}, che funzionava.\nI tuoi documenti restano come sono."
+
+msgid "Go back to {old}"
+msgstr "Torna alla versione {old}"
+
+msgid "Try again"
+msgstr "Riprova"
+
+msgid "Back to {name} {old}. Your documents are not touched; settings changed by the newer version may not work in this one."
+msgstr "Tornato a {name} {old}. I tuoi documenti non sono toccati; le impostazioni cambiate dalla versione più recente potrebbero non funzionare in questa."
