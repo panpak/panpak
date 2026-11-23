@@ -1190,7 +1190,7 @@ The cache folder of an app (the `XDG_CACHE_HOME` of the app, `$XDG_CACHE_HOME/pa
 A client keeps, for an installed app, the installed version, a staged version, and the *last good* version: the last version that worked, named by the link `apps/<id>/last_good`
 (the record, as `current` names one). The previous version (`previous`) is kept until the installed version has worked, and always when the person asked (the file
 `apps/<id>/keep_previous`, made by `panpak keep-previous`). A rollback goes to the last good version when there is one that is not the installed version, else to the previous one;
-it is refused for a version below the floor (§3.1.10), which a client does not keep for that purpose either. With free space under 2 GiB or under 5 percent the collection (§6.8) drops the last good version first (never
+it is refused for a version below the floor (§3.1.10), and a last good version below the floor is not kept. With free space under 2 GiB or under 5 percent the collection (§6.8) drops the last good version first (never
 the installed or staged one).
 
 *The outcome of a start.* The process that holds the app counts how each start ended, in `apps/<id>/starts` (lines `root=<hex>`, `good=<n>`, `failed=<n>`; the counters are of the

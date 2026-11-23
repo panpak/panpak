@@ -189,7 +189,7 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
         let floor = panpak_core::release::seen_floor(&appdir);
         // Kept versions (PANPAK-FORMAT.md section 6.10): the installed version, the staged one, and the last version that worked. The previous one stays until
         // the installed version has worked (it is then the one to go back to), and always when the person asked (`panpak keep-previous`). With little free space
-        // the version that worked goes first; no version below the floor of its author is kept for a rollback, since a rollback does not go there.
+        // the version that worked goes first; the last good version is not kept when it is below the floor of its author, since a rollback does not go there.
         let proven_now = good_rec.is_some() && good_rec == current_rec;
         let below_floor = |link: &Path| {
             panpak_core::durable::resolve_link(link).ok().and_then(|t| panpak_core::record::open_verified(&t).ok()).and_then(|o| o.manifest.release).is_some_and(|r| r.revision < floor)
@@ -197,7 +197,7 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
         for link in ["current", "previous", panpak_core::pending::LINK, panpak_core::starts::LAST_GOOD] {
             let path = appdir.join(link);
             let dropped = match link {
-                "previous" => (proven_now && !panpak_core::starts::keeps_previous(&appdir)) || below_floor(&path),
+                "previous" => proven_now && !panpak_core::starts::keeps_previous(&appdir),
                 panpak_core::starts::LAST_GOOD => (pressure && good_rec != current_rec) || below_floor(&path),
                 _ => false,
             };
