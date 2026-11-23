@@ -951,6 +951,11 @@ independently (§5 point 5).
 GTK 3 and Qt read (the bytes `gtk-update-icon-cache -f -t -i` writes: no image data, the index of the theme ignored). The file is data of the package like any other (it is in the index, chunked and hashed), and
 the reader gives it the time of §6.9 so that GTK and Qt keep it. A Reader does not need to know of it.
 
+**Python that the writer precompiles.** When a package carries its own Python (an ELF file `bin/python3.N`) and Python sources, `panpak pack` runs that Python once on the files of the package and adds
+the result: `__pycache__/<name>.cpython-3N.pyc` files made with `compileall --invalidation-mode unchecked-hash` (a `.pyc` of this kind does not look at the time of its source, which the store sets itself, so it is
+valid at every start; the same source gives the same bytes). The run is in a sandbox with no network, the package read-only and a folder for the output, and a time limit; a package that already has a `.pyc` at a path keeps its own.
+A failure is a note and the package is made without them. A Reader does not need to know of it: they are files of the package.
+
 **The compression level is not part of the identity of the content.** The hash of a chunk is the BLAKE3 of its raw bytes (§5 point 5), and the name of a file in the store
 is made of those hashes (§6), so the same file compressed at another level has the same chunks and the same name in the store: an update between a package made at one level and a package
 made at another fetches only the chunks that really differ, and a store never holds a file twice because of the level. Only the bytes of the package (the index, with the sizes and offsets of the compressed

@@ -15,6 +15,7 @@ mod gc;
 mod happy;
 mod icons;
 mod protected;
+mod pyc;
 mod ranges;
 mod remove;
 mod source;
@@ -1912,6 +1913,8 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
     // An icon theme folder without its cache makes Qt look up each icon file by file at the start (tens of thousands of failed lookups): the cache is made here,
     // by panpak itself (`panpak_core::iconcache`, the same bytes as `gtk-update-icon-cache -f -t -i`), for every theme that has none. Nobody has to run a tool.
     add_icon_caches(&mut payload);
+    // A Python that the package carries cannot write its `__pycache__` in a read-only tree: its `.pyc` files are made here, with that Python, in a sandbox (src/pyc.rs).
+    add_pyc_files(dir, &mut payload);
     for note in icon_theme_notes(payload.iter().map(|p| p.entry.path.as_path())) {
         eprintln!("panpak: WARNING: {note}");
     }
@@ -4611,6 +4614,41 @@ fn disk_free(p: &Path) -> Option<u64> {
         }
         st.f_bavail.checked_mul(st.f_frsize as u64)
     }
+}
+
+/// Precompile the Python of the package, when it carries its own (`pyc::precompile`), and add the `.pyc` files (and the `__pycache__` folders that they need) to the payload.
+/// Anything that goes wrong is a note: a package without `.pyc` works, only slower at its first start.
+fn add_pyc_files(root: &Path, payload: &mut Vec<PayloadEntry>) {
+    let paths: Vec<PathBuf> = payload.iter().filter(|p| matches!(p.entry.kind, Kind::File { .. })).map(|p| p.entry.path.clone()).collect();
+    let compiled = match pyc::precompile(root, &paths) {
+        Ok(Some(c)) => c,
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("panpak: note: no .pyc files: {e:#}");
+            return;
+        }
+    };
+    let have: std::collections::HashSet<PathBuf> = payload.iter().map(|p| p.entry.path.clone()).collect();
+    let mut dirs: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    let mut new: Vec<PayloadEntry> = Vec::new();
+    for (path, data) in compiled.files {
+        // A `.pyc` that the package has already is its own.
+        if have.contains(&path) {
+            continue;
+        }
+        if let Some(d) = path.parent() {
+            if !have.contains(d) {
+                dirs.insert(d.to_path_buf());
+            }
+        }
+        new.push(PayloadEntry { entry: Entry { path, mode: 0o644, kind: Kind::File { chunks: Vec::new() }, info: Default::default() }, source: None, embedded: None, data: Some(data) });
+    }
+    for d in dirs {
+        new.push(PayloadEntry { entry: Entry { path: d, mode: 0o755, kind: Kind::Dir, info: Default::default() }, source: None, embedded: None, data: None });
+    }
+    eprintln!("panpak: {}", compiled.note);
+    payload.extend(new);
+    payload.sort_by(|a, b| a.entry.path.cmp(&b.entry.path));
 }
 
 /// Make the `icon-theme.cache` of every icon theme of the payload (`share/icons/<theme>/`, anywhere below the root, as `icon_theme_notes` finds them) that has icons and
