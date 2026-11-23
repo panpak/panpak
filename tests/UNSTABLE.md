@@ -9,3 +9,11 @@ Worked example: `tests/pty.py` failed 3 times in the full suite and never alone.
 | Test | First seen | Symptom | What is known | Count |
 |---|---|---|---|---|
 | (none now) | | | | |
+
+## Failures of the infrastructure, not of a test
+
+A job that fails because of the machine or the network (apt locked, a download that times out, a runner that is lost) and passes when it is run again. If one repeats, it is fixed (a retry in the workflow, a cache, a mirror).
+
+| Job | Date | Symptom | Run again | Count |
+|---|---|---|---|---|
+| private-bus (pull request 95) | 2026-11-23 | `E: Could not get lock /var/lib/dpkg/lock` while installing packages; `apt-install.sh` tried 3 times, the last for 900 s | green | 1 |
