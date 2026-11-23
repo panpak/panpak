@@ -49,6 +49,11 @@ In the description of the pull request, say which documents you updated, or why 
   `tests/isolation.py`. It never touches your real home or store.
 - Graphical tests run on a virtual X server or a headless Sway, never on your own session. Tests of
   D-Bus use a private bus (`tests/dbus_lab.py`), never your session bus.
+- **No test can reach your desktop, even by mistake.** The runners take it out of the environment: `scripts/test-runner.sh` (the `runner` of cargo, set in `.cargo/config.toml`, for every
+  test binary), `tests/with_timeout.py` (the CI) and `tests/isolation.py` (imported by every script of `tests/`, so a script run by hand is covered too) remove `DISPLAY`,
+  `WAYLAND_DISPLAY`, `WAYLAND_SOCKET` and `XAUTHORITY`, give `DBUS_SESSION_BUS_ADDRESS` an address that leads nowhere (or the canary of the CI) and `XDG_RUNTIME_DIR` a folder of the test's own.
+  A test that needs a display, a bus or a runtime folder makes its own (Xvfb, headless Sway, `tests/dbus_lab.py`) and puts it in the environment it hands to the program. A test of a window runs
+  with the window tool stand-in (`PANPAK_TEST_TOOLS_DIR`, debug builds only), never with the real `zenity` or `kdialog`. `tests_run_without_the_desktop_of_the_person` fails when the runner did not run.
 - A test ends the processes it started by their process id, never by name.
 - Builds of programs from source (`panpak build`, `tests/apps/run.py`) are heavy: run one at a time, and
   give the run a memory cap (`systemd-run --user --scope -p MemoryMax=10G -p MemorySwapMax=6G -- ...`;

@@ -30,8 +30,8 @@ Build date: `SOURCE_DATE_EPOCH=1795426088` (the date of the last commit that tou
 Sizes: `panpak-stub` 4,541,960 bytes, `panpak` 9,298,928 bytes.
 
 ```
-3e17d3d9a61961e7102a170b7aa078e80b511bd884a264d83577d364f5f36160  panpak-stub
-fa40c79422696b58ed4f7115620c5cec2c14d1fae95b4b34dbcb8895063b0a85  panpak
+56407aa80781b1bf629f3a4febfd5993324e1fbc9c622b2ba92cbceb6e82c2d4  panpak-stub
+a146db80ea778cc8ede1ce9c3058019271975ee7a0dc068ec413d4afa3ca77f6  panpak
 ```
 <!-- END GENERATED -->
 
