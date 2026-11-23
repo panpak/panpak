@@ -1,2 +1,2 @@
-# The check for updates is off: the updates of this app come from Panpak.
+# Update check turned off: Panpak delivers this app's updates.
 (check-updates no)
