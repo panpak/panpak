@@ -105,7 +105,7 @@ pub const CDC_MIN: usize = 16 * 1024;
 pub const CDC_AVG: usize = 64 * 1024;
 pub const CDC_MAX: usize = 256 * 1024;
 /// zstd level for chunks and index.
-pub const ZSTD_LEVEL: i32 = 3;
+pub const ZSTD_LEVEL: i32 = 19;
 /// Stub (runtime) ABI v1. Packages declare `[runtime] min_runtime`:
 /// the stub refuses packages requiring a newer runtime.
 pub const RUNTIME_ABI: u32 = 1;
