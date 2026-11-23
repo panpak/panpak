@@ -614,7 +614,7 @@ def parse_index(raw: bytes):
                 raise Fail("truncated file flags")
             flags = raw[p]
             p += 1
-            if flags & ~0x07:
+            if flags & ~0x0F:
                 raise Fail(f"file flags {flags:#x} that this reader does not know: update panpak")
             if flags & 4 and not flags & 1:
                 raise Fail("a SONAME on a file that is not marked as ELF")
@@ -633,6 +633,19 @@ def parse_index(raw: bytes):
                 p += sl
                 if any(unicodedata.category(c) == "Cc" or c == "/" for c in soname):
                     raise Fail("unsafe SONAME")
+            patch = None
+            if flags & 8:
+                if p + 76 > len(raw):
+                    raise Fail("truncated patch fields")
+                base = raw[p : p + 32]
+                poff, plen = struct.unpack_from("<QI", raw, p + 32)
+                phash = raw[p + 44 : p + 76]
+                p += 76
+                if not (1 <= plen <= 1 << 30):
+                    raise Fail("patch length out of range")
+                if poff + plen >= 1 << 64:
+                    raise Fail("patch offset out of range")
+                patch = {"base": base, "off": poff, "len": plen, "hash": phash}
             el = u16(raw, p)
             p += 2
             if el > 1024 or p + el > len(raw):
@@ -649,7 +662,7 @@ def parse_index(raw: bytes):
                 if ty & 0x8000:
                     raise Fail(f"a critical extension of type {ty:#x} that this reader does not know: update panpak")
                 q += 4 + xl
-            entries.append({"path": path, "mode": mode, "kind": "file", "size": size, "chunks": ids, "flags": flags, "soname": soname})
+            entries.append({"path": path, "mode": mode, "kind": "file", "size": size, "chunks": ids, "flags": flags, "soname": soname, "patch": patch})
         elif kind == 1:
             entries.append({"path": path, "mode": mode, "kind": "dir"})
         elif kind == 2:

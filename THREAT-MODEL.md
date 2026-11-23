@@ -605,6 +605,16 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   per-file grant); the "the app asks the user which file to open/save"
   case stays with the future broker (see PORTAL-DESIGN.md).
 - **Rollback**: `apps/<id>/previous` + `panpak rollback` (atomic swap).
+- **Patches** (spec §4.1): an update can download, for a file whose chunks all changed, a zstd frame that uses the installed file as its dictionary, instead of the chunks.
+  The risk is the decompressor: it reads bytes that come from the network, with a second input (the installed file) and a window larger than the one of a chunk. What
+  is done about it: there is no list of patches that nobody signed: the hash of each patch is in the *signed index* of the new version, next to the file it rebuilds, so a
+  server cannot change, add or swap a patch, only keep it back (and then the client downloads the chunks, as it does for a server that does not answer); the client checks that hash **before**
+  it gives a byte of the patch to the decompressor, so only data with a signed hash is decompressed; the file it starts from is the installed file and its hash is signed too (the
+  `base` field), so the dictionary is never data of the server; the window is limited to 2^28 (the decoder is told), the output is limited to the size that the index gives for
+  the file and a frame that ends before or after it is refused, and the memory is checked first (twice the two files, and a margin), so a patch cannot take more memory than the
+  chunks of the same file can; and the rebuilt file is checked chunk by chunk against the index as any file is, so a patch cannot produce a file that the index does not describe.
+  What remains: a flaw in the zstd decoder that a *signed* patch could hit; the author signs it, so it is the author (A3 with the key) who could, and the same decoder reads
+  every chunk already. The cost is 76 bytes in the index for each file that has a patch, and a second file on the server.
 - **A version below the floor of its author (protected mode, spec §3.1.10)**: it is not blocked. It runs with **no network but its own loopback**: in
   the isolated view this is the network namespace of an app with no network permission, so no TCP, UDP (DNS and QUIC too), IPv6 or other protocol
   leaves it (tested with datagrams that a socket of the test must not receive); **without the view** the filter of the system calls makes every IPv4 and

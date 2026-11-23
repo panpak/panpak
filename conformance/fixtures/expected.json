@@ -198,6 +198,18 @@
   ],
   "ok": false
  },
+ "invalid-file-patch-length-huge.panpak": {
+  "err": [
+   "patch"
+  ],
+  "ok": false
+ },
+ "invalid-file-patch-length-zero.panpak": {
+  "err": [
+   "patch"
+  ],
+  "ok": false
+ },
  "invalid-file-soname-not-elf.panpak": {
   "err": [
    "SONAME"
@@ -843,11 +855,19 @@
   "err": [],
   "ok": true
  },
+ "valid-file-elf-soname-patch.panpak": {
+  "err": [],
+  "ok": true
+ },
  "valid-file-elf-soname.panpak": {
   "err": [],
   "ok": true
  },
  "valid-file-ext-noncritical.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-file-patch.panpak": {
   "err": [],
   "ok": true
  },

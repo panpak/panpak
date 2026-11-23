@@ -85,6 +85,21 @@ fn par_each<T: Sync>(items: &[T], threads: usize, f: &(dyn Fn(&T) -> Result<()> 
 trait ChunkSource: Sync {
     /// The raw bytes of chunk `c`, checked against its hash.
     fn raw<'a>(&self, c: &Chunk, dec: &mut ChunkDecoder, scratch: &'a mut Vec<u8>) -> Result<&'a [u8]>;
+    /// Is chunk `c` here already (in the files of the installed version or in the download)? A package has all of them.
+    fn has(&self, _c: &Chunk) -> bool {
+        true
+    }
+    /// Where a patch is read from and which tree it starts from, when the source has them (an update).
+    fn patches(&self) -> Option<PatchSource<'_>> {
+        None
+    }
+}
+
+/// What an update has for rebuilding a file by a patch: the folder of the downloaded patches (a file for each, named by its hash) and the tree of the
+/// installed version, which holds the file that the patch starts from.
+struct PatchSource<'a> {
+    dir: &'a Path,
+    old_tree: &'a Path,
 }
 
 /// The chunks of an open package file.
@@ -109,6 +124,8 @@ impl ChunkSource for PackageChunks<'_> {
 /// its hash wherever it comes from; one that is in neither is an error that says which.
 struct StagedChunks {
     dir: Option<PathBuf>,
+    /// The tree of the installed version (the files that patches start from).
+    old_tree: Option<PathBuf>,
     /// hash -> (file of the old tree, offset in it, raw length)
     old: std::collections::HashMap<[u8; 32], (PathBuf, u64, u32)>,
 }
@@ -128,11 +145,19 @@ impl StagedChunks {
                 }
             }
         }
-        Self { dir, old: map }
+        Self { dir, old_tree: old.map(|(t, _, _)| t.to_path_buf()), old: map }
     }
 }
 
 impl ChunkSource for StagedChunks {
+    fn has(&self, c: &Chunk) -> bool {
+        self.old.get(&c.hash).is_some_and(|(_, _, len)| *len == c.raw) || self.dir.as_ref().is_some_and(|d| fs::metadata(d.join(hex(&c.hash))).is_ok_and(|m| m.len() == c.comp as u64))
+    }
+
+    fn patches(&self) -> Option<PatchSource<'_>> {
+        Some(PatchSource { dir: self.dir.as_deref()?, old_tree: self.old_tree.as_deref()? })
+    }
+
     fn raw<'a>(&self, c: &Chunk, dec: &mut ChunkDecoder, scratch: &'a mut Vec<u8>) -> Result<&'a [u8]> {
         use std::os::unix::fs::FileExt;
         if let Some((path, off, len)) = self.old.get(&c.hash) {
@@ -334,6 +359,9 @@ struct FileJob<'a> {
     dst: PathBuf,
     ids: &'a [u32],
     mode: u32,
+    /// The path in the tree, and the patch that the index gives for the file, if any.
+    rel: &'a Path,
+    patch: Option<panpak_core::patch::PatchRef>,
 }
 
 struct Made {
@@ -457,6 +485,45 @@ fn ensure_room(blobs: &Path, need: u64) -> Result<()> {
     Ok(())
 }
 
+/// Rebuild a file from its patch and the same file of the installed version, writing it to `out`. Only data with a signed hash reaches the decompressor: the patch
+/// is checked against the hash in the index, and so is the file it starts from; the result is then checked chunk by chunk against the index, as any file is.
+fn rebuild_by_patch(ps: &PatchSource, p: &panpak_core::patch::PatchRef, job: &FileJob, chunks: &[Chunk], out: &mut File) -> Result<()> {
+    use panpak_core::patch;
+    use std::io::Write;
+    let size: u64 = job.ids.iter().map(|&id| chunks[id as usize].raw as u64).sum();
+    let base_path = ps.old_tree.join(job.rel);
+    let meta = fs::symlink_metadata(&base_path).context("the file of the installed version")?;
+    ensure!(meta.file_type().is_file(), "the file of the installed version is not a file");
+    ensure!(patch::window_log(meta.len(), size).is_some(), "the files are too large for a patch");
+    ensure!(patch::enough_memory(meta.len(), size, patch::available_memory()), "not enough free memory for a patch");
+    let base = fs::read(&base_path).context("read the file of the installed version")?;
+    ensure!(blake3::hash(&base).as_bytes() == &p.base, "the installed file is not the one the patch starts from");
+    let comp = fs::read(ps.dir.join("patches").join(hex(&p.hash))).context("the patch was not downloaded")?;
+    ensure!(comp.len() == p.len as usize && blake3::hash(&comp).as_bytes() == &p.hash, "the patch does not match its hash in the index");
+    let mut at = 0usize;
+    let mut pending: Vec<u8> = Vec::new();
+    patch::apply(&base, &comp, size, &mut |piece| {
+        pending.extend_from_slice(piece);
+        let mut used = 0usize;
+        while at < job.ids.len() {
+            let c = &chunks[job.ids[at] as usize];
+            let n = c.raw as usize;
+            if pending.len() - used < n {
+                break;
+            }
+            let raw = &pending[used..used + n];
+            panpak_core::verify_chunk(c, raw)?;
+            out.write_all(raw)?;
+            used += n;
+            at += 1;
+        }
+        pending.drain(..used);
+        Ok(())
+    })?;
+    ensure!(at == job.ids.len() && pending.is_empty(), "the patch does not end at the end of the file");
+    Ok(())
+}
+
 /// Make the files of a tree. Every file, large or small, goes the same way: it is a blob of the store, named by the hashes of its chunks, and the
 /// file of the tree is a link to it. A blob that is in the store is checked against the index (every chunk, read from the blob, has the hash that
 /// the index gives) before it is linked, because the file of the tree is that very file. A blob that is not there is written into a work folder
@@ -566,6 +633,29 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
                         // Written one chunk after the other: the memory is a chunk, whatever the size of the file.
                         let path = work_dir.join(name);
                         let mut out = File::create(&path)?;
+                        // A file that changed and whose chunks are not here is rebuilt from a patch when the download has one; any trouble with it, and the
+                        // chunks are used (and said missing if they are not there).
+                        if let (Some(p), Some(ps)) = (&job.patch, src.patches()) {
+                            if job.ids.iter().any(|&id| !src.has(&chunks[id as usize])) {
+                                let t = std::time::Instant::now();
+                                match rebuild_by_patch(&ps, p, job, chunks, &mut out) {
+                                    Ok(()) => {
+                                        t_decode += t.elapsed();
+                                        let t = std::time::Instant::now();
+                                        panpak_core::durable::start_writeback(&out);
+                                        drop(out);
+                                        fs::set_permissions(&path, fs::Permissions::from_mode(job.mode & !0o222))?;
+                                        written.push(name.to_string());
+                                        t_write += t.elapsed();
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        eprintln!("panpak: the patch of {} was not used: {e:#}", job.rel.display());
+                                        out = File::create(&path)?;
+                                    }
+                                }
+                            }
+                        }
                         for &id in job.ids {
                             let t = std::time::Instant::now();
                             let raw = src.raw(&chunks[id as usize], &mut dec, &mut scratch)?;
@@ -751,7 +841,7 @@ fn materialize_from(
                 if let Some(parent) = e.path.parent() {
                     add_with_parents(parent, &mut made_dirs);
                 }
-                jobs.push(FileJob { dst, ids, mode: e.mode });
+                jobs.push(FileJob { dst, ids, mode: e.mode, rel: &e.path, patch: e.info.patch });
             }
         }
     }
@@ -3682,6 +3772,56 @@ mod tests {
             entries.push(Entry { path: PathBuf::from(name), mode: *mode, kind: Kind::File { chunks: ids }, info: Default::default() });
         }
         (chunks, entries, MemChunks(data))
+    }
+
+    #[test]
+    fn a_file_is_rebuilt_from_a_patch_only_when_the_patch_and_the_old_file_match_their_signed_hashes() {
+        let dir = tmpdir("patch-rebuild");
+        let old_tree = dir.join("old");
+        fs::create_dir_all(old_tree.join("bin")).unwrap();
+        let mut s = 99u64;
+        let base: Vec<u8> = (0..400_000).map(|_| { s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (s >> 33) as u8 }).collect();
+        let mut new = base.clone();
+        for i in (0..new.len()).step_by(7000) { new[i] ^= 0x33; }
+        fs::write(old_tree.join("bin/app"), &base).unwrap();
+        // The chunks of the new file, as the index lists them.
+        let mut chunks = Vec::new();
+        let mut ids = Vec::new();
+        for part in new.chunks(60_000) {
+            ids.push(chunks.len() as u32);
+            chunks.push(Chunk { hash: *blake3::hash(part).as_bytes(), off: 0, comp: 1, raw: part.len() as u32 });
+        }
+        let comp = panpak_core::patch::make(&base, &new, 9).unwrap();
+        let p = panpak_core::patch::PatchRef { base: *blake3::hash(&base).as_bytes(), off: 0, len: comp.len() as u32, hash: *blake3::hash(&comp).as_bytes() };
+        let dl = dir.join("dl");
+        fs::create_dir_all(dl.join("patches")).unwrap();
+        fs::write(dl.join("patches").join(hex(&p.hash)), &comp).unwrap();
+        let ps = PatchSource { dir: &dl, old_tree: &old_tree };
+        let job = FileJob { dst: dir.join("x"), ids: &ids, mode: 0o755, rel: Path::new("bin/app"), patch: Some(p) };
+        let run = |ps: &PatchSource, p: &panpak_core::patch::PatchRef| {
+            let mut out = File::create(dir.join("out")).unwrap();
+            rebuild_by_patch(ps, p, &job, &chunks, &mut out).map(|()| fs::read(dir.join("out")).unwrap())
+        };
+        assert_eq!(run(&ps, &p).unwrap(), new);
+        // A patch file that is not the one that the index signs: refused before the decompressor sees it.
+        let mut bad = comp.clone();
+        bad[comp.len() / 2] ^= 1;
+        fs::write(dl.join("patches").join(hex(&p.hash)), &bad).unwrap();
+        assert!(format!("{:#}", run(&ps, &p).unwrap_err()).contains("does not match its hash"));
+        fs::write(dl.join("patches").join(hex(&p.hash)), &comp).unwrap();
+        // The installed file is not the one the patch starts from.
+        let mut other = base.clone();
+        other[10] ^= 1;
+        fs::remove_file(old_tree.join("bin/app")).unwrap();
+        fs::write(old_tree.join("bin/app"), &other).unwrap();
+        assert!(format!("{:#}", run(&ps, &p).unwrap_err()).contains("not the one the patch starts from"));
+        // The index says another content than the patch makes: the chunk check stops it.
+        fs::write(old_tree.join("bin/app"), &base).unwrap();
+        let mut wrong = chunks.clone();
+        wrong[2].hash = [9u8; 32];
+        let mut out = File::create(dir.join("out")).unwrap();
+        assert!(rebuild_by_patch(&ps, &p, &job, &wrong, &mut out).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

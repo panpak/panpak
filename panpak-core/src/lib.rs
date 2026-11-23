@@ -2065,6 +2065,28 @@ mod tests {
     }
 
     #[test]
+    fn the_patch_of_a_file_is_in_the_signed_index_and_read_back() {
+        use crate::{patch::PatchRef, Chunk, Entry, FileInfo, Kind};
+        let chunk = Chunk { hash: [3u8; 32], off: 100, comp: 10, raw: 70_000 };
+        let patch = PatchRef { base: [1u8; 32], off: 12345, len: 777, hash: [2u8; 32] };
+        let mk = |info: FileInfo| vec![Entry { path: std::path::PathBuf::from("bin/app"), mode: 0o755, kind: Kind::File { chunks: vec![0] }, info }];
+        let with = mk(FileInfo { flags: crate::FILE_ELF, soname: Some("libx.so".into()), patch: Some(patch), ext: vec![] });
+        let raw = crate::encode_index(std::slice::from_ref(&chunk), &with);
+        let (_, back) = crate::parse_index(&raw).unwrap();
+        assert_eq!(back[0].info.patch, Some(patch));
+        assert_eq!(back[0].info.soname.as_deref(), Some("libx.so"));
+        assert!(back[0].info.flags & crate::FILE_HAS_PATCH != 0);
+        // Without a patch the entry is as before: the flag is not set and the four fields are not there.
+        let without = crate::encode_index(std::slice::from_ref(&chunk), &mk(FileInfo::default()));
+        assert_eq!(raw.len() - without.len(), (2 + 7) + (32 + 8 + 4 + 32), "the SONAME adds 9 bytes and the patch 76");
+        let (_, back) = crate::parse_index(&without).unwrap();
+        assert_eq!(back[0].info.patch, None);
+        // A patch of length 0 is refused, and so is a flag bit that is not known.
+        let zero = mk(FileInfo { patch: Some(PatchRef { len: 0, ..patch }), ..Default::default() });
+        assert!(crate::parse_index(&crate::encode_index(&[chunk], &zero)).is_err());
+    }
+
+    #[test]
     fn the_inventory_from_the_index_takes_files_with_so_in_the_name() {
         use crate::{Entry, Kind};
         let e = |p: &str, kind| Entry { path: std::path::PathBuf::from(p), mode: 0o755, kind, info: Default::default() };

@@ -112,12 +112,15 @@ def encode_index(chunks, entries) -> bytes:
             out += struct.pack("<I", len(e["chunks"]))
             for cid in e["chunks"]:
                 out += struct.pack("<I", cid)
-            # What pack read from the file: flags (bit 0 ELF, bit 1 sets LD_LIBRARY_PATH, bit 2 has a SONAME), the SONAME, the extension area.
-            flags = e.get("flags", 0) | (4 if e.get("soname") is not None else 0)
+            # What pack read from the file: flags (bit 0 ELF, bit 1 sets LD_LIBRARY_PATH, bit 2 has a SONAME, bit 3 has a patch), the SONAME, the patch, the extension area.
+            flags = e.get("flags", 0) | (4 if e.get("soname") is not None else 0) | (8 if e.get("patch") is not None else 0)
             out += struct.pack("<B", flags)
             if e.get("soname") is not None:
                 sn = e["soname"].encode()
                 out += struct.pack("<H", len(sn)) + sn
+            if e.get("patch") is not None:
+                pt = e["patch"]
+                out += pt["base"] + struct.pack("<QI", pt["off"], pt["len"]) + pt["hash"]
             ext = e.get("ext", b"")
             out += struct.pack("<H", len(ext)) + ext
         elif e["kind"] == "dir":

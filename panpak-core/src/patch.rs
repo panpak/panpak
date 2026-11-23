@@ -32,6 +32,28 @@ pub fn window_log(base: u64, out: u64) -> Option<u32> {
     (log <= PATCH_WINDOW_LOG_MAX).then_some(log)
 }
 
+/// The memory that this process can still use: what the system says is available, or less when the control group of the process has a limit (a scope, a container).
+pub fn available_memory() -> Option<u64> {
+    let kib = |s: &str, key: &str| -> Option<u64> { s.lines().find_map(|l| l.strip_prefix(key)).and_then(|r| r.trim().trim_end_matches("kB").trim().parse::<u64>().ok()).map(|k| k << 10) };
+    let sys = kib(&std::fs::read_to_string("/proc/meminfo").ok()?, "MemAvailable:");
+    let cg = std::fs::read_to_string("/proc/self/cgroup").ok().and_then(|c| {
+        let rel = c.lines().find_map(|l| l.strip_prefix("0::"))?.trim().to_string();
+        let dir = std::path::Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
+        let max = std::fs::read_to_string(dir.join("memory.max")).ok()?.trim().parse::<u64>().ok()?;
+        let cur = std::fs::read_to_string(dir.join("memory.current")).ok()?.trim().parse::<u64>().ok()?;
+        Some(max.saturating_sub(cur))
+    });
+    match (sys, cg) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Is there room to make or use a patch between files of these sizes? A system that does not say how much is free is trusted.
+pub fn enough_memory(base: u64, out: u64, available: Option<u64>) -> bool {
+    available.is_none_or(|a| a >= memory_needed(base, out).saturating_add(256 << 20))
+}
+
 /// The memory that making or using a patch needs, with a margin: the base, the output of the decoder and the window, twice over.
 pub fn memory_needed(base: u64, out: u64) -> u64 {
     (base + out).saturating_mul(2)

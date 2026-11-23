@@ -76,6 +76,11 @@ To rotate the update key, sign with the new key and add
 dedups by BLAKE3 hash, signs `manifest || root_hash` and appends
 index + manifest + 80-byte footer to the stub.
 
+**Patches for updates.** With `--previous old.panpak`, `pack` also makes, for each large file that changed from the previous release, a *patch* (the difference to the same file of that release), and writes the
+patches to `<package>.patches` (`app-1.2.panpak.patches`). Publish that file beside the package, at the package's address plus `.patches`: an update then downloads the
+patch of a file whose chunks all changed (a program that was built again) instead of its chunks. Nothing else is needed: a server without the file just costs the client the
+chunks, and a patch is used only for the update from the immediately previous release. The hash of each patch is in the signed index, so a server cannot change it.
+
 ## 5. Verify and run
 
 ```sh

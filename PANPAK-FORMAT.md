@@ -870,7 +870,8 @@ A client updating a package MUST:
   and a package whose history does not continue the installed one. A package of another channel that the person chose with `--switch-channel` is the exception: the counters of two
   channels are separate, so it may carry a lower revision (no `--allow-downgrade`) or the same revision with other bytes, and the history of the old channel is not asked
   of it; only the floor still holds (the history of the new channel is the one the new package carries);
-- fetch only the chunks that the installed version does not have (Range;
+- fetch only the chunks that the installed version does not have (Range; for a file that has a patch (§4.1) whose starting file is installed, the patch instead of the
+  chunks that only that file needs;
   the others are read from the files of its tree, and every blob that is
   reused is checked against the signed index, §6.3), make the new tree,
   verify as in §5, and only then move `current` (the previous version stays
@@ -918,14 +919,16 @@ n_entries x {
                 // size MUST equal the sum of the raw_len of the
                 // indicated chunks (mandatory coherence check)
                 u8  flags       // bit 0 ELF file, bit 1 script that sets LD_LIBRARY_PATH itself,
-                                // bit 2 the SONAME follows; bits 3-7 are 0
+                                // bit 2 the SONAME follows, bit 3 a patch follows; bits 4-7 are 0
                 [u16 len, soname]   // only when bit 2 is set: 1 to 255 bytes of UTF-8, no control character, no "/"
+                [[u8;32] base, u64 patch_off, u32 patch_len, [u8;32] patch_hash]
+                                // only when bit 3 is set: a patch (§4.1)
                 u16 ext_len, ext    // the extension area, at most 1024 bytes
   kind=symlink: u16 len, target
 }
 ```
 
-The flags, the SONAME and the extension area are what `panpak pack` read from the file; they are signed with the index, so a reader that has the index does not
+The flags, the SONAME, the patch and the extension area are what `panpak pack` read from or made of the file; they are signed with the index, so a reader that has the index does not
 open the tree to know what a file is. A Reader MUST refuse an entry that sets a flag bit it does not know ("update panpak"), a SONAME with no ELF flag, and a
 file that is both an ELF file and a script. Bit 0 is set for a little-endian ELF64 file (`ET_EXEC` or `ET_DYN`) whose first 64 bytes are readable; bit 1 for an
 executable of at most 64 KiB, whose name has no `.so`, that starts with `#!` and has a line that assigns `LD_LIBRARY_PATH` (not a comment, not `unset`, not another
@@ -943,6 +946,33 @@ identical chunks SHOULD be stored once (a Reader also accepts
 duplicates, but still verifies them one by one). Overlapping chunk
 ranges are structurally allowed, but every chunk MUST be verified
 independently (§5 point 5).
+
+### 4.1 Patches [NORMATIVE]
+
+A file of a new release MAY carry a *patch*: the file written as one zstd frame that uses the same file of the immediately previous release as its dictionary (a
+reference prefix, as `zstd --patch-from`). It exists so that a client that has the previous release downloads the difference of a file whose chunks all changed (a program that was
+built again, a database) and not its chunks. It is an optimisation and nothing depends on it: a client that does not use a patch downloads the chunks, as always.
+
+*The entry.* Bit 3 of `flags` says that four fields follow the SONAME: `base` (BLAKE3 of the whole file of the previous release that the patch starts from), `patch_off` and
+`patch_len` (where the patch is in the patches file, below), and `patch_hash` (BLAKE3 of the `patch_len` bytes of the patch, as they are in that file). They are signed with
+the index. A Reader MUST refuse a `patch_len` of 0 or above 2^30 and an offset that with the length passes 2^64. The field belongs to the format; it is not an extension, and
+a Reader that does not know bit 3 refuses the package like any other flag it does not know.
+
+*The patches file.* A Writer that makes patches writes them one after the other, with nothing between them, in the file that has the name of the package and `.patches`
+(`app-1.2.panpak` has `app-1.2.panpak.patches`), beside the package. A client asks for it at the address of the package and `.patches` (an address with a query or a fragment has none) with the
+range requests of §3.4. The file has no index, no footer and no signature of its own: each patch is identified, and checked, by the hash in the signed index. A server that
+does not have the file, or does not answer, costs the client nothing but the chunks.
+
+*Making.* A Writer MAY make a patch only from the file at the same path in the immediately previous release, never from an older one, and only for a file of at least 64 KiB whose
+previous file and new file together are at most 2^28 bytes (the window of the frame is 2^28 at most; the Writer sets the window log to what the two files need, with long-distance matching).
+A Writer MUST NOT publish a patch that weighs more than half of the compressed chunks of the file that a client that has the previous release would download (the chunks the previous release does
+not have). The patch is made when the package is made, so it is signed with it.
+
+*Using.* A Reader that uses a patch MUST, in this order: (1) have the file of the previous release in the installed tree at the same path and check that its BLAKE3 is `base`; (2)
+have enough free memory (twice the two files together, and a margin); (3) download the patch and check that its BLAKE3 is `patch_hash` **before** it gives a byte of it to the
+decompressor; (4) decompress with the file of (1) as the dictionary, a window limit of 2^28 and an output limit of the size that the index gives for the file, and refuse a frame that
+ends before or after that size or has bytes after it; (5) check the result against the chunks of the index like any file (§5 point 5). A Reader that finds any of this wrong MUST fall
+back to the chunks of the file. So only bytes with a signed hash reach the decompressor, and a patch cannot make a file that the index does not describe.
 
 **The compression level is not part of the identity of the content.** The hash of a chunk is the BLAKE3 of its raw bytes (§5 point 5), and the name of a file in the store
 is made of those hashes (§6), so the same file compressed at another level has the same chunks and the same name in the store: an update between a package made at one level and a package

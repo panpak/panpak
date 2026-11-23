@@ -127,6 +127,79 @@ fn http_range(agent: &ureq::Agent, url: &str, start: u64, end: u64) -> Result<(V
     Ok((body, total))
 }
 
+/// The address of the patches file of a package: the address of the package and `.patches` (PANPAK-FORMAT.md §4.1). None for an address that has a query or a fragment.
+fn patches_url(url: &str) -> Option<String> {
+    (!url.contains('?') && !url.contains('#')).then(|| format!("{url}.patches"))
+}
+
+/// The patches of an update that can be used here, downloaded into `staging/patches/<hash>` and checked against the hash that the signed index gives: a
+/// patch is used for a file only when the file that it starts from is in the installed tree (the hash of that file is the one the index gives) and
+/// there is memory for it. Anything that goes wrong (no patches file, a short answer, a hash that does not match) leaves the file to its chunks. Returns
+/// the paths of the files that will be rebuilt by a patch (their index in `entries`) and the bytes that came.
+fn fetch_patches(
+    agent: &ureq::Agent,
+    url: &str,
+    staging: &Path,
+    old_tree: &Path,
+    entries: &[Entry],
+    chunks: &[panpak_core::Chunk],
+    have: &std::collections::HashSet<([u8; 32], u32)>,
+) -> (std::collections::HashSet<usize>, u64) {
+    use panpak_core::patch;
+    let none = (std::collections::HashSet::new(), 0);
+    let Some(purl) = patches_url(url) else { return none };
+    let mut plan: Vec<(usize, patch::PatchRef)> = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        let (Some(p), Kind::File { chunks: ids }) = (e.info.patch, &e.kind) else { continue };
+        if !ids.iter().any(|&id| !have.contains(&(chunks[id as usize].hash, chunks[id as usize].raw))) {
+            continue;
+        }
+        let size: u64 = ids.iter().map(|&id| chunks[id as usize].raw as u64).sum();
+        let base_path = old_tree.join(&e.path);
+        let Ok(meta) = fs::symlink_metadata(&base_path) else { continue };
+        if !meta.file_type().is_file() || patch::window_log(meta.len(), size).is_none() || !patch::enough_memory(meta.len(), size, patch::available_memory()) {
+            continue;
+        }
+        if fs::read(&base_path).is_ok_and(|b| blake3::hash(&b).as_bytes() == &p.base) {
+            plan.push((i, p));
+        }
+    }
+    if plan.is_empty() {
+        return none;
+    }
+    let dir = staging.join("patches");
+    let wanted: Vec<panpak_core::Chunk> = plan.iter().map(|(_, p)| panpak_core::Chunk { hash: p.hash, off: p.off, comp: p.len, raw: 0 }).collect();
+    let fetched = ranges::fetch_chunks(&dir, &wanted, u64::MAX, ranges::Policy::default(), &|start, end| Ok(http_range(agent, &purl, start, end - 1)?.0));
+    let Ok((_, bytes)) = fetched else {
+        let _ = fs::remove_dir_all(&dir);
+        return none;
+    };
+    let mut used = std::collections::HashSet::new();
+    for (i, p) in plan {
+        let f = dir.join(panpak_core::hex(&p.hash));
+        if fs::read(&f).is_ok_and(|b| b.len() == p.len as usize && blake3::hash(&b).as_bytes() == &p.hash) {
+            used.insert(i);
+        } else {
+            let _ = fs::remove_file(&f);
+        }
+    }
+    (used, bytes)
+}
+
+/// The chunks that are not downloaded because a patch rebuilds the files that need them: the chunks of those files that no other file needs.
+fn chunks_replaced_by_patches(entries: &[Entry], patched: &std::collections::HashSet<usize>) -> std::collections::HashSet<u32> {
+    let mut skip = std::collections::HashSet::new();
+    let mut keep = std::collections::HashSet::new();
+    for (i, e) in entries.iter().enumerate() {
+        if let Kind::File { chunks: ids } = &e.kind {
+            let set = if patched.contains(&i) { &mut skip } else { &mut keep };
+            set.extend(ids.iter().copied());
+        }
+    }
+    skip.retain(|id| !keep.contains(id));
+    skip
+}
+
 /// Suffix-range: last `n` bytes (for the footer).
 fn http_suffix(agent: &ureq::Agent, url: &str, n: u64) -> Result<(Vec<u8>, u64)> {
     let resp = agent.get(url).header("Range", &format!("bytes=-{n}")).call().map_err(|e| net_err("GET suffix", url, e))?;
@@ -253,7 +326,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
     ensure!(total3 == total, "file changed during download");
     let index_raw = panpak_core::decode_capped(&index_comp, panpak_core::MAX_INDEX_RAW)?;
     ensure_code!(blake3::hash(&index_raw).as_bytes() == &ft.root, ErrorCode::E0004, "remote root hash mismatch: corrupt or tampered download, retry; if it persists do not trust the file");
-    let (chunks, _entries) = panpak_core::parse_index(&index_raw)?;
+    let (chunks, entries) = panpak_core::parse_index(&index_raw)?;
     let root_hex = panpak_core::hex(&ft.root);
     // The files of the installed version are what the unchanged chunks are taken from: they must be there.
     let old_tree = store.join("trees").join(panpak_core::hex(&old_ft.root));
@@ -282,17 +355,21 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
         }
         // What has to be downloaded: the chunks that the installed version does not have.
         let have: std::collections::HashSet<([u8; 32], u32)> = old_chunks0.iter().map(|c| (c.hash, c.raw)).collect();
-        let needed: Vec<panpak_core::Chunk> = chunks.iter().filter(|c| !have.contains(&(c.hash, c.raw))).cloned().collect();
-        n_reused = (chunks.len() - needed.len()) as u64;
         let staging = store.join("staging").join(app_id).join(&root_hex);
         drop(first_lock.take());
-        let (nf, fetched_bytes) = ranges::fetch_chunks(&staging, &needed, ft.index_off, ranges::Policy::default(), &|start, end| {
+        // Files that changed and have a patch from the installed file: the patch is downloaded instead of the chunks that only that file needs.
+        let (patched_files, patch_bytes) = fetch_patches(&agent, &url, &staging, &old_tree, &entries, &chunks, &have);
+        let skip = chunks_replaced_by_patches(&entries, &patched_files);
+        let needed: Vec<panpak_core::Chunk> = chunks.iter().enumerate().filter(|(i, c)| !have.contains(&(c.hash, c.raw)) && !skip.contains(&(*i as u32))).map(|(_, c)| c.clone()).collect();
+        n_reused = (chunks.len() - needed.len()) as u64;
+        let fetch_package = |start: u64, end: u64| -> Result<Vec<u8>> {
             let (bytes, range_total) = http_range(&agent, &url, start, end - 1)?;
             ensure!(range_total == total, "file changed during download");
             Ok(bytes)
-        })?;
+        };
+        let (nf, fetched_bytes) = ranges::fetch_chunks(&staging, &needed, ft.index_off, ranges::Policy::default(), &fetch_package)?;
         n_fetched = nf;
-        downloaded = 80 + man_b.len() as u64 + sig_b.len() as u64 + index_comp.len() as u64 + fetched_bytes;
+        downloaded = 80 + man_b.len() as u64 + sig_b.len() as u64 + index_comp.len() as u64 + fetched_bytes + patch_bytes;
         panpak_core::failpoint!("update.chunks_fetched");
         let _app_lock = panpak_core::applock::lock(&store, app_id)?;
         ensure!(
@@ -308,10 +385,20 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
         panpak_core::durable::write_file(&dest, &record, 0o644)?;
         panpak_core::failpoint!("stage.record_written");
         let stub_for_prepare = stable_stub_link(&store)?;
-        if let Err(e) = run_prepare(
-            &stub_for_prepare,
-            &[dest.as_os_str(), "--chunks".as_ref(), staging.as_os_str(), "--from-record".as_ref(), current_pkg.as_os_str()],
-        ) {
+        let prepare = || {
+            run_prepare(&stub_for_prepare, &[dest.as_os_str(), "--chunks".as_ref(), staging.as_os_str(), "--from-record".as_ref(), current_pkg.as_os_str()])
+        };
+        let mut prepared = prepare();
+        // A patch that did not work out (the stub says so and finds the chunks missing): the chunks that the patches stood for are downloaded, and it is tried again.
+        if prepared.is_err() && !patched_files.is_empty() {
+            let _ = fs::remove_dir_all(staging.join("patches"));
+            let rest: Vec<panpak_core::Chunk> = chunks.iter().enumerate().filter(|(i, c)| skip.contains(&(*i as u32)) && !have.contains(&(c.hash, c.raw))).map(|(_, c)| c.clone()).collect();
+            if let Ok((_, more)) = ranges::fetch_chunks(&staging, &rest, ft.index_off, ranges::Policy::default(), &fetch_package) {
+                downloaded += more;
+                prepared = prepare();
+            }
+        }
+        if let Err(e) = prepared {
             // The record is not named by any link yet: it goes, and so does what was downloaded (a chunk that came damaged would be found there
             // again by the next try; the stub checks every chunk against its hash only now).
             let _ = fs::remove_file(&dest);
@@ -1258,6 +1345,66 @@ struct Prev {
     channel: String,
     signed: [u8; 32],
     history: Option<Vec<panpak_core::release::Entry>>,
+    /// The files of that release, to make patches from (none when they cannot be read).
+    files: Option<PrevFiles>,
+}
+
+/// Where the content of the files of the earlier release is read from.
+enum PrevSource {
+    /// The package file (`pack --previous`): the chunks are decoded.
+    Package(File),
+    /// The tree of the installed version.
+    Tree(PathBuf),
+}
+
+/// The files of the earlier release, for patches: every file is read and checked against the chunk hashes of that release's index.
+struct PrevFiles {
+    source: PrevSource,
+    chunks: Vec<Chunk>,
+    ids: HashMap<PathBuf, Vec<u32>>,
+    hashes: std::collections::HashSet<[u8; 32]>,
+}
+
+impl PrevFiles {
+    fn new(source: PrevSource, raw_index: &[u8]) -> Option<Self> {
+        let (chunks, entries) = panpak_core::parse_index(raw_index).ok()?;
+        let hashes = chunks.iter().map(|c| c.hash).collect();
+        let ids = entries.into_iter().filter_map(|e| if let Kind::File { chunks } = e.kind { Some((e.path, chunks)) } else { None }).collect();
+        Some(Self { source, chunks, ids, hashes })
+    }
+
+    /// The bytes of the file at `path` in the earlier release, or `None` when it is not a file there or does not match its chunks.
+    fn read(&self, path: &Path) -> Option<Vec<u8>> {
+        use std::os::unix::fs::FileExt;
+        let ids = self.ids.get(path)?;
+        let mut out = Vec::new();
+        let tree_file = match &self.source {
+            PrevSource::Tree(root) => Some(File::open(root.join(path)).ok()?),
+            PrevSource::Package(_) => None,
+        };
+        let mut dec = panpak_core::ChunkDecoder::new().ok()?;
+        let mut raw = Vec::new();
+        let mut at = 0u64;
+        for &id in ids {
+            let c = self.chunks.get(id as usize)?;
+            match (&self.source, tree_file.as_ref()) {
+                (PrevSource::Package(f), _) => {
+                    let mut comp = vec![0u8; c.comp as usize];
+                    f.read_exact_at(&mut comp, c.off).ok()?;
+                    dec.decode(&comp, c.raw as u64, &mut raw).ok()?;
+                }
+                (PrevSource::Tree(_), Some(f)) => {
+                    raw.resize(c.raw as usize, 0);
+                    f.read_exact_at(&mut raw, at).ok()?;
+                    at += c.raw as u64;
+                }
+                _ => return None,
+            }
+            panpak_core::verify_chunk(c, &raw).ok()?;
+            out.extend_from_slice(&raw);
+        }
+        Some(out)
+    }
 }
 
 /// The earlier release, verified, from a package file.
@@ -1275,6 +1422,7 @@ fn previous_from_file(path: &Path, app_id: &str) -> Result<Prev> {
         channel: rel.channel.clone(),
         signed: panpak_core::release::signed_hash(ft.version, ft.flags, &ft.root, &manifest),
         history: panpak_core::release::read_package_history(&mut f, &raw_index, rel)?,
+        files: PrevFiles::new(PrevSource::Package(f.try_clone()?), &raw_index),
     })
 }
 
@@ -1295,6 +1443,7 @@ fn previous_from_installed(app_id: &str, key: &str) -> Option<Prev> {
         channel: rel.channel.clone(),
         signed: panpak_core::record::signed_hash_of(&rec).ok()?,
         history: panpak_core::release::read_tree_history(&tree, rel).ok()?,
+        files: PrevFiles::new(PrevSource::Tree(tree), &o.raw_index),
     })
 }
 
@@ -1439,6 +1588,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
     add_license_entries(&mut payload)?;
     // The release: the numbers come from the input (or from the earlier package) and the history of the channel from the earlier package.
     // The history is a file of the tree, so it is made here, before the index is.
+    let prev_files: Option<PrevFiles>;
     let release = {
         let input = man.release.take();
         let derived_key = derived.clone();
@@ -1449,7 +1599,8 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
             Previous::Installed => previous_from_installed(&man.app.id, &derived_key),
         };
         // Releases of another channel are another line: they do not continue each other.
-        let prev = prev.filter(|p| p.channel == channel);
+        let mut prev = prev.filter(|p| p.channel == channel);
+        prev_files = prev.as_mut().and_then(|p| p.files.take());
         let revision = match (&input, &prev) {
             (Some(i), Some(p)) => {
                 ensure!(i.revision > p.revision, "[release].revision {} is not above the revision {} of the earlier package", i.revision, p.revision);
@@ -1765,6 +1916,15 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
     }
     comp.flush(&mut pending, &mut chunks, &mut fout, &mut file_off)?;
 
+    // The patches go to the file beside the package; the file is there only when a patch is.
+    let patches_path = patches_file_of(&out_path);
+    let made_patches = match &prev_files {
+        Some(prev) => make_patches(&mut payload, &chunks, prev, &patches_path)?,
+        None => (0, 0),
+    };
+    if made_patches.0 == 0 {
+        let _ = fs::remove_file(&patches_path);
+    }
     let entries: Vec<Entry> = payload.into_iter().map(|p| p.entry).collect();
     let raw_index = encode_index(&chunks, &entries);
     let comp_index = comp.encode_one(&raw_index)?;
@@ -1821,7 +1981,78 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
         entries.len(),
         panpak_core::hex(&root)
     );
+    if made_patches.0 > 0 {
+        println!("pack: {} patches from the earlier release, {} bytes, in {}", made_patches.0, made_patches.1, patches_path.display());
+    }
     Ok(out_path)
+}
+
+/// The patches file of a package: the name of the package and `.patches` (PANPAK-FORMAT.md §4.1).
+pub fn patches_file_of(package: &Path) -> PathBuf {
+    let mut name = package.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".patches");
+    package.with_file_name(name)
+}
+
+/// The content of a file that the payload holds.
+fn payload_bytes(p: &PayloadEntry) -> Result<Option<Vec<u8>>> {
+    Ok(match (&p.source, p.embedded, &p.data) {
+        (_, _, Some(d)) => Some(d.clone()),
+        (Some(src), _, _) => Some(fs::read(src)?),
+        (None, Some(text), _) => Some(text.as_bytes().to_vec()),
+        _ => None,
+    })
+}
+
+/// A file that changed from the earlier release gets a patch when the patch weighs at most half of what the client would download for the file (the
+/// chunks that the earlier release does not have). Returns how many patches and how many bytes. The patches are written one after the other to `path`.
+fn make_patches(payload: &mut [PayloadEntry], chunks: &[Chunk], prev: &PrevFiles, path: &Path) -> Result<(usize, u64)> {
+    use panpak_core::patch;
+    let mut out: Option<File> = None;
+    let (mut n, mut off) = (0usize, 0u64);
+    for p in payload.iter_mut() {
+        let Kind::File { chunks: ids } = &p.entry.kind else { continue };
+        let Some(old_ids) = prev.ids.get(&p.entry.path) else { continue };
+        let size: u64 = ids.iter().map(|&i| chunks[i as usize].raw as u64).sum();
+        if size < patch::PATCH_MIN_FILE || ids.iter().map(|&i| chunks[i as usize].hash).eq(old_ids.iter().map(|&i| prev.chunks[i as usize].hash)) {
+            continue;
+        }
+        // What the client downloads without a patch: the chunks of the file that the earlier release does not have.
+        let mut seen = std::collections::HashSet::new();
+        let weight: u64 = ids.iter().filter(|&&i| seen.insert(i) && !prev.hashes.contains(&chunks[i as usize].hash)).map(|&i| chunks[i as usize].comp as u64).sum();
+        if weight < 16 << 10 {
+            continue;
+        }
+        let old_size: u64 = old_ids.iter().map(|&i| prev.chunks[i as usize].raw as u64).sum();
+        if patch::window_log(old_size, size).is_none() {
+            continue;
+        }
+        // Memory: the two files, and the work of the compressor, which is a few times the window.
+        if available_memory().is_some_and(|a| a < patch::memory_needed(old_size, size).saturating_mul(3) + (512 << 20)) {
+            continue;
+        }
+        let Some(base) = prev.read(&p.entry.path) else { continue };
+        let Some(new) = payload_bytes(p)? else { continue };
+        if new.len() as u64 != size {
+            continue;
+        }
+        let bytes = patch::make(&base, &new, ZSTD_LEVEL)?;
+        if bytes.len() as u64 * 2 > weight || bytes.len() as u64 > patch::MAX_PATCH_LEN as u64 {
+            continue;
+        }
+        let f = match &mut out {
+            Some(f) => f,
+            None => out.insert(File::create(path).with_context(|| format!("create {}", path.display()))?),
+        };
+        f.write_all(&bytes)?;
+        p.entry.info.patch = Some(patch::PatchRef { base: *blake3::hash(&base).as_bytes(), off, len: bytes.len() as u32, hash: *blake3::hash(&bytes).as_bytes() });
+        off += bytes.len() as u64;
+        n += 1;
+    }
+    if let Some(f) = &mut out {
+        f.flush()?;
+    }
+    Ok((n, off))
 }
 
 /// `panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery blake3:<hash>] -o <out>`: the same files under another
@@ -4285,21 +4516,8 @@ fn compression_threads(cores: usize, level: i32, available: Option<u64>) -> usiz
     ((room / thread_cost(level)) as usize).clamp(1, cores)
 }
 
-/// The memory that this process can still use: what the system says is available, or less when the control group of the process has a limit (a scope, a container).
 fn available_memory() -> Option<u64> {
-    let kib = |s: &str, key: &str| -> Option<u64> { s.lines().find_map(|l| l.strip_prefix(key)).and_then(|r| r.trim().trim_end_matches("kB").trim().parse::<u64>().ok()).map(|k| k << 10) };
-    let sys = kib(&fs::read_to_string("/proc/meminfo").ok()?, "MemAvailable:");
-    let cg = fs::read_to_string("/proc/self/cgroup").ok().and_then(|c| {
-        let rel = c.lines().find_map(|l| l.strip_prefix("0::"))?.trim().to_string();
-        let dir = Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
-        let max = fs::read_to_string(dir.join("memory.max")).ok()?.trim().parse::<u64>().ok()?;
-        let cur = fs::read_to_string(dir.join("memory.current")).ok()?.trim().parse::<u64>().ok()?;
-        Some(max.saturating_sub(cur))
-    });
-    match (sys, cg) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    }
+    panpak_core::patch::available_memory()
 }
 
 /// One zstd context per thread; a batch of chunks is split between the threads and written in the order of the chunks.

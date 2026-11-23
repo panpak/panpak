@@ -120,7 +120,7 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
         if os.environ.get("PANPAK_RANGE_LOG"):
             with open(os.environ["PANPAK_RANGE_LOG"], "a") as log:
-                log.write(json.dumps({"start": s, "end": e, "bytes": len(body)}) + "\n")
+                log.write(json.dumps({"start": s, "end": e, "bytes": len(body), "path": self.path}) + "\n")
 
 
 def main():
