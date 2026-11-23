@@ -31,7 +31,8 @@ def main():
         assert r.returncode == 0, r
         assert "trying archive.ubuntu.com" in r.stderr and "archive.ubuntu.com/ubuntu/" in text and "azure" not in text, (r.stderr, text)
         assert took < 30, took
-        assert "install -y -qq pkg-a pkg-b" in (tmp / "calls").read_text()
+        calls = (tmp / "calls").read_text()
+        assert "install -y -qq pkg-a pkg-b" in calls and "install -y -qq --download-only pkg-a pkg-b" in calls, calls
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
         # A good first mirror: one attempt, nothing rewritten.
@@ -46,6 +47,12 @@ def main():
         # Both fail: it says so and fails.
         r, _, _ = run(Path(t), "azure.archive.ubuntu.com", "exit 100")
         assert r.returncode == 1 and "could not be installed" in r.stderr and "status 100" in r.stderr, r
+    with tempfile.TemporaryDirectory() as t:
+        # The installation itself is not stopped by the limit: a slow install (longer than the limit) ends well, with one install call and no second attempt.
+        slow_install = 'if [ "$1" = -o ]; then sleep 4; fi; exit 0'
+        r, took, _ = run(Path(t), "azure.archive.ubuntu.com", slow_install, limit=2)
+        calls = (Path(t) / "calls").read_text()
+        assert r.returncode == 0 and "trying" not in r.stderr and calls.count("-o DPkg::Lock::Timeout=300 install") == 1, (r.stderr, calls)
     print("apt_install PASS")
 
 

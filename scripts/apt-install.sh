@@ -21,12 +21,16 @@ if [ "${1:-}" = "--no-update" ]; then update=0; shift; fi
 [ "$#" -gt 0 ] || { echo "usage: apt-install.sh [--no-update] <package>..." >&2; exit 2; }
 
 attempt() {
+  # Only the part that waits for the network has a limit: the update and the download. Stopping `apt-get install` while dpkg works on the files leaves dpkg running with
+  # its lock, and every later attempt then fails with "Could not get lock /var/lib/dpkg/lock" (the CI of main failed that way on 2026-11-23: the install was at its last
+  # triggers when the 180 s ended). The installation itself works on files that are on the disk and is not stopped; it waits for the lock of dpkg for a while.
   timeout --kill-after=10 "${LIMIT:-$limit}" bash -c '
     set -e
     upd=$1; apt=$2; shift 2
     if [ "$upd" = 1 ]; then $apt update -qq; fi
-    $apt install -y -qq "$@"
-  ' _ "$update" "$apt_get" "$@"
+    $apt install -y -qq --download-only "$@"
+  ' _ "$update" "$apt_get" "$@" || return $?
+  $apt_get -o DPkg::Lock::Timeout=300 install -y -qq "$@"
 }
 
 attempt "$@" && exit 0
