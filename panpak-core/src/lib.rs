@@ -37,6 +37,7 @@ mod openurl;
 pub mod removal;
 pub mod safefs;
 pub mod seccomp;
+pub mod cachewipe;
 pub mod stalelocks;
 pub mod unitname;
 pub mod wayland;

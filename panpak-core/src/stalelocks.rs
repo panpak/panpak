@@ -224,7 +224,7 @@ pub fn copies_lock_path(runtime_dir: &Path, app_id: &str) -> PathBuf {
 }
 
 /// Whether a copy of the app is alive: another process holds its lock.
-fn copy_alive(lock: &Path) -> Result<bool> {
+pub(crate) fn copy_alive(lock: &Path) -> Result<bool> {
     let f = match File::open(lock) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),

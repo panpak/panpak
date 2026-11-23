@@ -362,6 +362,10 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
             // What the new version made unreachable (the version before the one that was `previous`) goes now, with this command's locks let go.
             drop(store_guard);
             gc::after(&store, &[]);
+            // The cache of the app can be made again, and some caches only see files that are newer than themselves (PANPAK-FORMAT.md section 6.9).
+            if let Err(e) = panpak_core::cachewipe::after_change(app_id) {
+                eprintln!("panpak: the cache of {app_id} was not emptied: {}", panpak_core::err_text(&e));
+            }
             println!("updated {app_id}: {} -> {} (reused chunks {n_reused}, fetched chunks {n_fetched}, runtime {best_abi})", old_man.app.version, man.app.version);
             println!("downloaded bytes: {downloaded}");
             Ok(dest)
@@ -794,6 +798,10 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
         remove_store_tree(&aside)?;
     }
     let _ = fs::remove_dir_all(store.join("staging").join(app_id));
+    // The cache of the app can be made again, and some caches only see files that are newer than themselves (PANPAK-FORMAT.md section 6.9).
+    if let Err(e) = panpak_core::cachewipe::after_change(app_id) {
+        eprintln!("panpak: the cache of {app_id} was not emptied: {}", panpak_core::err_text(&e));
+    }
     println!("repaired {app_id} {}", rec.manifest.app.version);
     clear_damaged(&appdir);
     Ok(())
@@ -849,6 +857,10 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     panpak_core::durable::replace_symlink(&prev_t, &current)?;
     panpak_core::failpoint!("rollback.between_links");
     panpak_core::durable::replace_symlink(&cur_t, &previous)?;
+    // The cache of the app can be made again, and some caches only see files that are newer than themselves (PANPAK-FORMAT.md section 6.9).
+    if let Err(e) = panpak_core::cachewipe::after_change(app_id) {
+        eprintln!("panpak: the cache of {app_id} was not emptied: {}", panpak_core::err_text(&e));
+    }
     println!("rollback {app_id}: back to {}", prev_t.display());
     Ok(prev_t)
 }
