@@ -2095,7 +2095,9 @@ fn make_patches(payload: &mut [PayloadEntry], chunks: &[Chunk], prev: &PrevFiles
     let gate = (Mutex::new((0u64, 0usize)), Condvar::new());
     let next = std::sync::atomic::AtomicUsize::new(0);
     let failed: Mutex<Option<anyhow::Error>> = Mutex::new(None);
-    let made: Mutex<Vec<Option<(Vec<u8>, [u8; 32])>>> = Mutex::new((0..jobs.len()).map(|_| None).collect());
+    // The patch and the hash of the file it starts from, for each job (None: no base, or nothing to say).
+    type Made = Option<(Vec<u8>, [u8; 32])>;
+    let made: Mutex<Vec<Made>> = Mutex::new((0..jobs.len()).map(|_| None).collect());
     let shared: &[PayloadEntry] = payload;
     std::thread::scope(|sc| {
         for _ in 0..cores.min(jobs.len()) {
@@ -2118,7 +2120,7 @@ fn make_patches(payload: &mut [PayloadEntry], chunks: &[Chunk], prev: &PrevFiles
                     g.0 += job.cost;
                     g.1 += 1;
                 }
-                let one = || -> Result<Option<(Vec<u8>, [u8; 32])>> {
+                let one = || -> Result<Made> {
                     let p = &shared[job.at];
                     let Some(base) = prev.read(&p.entry.path) else { return Ok(None) };
                     let Some(new) = payload_bytes(p)? else { return Ok(None) };
