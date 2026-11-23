@@ -27,7 +27,7 @@ ID = 'org.example.kept'
 def run(args, env, ok=True, timeout=60):
     p = subprocess.run([str(x) for x in args], env=env, capture_output=True, text=True, timeout=timeout)
     if ok:
-        assert p.returncode == 0, p.stdout + p.stderr
+        assert p.returncode == 0, f'{[str(x) for x in args][:3]} ended with status {p.returncode}\n{p.stdout}{p.stderr}'
     return p
 
 
