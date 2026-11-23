@@ -134,6 +134,26 @@ The bytes in between that are fetched and dropped are +2.1% for Kdenlive and +0.
 are 13 and 19 higher because of the requests for the footer, the manifest, the signature and the index). The peak memory is higher: up to six responses of at most 4 MiB are held at once, and a part of the answers is held while the
 tree is made. Not measured: a real network (not a local server), a server that limits the connections, a cold disk, and the virtual machine (btrfs).
 
+## Compression level of the chunks: 3 and 19
+
+Measured on 2026-11-23 on the development host (an external SSD, Samsung T7 over USB, LUKS, ext4, with discard passing to the SSD; kernel 7.0.0-43-generic, 16 threads, 14 GiB), release build (glibc).
+The two versions of the official AppImage of ONLYOFFICE Desktop Editors (9.4.0 and 10.0.0) converted with `panpak convert` (`bench/silverblue/make_conversions.py`, a throwaway key), once with level 3 (main at `9a7bee8`)
+and once with level 19 (this change), one run each (the time is for both conversions together; each is the unpacking of the AppImage and the packing).
+
+| | Level 3 | Level 19 |
+|---|---|---|
+| Time of the two conversions | 17.1 s | 631.5 s (37 times longer; about 5 minutes for each package, on one thread) |
+| Peak memory of the conversions | 474 MiB | 579 MiB |
+| Package 9.4.0 | 592,854,636 bytes | 534,922,465 bytes (-9.8%) |
+| Package 10.0.0 | 485,684,384 bytes | 429,760,997 bytes (-11.5%) |
+| Compressed chunks of 9.4.0 (index) | 560.1 MiB | 504.9 MiB (-9.9%) |
+| Install of the 9.4.0 package (median of 3) | 3.2 s, 46 MiB | 2.7 s, 45 MiB |
+
+The chunks of the two packages are the same: 21,516 chunks with the same hashes and the same raw bytes, so the level changes only the size of the compressed chunks, the index and the root hash. Installing and
+reading a package made at level 19 costs nothing more (the decoder has the same memory and time; the window of a frame of level 19 is 8 MiB, and the memory of the install is 45 MiB for both). The price is
+paid once, by whoever publishes. Not measured: the update size of the pair of versions at level 19 (the earlier estimate on the chunks to fetch for the update of Kdenlive and ONLYOFFICE was 12 to 14% less than at level 3: 120.5 and 121.4 MiB to
+103.6 and 108.6 MiB), and the same on the virtual machines.
+
 ## Update size
 
 Method: two consecutive versions of an app are converted, the older one is installed, and
