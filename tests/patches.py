@@ -41,7 +41,8 @@ def main():
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
         sock.close()
-        env = dict(os.environ, HOME=str(tmp), XDG_DATA_HOME=str(tmp / 'data'), PANPAK_NO_BACKGROUND='1')
+        (tmp / 'run').mkdir(mode=0o700)
+        env = dict(os.environ, HOME=str(tmp), XDG_DATA_HOME=str(tmp / 'data'), XDG_RUNTIME_DIR=str(tmp / 'run'), PANPAK_NO_BACKGROUND='1')
         env['PANPAK_RANGE_LOG'] = str(tmp / 'ranges.jsonl')
         (tmp / 'secret.key').write_text((bytes([41]) * 32).hex() + '\n')
         (tmp / 'secret.key').chmod(0o600)
