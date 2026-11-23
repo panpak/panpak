@@ -2356,6 +2356,13 @@ fn real_main() -> Result<()> {
         }
     }
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute());
+    // The file services of the system (permission `gvfs`): the sockets that `gvfsd` makes for the mounts are in a folder of the runtime folder, as for an app of Flatpak.
+    // The names on the bus are the rule of the proxy (`panpak_core::dbus::rules`); here the folder is opened, and made first when the daemon has not (it starts on request).
+    if man.permissions.as_ref().is_some_and(|p| p.gvfs == Some(true)) {
+        if let Some(d) = runtime_dir.as_deref().and_then(panpak_core::prepare_gvfsd_dir) {
+            access.rw.push(d);
+        }
+    }
     access.sockets = panpak_core::implied_sockets(
         man.permissions.as_ref(),
         runtime_dir.as_deref(),
@@ -5061,6 +5068,7 @@ mod tests {
             dbus_own: None,
             mpris: None,
             devices: None,
+            gvfs: None,
             exec_written: None,
         });
         let access = Access { rw: vec![appdata.clone()], ..Access::default() };

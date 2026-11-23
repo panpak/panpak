@@ -95,6 +95,8 @@ pub static ROWS: &[Row] = &[
         "A place in your home folder that belongs to you, not to the app, is open to it for reading. The app cannot change it.", ""),
     row("socket", Level::Attention, "network-server-symbolic", "\u{2301}", "Talk to the local service {subject}",
         "It can connect to this Unix socket, and so to the program that listens on it.", ""),
+    row("gvfs", Level::High, "folder-remote-symbolic", "\u{2601}", "Can access network locations, shared folders and connected drives through your system's file services. This lets it read and modify any of your files.",
+        "The file services of your system (GVfs) open network locations, shared folders and drives for the app, outside its sandbox: what they can reach, the app can reach.", "it reaches your files through the file services of your system"),
     row("devices", Level::Attention, "input-gaming-symbolic", "\u{2328}", "Be told when devices are plugged in or removed ({subject})",
         "It receives the notices that the system sends about devices that come and go, with their names and numbers. It does not open the devices.", ""),
     row("exec-written", Level::Attention, "system-run-symbolic", "\u{2699}", "Run programs that it downloads",
@@ -227,6 +229,9 @@ fn from_permissions(lang: Option<&Catalog>, p: &Permissions) -> Vec<Item> {
         // What the app says it is for, in words: the notices are those of every device of the machine, so the row says so too.
         let words: Vec<String> = d.iter().map(|c| tr_in(lang, if c == "camera" { crate::messages::DEVICE_CAMERA } else { crate::messages::DEVICE_GAMEPAD }).into_owned()).collect();
         out.push(item(lang, "devices", words));
+    }
+    if p.gvfs == Some(true) {
+        out.push(item(lang, "gvfs", vec![]));
     }
     if p.exec_written == Some(true) {
         out.push(item(lang, "exec-written", vec![]));
@@ -391,7 +396,8 @@ pub fn cannot(lang: Option<&Catalog>, man: &Manifest, enf: Enforced) -> Vec<Stri
     let has = |f: &dyn Fn(&Permissions) -> bool| p.as_ref().is_some_and(f);
     let list = |v: &Option<Vec<String>>| v.as_ref().is_some_and(|l| !l.is_empty());
     let net = has(&|p| p.network == Some(true) || !ports(&p.network_allow_tcp).is_empty() || !ports(&p.network_bind_tcp).is_empty());
-    let homes = has(&|p| p.home_paths.as_ref().is_some_and(|h| !h.is_empty()));
+    // The file services of the system open any file of the user, so the app that has them is not told that it cannot see the personal files.
+    let homes = has(&|p| p.home_paths.as_ref().is_some_and(|h| !h.is_empty()) || p.gvfs == Some(true));
     let dirs = has(&|p| p.xdg_dirs.as_ref().is_some_and(|d| !d.is_empty()));
     let socks = has(&|p| list(&p.sockets_allow));
     let bus = has(&|p| p.sockets_allow.iter().flatten().any(|s| crate::is_bus_socket(s)));
@@ -595,6 +601,22 @@ mod tests {
             ids,
             [("x11", Level::High), ("folder-write", Level::Attention), ("home-path-read", Level::Attention), ("notifications", Level::Normal)]
         );
+    }
+
+    #[test]
+    fn gvfs_is_a_high_row_with_the_agreed_sentence_and_the_app_is_not_told_that_it_cannot_see_files() {
+        let m = man("[permissions]\ngvfs=true\n");
+        let its = items_in(None, &m);
+        assert_eq!(its.iter().map(|i| (i.id, i.level)).collect::<Vec<_>>(), [("gvfs", Level::High)], "the same weight as the home folder");
+        assert_eq!(its[0].text, "Can access network locations, shared folders and connected drives through your system's file services. This lets it read and modify any of your files.");
+        assert!(items_in(None, &man("[permissions]\ngvfs=false\n")).is_empty());
+        let none = man("");
+        let new = added(&none, &m);
+        assert_eq!(new.iter().map(|i| i.id).collect::<Vec<_>>(), ["gvfs"], "an update that adds it asks again");
+        let no = cannot(None, &m, Enforced { view: true, abi: None });
+        assert!(no.iter().all(|s| !s.contains("personal files") && !s.contains("passwords")), "{no:?}");
+        let s = summary(None, &its);
+        assert!(s.contains("file services"), "{s}");
     }
 
     #[test]

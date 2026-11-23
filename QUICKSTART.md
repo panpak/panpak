@@ -154,6 +154,13 @@ panpak sbom --export pkg.panpak    # the same, completed with the name, id and v
 `panpak sbom` also takes an app id (the installed one) or an https address (only the parts of the package that hold the SBOM are downloaded).
 A rollback to a version below the floor that the author set is refused. A rollback does not undo what the newer version did to the data of the app.
 
+## Network locations and drives (`gvfs`)
+
+An app that opens `sftp://`, `smb://` or `https://` locations, shared folders or connected drives through the file services of the system (GIMP's "Open Location", file managers) declares `gvfs = true` in `[permissions]`.
+The runtime then lets its calls to `org.gtk.vfs.*` reach the session bus of your computer, as Flatpak does with `--talk-name=org.gtk.vfs.*`, and opens the folder of the sockets of the GVfs daemon. **This is a high risk,
+the same as access to your whole home folder**: through GVfs the app can read and change any of your files, also outside its sandbox. `install` and `update` show it ("Can access network locations, shared folders and connected
+drives through your system's file services. This lets it read and modify any of your files.") and an update that adds it asks again. If GVfs is not installed (`panpak doctor` says it) the app works without those locations.
+
 ## Kept versions: going back
 
 An app that fails to start twice in a row after an update opens a window ("<app> doesn't start") that offers to go back to the last version that worked, or to try again. A version

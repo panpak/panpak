@@ -33,7 +33,7 @@ CRITICAL_SECTIONS = {
     "release": {"revision", "floor", "security", "channel", "history"},
     "abi": {"needs", "prefer_host", "modules"},
     "permissions": {"x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs",
-                    "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"},
+                    "portal", "notifications", "tray", "mpris", "devices", "exec_written", "gvfs", "dbus_own"},
     "launch": {"args", "env"},
     "runtime": {"min_runtime", "stub_hash"},
     "trust": {"root", "threshold", "recovery", "domain", "chain"},

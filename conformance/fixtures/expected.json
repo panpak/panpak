@@ -276,6 +276,12 @@
   ],
   "ok": false
  },
+ "invalid-gvfs-type.panpak": {
+  "err": [
+   "gvfs"
+  ],
+  "ok": false
+ },
  "invalid-home-path-autostart.panpak": {
   "code": "PANPAK-E0007",
   "err": [
@@ -880,6 +886,10 @@
   "ok": true
  },
  "valid-format-critical-known.panpak": {
+  "err": [],
+  "ok": true
+ },
+ "valid-gvfs.panpak": {
   "err": [],
   "ok": true
  },

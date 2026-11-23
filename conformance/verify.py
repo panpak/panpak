@@ -306,7 +306,7 @@ def own_name_ok(name, app):
 
 def check_bus(man):
     perms = man.get("permissions", {})
-    for k in ("notifications", "tray", "exec_written"):
+    for k in ("notifications", "tray", "exec_written", "gvfs"):
         if k in perms and not isinstance(perms[k], bool):
             raise Fail(f"invalid manifest field permissions.{k}")
     own = perms.get("dbus_own", [])
@@ -325,7 +325,7 @@ FORMAT_LEVEL = 1
 KNOWN_CRITICAL = {
     "release": {"revision", "floor", "security", "channel", "history"},
     "permissions": {"x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs",
-                    "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"},
+                    "portal", "notifications", "tray", "mpris", "devices", "exec_written", "gvfs", "dbus_own"},
     "launch": {"args", "env"},
     "abi": {"needs", "prefer_host", "modules"},
     "runtime": {"min_runtime", "stub_hash"},

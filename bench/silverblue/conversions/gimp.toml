@@ -1,8 +1,9 @@
 # What the converter declares for GIMP: the functions that the Flatpak of Flathub gives it (network, the user folders it works on, the file dialog of the portal), as far as Panpak has an
 # equivalent. What the Flatpak gives and Panpak does not (PROCEDURE.md section 2): `--device=all` (graphics tablets and every other device), `--filesystem=host` (every folder, by path),
-# the screenshot and file manager services of the session, and gvfs.
+# the screenshot and file manager services of the session. Gvfs (network locations, shared folders, drives) is `gvfs = true` below, with the weight of the whole home folder.
 [permissions]
 network = true
+gvfs = true
 
 [permissions.portal]
 files = "picker"

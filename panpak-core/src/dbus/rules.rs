@@ -169,6 +169,10 @@ pub fn proxy_args(n: &BusNeeds<'_>) -> Vec<String> {
     if n.perms.is_some_and(|p| p.tray == Some(true)) {
         a.push(format!("--talk={TRAY_WATCHER}"));
     }
+    // The file services of the system (GVfs): the names `org.gtk.vfs.*`, as Flatpak's `--talk-name=org.gtk.vfs.*`; no name of them is owned.
+    if n.perms.is_some_and(|p| p.gvfs == Some(true)) {
+        a.push("--talk=org.gtk.vfs.*".to_string());
+    }
     // A media player: one alias that carries the id of the package, never a name of another player.
     if n.perms.is_some_and(|p| p.mpris == Some(true)) {
         a.push(format!("--own={}", mpris_alias_for(n.app_id)));
@@ -291,6 +295,15 @@ mod tests {
         assert!(a.iter().all(|x| !x.contains("com.example.app")), "{a:?}");
         // Nothing for the permissions that are off.
         assert!(a.iter().all(|x| !x.contains("Notification") && !x.contains("StatusNotifier") && !x.contains("mpris")), "{a:?}");
+    }
+
+    #[test]
+    fn gvfs_opens_the_names_of_the_file_services_and_nothing_else() {
+        let a = args("gvfs = true\n");
+        assert!(a.iter().any(|x| x == "--talk=org.gtk.vfs.*"), "{a:?}");
+        assert!(a.iter().all(|x| !x.starts_with("--own=") && !x.starts_with("--see")), "{a:?}");
+        assert!(args("").iter().all(|x| !x.contains("org.gtk")), "without the permission the names stay closed");
+        assert!(args("gvfs = false\n").iter().all(|x| !x.contains("org.gtk")));
     }
 
     #[test]

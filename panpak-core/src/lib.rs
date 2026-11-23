@@ -62,7 +62,7 @@ pub use layout::{
     PARTIAL_ISOLATION_WARNING,
 };
 pub use view::{
-    bwrap_version, implied_sockets, network_requested, open_o_path, resolv_conf_run_dir, unopenable_rule_paths, view_status, view_status_at, ViewProblem,
+    bwrap_version, gvfs_installed, implied_sockets, prepare_gvfsd_dir, network_requested, GVFSD_DIR, open_o_path, resolv_conf_run_dir, unopenable_rule_paths, view_status, view_status_at, ViewProblem,
     ViewStatus, BWRAP, SYSTEM_RULE_PATHS,
 };
 pub use validate::{
@@ -450,6 +450,9 @@ pub struct Permissions {
     pub devices: Option<Vec<String>>,
     /// The app may run programs that it wrote itself (downloaded, unpacked, built) in the folders it can write. Default false: nothing the app can write can be executed (PANPAK-FORMAT.md §3.1.8).
     pub exec_written: Option<bool>,
+    /// The file services of the system (GVfs): network locations, shared folders and connected drives. The app may talk to `org.gtk.vfs.*` on the session bus and reach the sockets of `gvfsd`,
+    /// as an app of Flatpak with `--talk-name=org.gtk.vfs.*` does; through them it can read and change any file that the user can (PANPAK-FORMAT.md §3.1.5). Default false.
+    pub gvfs: Option<bool>,
     /// Extra names for the app on its private bus (at most 8, no wildcards). Since step 13p every name is the app's own on its private bus, so the list has no effect;
     /// it is still checked, so that an old package stays valid.
     pub dbus_own: Option<Vec<String>>,
@@ -648,7 +651,7 @@ const RELEASE_KEYS: &[&str] = &["revision", "floor", "security", "channel", "his
 const FORMAT_KEYS: &[&str] = &["min_panpak", "critical", "compression", "chunking", "packed_by"];
 pub(crate) const SBOM_KEYS: &[&str] = &["hash", "coverage"];
 const ABI_KEYS: &[&str] = &["needs", "prefer_host", "modules"];
-const PERM_KEYS: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal", "notifications", "tray", "mpris", "devices", "exec_written", "dbus_own"];
+const PERM_KEYS: &[&str] = &["x11", "audio", "network", "network_allow_tcp", "network_bind_tcp", "sockets_allow", "home_paths", "xdg_dirs", "portal", "notifications", "tray", "mpris", "devices", "exec_written", "gvfs", "dbus_own"];
 const LAUNCH_KEYS: &[&str] = &["args", "env"];
 const RUNTIME_KEYS: &[&str] = &["min_runtime", "stub_hash"];
 

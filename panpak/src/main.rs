@@ -4298,6 +4298,12 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
         Ok(abi) => line(true, &format!("kernel {release}, Landlock {abi:?} ({})", abi_features(abi))),
         Err(e) => line(false, &format!("kernel {release}, Landlock unavailable ({}); kernel >= 5.13 with CONFIG_SECURITY_LANDLOCK=y required", panpak_core::err_text(&e))),
     }
+    // The permission `gvfs` (network locations, shared folders, drives) needs the file services of the system; without them an app that asks for it works as before.
+    if panpak_core::gvfs_installed() {
+        println!("OK   GVfs: the file services of the system are installed (an app with the permission `gvfs` can open network locations, shared folders and drives)");
+    } else {
+        println!("NOTE GVfs: the file services of the system are not installed; an app that asks for the permission `gvfs` runs without network locations, shared folders and drives");
+    }
     if panpak_core::detect_abi().is_ok_and(|a| a < landlock::ABI::V5) {
         println!("NOTE device ioctl: Landlock V5 (Linux 6.10) is needed to refuse ioctl on devices; on this kernel an app may use the ioctl of any device it can open (/dev/null, /dev/zero, /dev/tty and /dev/dri only are reachable)");
     } else {
