@@ -106,6 +106,8 @@ pub const CDC_AVG: usize = 64 * 1024;
 pub const CDC_MAX: usize = 256 * 1024;
 /// zstd level for chunks and index.
 pub const ZSTD_LEVEL: i32 = 19;
+/// The level `panpak convert` uses when `--level` is not given: a conversion on the computer of the user has to be quick.
+pub const ZSTD_LEVEL_CONVERT: i32 = 3;
 /// Stub (runtime) ABI v1. Packages declare `[runtime] min_runtime`:
 /// the stub refuses packages requiring a newer runtime.
 pub const RUNTIME_ABI: u32 = 1;

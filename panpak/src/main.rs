@@ -24,7 +24,7 @@ use panpak_core::desktop::{self as dsk, desktop_is_ours, desktop_path, launcher_
 use panpak_core::{bail_code, coded, ensure_code, ErrorCode};
 use panpak_core::{
     encode_footer, encode_index, parse_secret, CDC_AVG, CDC_MAX, CDC_MIN, Chunk, Entry, Footer,
-    Kind, Manifest, ZSTD_LEVEL,
+    Kind, Manifest, ZSTD_LEVEL, ZSTD_LEVEL_CONVERT,
 };
 use std::{
     collections::HashMap,
@@ -35,7 +35,7 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [--permissions <file.toml>] [--wm-class <window class>] [--append <path in the tree>=<file>] [--update-url <url>] [--previous <package>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak sbom [--export] <package | app id | https URL> [--allow-insecure-http] [--timeout <s>]   (the software bill of materials of a package, CycloneDX 1.6 JSON; --export completes it with the name, id and version, a serial number and the time, for a scanner; from a URL only the parts of the package that hold it are downloaded)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
+    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [--level <1-22>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [--permissions <file.toml>] [--wm-class <window class>] [--append <path in the tree>=<file>] [--update-url <url>] [--previous <package>] [--level <1-22>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak sbom [--export] <package | app id | https URL> [--allow-insecure-http] [--timeout <s>]   (the software bill of materials of a package, CycloneDX 1.6 JSON; --export completes it with the name, id and version, a serial number and the time, for a scanner; from a URL only the parts of the package that hold it are downloaded)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--show-key] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the domain of the author confirms the key, or the key the author published, or the key of the file; --yes alone does not, unless the domain confirms)\n  panpak update [--stage] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file|trust.confirm_domain> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
   panpak open <app-id> [file] [--write | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
@@ -1320,7 +1320,8 @@ fn normalized_domain(d: &str) -> String {
     panpak_core::domain::ascii_form(&nfc)
 }
 
-fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Option<&Path>, extra_icons: Vec<IconInput>, previous: Previous<'_>) -> Result<PathBuf> {
+#[allow(clippy::too_many_arguments)]
+fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Option<&Path>, extra_icons: Vec<IconInput>, previous: Previous<'_>, level: i32) -> Result<PathBuf> {
     let input_toml = fs::read_to_string(dir.join("panpak.toml")).context("read <folder>/panpak.toml")?;
     // Strict schema in pack: future keys must not silently disappear.
     panpak_core::check_panpak_toml_schema(&input_toml)?;
@@ -1712,7 +1713,7 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
     let mut refs: u64 = 0;
     // The chunks are compressed on all the cores, in batches: the main thread cuts and hashes, a batch of new chunks is compressed in
     // parallel, and the frames are written in the order of the chunks, so the file is the same as one written by a single thread.
-    let mut comp = ChunkCompressor::new(compression_level())?;
+    let mut comp = ChunkCompressor::new(level)?;
     let mut pending: Vec<Vec<u8>> = Vec::new();
     let mut pending_bytes = 0usize;
     for p in payload.iter_mut() {
@@ -2216,6 +2217,8 @@ struct ConvertArgs<'a> {
     update_url: Option<&'a str>,
     /// The earlier package of the same app, so that the revision goes up and the history continues (as `pack --previous`).
     previous: Option<&'a Path>,
+    /// The zstd level of the chunks (`--level`; `ZSTD_LEVEL_CONVERT` when it is not given).
+    level: i32,
     out: Option<&'a Path>,
 }
 
@@ -2281,7 +2284,7 @@ fn append_to_tree_file(tw: &mut treewriter::TreeWriter, tree: &Path, path: &str,
 
 fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     use std::io::Read;
-    let ConvertArgs { src, id, stub, secret, trust, name_ov, version_ov, entry_ov, icon_ov, perms_ov, wm_class_ov, appends, update_url, previous, out } = a;
+    let ConvertArgs { src, id, stub, secret, trust, name_ov, version_ov, entry_ov, icon_ov, perms_ov, wm_class_ov, appends, update_url, previous, level, out } = a;
     panpak_core::validate_app_id(id)?;
     let mut f = File::open(src)?;
     // Look for the squashfs v4 magic ("hsqs") in the first 64 MiB, validating the
@@ -2554,7 +2557,7 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     tw.replace_file(Path::new("panpak.toml"), toml.as_bytes(), 0o644)?;
     // The links that make the library path of the app valid for its own programs only (PANPAK-FORMAT.md section 7.1).
     panpak_core::libpath::make_links(&tree, id, &mut |p, t| tw.symlink(p, Path::new(t)))?;
-    cmd_pack(&tree, stub, secret, trust, out, icons, previous.map_or(Previous::Installed, Previous::File))
+    cmd_pack(&tree, stub, secret, trust, out, icons, previous.map_or(Previous::Installed, Previous::File), level)
 }
 
 /// An icon handed to `pack` as bytes: where it came from (for the messages) and the file.
@@ -4243,10 +4246,13 @@ fn qt_plugin_notes<'a>(paths: impl Iterator<Item = &'a Path>) -> Vec<String> {
 /// Raw bytes of new chunks that are gathered before they are compressed together.
 const BATCH_BYTES: usize = 32 << 20;
 
-/// The zstd level of `pack` and `convert`: `ZSTD_LEVEL`, unless `PANPAK_ZSTD_LEVEL` says another one (measurements; the level is not part
-/// of the identity of the content).
-fn compression_level() -> i32 {
-    std::env::var("PANPAK_ZSTD_LEVEL").ok().and_then(|v| v.parse().ok()).filter(|l| (1..=22).contains(l)).unwrap_or(ZSTD_LEVEL)
+/// The value of `--level`: a zstd level that the compressor accepts.
+fn parse_level(v: Option<&String>) -> Result<i32> {
+    let v = v.ok_or_else(|| coded(ErrorCode::E5002, "--level <1 to 22>"))?;
+    match v.parse::<i32>() {
+        Ok(l) if (1..=22).contains(&l) => Ok(l),
+        _ => bail_code!(ErrorCode::E5002, "--level must be a number from 1 to 22, not {v:?}"),
+    }
 }
 
 /// One zstd context per thread; a batch of chunks is split between the threads and written in the order of the chunks.
@@ -4428,6 +4434,7 @@ fn real_main() -> Result<()> {
             let mut rotate_from = None;
             let (mut recover_with, mut recovery, mut sign_command, mut public_key) = (None::<String>, None::<String>, None::<String>, None::<String>);
             let mut previous: Option<String> = None;
+            let mut level = ZSTD_LEVEL;
             let mut out = None;
             let mut i = 3;
             while i < args.len() {
@@ -4464,6 +4471,10 @@ fn real_main() -> Result<()> {
                         previous = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--previous <package>"))?.clone());
                         i += 2;
                     }
+                    "--level" => {
+                        level = parse_level(args.get(i + 1))?;
+                        i += 2;
+                    }
                     "-o" => {
                         out = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "-o <out>"))?.as_str());
                         i += 2;
@@ -4487,7 +4498,7 @@ fn real_main() -> Result<()> {
                     (secret, trust)
                 }
             };
-            cmd_pack(Path::new(dir), Path::new(stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?), &secret, &trust, out_p.as_deref(), Vec::new(), previous.as_deref().map_or(Previous::None, |p| Previous::File(Path::new(p))))?;
+            cmd_pack(Path::new(dir), Path::new(stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?), &secret, &trust, out_p.as_deref(), Vec::new(), previous.as_deref().map_or(Previous::None, |p| Previous::File(Path::new(p))), level)?;
             Ok(())
         }
         Some("install-runtime") => {
@@ -4658,6 +4669,7 @@ fn real_main() -> Result<()> {
             let mut appends: Vec<(&str, &Path)> = Vec::new();
             let mut update_url = None;
             let mut previous = None;
+            let mut level = ZSTD_LEVEL_CONVERT;
             let mut out = None;
             let mut i = 3;
             while i < args.len() {
@@ -4673,6 +4685,7 @@ fn real_main() -> Result<()> {
                     "--update-url" => { update_url = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--update-url <https address>"))?.as_str()); i += 2; }
                     "--previous" => { previous = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--previous <package>"))?.as_str()); i += 2; }
                     "--permissions" => { perms = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--permissions <file.toml>"))?.as_str()); i += 2; }
+                    "--level" => { level = parse_level(args.get(i + 1))?; i += 2; }
                     "--wm-class" => { wm_class = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--wm-class <window class>"))?.as_str()); i += 2; }
                     "--append" => {
                         let v = args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--append <path in the tree>=<file>"))?.as_str();
@@ -4707,6 +4720,7 @@ fn real_main() -> Result<()> {
                 appends: &appends,
                 update_url,
                 previous: previous.map(Path::new),
+                level,
                 out: out.map(PathBuf::from).as_deref(),
             })?;
             Ok(())
@@ -5411,7 +5425,7 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None, 3).unwrap();
         let mut f = File::open(&out).unwrap();
         let ft = panpak_core::read_footer(&mut f).unwrap();
         let (_man, raw) = panpak_core::verify(&mut f, &ft).unwrap();
@@ -5424,12 +5438,12 @@ mod tests {
         }
         // Same input -> same package (licenses do not break determinism).
         let out2 = dir.join("b.panpak");
-        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out2), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out2), Vec::new(), Previous::None, 3).unwrap();
         assert_eq!(fs::read(&out).unwrap(), fs::read(&out2).unwrap());
         // The reserved top level cannot come from the user's tree.
         fs::create_dir_all(tree.join(".panpak")).unwrap();
         fs::write(tree.join(".panpak/x"), "x").unwrap();
-        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&dir.join("c.panpak")), Vec::new(), Previous::None).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&dir.join("c.panpak")), Vec::new(), Previous::None, 3).unwrap_err();
         assert!(panpak_core::err_text(&e).contains("reserved"), "{e:?}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -5457,14 +5471,14 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None, 3).unwrap_err();
         let text = panpak_core::render(&e, ErrorCode::E0000);
         assert!(text.contains("invalid") && text.contains("abi.needs") && text.contains("nothing was written"), "{text}");
         assert!(!out.exists(), "a file was written for an invalid manifest");
         // The same tree with a valid name is packed.
         elf[241..250].copy_from_slice(b"libc.so.6");
         fs::write(tree.join("bin/app"), &elf).unwrap();
-        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None, 3).unwrap();
         assert!(out.exists());
         let _ = fs::remove_dir_all(&dir);
     }

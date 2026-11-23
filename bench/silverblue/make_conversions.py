@@ -57,6 +57,7 @@ def main():
     ap.add_argument('--out', required=True)
     ap.add_argument('--key', required=True, help='the signing key of the converter (`panpak keygen -o`), one for every conversion')
     ap.add_argument('--update-url-base', required=True, help='the address (https) that serves <id>.panpak, for example https://192.168.122.1:8443')
+    ap.add_argument('--level', type=int, default=19, help='the zstd level of the chunks (`convert --level`); the series are publications, so 19 as `pack` uses')
     ap.add_argument('--panpak', default=str(ROOT / 'target/x86_64-unknown-linux-musl/release'), help='the folder with panpak and panpak-stub')
     ap.add_argument('apps', nargs='*', help=f'which of {sorted(APPS)} (default: all)')
     a = ap.parse_args()
@@ -78,7 +79,7 @@ def main():
                 sys.exit(f'{src}: SHA-256 {got} is not the one the author publishes ({want}): refused')
             dest = out / (f'{app_id}.prev.panpak' if i == 0 else f'{app_id}.panpak')
             cmd = [panpak, 'convert', src, '--id', app_id, '--name', title, '--version', version, '--stub', stub, '--secret-file', a.key, '--permissions', HERE / perms, '--wm-class', wm_class,
-                   '--update-url', f'{a.update_url_base.rstrip("/")}/{app_id}.panpak', '-o', dest]
+                   '--update-url', f'{a.update_url_base.rstrip("/")}/{app_id}.panpak', '--level', str(a.level), '-o', dest]
             if entry:
                 cmd += ['--entry', entry]
             for path_in_tree, text_file in APPENDS.get(name, []):

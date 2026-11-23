@@ -154,6 +154,22 @@ reading a package made at level 19 costs nothing more (the decoder has the same 
 paid once, by whoever publishes. Not measured: the update size of the pair of versions at level 19 (the earlier estimate on the chunks to fetch for the update of Kdenlive and ONLYOFFICE was 12 to 14% less than at level 3: 120.5 and 121.4 MiB to
 103.6 and 108.6 MiB), and the same on the virtual machines.
 
+### Levels 3, 9, 12, 15 and 19, with the chunks compressed on all the cores
+
+Measured on 2026-11-23 on the development host (an external SSD, Samsung T7 over USB, LUKS, ext4, with discard passing to the SSD; kernel 7.0.0-43-generic, 16 threads, 14 GiB), release build (glibc), run with low priority (`nice 19`, idle I/O class, CPU weight 20).
+The two versions of an app converted with `panpak convert` in one run (`bench/silverblue/make_conversions.py`, a throwaway key), one run for each level. The time is for the two conversions together; the memory is the peak of the run.
+
+| Level | Kdenlive 26.08.2 + 26.08.3: time, peak memory | Package .2 | Package .3 | ONLYOFFICE 9.4.0 + 10.0.0: time, peak memory | Package 10.0.0 | Package 9.4.0 |
+|---|---|---|---|---|---|---|
+| 3 | 14.2 s, 502 MiB | 255,853,601 | 255,039,136 | 18.9 s, 555 MiB | 485,684,376 | 592,854,629 |
+| 9 | 18.8 s, 575 MiB | 246,290,278 | 245,347,810 | 23.3 s, 700 MiB | 465,898,833 | 572,395,153 |
+| 12 | 20.5 s, 1.1 GiB | 245,822,730 | 244,871,856 | 30.8 s, 1.15 GiB | 465,136,740 | 571,620,785 |
+| 15 | 19.3 s, 1.5 GiB | 245,432,798 | 244,482,936 | 29.9 s, 1.5 GiB | 464,139,438 | 569,777,402 |
+| 19 | 59.1 s, 1.7 GiB | 220,431,397 | 219,144,936 | 107.5 s, 1.8 GiB | 429,761,035 | 534,922,458 |
+
+Level 19 on one thread took 631 s for the two conversions of ONLYOFFICE (above); on all the cores it takes 107 s, about 6 times less,
+at a cost of 1.8 GiB of memory (one zstd context for each thread). Between levels 3 and 15 the packages shrink by 4 to 6% and the time grows by half; the big step is level 19 (the strategy and the 8 MiB window change there), 11.5% for ONLYOFFICE and 14% for Kdenlive, at 4 to 5 times the time of level 3. Levels 16 to 18 were not measured. `pack` uses 19 and `convert` uses 3 unless `--level` says another one.
+
 ## Update size
 
 Method: two consecutive versions of an app are converted, the older one is installed, and

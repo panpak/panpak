@@ -72,7 +72,7 @@ To rotate the update key, sign with the new key and add
 `--rotate-from-file <old-key-file>` (same permission rules as
 `--secret-file`).
 
-`panpak pack` chunks (FastCDC 16K/64K/256K), compresses (zstd),
+`panpak pack` chunks (FastCDC 16K/64K/256K), compresses (zstd level 19 on all the cores; `--level 1` to `22` says another one),
 dedups by BLAKE3 hash, signs `manifest || root_hash` and appends
 index + manifest + 80-byte footer to the stub.
 
@@ -190,6 +190,7 @@ limits), `distro-matrix.md` (multi-distro tests).
 ```sh
 panpak convert Etcher.AppImage --id io.example.app -o app.panpak
 # the key is the personal one of ~/.config/panpak/secret.key, made before with `panpak key new` (--secret-file uses another)
+# the chunks are compressed at zstd level 3, to be quick; `--level 19` makes the package as small as `pack` does, for a conversion that you publish
 ```
 
 The manifest declares `[origin]` (file, version, SHA-256, never signed
