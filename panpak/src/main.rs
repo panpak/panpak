@@ -1710,8 +1710,11 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
     let mut chunks: Vec<Chunk> = Vec::new();
     let mut by_hash: HashMap<[u8; 32], u32> = HashMap::new();
     let mut refs: u64 = 0;
-    // One zstd context for every chunk and for the index.
-    let mut enc = panpak_core::ChunkEncoder::new(ZSTD_LEVEL)?;
+    // The chunks are compressed on all the cores, in batches: the main thread cuts and hashes, a batch of new chunks is compressed in
+    // parallel, and the frames are written in the order of the chunks, so the file is the same as one written by a single thread.
+    let mut comp = ChunkCompressor::new(compression_level())?;
+    let mut pending: Vec<Vec<u8>> = Vec::new();
+    let mut pending_bytes = 0usize;
     for p in payload.iter_mut() {
         let reader: Box<dyn std::io::Read> = match (&p.source, p.embedded) {
             _ if p.data.is_some() => Box::new(std::io::Cursor::new(p.data.clone().unwrap_or_default())),
@@ -1730,28 +1733,28 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
                 ids.push(id);
                 continue;
             }
-            let comp = enc.encode(&raw)?;
             let id = chunks.len() as u32;
-            fout.write_all(comp)?;
-            chunks.push(Chunk {
-                hash,
-                off: file_off,
-                comp: comp.len() as u32,
-                raw: raw.len() as u32,
-            });
-            file_off += comp.len() as u64;
+            // `off` and `comp` are set when the batch is written.
+            chunks.push(Chunk { hash, off: 0, comp: 0, raw: raw.len() as u32 });
+            pending_bytes += raw.len();
+            pending.push(raw);
             by_hash.insert(hash, id);
             ids.push(id);
+            if pending_bytes >= BATCH_BYTES {
+                comp.flush(&mut pending, &mut chunks, &mut fout, &mut file_off)?;
+                pending_bytes = 0;
+            }
         }
         if let Kind::File { chunks: dst } = &mut p.entry.kind {
             refs += ids.len() as u64;
             *dst = ids;
         }
     }
+    comp.flush(&mut pending, &mut chunks, &mut fout, &mut file_off)?;
 
     let entries: Vec<Entry> = payload.into_iter().map(|p| p.entry).collect();
     let raw_index = encode_index(&chunks, &entries);
-    let comp_index = enc.encode(&raw_index)?.to_vec();
+    let comp_index = comp.encode_one(&raw_index)?;
     let root = *blake3::hash(&raw_index).as_bytes();
 
     let index_off = file_off;
@@ -4195,6 +4198,76 @@ fn qt_plugin_notes<'a>(paths: impl Iterator<Item = &'a Path>) -> Vec<String> {
 }
 
 /// The numbers of a glibc version as `ldd --version` prints it (`2.39`, `2.39-0ubuntu8`).
+/// Raw bytes of new chunks that are gathered before they are compressed together.
+const BATCH_BYTES: usize = 32 << 20;
+
+/// The zstd level of `pack` and `convert`: `ZSTD_LEVEL`, unless `PANPAK_ZSTD_LEVEL` says another one (measurements; the level is not part
+/// of the identity of the content).
+fn compression_level() -> i32 {
+    std::env::var("PANPAK_ZSTD_LEVEL").ok().and_then(|v| v.parse().ok()).filter(|l| (1..=22).contains(l)).unwrap_or(ZSTD_LEVEL)
+}
+
+/// One zstd context per thread; a batch of chunks is split between the threads and written in the order of the chunks.
+struct ChunkCompressor {
+    encoders: Vec<panpak_core::ChunkEncoder>,
+}
+
+impl ChunkCompressor {
+    fn new(level: i32) -> Result<Self> {
+        let n = std::thread::available_parallelism().map_or(1, |n| n.get()).min(32);
+        let encoders = (0..n).map(|_| panpak_core::ChunkEncoder::new(level)).collect::<Result<Vec<_>>>()?;
+        Ok(Self { encoders })
+    }
+
+    /// Compress `batch` and write the frames in order; the chunks of the batch are the last ones of `chunks`.
+    fn flush(&mut self, batch: &mut Vec<Vec<u8>>, chunks: &mut [Chunk], out: &mut impl Write, off: &mut u64) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let first = chunks.len() - batch.len();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let frames: Vec<Vec<(usize, Vec<u8>)>> = std::thread::scope(|sc| {
+            let work: &[Vec<u8>] = batch;
+            let handles: Vec<_> = self
+                .encoders
+                .iter_mut()
+                .map(|enc| {
+                    let next = &next;
+                    sc.spawn(move || -> Result<Vec<(usize, Vec<u8>)>> {
+                        let mut done = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if i >= work.len() {
+                                return Ok(done);
+                            }
+                            done.push((i, enc.encode(&work[i])?.to_vec()));
+                        }
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().map_err(|_| anyhow::anyhow!("a compression thread panicked")).and_then(|r| r)).collect::<Result<Vec<_>>>()
+        })?;
+        let mut ordered: Vec<Option<Vec<u8>>> = vec![None; batch.len()];
+        for (i, f) in frames.into_iter().flatten() {
+            ordered[i] = Some(f);
+        }
+        for (k, frame) in ordered.into_iter().enumerate() {
+            let frame = frame.context("a chunk was not compressed")?;
+            out.write_all(&frame)?;
+            chunks[first + k].off = *off;
+            chunks[first + k].comp = frame.len() as u32;
+            *off += frame.len() as u64;
+        }
+        batch.clear();
+        Ok(())
+    }
+
+    /// One block (the index), compressed by the first context.
+    fn encode_one(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        Ok(self.encoders[0].encode(data)?.to_vec())
+    }
+}
+
 fn glibc_numbers(text: &str) -> Option<Vec<u32>> {
     let head: String = text.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
     let nums: Option<Vec<u32>> = head.trim_matches('.').split('.').map(|p| p.parse::<u32>().ok()).collect();
@@ -5029,6 +5102,35 @@ fn real_main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chunks_compressed_on_many_threads_are_written_as_one_thread_would_write_them() {
+        let level = 3;
+        let raw: Vec<Vec<u8>> = (0..40u32)
+            .map(|k| (0..(20_000 + k as usize * 997)).map(|i| ((i as u32).wrapping_mul(k + 7) >> (k % 5)) as u8).collect())
+            .collect();
+        let mut one = panpak_core::ChunkEncoder::new(level).unwrap();
+        let mut want = Vec::new();
+        let mut want_chunks = Vec::new();
+        for r in &raw {
+            let f = one.encode(r).unwrap().to_vec();
+            want_chunks.push((want.len() as u64 + 5, f.len() as u32));
+            want.extend_from_slice(&f);
+        }
+        let mut c = ChunkCompressor::new(level).unwrap();
+        // two batches, to see that the offsets go on from one to the next
+        let mut chunks: Vec<Chunk> = raw.iter().map(|r| Chunk { hash: [0; 32], off: 0, comp: 0, raw: r.len() as u32 }).collect();
+        let mut out = vec![0u8; 5];
+        let mut off = 5u64;
+        let mut first: Vec<Vec<u8>> = raw[..15].to_vec();
+        c.flush(&mut first, &mut chunks[..15], &mut out, &mut off).unwrap();
+        let mut second: Vec<Vec<u8>> = raw[15..].to_vec();
+        c.flush(&mut second, &mut chunks, &mut out, &mut off).unwrap();
+        assert_eq!(&out[5..], &want[..]);
+        for (k, ch) in chunks.iter().enumerate() {
+            assert_eq!((ch.off, ch.comp), want_chunks[k], "chunk {k}");
+        }
+    }
+
     #[test]
     fn a_file_is_linked_when_asked_and_possible_and_copied_in_every_other_case() {
         use std::os::unix::fs::MetadataExt;
