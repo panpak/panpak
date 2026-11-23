@@ -206,19 +206,31 @@ fn ensure_tree_readonly(tree: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The modification time of every file, folder and link of a tree in the store: 2000-01-01T00:00:00Z. A package does not carry times, and the time at which the store
-/// happened to create each entry is of no use: it made a cache file older than the folder that holds it (a folder gets a new time whenever an entry is
-/// created in it, and `icon-theme.cache` comes before the folders that sort after it), and Qt ignores an icon cache that is older than its folder.
-/// With one time for everything such a cache is never older. Files that are shared between trees (hard links of the blobs) get the same time in each.
+/// The modification time of every folder and link of a tree in the store, and the earliest of a file: 2000-01-01T00:00:00Z. A package does not carry times, and the
+/// time at which the store happened to create each entry is of no use: it made a cache file older than the folder that holds it (a folder gets a new time whenever an
+/// entry is created in it, and `icon-theme.cache` comes before the folders that sort after it), and Qt ignores an icon cache that is older than its folder.
+/// A folder never has a later time than any file, so such a cache is never older.
 pub const TREE_MTIME: i64 = 946_684_800;
+
+/// How far above `TREE_MTIME` the time of a file can be: 2^25 seconds, a little more than a year.
+const FILE_TIME_SPAN: u64 = 1 << 25;
+
+/// The modification time of a file, from its content: `TREE_MTIME` and a number of seconds made of the first bytes of the name of its blob (the hash of its chunks and
+/// its mode). The same content has the same time in every tree and every version, and another content has another time (but for a chance of one in 33 million), so a
+/// program that keeps what it learned about a file by the time of the file (GIMP: the plug-ins that it has queried) asks again for the files that changed and for no other.
+/// Files that are shared between trees (hard links of the blobs) have one time, since it is the time of the inode.
+pub fn content_mtime(blob: &str) -> i64 {
+    let n = blob.get(..8).and_then(|h| u32::from_str_radix(h, 16).ok()).unwrap_or(0) as u64;
+    TREE_MTIME + (n % FILE_TIME_SPAN) as i64
+}
 
 /// Give every entry of a tree the one time (`TREE_MTIME`) and take the write bits from the files and folders (a link has neither). The entries are
 /// the ones that were made (the folders, the files and the links), so nothing is walked, and the work is shared between threads: it is a few thousand system calls on different inodes.
-fn finalize_tree(root: &Path, paths: &[PathBuf]) -> Result<()> {
+fn finalize_tree(root: &Path, paths: &[PathBuf], times: &std::collections::HashMap<PathBuf, i64>) -> Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    fn one(p: &Path) -> Result<()> {
+    fn one(p: &Path, sec: i64) -> Result<()> {
         let c = std::ffi::CString::new(p.as_os_str().as_bytes()).context("path with a NUL")?;
-        let t = libc::timespec { tv_sec: TREE_MTIME, tv_nsec: 0 };
+        let t = libc::timespec { tv_sec: sec, tv_nsec: 0 };
         // SAFETY: utimensat(2) with a NUL-terminated path and two valid timespecs; the link itself is changed, never what it points to.
         unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), [t, t].as_ptr(), libc::AT_SYMLINK_NOFOLLOW) };
         let m = fs::symlink_metadata(p)?;
@@ -238,7 +250,7 @@ fn finalize_tree(root: &Path, paths: &[PathBuf]) -> Result<()> {
             let failed = &failed;
             s.spawn(move || {
                 for rel in part {
-                    if let Err(err) = one(&root.join(rel)) {
+                    if let Err(err) = one(&root.join(rel), times.get(rel).copied().unwrap_or(TREE_MTIME)) {
                         if let Ok(mut f) = failed.lock() {
                             f.get_or_insert(err);
                         }
@@ -252,8 +264,8 @@ fn finalize_tree(root: &Path, paths: &[PathBuf]) -> Result<()> {
         return Err(e);
     }
     // The mark and the root last: they are not entries of the index (and a folder's own time does not change when its entries do not).
-    one(&root.join(".complete"))?;
-    one(root)
+    one(&root.join(".complete"), TREE_MTIME)?;
+    one(root, TREE_MTIME)
 }
 
 /// One file of a tree to make: where, from which chunks of the index, with which mode.
@@ -793,7 +805,15 @@ fn materialize_from(
     // One time for everything, and nothing writable, before the tree is published (defense in depth).
     let mut all: Vec<PathBuf> = made_dirs.iter().cloned().collect();
     all.extend(entries.iter().filter(|e| !matches!(e.kind, Kind::Dir)).map(|e| e.path.clone()));
-    finalize_tree(&tmp, &all)?;
+    // The time of each file comes from its content (see `content_mtime`); folders and links have `TREE_MTIME`.
+    let times: HashMap<PathBuf, i64> = entries
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Kind::File { chunks: ids } => Some((e.path.clone(), content_mtime(&blob_name(chunks, ids, e.mode)))),
+            _ => None,
+        })
+        .collect();
+    finalize_tree(&tmp, &all, &times)?;
     panpak_core::failpoint!("prepare.tree_complete");
     let t_meta = t_links.elapsed();
     let t_sync = std::time::Instant::now();
@@ -3549,11 +3569,13 @@ mod tests {
         let tree = materialize(&mut f, &dir.join("store"), &root, &chunks, &entries).unwrap();
         assert_eq!(fs::read(tree.join("bin/hello")).unwrap(), data);
         assert!(tree.join(".complete").exists());
-        // Every entry has the one time, the root and the folders included: a cache file is never older than the folder that holds it.
+        // The root, the folders and the mark have the one time; a file has the time of its content, never earlier than the folders: a cache file is never older than the folder that holds it.
         use std::os::unix::fs::MetadataExt;
-        for p in [tree.clone(), tree.join("bin"), tree.join("bin/hello"), tree.join(".complete")] {
+        for p in [tree.clone(), tree.join("bin"), tree.join(".complete")] {
             assert_eq!(fs::symlink_metadata(&p).unwrap().mtime(), TREE_MTIME, "{}", p.display());
         }
+        let t = fs::symlink_metadata(tree.join("bin/hello")).unwrap().mtime();
+        assert!((TREE_MTIME..TREE_MTIME + FILE_TIME_SPAN as i64).contains(&t), "{t}");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -3626,6 +3648,34 @@ mod tests {
         assert_ne!(good, bad);
         assert_eq!(good.len(), 12_000_000);
         assert_ne!(fs::metadata(t4.join("other/dir/renamed.so")).unwrap().ino(), a.ino(), "a new blob, not the damaged one");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_has_the_time_of_its_content_the_same_in_every_tree_and_another_for_another_content() {
+        use std::os::unix::fs::MetadataExt;
+        let dir = tmpdir("content-time");
+        let store = dir.join("store");
+        // Version 1 and version 2 of an app: `keep` is the same, `change` is not, a folder and a link are there.
+        let (c1, e1, s1) = mem_package(&[("lib/keep", 0o644, &[1, 2]), ("lib/change", 0o644, &[3])], 1000);
+        let t1 = materialize_from(&s1, &store, &[1u8; 32], &c1, &e1).unwrap();
+        let (c2, e2, s2) = mem_package(&[("lib/keep", 0o644, &[1, 2]), ("lib/change", 0o644, &[4])], 1000);
+        let t2 = materialize_from(&s2, &store, &[2u8; 32], &c2, &e2).unwrap();
+        let m = |t: &Path, f: &str| fs::symlink_metadata(t.join(f)).unwrap().mtime();
+        assert_eq!(m(&t1, "lib/keep"), m(&t2, "lib/keep"), "the same content, the same time");
+        assert_ne!(m(&t1, "lib/change"), m(&t2, "lib/change"), "another content, another time");
+        assert_eq!(m(&t1, "lib"), TREE_MTIME);
+        for (t, f) in [(&t1, "lib/keep"), (&t1, "lib/change"), (&t2, "lib/change")] {
+            let v = m(t, f);
+            assert!((TREE_MTIME..TREE_MTIME + FILE_TIME_SPAN as i64).contains(&v), "{f}: {v}");
+            assert!(v >= m(t, "lib"), "a file is never older than its folder");
+        }
+        // The time is the one of the name of the blob (so the same through the hard link), and it is the same on every run.
+        assert_eq!(fs::metadata(t1.join("lib/keep")).unwrap().ino(), fs::metadata(t2.join("lib/keep")).unwrap().ino());
+        assert_eq!(content_mtime("00000000aaaa-644"), TREE_MTIME);
+        assert_eq!(content_mtime("00000001aaaa-644"), TREE_MTIME + 1);
+        assert_eq!(content_mtime("ffffffffaaaa-644"), TREE_MTIME + (0xffff_ffffu64 % FILE_TIME_SPAN) as i64);
+        assert_eq!(content_mtime("zz"), TREE_MTIME, "a name that is not a hash gives the earliest time");
         let _ = fs::remove_dir_all(&dir);
     }
 
