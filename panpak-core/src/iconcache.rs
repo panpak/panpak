@@ -1378,6 +1378,21 @@ mod tests {
         std::os::unix::fs::symlink(target, p).unwrap();
     }
 
+    /// The version of GTK 3 that this port follows byte for byte.
+    const REFERENCE: &str = "3.24.52";
+
+    /// Is the tool of this machine of the version that the port follows? (The version of the package that has it; unknown counts as no.)
+    fn reference_tool() -> bool {
+        let q = |cmd: &str, args: &[&str]| Command::new(cmd).args(args).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+        let v = q("pkg-config", &["--modversion", "gtk+-3.0"]).or_else(|| q("dpkg-query", &["-W", "-f=${Version}", "libgtk-3-bin"])).unwrap_or_default();
+        v.starts_with(REFERENCE)
+    }
+
+    fn has_icon_file(theme: &Path) -> bool {
+        let mut rels = Vec::new();
+        walk(theme, &mut Vec::new(), 0, &mut rels).is_ok() && rels.iter().any(|r| r.ends_with(b".icon"))
+    }
+
     /// Whether the real tool succeeded, and the cache it wrote (`None` when it wrote none).
     fn run_tool(theme: &Path) -> (bool, Option<Vec<u8>>) {
         let out = Command::new(TOOL).args(["-f", "-t", "-i", "-q"]).arg(theme).output().unwrap();
@@ -1410,6 +1425,12 @@ mod tests {
             } else {
                 assert_eq!(build_from_files(&rels).ok(), listed.ok(), "{label}: build_from_files");
             }
+        }
+        // What the tool writes for a `.icon` file changed between versions of GTK 3 (the sizes of the strings differ in 3.24.41, which the CI has): those themes are compared only with the
+        // version this port follows. The other themes are compared with any version.
+        if has_icon_file(theme) && !reference_tool() {
+            eprintln!("{label}: not compared with the tool: it is not GTK {REFERENCE} (`.icon` files are written differently by other versions)");
+            return ours.map(|a| a.len()).unwrap_or(0);
         }
         let (ok, tool) = run_tool(theme);
         match (ours, ok, tool) {
