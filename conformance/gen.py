@@ -485,6 +485,7 @@ def main():
         '[permissions]\nnotifications = true\ntray = true\ndbus_own = ["org.example.app.Second", "org.kde.conf"]\n'
         '[desktop]\nwm_class = "Example-App"\n')),
         blobs=std_index()[2]), True)
+    put("valid-gvfs.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra='[permissions]\ngvfs = true\n'), blobs=std_index()[2]), True)
     for fname, extra, field in [
         ("dbus-own-freedesktop", '[permissions]\ndbus_own = ["org.freedesktop.Notifications"]\n', "dbus_own"),
         ("dbus-own-portal", '[permissions]\ndbus_own = ["org.freedesktop.portal.Desktop"]\n', "dbus_own"),
@@ -507,6 +508,7 @@ def main():
     for fname, extra, field in [
         ("dbus-own-type", '[permissions]\ndbus_own = "org.example.app.X"\n', "dbus_own"),
         ("notifications-type", '[permissions]\nnotifications = "yes"\n', "notifications"),
+        ("gvfs-type", '[permissions]\ngvfs = "yes"\n', "gvfs"),
     ]:
         put(f"invalid-{fname}.panpak", assemble(STUB, encode_index(*std_index()[:2]), manifest(extra=extra), blobs=std_index()[2]), False, [field])
     # index path with a control character

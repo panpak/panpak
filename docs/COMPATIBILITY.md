@@ -111,7 +111,7 @@ set `DBUS_SESSION_BUS_ADDRESS` (a test error, fixed); now they do.
 |---|---|---|
 | `org.freedesktop.portal.Desktop` (Settings `Read`/`ReadAll`, Properties) | MuseScore, Krita, Kdenlive, Audacity, Simplenote (5 call it); 8 watch the name | allow `Settings` |
 | `org.a11y.Bus` (`GetAddress`, `Properties.Get`) | MuseScore, Audacity, PrusaSlicer, GIMP, Bitwarden, Jitsi, Obsidian, Zulip (8) | deny quietly for now; real accessibility needs a separate proxy on the accessibility bus, as Flatpak does (to evaluate) |
-| `org.gtk.vfs.Daemon` (`ListMountableInfo`) and volume monitors | MuseScore, Audacity, PrusaSlicer, GIMP, Bitwarden, Jitsi, Obsidian, Zulip (8); GIMP also the monitors | deny (GVfs would show host mounts) |
+| `org.gtk.vfs.Daemon` (`ListMountableInfo`) and volume monitors | MuseScore, Audacity, PrusaSlicer, GIMP, Bitwarden, Jitsi, Obsidian, Zulip (8); GIMP also the monitors | deny; allowed with `permissions.gvfs` (GIMP's conversion declares it: "Open Location" with `sftp://` and `https://`) |
 | `org.freedesktop.DBus.StartServiceByName` | 8 | needed by the above, deny |
 | `org.freedesktop.systemd1` (name watched) | Bitwarden, Jitsi, Obsidian, Zulip (4) | deny |
 | `org.freedesktop.IBus` (name watched) | Bitwarden, Jitsi, Zulip, Simplenote (4) | not the IBus bus directly; through `org.freedesktop.portal.IBus`, the portal made for sandboxes (to evaluate) |

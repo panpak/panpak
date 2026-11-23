@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The permission `gvfs`: the file services of the system, as in Flatpak and no more.** An app that needs network locations (`sftp://`, `smb://`, `https://` through GIO), shared folders or connected drives (GIMP's "Open Location") had the names
+  `org.gtk.vfs.*` closed. With `permissions.gvfs = true` (a critical field) the proxy of the host bus passes `org.gtk.vfs` and `org.gtk.vfs.*` (`--talk=org.gtk.vfs.*`, the surface of Flatpak's `--talk-name=org.gtk.vfs.*`; no name is owned) and the
+  folder of the sockets of `gvfsd` (`$XDG_RUNTIME_DIR/gvfsd`) is opened; the FUSE tree is not. The screen of the permissions shows it as a **high risk**, like the whole home folder, with the sentence "Can access network locations, shared folders
+  and connected drives through your system's file services. This lets it read and modify any of your files." (Italian in `po/it.po`), an update that adds it asks again, and the list "what it cannot do" no longer says that the app cannot see the personal files.
+  A system without GVfs: the app works as before and `panpak doctor` says it (a note). The conversion of GIMP declares it. PANPAK-FORMAT.md §3.1.5, §9.5; THREAT-MODEL.md §4 (the app reaches files outside the sandbox through GVfs, as on Flatpak);
+  docs/PRIVATE-BUS.md, docs/COMPATIBILITY.md, README (the table of permissions), QUICKSTART. Tests: the rules of the proxy with and without the permission, the row and its sentence (the weight, the update, "cannot"), `gvfs_installed`, two conformance
+  fixtures (156/156). Not tried on a real GVfs: GIMP with "Open Location" `https://` and `sftp://` is in the list of the VM session (P11).
 - **`.pyc` files for a package that carries its own Python, made by `pack`.** A tree is read-only at run time, so the Python of an app (GIMP's, 3.13) cannot write its `__pycache__` and compiles the standard library and the
   plug-ins at every start (3.1 s at the first start of GIMP, measured). `pack`, so `convert` and `build` too, now runs the Python of the package (`bin/python3.N`, an ELF file, found in the files being packed) once, in
   `bubblewrap` with no network, the package read-only and a folder for the output, with `compileall --invalidation-mode unchecked-hash`, and adds the `.pyc` files to the package (no work for the author; a package that

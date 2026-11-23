@@ -254,6 +254,7 @@ dbus_own = []                  # §3.1.5: names of the app on its private bus (n
 mpris = false                  # §3.1.5: a media player: one alias org.mpris.MediaPlayer2.panpak.<id> on the host bus
 devices = ["gamepad"]          # §3.1.5: categories of devices; hear of devices that come and go: the uevent socket of netlink
 exec_written = false           # §3.1.8: the app may run programs that it wrote itself (downloaded, unpacked, built)
+gvfs = false                   # §3.1.5: the file services of the system (GVfs): network locations, shared folders, drives; weighs as the whole home
 
 [[permissions.home_paths]]     # last resort, §3.1.2: a fixed path in the home folder
 path = ".config/editor"        # relative to the home, no ".."
@@ -489,6 +490,14 @@ its connection (measured with Chromium and Qt 6), which the host can read and ac
 **`permissions.mpris`** (boolean). The app is a media player: the runtime owns the one name
 `org.mpris.MediaPlayer2.panpak.<id>` (the id with each `.` and `-` written `_`) on the host bus for it, and the media keys and the shell's media
 widget reach the player through it (§9.5). The app never owns a name on the host bus.
+
+**`permissions.gvfs`** (boolean, default false; a critical field). The app may use the file services of the system (GVfs): network locations (`sftp://`, `smb://`, `https://` through GIO), shared folders and
+connected drives. The runtime lets the app's calls to the names `org.gtk.vfs` and `org.gtk.vfs.*` through to the session bus of the host, as `--talk-name=org.gtk.vfs.*` does for Flatpak (calls, replies and
+signals; the app owns none of those names), and opens the folder of the sockets that the daemon makes for the mounts (`$XDG_RUNTIME_DIR/gvfsd`) for reading and writing; the FUSE tree `$XDG_RUNTIME_DIR/gvfs`
+is not opened (an app that needs it says so). Without the permission those names stay closed (§9.5). It weighs as the whole home folder: through GVfs the app can read and change any file that the user can, also
+outside its sandbox (`file://`), so `install` and `update` MUST show it as a high risk, with the sentence "Can access network locations, shared folders and connected drives through your system's file services. This lets it
+read and modify any of your files.", MUST count it as a new permission when an update adds it, and MUST NOT tell the person that the app cannot see their personal files. A system without GVfs gives the app nothing
+more and nothing less than before; `panpak doctor` says whether GVfs is installed.
 
 **`permissions.devices`** (list of one to four different strings; absent means none). The categories of devices that the app is for. The boolean of the test versions is gone: a
 Reader MUST refuse a package whose `devices` is not a list, an empty list and a repeat (a malformed field), and MUST refuse with "update panpak" a name that it does not
@@ -1794,6 +1803,7 @@ one on unchanged to the proxy of the copy, or answers it from the state it keeps
   `panpak.<id>.desktop` exists (portal 1.21 and later);
 - `org.freedesktop.portal.OpenURI` goes to the address-opening channel (§9.3) and the router builds the method return and the `Response` (code 0 when the
   address was opened, 2 when it was refused or could not be opened, with the reason on the channel);
+- with `permissions.gvfs`, the proxy of the host bus lets the names `org.gtk.vfs` and `org.gtk.vfs.*` through (`--talk=org.gtk.vfs.*`), and nothing else of GVfs is added; the router forwards the app's calls to them as it does for any host name that the proxy allows;
 - with `permissions.mpris`, one alias on the host bus, taken with `DO_NOT_QUEUE`; the rules of the proxy allow `--own` for that one name only.
 
 The router MUST NOT have privileges: no new privileges, no dump, `RLIMIT_NPROC` 0, Landlock with no rule, a seccomp allow list of the calls it needs

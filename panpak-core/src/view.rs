@@ -220,6 +220,18 @@ pub fn implied_sockets(perms: Option<&Permissions>, runtime_dir: Option<&Path>, 
     out
 }
 
+/// The folder of the sockets that `gvfsd` makes for each mount, in the runtime folder of the user. An app with the `gvfs` permission may use what is in it.
+pub const GVFSD_DIR: &str = "gvfsd";
+
+/// Is GVfs on this system? The daemon is started by the session bus when something asks for `org.gtk.vfs.Daemon`, so the service file or the program is what tells.
+pub fn gvfs_installed() -> bool {
+    gvfs_installed_at(&["/usr/share/dbus-1/services/org.gtk.vfs.Daemon.service", "/usr/libexec/gvfsd", "/usr/lib/gvfs/gvfsd", "/usr/lib/x86_64-linux-gnu/gvfs/gvfsd"])
+}
+
+pub fn gvfs_installed_at(paths: &[&str]) -> bool {
+    paths.iter().any(|p| Path::new(p).exists())
+}
+
 /// The folder in `/run` that holds the target of `/etc/resolv.conf`, if the file is a link
 /// into `/run` (systemd-resolved, NetworkManager). The view mounts it read-only so that
 /// name resolution works.
@@ -350,6 +362,13 @@ mod tests {
         assert!(network_requested(Some(&conn)));
         let bind: Permissions = toml::from_str("network_bind_tcp = [8080]").unwrap();
         assert!(network_requested(Some(&bind)));
+    }
+
+    #[test]
+    fn gvfs_is_there_when_one_of_its_files_is() {
+        assert!(!gvfs_installed_at(&["/nonexistent/panpak-gvfs-a", "/nonexistent/panpak-gvfs-b"]));
+        assert!(gvfs_installed_at(&["/nonexistent/panpak-gvfs-a", "/"]));
+        assert!(!gvfs_installed_at(&[]));
     }
 
     #[test]

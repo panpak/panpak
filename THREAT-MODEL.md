@@ -616,6 +616,11 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   use the CPU and memory for 10 minutes and write what it likes to the output folder; the output is taken only as files named `*.pyc` and put in `__pycache__` folders beside sources, and a `.pyc` is
   code that the same Python would run at the app's own start anyway. A `.pyc` is `unchecked-hash`: it is valid whatever the source says, so a package cannot be told from a hand-made one by its `.pyc`, and the
   reader of the signed package trusts its files exactly as it trusts the rest (the hash of every chunk is in the signed index).
+- **GVfs** (spec §3.1.5, `permissions.gvfs`): an app that declares it can talk to the file services of the system (`org.gtk.vfs.*` on the host session bus) and reach the sockets of `gvfsd`. Through them it can read and
+  change any file that the user can, **also outside its sandbox**, as an app of Flatpak with `--talk-name=org.gtk.vfs.*` can: GVfs does the work in a process of the session that Landlock does not confine. The permission is
+  therefore shown as a high risk, the weight of the whole home folder, with that sentence on the screen of the permissions, and an update that adds it asks again. Without it nothing changes: the names are closed
+  as before. It opens no more than Flatpak does (no owned name, no FUSE tree). What it does not do: it does not give the app the host's mounts without the permission, and a system without GVfs
+  gives it nothing.
 - **Rollback**: `apps/<id>/previous` + `panpak rollback` (atomic swap).
 - **Patches** (spec §4.1): an update can download, for a file whose chunks all changed, a zstd frame that uses the installed file as its dictionary, instead of the chunks.
   The risk is the decompressor: it reads bytes that come from the network, with a second input (the installed file) and a window larger than the one of a chunk. What

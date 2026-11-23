@@ -151,7 +151,8 @@ The only list is in the proxy, where it already is. (One exception on purpose: t
 | `org.gtk.Application`, `org.gtk.Actions`, `org.freedesktop.Application` | app to app (copies) | local to the router |
 | `org.freedesktop.portal.FileChooser` | app to portal | served by the router, to the outer stub, which shows the dialog and shares the files (step 11, docs/FILE-CHOOSER.md); its `version` property is answered by the router |
 | `org.freedesktop.portal.Documents` and others | app to portal | not given. The document portal is used by the outer stub, not by the app |
-| `ca.desrt.dconf`, `org.gtk.vfs`, secrets, the shell | app to services | refused as today |
+| `ca.desrt.dconf`, secrets, the shell | app to services | refused as today |
+| `org.gtk.vfs` and `org.gtk.vfs.*` | app to services | refused, unless the manifest has `permissions.gvfs` (the proxy then passes them, as Flatpak's `--talk-name=org.gtk.vfs.*`) |
 
 Calls from the real bus *to the app* are only the ones to its unique name (replies, `Response`, tray and menu callbacks) and,
 for the media alias, to the alias. A process of the user cannot call the app by an id any more, which is the point of B.

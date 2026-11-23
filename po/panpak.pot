@@ -37,6 +37,9 @@ msgstr ""
 msgid "Be told when devices are plugged in or removed ({subject})"
 msgstr ""
 
+msgid "Can access network locations, shared folders and connected drives through your system's file services. This lets it read and modify any of your files."
+msgstr ""
+
 msgid "Cancel"
 msgstr ""
 
@@ -268,6 +271,9 @@ msgstr ""
 msgid "The author of {name} reported a serious problem in this version. With the internet on, the problem can be used against you, for example to send your files out. This applies only to {name}, it ends when you update, and you can cancel it at any time. Even then, it does not run programs that it downloads."
 msgstr ""
 
+msgid "The file services of your system (GVfs) open network locations, shared folders and drives for the app, outside its sandbox: what they can reach, the app can reach."
+msgstr ""
+
 msgid "The folder is the one of your user-dirs.dirs, not a copy."
 msgstr ""
 
@@ -434,6 +440,9 @@ msgid "it can watch other apps (X11)"
 msgstr ""
 
 msgid "it reaches passwords, keys or startup files"
+msgstr ""
+
+msgid "it reaches your files through the file services of your system"
 msgstr ""
 
 msgid "it reaches your whole home folder"
