@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The `.pyc` files made by `pack` are removed (they were added by the change of the same release).** `pack`, `convert` and `build` no longer run the Python of a package in a sandbox to make `__pycache__`
+  files, and `PANPAK_NO_PYC` does nothing. The reason is the measure: on the VM (Silverblue, external SSD with TRIM, 2026-11-23, GIMP 3.2.8) a first start with the `.pyc` files is 15.7 s and without them 15.9 s
+  (series 3), inside the spread of the runs; a Python plug-in starts 0.15 to 0.2 s faster in isolation (0.10 s against 0.25 to 0.34 s), which does not show in the first start; and the package is 15 MB larger
+  (+5.4% at level 3) and takes longer to make (6.0 s to 7.5 s). A package that carries its own `.pyc` files keeps them: they are files of the package. PANPAK-FORMAT.md §4 and THREAT-MODEL.md §4 lose the paragraph
+  (the sandbox that ran a package's Python on the machine of the person who packs is gone, so is its risk).
 - **The conversion of Kdenlive tells Qt to use the portal theme.** The AppImage of Kdenlive (Qt 6.11.1) has the platform theme `xdgdesktopportal` and no `gtk2`, and its `linuxdeploy-plugin-qt-hook.sh` sets `QT_QPA_PLATFORMTHEME=gtk2` on GNOME and XFCE,
   a plugin that is not there. The file of a conversion (`convert --permissions <file>`) may now carry `[launch.env]` besides the `[permissions]` tables (start arguments are still not read), and `bench/silverblue/conversions/kdenlive.toml` sets
   `QT_QPA_PLATFORMTHEME = "xdgdesktopportal"`. Nothing for ONLYOFFICE (Qt 5.9.9, it calls the file portal itself). Test: `convert_icons.rs` (the variable is in the manifest; `args` is refused). To check on the VM: P12 (the file dialog on GNOME).
@@ -12,13 +17,6 @@
   A system without GVfs: the app works as before and `panpak doctor` says it (a note). The conversion of GIMP declares it. PANPAK-FORMAT.md §3.1.5, §9.5; THREAT-MODEL.md §4 (the app reaches files outside the sandbox through GVfs, as on Flatpak);
   docs/PRIVATE-BUS.md, docs/COMPATIBILITY.md, README (the table of permissions), QUICKSTART. Tests: the rules of the proxy with and without the permission, the row and its sentence (the weight, the update, "cannot"), `gvfs_installed`, two conformance
   fixtures (156/156); the table of critical fields of the harness (`tests/sigfmt.py`) has the key too, and `ci-local.sh` now runs the unit tests of the harness (`unittest discover`), which it did not and which failed the first CI of this change. Not tried on a real GVfs: GIMP with "Open Location" `https://` and `sftp://` is in the list of the VM session (P11).
-- **`.pyc` files for a package that carries its own Python, made by `pack`.** A tree is read-only at run time, so the Python of an app (GIMP's, 3.13) cannot write its `__pycache__` and compiles the standard library and the
-  plug-ins at every start (3.1 s at the first start of GIMP, measured). `pack`, so `convert` and `build` too, now runs the Python of the package (`bin/python3.N`, an ELF file, found in the files being packed) once, in
-  `bubblewrap` with no network, the package read-only and a folder for the output, with `compileall --invalidation-mode unchecked-hash`, and adds the `.pyc` files to the package (no work for the author; a package that
-  has its own `.pyc` at a path keeps it; `PANPAK_NO_PYC=1` skips it). A package that carries its own glibc is run by its own loader with its libraries (the Python of GIMP asks for its loader by the relative path
-  `.//usr/lib64/ld-linux-x86-64.so.2`, so the working folder is the package). `PYTHONHASHSEED=0`, so the same source gives the same bytes (checked twice). GIMP 3.2.8: 2156 `.pyc` files, 33 MiB, made in 1.1 s; `convert` takes 1.5 s
-  longer (6.0 s -> 7.5 s) and the package is 15 MB larger at level 3 (282.2 -> 297.5 MB, +5.4%). PANPAK-FORMAT.md §4, THREAT-MODEL.md §4. Tests: `pyc.rs` (the path of a `.pyc`, the choice of the Python, a Python made into a
-  package: unchecked-hash header, same bytes twice, the standard library too).
 - **Patches: an update downloads the difference of a file whose chunks all changed.** Before, a program that was built again (every chunk different) was downloaded whole, and the
   update of a large app was nearly the size of the app. Now `panpak pack --previous` (and `convert`, `build`, which know the installed version) makes, for each file of at least 64 KiB that changed
   from the previous release, a zstd frame that uses the same file of the previous release as its dictionary, and publishes it when it weighs less than the chunks of the file that

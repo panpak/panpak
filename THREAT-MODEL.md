@@ -610,12 +610,6 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   `panpak open` covers the "open this known file" case (explicit
   per-file grant); the "the app asks the user which file to open/save"
   case stays with the future broker (see PORTAL-DESIGN.md).
-- **Precompiled Python at pack time** (spec §4): `panpak pack` (so `convert` and `build`) runs the Python that the package carries, on the files of the package, to make the `.pyc` files. That is code of the
-  package running on the machine of the person who packs. It runs in `bubblewrap` with no network, with a new namespace of every kind, no capability, only `/usr` of the host and the package (read-only) visible, a folder for
-  the output, no `site` (no `.pth` file runs), and a limit of 10 minutes; it cannot write the package or reach the home. What it can still do is what any program can do inside that sandbox:
-  use the CPU and memory for 10 minutes and write what it likes to the output folder; the output is taken only as files named `*.pyc` and put in `__pycache__` folders beside sources, and a `.pyc` is
-  code that the same Python would run at the app's own start anyway. A `.pyc` is `unchecked-hash`: it is valid whatever the source says, so a package cannot be told from a hand-made one by its `.pyc`, and the
-  reader of the signed package trusts its files exactly as it trusts the rest (the hash of every chunk is in the signed index).
 - **GVfs** (spec §3.1.5, `permissions.gvfs`): an app that declares it can talk to the file services of the system (`org.gtk.vfs.*` on the host session bus) and reach the sockets of `gvfsd`. Through them it can read and
   change any file that the user can, **also outside its sandbox**, as an app of Flatpak with `--talk-name=org.gtk.vfs.*` can: GVfs does the work in a process of the session that Landlock does not confine. The permission is
   therefore shown as a high risk, the weight of the whole home folder, with that sentence on the screen of the permissions, and an update that adds it asks again. Without it nothing changes: the names are closed
