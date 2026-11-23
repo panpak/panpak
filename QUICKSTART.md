@@ -72,7 +72,7 @@ To rotate the update key, sign with the new key and add
 `--rotate-from-file <old-key-file>` (same permission rules as
 `--secret-file`).
 
-`panpak pack` chunks (FastCDC 16K/64K/256K), compresses (zstd),
+`panpak pack` chunks (FastCDC 16K/64K/256K), compresses (zstd level 19 on all the cores; `--level 1` to `22` says another one),
 dedups by BLAKE3 hash, signs `manifest || root_hash` and appends
 index + manifest + 80-byte footer to the stub.
 
@@ -190,6 +190,7 @@ limits), `distro-matrix.md` (multi-distro tests).
 ```sh
 panpak convert Etcher.AppImage --id io.example.app -o app.panpak
 # the key is the personal one of ~/.config/panpak/secret.key, made before with `panpak key new` (--secret-file uses another)
+# the chunks are compressed at zstd level 3, to be quick; `--level 19` makes the package as small as `pack` does, for a conversion that you publish
 ```
 
 The manifest declares `[origin]` (file, version, SHA-256, never signed
@@ -199,6 +200,7 @@ doctor` shows it. See `distro-matrix.md` for the real cases tried.
 A conversion has no permissions unless the converter declares them (the one guess that `convert` makes is `x11` for an app that has only the xcb plugin of Qt). To declare them, give a file with
 the `[permissions]` tables (nothing else is read from it): `--permissions perms.toml`. The desktop shows the icon of an app in the task bar by the window class that its windows have, which is not always the one in the desktop file of the AppImage: if the task bar shows a gear, `--wm-class <class>` sets it (the class is the `app_id` or `WM_CLASS` of the window; `[desktop] wm_class` in the recipe of a `panpak build`). To publish updates of the conversions, `--update-url https://example.org/app.panpak` writes `[update].url`, and
 `--previous old.panpak` makes the new conversion follow the old one (the revision goes up and the history continues, as with `pack --previous`).
+`--append <path in the tree>=<file>` adds the text of a file at the end of a file of the program that the AppImage has (a setting that the converter chooses for everyone who installs the conversion; for example GIMP's system `gimprc`, where its check for updates is turned off because the updates of the conversion come from Panpak). The file of the tree must be there, a regular file, with no link on the way; the text is at most 4 KiB; when it starts with a comment line (`# ...`), the report of the conversion says it as the reason: `appended 82 bytes to usr/etc/gimp/3.0/gimprc (Update check turned off: Panpak delivers this app's updates.)`. The program reads its own settings after this file, so a person can still say otherwise.
 
 ## Reproducible builds
 

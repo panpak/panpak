@@ -303,6 +303,20 @@ fn the_permissions_option_declares_what_the_converter_gives_the_app_and_reads_no
 }
 
 #[test]
+fn the_level_option_takes_a_zstd_level_from_1_to_22_and_refuses_other_words() {
+    let l = lab("level-option");
+    for level in ["1", "19", "22"] {
+        let (o, pkg) = l.convert(&appimage(real_layout()), &["--level", level]);
+        assert!(o.status.success(), "{level}: {}", text(&o));
+        assert!(l.manifest(&pkg).contains("compression = \"zstd\""), "level {level}");
+    }
+    for bad in ["0", "23", "fast", "-1"] {
+        let (o, _) = l.convert(&appimage(real_layout()), &["--level", bad]);
+        assert!(!o.status.success() && text(&o).contains("--level must be a number from 1 to 22"), "{bad}: {}", text(&o));
+    }
+}
+
+#[test]
 fn the_wm_class_option_sets_the_window_class_that_the_desktop_groups_by() {
     let l = lab("wm-class-option");
     // Without the option the class is the one of the desktop file of the AppImage, if it has one.
@@ -317,6 +331,42 @@ fn the_wm_class_option_sets_the_window_class_that_the_desktop_groups_by() {
     // A class that is not a plain window class is refused.
     let (o, _) = l.convert(&appimage(real_layout()), &["--wm-class", "bad class\nwith lines"]);
     assert!(!o.status.success() && text(&o).contains("not a plain window class"), "{}", text(&o));
+}
+
+#[test]
+fn the_append_option_adds_a_setting_at_the_end_of_a_file_of_the_app_and_nothing_else() {
+    let l = lab("append-option");
+    let mut layout = real_layout();
+    layout.push(Node::File("etc/app/rc", b"# defaults
+# (check yes)
+".to_vec()));
+    layout.push(Node::Link("etc/app/rc-link", "rc"));
+    layout.push(Node::Link("etc/via", "app"));
+    let text_file = l.home.join("append.txt");
+    fs::write(&text_file, "# Updates come from Panpak, not from the program.\n(check no)\n").unwrap();
+    let arg = format!("etc/app/rc={}", text_file.display());
+    let (o, pkg) = l.convert(&appimage(layout), &["--append", &arg]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("appended 61 bytes to etc/app/rc (Updates come from Panpak, not from the program.)"), "{}", text(&o));
+    assert!(l.manifest(&pkg).contains("[origin]"), "{}", l.manifest(&pkg));
+    // What is refused: a file that is not in the app, a path that leaves the tree, a link (as the last name and on the way), a folder.
+    for bad in ["etc/app/other", "../etc/app/rc", "/etc/app/rc", "etc/app/rc-link", "etc/via/rc", "etc/app"] {
+        let arg = format!("{bad}={}", text_file.display());
+        let mut layout = real_layout();
+        layout.push(Node::File("etc/app/rc", b"# defaults\n".to_vec()));
+        layout.push(Node::Link("etc/app/rc-link", "rc"));
+        layout.push(Node::Link("etc/via", "app"));
+        let (o, _) = l.convert(&appimage(layout), &["--append", &arg]);
+        assert!(!o.status.success(), "{bad} must be refused: {}", text(&o));
+    }
+    // The text is at most 4 KiB.
+    let big = l.home.join("big.txt");
+    fs::write(&big, vec![b'a'; 4097]).unwrap();
+    let mut layout = real_layout();
+    layout.push(Node::File("etc/app/rc", b"x\n".to_vec()));
+    let arg = format!("etc/app/rc={}", big.display());
+    let (o, _) = l.convert(&appimage(layout), &["--append", &arg]);
+    assert!(!o.status.success() && text(&o).contains("larger than 4 KiB"), "{}", text(&o));
 }
 
 #[test]

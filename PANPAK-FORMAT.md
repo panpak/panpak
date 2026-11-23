@@ -947,7 +947,7 @@ independently (§5 point 5).
 **The compression level is not part of the identity of the content.** The hash of a chunk is the BLAKE3 of its raw bytes (§5 point 5), and the name of a file in the store
 is made of those hashes (§6), so the same file compressed at another level has the same chunks and the same name in the store: an update between a package made at one level and a package
 made at another fetches only the chunks that really differ, and a store never holds a file twice because of the level. Only the bytes of the package (the index, with the sizes and offsets of the compressed
-chunks, and so the root hash and the signature) change with the level. A Writer MAY use any level (the reference `panpak pack` uses 19 since 2026-11-23; before, 3); a Reader MUST accept
+chunks, and so the root hash and the signature) change with the level. A Writer MAY use any level (the reference `panpak pack` uses 19 since 2026-11-23, before it 3, and `panpak convert` uses 3; both take `--level`); a Reader MUST accept
 any level. A Writer SHOULD make frames whose window is at most 8 MiB (the window of level 19), and a Reader MAY refuse a frame that asks for a window of more than 128 MiB.
 Two publications of the same release at two levels are two different packages with two different root hashes, and a release is published once (the rule of the same revision, in the release checks of §3): the level is chosen when the release is made, never changed for a release that exists.
 
