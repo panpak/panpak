@@ -3633,11 +3633,13 @@ mod tests {
         let tree = materialize(&mut f, &dir.join("store"), &root, &chunks, &entries).unwrap();
         assert_eq!(fs::read(tree.join("bin/hello")).unwrap(), data);
         assert!(tree.join(".complete").exists());
-        // The root, the folders and the mark have the one time; a file has the time of its content, never earlier than the folders: a cache file is never older than the folder that holds it.
+        // A folder has the time of its list and a file the time of its content, both in the one span; the mark keeps the fixed time.
         use std::os::unix::fs::MetadataExt;
-        for p in [tree.clone(), tree.join("bin"), tree.join(".complete")] {
-            assert_eq!(fs::symlink_metadata(&p).unwrap().mtime(), TREE_MTIME, "{}", p.display());
+        for p in [tree.clone(), tree.join("bin")] {
+            let t = fs::symlink_metadata(&p).unwrap().mtime();
+            assert!((TREE_MTIME..TREE_MTIME + FILE_TIME_SPAN as i64).contains(&t), "{}: {t}", p.display());
         }
+        assert_eq!(fs::symlink_metadata(tree.join(".complete")).unwrap().mtime(), TREE_MTIME);
         let t = fs::symlink_metadata(tree.join("bin/hello")).unwrap().mtime();
         assert!((TREE_MTIME..TREE_MTIME + FILE_TIME_SPAN as i64).contains(&t), "{t}");
         let _ = fs::remove_dir_all(&dir);
