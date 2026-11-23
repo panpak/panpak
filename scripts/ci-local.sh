@@ -114,6 +114,11 @@ if [ "$quick" = 0 ]; then
 		*) step "$script" lowrun python3 tests/with_timeout.py "$secs" "$script" ;;
 		esac
 	done
+	# The unit tests of the app harness (tests/apps), which the workflow runs with `unittest discover` (a table of the harness that must be the one of the Rust code is checked there).
+	for cmd in $(grep -oE "python3 -m unittest discover -s [a-z/]+ -p 'test_\*\.py'" .github/workflows/ci.yml | sort -u | tr ' ' '|'); do
+		line=$(echo "$cmd" | tr '|' ' ')
+		step "$line" bash -c "$line"
+	done
 	# The reference of the reproducible build, last: the double build starts from nothing and takes the longest. It is compared with the committed file.
 	step "reproducible build: the reference is what the script makes" bash -c 'lowrun() { "$@"; }; ./scripts/repro-build.sh --update | tee /tmp/panpak-repro-local.log && grep -q IDENTICAL /tmp/panpak-repro-local.log && git diff --exit-code -- REPRODUCIBLE-HASHES.md'
 fi
