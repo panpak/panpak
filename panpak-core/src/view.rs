@@ -223,9 +223,29 @@ pub fn implied_sockets(perms: Option<&Permissions>, runtime_dir: Option<&Path>, 
 /// The folder of the sockets that `gvfsd` makes for each mount, in the runtime folder of the user. An app with the `gvfs` permission may use what is in it.
 pub const GVFSD_DIR: &str = "gvfsd";
 
+/// The folder of the sockets of `gvfsd`, ready for an app with the permission `gvfs`: made (mode 0700, ours) when it is not there, left alone when it is a folder of ours. The daemon starts on
+/// request and makes the folder itself, but an app that is the first to use GVfs in the session would find none to open, and the mounts with sockets of their own (`sftp://`, `smb://`) would fail,
+/// so the folder is made before the app starts, as Flatpak does for `xdg-run/gvfsd`. `gvfsd` accepts a folder that is there (it calls `g_mkdir (socket_dir, 0700)` and does not look at the result).
+/// `None` when there is no runtime folder, or the place is not a folder of ours (a link, a file, a folder of another user): nothing is opened then.
+pub fn prepare_gvfsd_dir(runtime_dir: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let dir = runtime_dir.join(GVFSD_DIR);
+    // SAFETY: geteuid cannot fail.
+    let me = unsafe { libc::geteuid() };
+    let mine = |m: &fs::Metadata| m.file_type().is_dir() && m.uid() == me;
+    match fs::symlink_metadata(&dir) {
+        Ok(m) => mine(&m).then_some(dir),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::DirBuilder::new().mode(0o700).create(&dir).ok()?;
+            fs::symlink_metadata(&dir).ok().filter(mine).map(|_| dir)
+        }
+        Err(_) => None,
+    }
+}
+
 /// Is GVfs on this system? The daemon is started by the session bus when something asks for `org.gtk.vfs.Daemon`, so the service file or the program is what tells.
 pub fn gvfs_installed() -> bool {
-    gvfs_installed_at(&["/usr/share/dbus-1/services/org.gtk.vfs.Daemon.service", "/usr/libexec/gvfsd", "/usr/lib/gvfs/gvfsd", "/usr/lib/x86_64-linux-gnu/gvfs/gvfsd"])
+    gvfs_installed_at(&["/usr/share/dbus-1/services/org.gtk.vfs.Daemon.service", "/usr/libexec/gvfsd", "/usr/lib/gvfs/gvfsd", "/usr/lib/gvfsd", "/usr/lib/x86_64-linux-gnu/gvfs/gvfsd"])
 }
 
 pub fn gvfs_installed_at(paths: &[&str]) -> bool {
@@ -362,6 +382,34 @@ mod tests {
         assert!(network_requested(Some(&conn)));
         let bind: Permissions = toml::from_str("network_bind_tcp = [8080]").unwrap();
         assert!(network_requested(Some(&bind)));
+    }
+
+    #[test]
+    fn the_folder_of_the_sockets_of_gvfsd_is_made_when_it_is_not_there() {
+        use std::os::unix::fs::PermissionsExt;
+        let rt = std::env::temp_dir().join(format!("panpak-gvfsd-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&rt);
+        fs::create_dir_all(&rt).unwrap();
+        // Not there at the start (the app is the first to use GVfs in the session): made, 0700, ours.
+        let made = prepare_gvfsd_dir(&rt).expect("made");
+        assert_eq!(made, rt.join("gvfsd"));
+        assert_eq!(fs::metadata(&made).unwrap().permissions().mode() & 0o777, 0o700);
+        // There already (the daemon made it, or an earlier start): left as it is, with what is in it.
+        fs::write(made.join("socket-abc"), b"").unwrap();
+        assert_eq!(prepare_gvfsd_dir(&rt), Some(made.clone()));
+        assert!(made.join("socket-abc").exists());
+        // A link in its place, or a file: nothing is opened.
+        let rt2 = rt.join("other");
+        fs::create_dir_all(&rt2).unwrap();
+        std::os::unix::fs::symlink("/tmp", rt2.join("gvfsd")).unwrap();
+        assert_eq!(prepare_gvfsd_dir(&rt2), None);
+        let rt3 = rt.join("third");
+        fs::create_dir_all(&rt3).unwrap();
+        fs::write(rt3.join("gvfsd"), b"x").unwrap();
+        assert_eq!(prepare_gvfsd_dir(&rt3), None);
+        // No runtime folder: nothing to make.
+        assert_eq!(prepare_gvfsd_dir(&rt.join("missing/deeper")), None);
+        let _ = fs::remove_dir_all(&rt);
     }
 
     #[test]

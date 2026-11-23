@@ -575,7 +575,7 @@ msgid "Back to {name} {old}. Your documents are not touched; settings changed by
 msgstr "Tornato a {name} {old}. I tuoi documenti non sono toccati; le impostazioni cambiate dalla versione più recente potrebbero non funzionare in questa."
 
 msgid "Can access network locations, shared folders and connected drives through your system's file services. This lets it read and modify any of your files."
-msgstr "Può accedere a posizioni di rete, cartelle condivise e unità collegate tramite i servizi di file del tuo sistema. Questo gli permette di leggere e modificare qualsiasi tuo file."
+msgstr "Può accedere a posizioni di rete, cartelle condivise e unità collegate tramite i servizi di file del tuo sistema. Così può leggere e modificare tutti i tuoi file."
 
 msgid "The file services of your system (GVfs) open network locations, shared folders and drives for the app, outside its sandbox: what they can reach, the app can reach."
 msgstr "I servizi di file del tuo sistema (GVfs) aprono per l'app posizioni di rete, cartelle condivise e unità, fuori dalla sua sandbox: ciò che raggiungono loro, lo raggiunge l'app."
