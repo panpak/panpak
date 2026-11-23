@@ -1,0 +1,2 @@
+# Update check turned off: Panpak delivers this app's updates.
+(check-updates no)

@@ -320,6 +320,42 @@ fn the_wm_class_option_sets_the_window_class_that_the_desktop_groups_by() {
 }
 
 #[test]
+fn the_append_option_adds_a_setting_at_the_end_of_a_file_of_the_app_and_nothing_else() {
+    let l = lab("append-option");
+    let mut layout = real_layout();
+    layout.push(Node::File("etc/app/rc", b"# defaults
+# (check yes)
+".to_vec()));
+    layout.push(Node::Link("etc/app/rc-link", "rc"));
+    layout.push(Node::Link("etc/via", "app"));
+    let text_file = l.home.join("append.txt");
+    fs::write(&text_file, "# Updates come from Panpak, not from the program.\n(check no)\n").unwrap();
+    let arg = format!("etc/app/rc={}", text_file.display());
+    let (o, pkg) = l.convert(&appimage(layout), &["--append", &arg]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(text(&o).contains("appended 61 bytes to etc/app/rc (Updates come from Panpak, not from the program.)"), "{}", text(&o));
+    assert!(l.manifest(&pkg).contains("[origin]"), "{}", l.manifest(&pkg));
+    // What is refused: a file that is not in the app, a path that leaves the tree, a link (as the last name and on the way), a folder.
+    for bad in ["etc/app/other", "../etc/app/rc", "/etc/app/rc", "etc/app/rc-link", "etc/via/rc", "etc/app"] {
+        let arg = format!("{bad}={}", text_file.display());
+        let mut layout = real_layout();
+        layout.push(Node::File("etc/app/rc", b"# defaults\n".to_vec()));
+        layout.push(Node::Link("etc/app/rc-link", "rc"));
+        layout.push(Node::Link("etc/via", "app"));
+        let (o, _) = l.convert(&appimage(layout), &["--append", &arg]);
+        assert!(!o.status.success(), "{bad} must be refused: {}", text(&o));
+    }
+    // The text is at most 4 KiB.
+    let big = l.home.join("big.txt");
+    fs::write(&big, vec![b'a'; 4097]).unwrap();
+    let mut layout = real_layout();
+    layout.push(Node::File("etc/app/rc", b"x\n".to_vec()));
+    let arg = format!("etc/app/rc={}", big.display());
+    let (o, _) = l.convert(&appimage(layout), &["--append", &arg]);
+    assert!(!o.status.success() && text(&o).contains("larger than 4 KiB"), "{}", text(&o));
+}
+
+#[test]
 fn a_conversion_can_name_where_it_is_updated_from_and_follow_an_earlier_one() {
     let l = lab("update-url");
     let (o, v1) = l.convert(&appimage(real_layout()), &["--update-url", "https://example.org/conversions/app.panpak"]);
