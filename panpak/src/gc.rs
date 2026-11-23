@@ -65,6 +65,21 @@ pub fn is_blob_name(name: &str) -> bool {
     name.len() > 65 && is_hex(&name[..64], 64) && name.as_bytes()[64] == b'-' && name[65..].bytes().all(|b| b.is_ascii_digit())
 }
 
+/// Is the free space of the store low: under 2 GiB or under 5 percent?
+fn low_on_space(store: &Path) -> bool {
+    use std::ffi::CString;
+    let Ok(c) = CString::new(store.as_os_str().as_encoded_bytes()) else { return false };
+    // SAFETY: statvfs(2) fills the struct that is passed, and nothing else.
+    unsafe {
+        let mut st: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c.as_ptr(), &mut st) != 0 {
+            return false;
+        }
+        let (free, total) = (st.f_bavail as u64 * st.f_frsize as u64, st.f_blocks as u64 * st.f_frsize as u64);
+        free < (2u64 << 30) || free < total / 20
+    }
+}
+
 fn pid_alive(pid: i32) -> bool {
     // SAFETY: signal 0 only asks whether the process exists.
     unsafe { libc::kill(pid, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) }
@@ -166,9 +181,29 @@ pub fn run(store: &Path, opts: &Options, held: &[&str]) -> Result<Report> {
     }
     let by_path: HashMap<PathBuf, usize> = recs.iter().enumerate().map(|(i, r)| (r.path.clone(), i)).collect();
     let mut keep = vec![false; recs.len()];
+    let pressure = low_on_space(store);
     for id in &ids {
-        for link in ["current", "previous", panpak_core::pending::LINK] {
-            let path = apps_dir.join(id).join(link);
+        let appdir = apps_dir.join(id);
+        let current_rec = panpak_core::durable::resolve_link(&appdir.join("current")).ok();
+        let good_rec = panpak_core::starts::last_good(&appdir);
+        let floor = panpak_core::release::seen_floor(&appdir);
+        // Kept versions (PANPAK-FORMAT.md section 6.10): the installed version, the staged one, and the last version that worked. The previous one stays until
+        // the installed version has worked (it is then the one to go back to), and always when the person asked (`panpak keep-previous`). With little free space
+        // the version that worked goes first; no version below the floor of its author is kept for a rollback, since a rollback does not go there.
+        let proven_now = good_rec.is_some() && good_rec == current_rec;
+        let below_floor = |link: &Path| {
+            panpak_core::durable::resolve_link(link).ok().and_then(|t| panpak_core::record::open_verified(&t).ok()).and_then(|o| o.manifest.release).is_some_and(|r| r.revision < floor)
+        };
+        for link in ["current", "previous", panpak_core::pending::LINK, panpak_core::starts::LAST_GOOD] {
+            let path = appdir.join(link);
+            let dropped = match link {
+                "previous" => (proven_now && !panpak_core::starts::keeps_previous(&appdir)) || below_floor(&path),
+                panpak_core::starts::LAST_GOOD => (pressure && good_rec != current_rec) || below_floor(&path),
+                _ => false,
+            };
+            if dropped {
+                continue;
+            }
             // No such link is no link; one that is there and cannot be read (an absolute link of an earlier store, a file in its place, a read error) is not "no link":
             // what it might name is kept, with the rest of the app.
             let t = match fs::symlink_metadata(&path) {

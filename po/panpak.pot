@@ -22,7 +22,13 @@ msgstr ""
 msgid "Accept them?"
 msgstr ""
 
+msgid "After the update to {new} it failed to start twice. You can go back to {old}, which worked.\nYour documents stay as they are."
+msgstr ""
+
 msgid "Attention"
+msgstr ""
+
+msgid "Back to {name} {old}. Your documents are not touched; settings changed by the newer version may not work in this one."
 msgstr ""
 
 msgid "Be controlled by the media keys"
@@ -50,6 +56,9 @@ msgid "Full isolation"
 msgstr ""
 
 msgid "Get the package for this architecture from the author."
+msgstr ""
+
+msgid "Go back to {old}"
 msgstr ""
 
 msgid "Going on because of --despite-domain-mismatch: the domain says otherwise."
@@ -328,6 +337,9 @@ msgstr ""
 msgid "To turn the internet back on for {name} you must confirm, but there is no window to ask you. Open a terminal and type: panpak allow-internet {id}"
 msgstr ""
 
+msgid "Try again"
+msgstr ""
+
 msgid "Turn the internet back on for {name}?"
 msgstr ""
 
@@ -506,6 +518,9 @@ msgid "{name} ({id}) is in protected mode: the author reported a serious problem
 msgstr ""
 
 msgid "{name} asks for new permissions, but there is no window to show them to you. To update, open a terminal and type: panpak update {id}"
+msgstr ""
+
+msgid "{name} doesn't start"
 msgstr ""
 
 msgid "{name} is in protected mode: links do not open until you update."
