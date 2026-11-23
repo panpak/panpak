@@ -380,6 +380,9 @@ jobs:
       - name: The folder that --write-rename opens (PP-07)
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/open_rename.py
+      - name: Patches (pack --previous writes them, update downloads a patch instead of the chunks, a missing or damaged patches file leaves the chunks)
+        timeout-minutes: 3
+        run: python3 tests/with_timeout.py 120 tests/patches.py
       - name: The collection keeps what it cannot read the links of (P2-04)
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/gc_unreadable.py
