@@ -303,6 +303,20 @@ fn the_permissions_option_declares_what_the_converter_gives_the_app_and_reads_no
 }
 
 #[test]
+fn the_level_option_takes_a_zstd_level_from_1_to_22_and_refuses_other_words() {
+    let l = lab("level-option");
+    for level in ["1", "19", "22"] {
+        let (o, pkg) = l.convert(&appimage(real_layout()), &["--level", level]);
+        assert!(o.status.success(), "{level}: {}", text(&o));
+        assert!(l.manifest(&pkg).contains("compression = \"zstd\""), "level {level}");
+    }
+    for bad in ["0", "23", "fast", "-1"] {
+        let (o, _) = l.convert(&appimage(real_layout()), &["--level", bad]);
+        assert!(!o.status.success() && text(&o).contains("--level must be a number from 1 to 22"), "{bad}: {}", text(&o));
+    }
+}
+
+#[test]
 fn the_wm_class_option_sets_the_window_class_that_the_desktop_groups_by() {
     let l = lab("wm-class-option");
     // Without the option the class is the one of the desktop file of the AppImage, if it has one.

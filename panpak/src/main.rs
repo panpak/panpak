@@ -24,7 +24,7 @@ use panpak_core::desktop::{self as dsk, desktop_is_ours, desktop_path, launcher_
 use panpak_core::{bail_code, coded, ensure_code, ErrorCode};
 use panpak_core::{
     encode_footer, encode_index, parse_secret, CDC_AVG, CDC_MAX, CDC_MIN, Chunk, Entry, Footer,
-    Kind, Manifest, ZSTD_LEVEL,
+    Kind, Manifest, ZSTD_LEVEL, ZSTD_LEVEL_CONVERT,
 };
 use std::{
     collections::HashMap,
@@ -35,7 +35,7 @@ use std::{
 };
 
 fn usage() -> &'static str {
-    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [--permissions <file.toml>] [--wm-class <window class>] [--append <path in the tree>=<file>] [--update-url <url>] [--previous <package>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak sbom [--export] <package | app id | https URL> [--allow-insecure-http] [--timeout <s>]   (the software bill of materials of a package, CycloneDX 1.6 JSON; --export completes it with the name, id and version, a serial number and the time, for a scanner; from a URL only the parts of the package that hold it are downloaded)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
+    "usage:\n  panpak key new [-o <secret-file>]   (makes the signing key, the recovery commitment and the 24 words of the recovery key; never made by itself)\n  panpak keygen -o <secret-file>      (the same, for a script)\n  panpak licenses [package]\n  (secret key: --secret-file <f> or PANPAK_SECRET_FILE=<f>, else ~/.config/panpak/secret.key; file mode 0600; its recovery commitment is the file <key>.recovery, or --recovery / PANPAK_RECOVERY; a key is never made by itself: `panpak key new`)\n  panpak pack <folder> --stub <stub> [--secret-file <f>] [--rotate-from-file <f> | --recover-with <words-file>] [--recovery blake3:<hash>] [--sign-command <cmd> --public-key <key> --recovery <hash>] [--previous <package>] [--level <1-22>] [-o <out.panpak>]\n  panpak convert <app.AppImage> --id <reverse-dns> --stub <stub> [--secret-file <f>] [--name N] [--version V] [--entry E] [--icon <file.png>] [--permissions <file.toml>] [--wm-class <window class>] [--append <path in the tree>=<file>] [--update-url <url>] [--previous <package>] [--level <1-22>] [-o <out.panpak>]\n  panpak resign <package> --secret-file <f> [--id I] [--version V] [--revision N] [--update-url U] [--recovery <hash>] -o <out>   (the same files as a release of another identity, signed with your key: for tests and benchmarks)\n  panpak sbom [--export] <package | app id | https URL> [--allow-insecure-http] [--timeout <s>]   (the software bill of materials of a package, CycloneDX 1.6 JSON; --export completes it with the name, id and version, a serial number and the time, for a scanner; from a URL only the parts of the package that hold it are downloaded)\n  panpak init [folder]\n  panpak build [folder] [--secret-file <f>] [--stub <stub>] [-o <out.panpak>] [--update-lock]\n  panpak install-runtime <stub> --allow-unsigned      (not needed in the usual way: `build` and `install` install the panpak-stub that comes with this program; this is for another build)
   panpak install-runtime <release.tar.gz> --release-key <ed25519:...>
   panpak release --version V [--secret-file <f>] [--target T] [--out-dir D]\n  panpak install [--expect-key <key> | --trust-first-key] [--show-key] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--runtime <stub>] <package>   (the first install of an app says whom it trusts: the domain of the author confirms the key, or the key the author published, or the key of the file; --yes alone does not, unless the domain confirms)\n  panpak update [--stage] [--offline] [--despite-domain-mismatch] [--yes] [--accept-new-permissions] [--allow-downgrade] [--switch-channel] [--force-host] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak apply [--yes] [--accept-new-permissions] [--at-start] <app-id>\n  panpak gc [--dry-run]   (take out of the store what no installed version reaches)\n  panpak config [show] | config set <background.updates|background.verify_mb|network.ca_file|trust.confirm_domain> <value>\n  panpak background [--force] [--exit] [--allow-insecure-http] <app-id>   (the check and the verification of one app; the stub starts it once a day, and with --exit when the last copy ends)\n  panpak list [--json]\n  panpak protected-action <update|internet-on|internet-off> [--accept-new-permissions] <app-id>   (the actions of protected mode, for a front end: one line of JSON)\n  panpak protected [--json] [<app-id>]   (the apps in protected mode: an installed version below the floor of its author)\n  panpak allow-internet [--undo] [--yes] <app-id>   (for scripts: turn the internet back on for an app in protected mode, or cancel it)\n  panpak remove [--purge-data] [--yes] <app-id>\n  panpak remove --ask <app-id>   (asks in a dialog; used by the menu action)\n  panpak data path <app-id>\n  panpak data clear [--yes] <app-id>\n  panpak data unlock <app-id>\n  panpak rollback <app-id>\n  panpak repair [--from <package>] [--allow-insecure-http] [--timeout N] <app-id>\n  panpak verify [--json] <app-id>   (read every file of the installed app against the signed index, now; changes nothing)
   panpak open <app-id> [file] [--read-only | --write-rename]\n  panpak inspect [--json] <package or app id>\n  panpak permissions [--markdown]\n  panpak doctor [package]\n  panpak dbus-rules <package>\n  panpak desktop-integration install|remove\n  panpak dump-index <package> <out.raw>\n  panpak dump-manifest <package> <out.toml>"
@@ -362,6 +362,10 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
             // What the new version made unreachable (the version before the one that was `previous`) goes now, with this command's locks let go.
             drop(store_guard);
             gc::after(&store, &[]);
+            // The cache of the app can be made again, and some caches only see files that are newer than themselves (PANPAK-FORMAT.md section 6.9).
+            if let Err(e) = panpak_core::cachewipe::after_change(app_id) {
+                eprintln!("panpak: the cache of {app_id} was not emptied: {}", panpak_core::err_text(&e));
+            }
             println!("updated {app_id}: {} -> {} (reused chunks {n_reused}, fetched chunks {n_fetched}, runtime {best_abi})", old_man.app.version, man.app.version);
             println!("downloaded bytes: {downloaded}");
             Ok(dest)
@@ -794,6 +798,10 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
         remove_store_tree(&aside)?;
     }
     let _ = fs::remove_dir_all(store.join("staging").join(app_id));
+    // The cache of the app can be made again, and some caches only see files that are newer than themselves (PANPAK-FORMAT.md section 6.9).
+    if let Err(e) = panpak_core::cachewipe::after_change(app_id) {
+        eprintln!("panpak: the cache of {app_id} was not emptied: {}", panpak_core::err_text(&e));
+    }
     println!("repaired {app_id} {}", rec.manifest.app.version);
     clear_damaged(&appdir);
     Ok(())
@@ -849,6 +857,10 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     panpak_core::durable::replace_symlink(&prev_t, &current)?;
     panpak_core::failpoint!("rollback.between_links");
     panpak_core::durable::replace_symlink(&cur_t, &previous)?;
+    // The cache of the app can be made again, and some caches only see files that are newer than themselves (PANPAK-FORMAT.md section 6.9).
+    if let Err(e) = panpak_core::cachewipe::after_change(app_id) {
+        eprintln!("panpak: the cache of {app_id} was not emptied: {}", panpak_core::err_text(&e));
+    }
     println!("rollback {app_id}: back to {}", prev_t.display());
     Ok(prev_t)
 }
@@ -1320,7 +1332,8 @@ fn normalized_domain(d: &str) -> String {
     panpak_core::domain::ascii_form(&nfc)
 }
 
-fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Option<&Path>, extra_icons: Vec<IconInput>, previous: Previous<'_>) -> Result<PathBuf> {
+#[allow(clippy::too_many_arguments)]
+fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Option<&Path>, extra_icons: Vec<IconInput>, previous: Previous<'_>, level: i32) -> Result<PathBuf> {
     let input_toml = fs::read_to_string(dir.join("panpak.toml")).context("read <folder>/panpak.toml")?;
     // Strict schema in pack: future keys must not silently disappear.
     panpak_core::check_panpak_toml_schema(&input_toml)?;
@@ -1710,8 +1723,11 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
     let mut chunks: Vec<Chunk> = Vec::new();
     let mut by_hash: HashMap<[u8; 32], u32> = HashMap::new();
     let mut refs: u64 = 0;
-    // One zstd context for every chunk and for the index.
-    let mut enc = panpak_core::ChunkEncoder::new(ZSTD_LEVEL)?;
+    // The chunks are compressed on all the cores, in batches: the main thread cuts and hashes, a batch of new chunks is compressed in
+    // parallel, and the frames are written in the order of the chunks, so the file is the same as one written by a single thread.
+    let mut comp = ChunkCompressor::new(level)?;
+    let mut pending: Vec<Vec<u8>> = Vec::new();
+    let mut pending_bytes = 0usize;
     for p in payload.iter_mut() {
         let reader: Box<dyn std::io::Read> = match (&p.source, p.embedded) {
             _ if p.data.is_some() => Box::new(std::io::Cursor::new(p.data.clone().unwrap_or_default())),
@@ -1730,28 +1746,28 @@ fn cmd_pack(dir: &Path, stub: &Path, secret: &str, trust: &TrustArgs, out: Optio
                 ids.push(id);
                 continue;
             }
-            let comp = enc.encode(&raw)?;
             let id = chunks.len() as u32;
-            fout.write_all(comp)?;
-            chunks.push(Chunk {
-                hash,
-                off: file_off,
-                comp: comp.len() as u32,
-                raw: raw.len() as u32,
-            });
-            file_off += comp.len() as u64;
+            // `off` and `comp` are set when the batch is written.
+            chunks.push(Chunk { hash, off: 0, comp: 0, raw: raw.len() as u32 });
+            pending_bytes += raw.len();
+            pending.push(raw);
             by_hash.insert(hash, id);
             ids.push(id);
+            if pending_bytes >= BATCH_BYTES {
+                comp.flush(&mut pending, &mut chunks, &mut fout, &mut file_off)?;
+                pending_bytes = 0;
+            }
         }
         if let Kind::File { chunks: dst } = &mut p.entry.kind {
             refs += ids.len() as u64;
             *dst = ids;
         }
     }
+    comp.flush(&mut pending, &mut chunks, &mut fout, &mut file_off)?;
 
     let entries: Vec<Entry> = payload.into_iter().map(|p| p.entry).collect();
     let raw_index = encode_index(&chunks, &entries);
-    let comp_index = enc.encode(&raw_index)?.to_vec();
+    let comp_index = comp.encode_one(&raw_index)?;
     let root = *blake3::hash(&raw_index).as_bytes();
 
     let index_off = file_off;
@@ -2213,6 +2229,8 @@ struct ConvertArgs<'a> {
     update_url: Option<&'a str>,
     /// The earlier package of the same app, so that the revision goes up and the history continues (as `pack --previous`).
     previous: Option<&'a Path>,
+    /// The zstd level of the chunks (`--level`; `ZSTD_LEVEL_CONVERT` when it is not given).
+    level: i32,
     out: Option<&'a Path>,
 }
 
@@ -2278,7 +2296,7 @@ fn append_to_tree_file(tw: &mut treewriter::TreeWriter, tree: &Path, path: &str,
 
 fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     use std::io::Read;
-    let ConvertArgs { src, id, stub, secret, trust, name_ov, version_ov, entry_ov, icon_ov, perms_ov, wm_class_ov, appends, update_url, previous, out } = a;
+    let ConvertArgs { src, id, stub, secret, trust, name_ov, version_ov, entry_ov, icon_ov, perms_ov, wm_class_ov, appends, update_url, previous, level, out } = a;
     panpak_core::validate_app_id(id)?;
     let mut f = File::open(src)?;
     // Look for the squashfs v4 magic ("hsqs") in the first 64 MiB, validating the
@@ -2551,7 +2569,7 @@ fn cmd_convert(a: ConvertArgs<'_>) -> Result<PathBuf> {
     tw.replace_file(Path::new("panpak.toml"), toml.as_bytes(), 0o644)?;
     // The links that make the library path of the app valid for its own programs only (PANPAK-FORMAT.md section 7.1).
     panpak_core::libpath::make_links(&tree, id, &mut |p, t| tw.symlink(p, Path::new(t)))?;
-    cmd_pack(&tree, stub, secret, trust, out, icons, previous.map_or(Previous::Installed, Previous::File))
+    cmd_pack(&tree, stub, secret, trust, out, icons, previous.map_or(Previous::Installed, Previous::File), level)
 }
 
 /// An icon handed to `pack` as bytes: where it came from (for the messages) and the file.
@@ -4237,6 +4255,115 @@ fn qt_plugin_notes<'a>(paths: impl Iterator<Item = &'a Path>) -> Vec<String> {
 }
 
 /// The numbers of a glibc version as `ldd --version` prints it (`2.39`, `2.39-0ubuntu8`).
+/// Raw bytes of new chunks that are gathered before they are compressed together.
+const BATCH_BYTES: usize = 32 << 20;
+
+/// The value of `--level`: a zstd level that the compressor accepts.
+fn parse_level(v: Option<&String>) -> Result<i32> {
+    let v = v.ok_or_else(|| coded(ErrorCode::E5002, "--level <1 to 22>"))?;
+    match v.parse::<i32>() {
+        Ok(l) if (1..=22).contains(&l) => Ok(l),
+        _ => bail_code!(ErrorCode::E5002, "--level must be a number from 1 to 22, not {v:?}"),
+    }
+}
+
+/// What one compression thread holds at a level, in bytes: its zstd context and the batch share (measured: 16 threads peaked at 0.56 GiB at level 3, 0.7 at 9, 1.15 at 12, 1.5 at 15 and 1.8 at 19,
+/// all with the memory of the rest of the program in it). The numbers are a little above the measures.
+fn thread_cost(level: i32) -> u64 {
+    match level {
+        ..=9 => 48 << 20,
+        10..=15 => 112 << 20,
+        _ => 144 << 20,
+    }
+}
+
+/// How many threads compress: all the cores, fewer when the memory that is free does not hold a context for each (a person who publishes from a small machine must not end without memory).
+/// Half a GiB is left for the rest of the program and the system; at least one thread works.
+fn compression_threads(cores: usize, level: i32, available: Option<u64>) -> usize {
+    let Some(avail) = available else { return cores };
+    let room = avail.saturating_sub(512 << 20);
+    ((room / thread_cost(level)) as usize).clamp(1, cores)
+}
+
+/// The memory that this process can still use: what the system says is available, or less when the control group of the process has a limit (a scope, a container).
+fn available_memory() -> Option<u64> {
+    let kib = |s: &str, key: &str| -> Option<u64> { s.lines().find_map(|l| l.strip_prefix(key)).and_then(|r| r.trim().trim_end_matches("kB").trim().parse::<u64>().ok()).map(|k| k << 10) };
+    let sys = kib(&fs::read_to_string("/proc/meminfo").ok()?, "MemAvailable:");
+    let cg = fs::read_to_string("/proc/self/cgroup").ok().and_then(|c| {
+        let rel = c.lines().find_map(|l| l.strip_prefix("0::"))?.trim().to_string();
+        let dir = Path::new("/sys/fs/cgroup").join(rel.trim_start_matches('/'));
+        let max = fs::read_to_string(dir.join("memory.max")).ok()?.trim().parse::<u64>().ok()?;
+        let cur = fs::read_to_string(dir.join("memory.current")).ok()?.trim().parse::<u64>().ok()?;
+        Some(max.saturating_sub(cur))
+    });
+    match (sys, cg) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// One zstd context per thread; a batch of chunks is split between the threads and written in the order of the chunks.
+struct ChunkCompressor {
+    encoders: Vec<panpak_core::ChunkEncoder>,
+}
+
+impl ChunkCompressor {
+    fn new(level: i32) -> Result<Self> {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get()).min(32);
+        let n = compression_threads(cores, level, available_memory());
+        let encoders = (0..n).map(|_| panpak_core::ChunkEncoder::new(level)).collect::<Result<Vec<_>>>()?;
+        Ok(Self { encoders })
+    }
+
+    /// Compress `batch` and write the frames in order; the chunks of the batch are the last ones of `chunks`.
+    fn flush(&mut self, batch: &mut Vec<Vec<u8>>, chunks: &mut [Chunk], out: &mut impl Write, off: &mut u64) -> Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let first = chunks.len() - batch.len();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let frames: Vec<Vec<(usize, Vec<u8>)>> = std::thread::scope(|sc| {
+            let work: &[Vec<u8>] = batch;
+            let handles: Vec<_> = self
+                .encoders
+                .iter_mut()
+                .map(|enc| {
+                    let next = &next;
+                    sc.spawn(move || -> Result<Vec<(usize, Vec<u8>)>> {
+                        let mut done = Vec::new();
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if i >= work.len() {
+                                return Ok(done);
+                            }
+                            done.push((i, enc.encode(&work[i])?.to_vec()));
+                        }
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().map_err(|_| anyhow::anyhow!("a compression thread panicked")).and_then(|r| r)).collect::<Result<Vec<_>>>()
+        })?;
+        let mut ordered: Vec<Option<Vec<u8>>> = vec![None; batch.len()];
+        for (i, f) in frames.into_iter().flatten() {
+            ordered[i] = Some(f);
+        }
+        for (k, frame) in ordered.into_iter().enumerate() {
+            let frame = frame.context("a chunk was not compressed")?;
+            out.write_all(&frame)?;
+            chunks[first + k].off = *off;
+            chunks[first + k].comp = frame.len() as u32;
+            *off += frame.len() as u64;
+        }
+        batch.clear();
+        Ok(())
+    }
+
+    /// One block (the index), compressed by the first context.
+    fn encode_one(&mut self, data: &[u8]) -> Result<Vec<u8>> {
+        Ok(self.encoders[0].encode(data)?.to_vec())
+    }
+}
+
 fn glibc_numbers(text: &str) -> Option<Vec<u32>> {
     let head: String = text.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
     let nums: Option<Vec<u32>> = head.trim_matches('.').split('.').map(|p| p.parse::<u32>().ok()).collect();
@@ -4355,6 +4482,7 @@ fn real_main() -> Result<()> {
             let mut rotate_from = None;
             let (mut recover_with, mut recovery, mut sign_command, mut public_key) = (None::<String>, None::<String>, None::<String>, None::<String>);
             let mut previous: Option<String> = None;
+            let mut level = ZSTD_LEVEL;
             let mut out = None;
             let mut i = 3;
             while i < args.len() {
@@ -4391,6 +4519,10 @@ fn real_main() -> Result<()> {
                         previous = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--previous <package>"))?.clone());
                         i += 2;
                     }
+                    "--level" => {
+                        level = parse_level(args.get(i + 1))?;
+                        i += 2;
+                    }
                     "-o" => {
                         out = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "-o <out>"))?.as_str());
                         i += 2;
@@ -4414,7 +4546,7 @@ fn real_main() -> Result<()> {
                     (secret, trust)
                 }
             };
-            cmd_pack(Path::new(dir), Path::new(stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?), &secret, &trust, out_p.as_deref(), Vec::new(), previous.as_deref().map_or(Previous::None, |p| Previous::File(Path::new(p))))?;
+            cmd_pack(Path::new(dir), Path::new(stub.ok_or_else(|| coded(ErrorCode::E5002, "missing --stub"))?), &secret, &trust, out_p.as_deref(), Vec::new(), previous.as_deref().map_or(Previous::None, |p| Previous::File(Path::new(p))), level)?;
             Ok(())
         }
         Some("install-runtime") => {
@@ -4587,6 +4719,7 @@ fn real_main() -> Result<()> {
             let mut appends: Vec<(&str, &Path)> = Vec::new();
             let mut update_url = None;
             let mut previous = None;
+            let mut level = ZSTD_LEVEL_CONVERT;
             let mut out = None;
             let mut i = 3;
             while i < args.len() {
@@ -4602,6 +4735,7 @@ fn real_main() -> Result<()> {
                     "--update-url" => { update_url = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--update-url <https address>"))?.as_str()); i += 2; }
                     "--previous" => { previous = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--previous <package>"))?.as_str()); i += 2; }
                     "--permissions" => { perms = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--permissions <file.toml>"))?.as_str()); i += 2; }
+                    "--level" => { level = parse_level(args.get(i + 1))?; i += 2; }
                     "--wm-class" => { wm_class = Some(args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--wm-class <window class>"))?.as_str()); i += 2; }
                     "--append" => {
                         let v = args.get(i + 1).ok_or_else(|| coded(ErrorCode::E5002, "--append <path in the tree>=<file>"))?.as_str();
@@ -4636,6 +4770,7 @@ fn real_main() -> Result<()> {
                 appends: &appends,
                 update_url,
                 previous: previous.map(Path::new),
+                level,
                 out: out.map(PathBuf::from).as_deref(),
             })?;
             Ok(())
@@ -5082,6 +5217,48 @@ fn real_main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_compression_threads_follow_the_free_memory() {
+        let gib = 1u64 << 30;
+        assert_eq!(compression_threads(16, 19, None), 16, "memory unknown: all the cores");
+        assert_eq!(compression_threads(16, 19, Some(64 * gib)), 16);
+        assert_eq!(compression_threads(16, 19, Some(4 * gib)), 16);
+        assert_eq!(compression_threads(16, 19, Some(gib)), 3);
+        assert_eq!(compression_threads(16, 19, Some(2 * gib)), 10, "2 GiB hold ten contexts of level 19");
+        assert_eq!(compression_threads(16, 19, Some(gib / 4)), 1, "never less than one");
+        assert_eq!(compression_threads(16, 3, Some(2 * gib)), 16, "level 3 is light");
+        assert_eq!(compression_threads(4, 19, Some(64 * gib)), 4);
+    }
+
+    #[test]
+    fn chunks_compressed_on_many_threads_are_written_as_one_thread_would_write_them() {
+        let level = 3;
+        let raw: Vec<Vec<u8>> = (0..40u32)
+            .map(|k| (0..(20_000 + k as usize * 997)).map(|i| ((i as u32).wrapping_mul(k + 7) >> (k % 5)) as u8).collect())
+            .collect();
+        let mut one = panpak_core::ChunkEncoder::new(level).unwrap();
+        let mut want = Vec::new();
+        let mut want_chunks = Vec::new();
+        for r in &raw {
+            let f = one.encode(r).unwrap().to_vec();
+            want_chunks.push((want.len() as u64 + 5, f.len() as u32));
+            want.extend_from_slice(&f);
+        }
+        let mut c = ChunkCompressor::new(level).unwrap();
+        // two batches, to see that the offsets go on from one to the next
+        let mut chunks: Vec<Chunk> = raw.iter().map(|r| Chunk { hash: [0; 32], off: 0, comp: 0, raw: r.len() as u32 }).collect();
+        let mut out = vec![0u8; 5];
+        let mut off = 5u64;
+        let mut first: Vec<Vec<u8>> = raw[..15].to_vec();
+        c.flush(&mut first, &mut chunks[..15], &mut out, &mut off).unwrap();
+        let mut second: Vec<Vec<u8>> = raw[15..].to_vec();
+        c.flush(&mut second, &mut chunks, &mut out, &mut off).unwrap();
+        assert_eq!(&out[5..], &want[..]);
+        for (k, ch) in chunks.iter().enumerate() {
+            assert_eq!((ch.off, ch.comp), want_chunks[k], "chunk {k}");
+        }
+    }
+
+    #[test]
     fn a_file_is_linked_when_asked_and_possible_and_copied_in_every_other_case() {
         use std::os::unix::fs::MetadataExt;
         let d = std::env::temp_dir().join(format!("panpak-link-{}", std::process::id()));
@@ -5311,7 +5488,7 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None, 3).unwrap();
         let mut f = File::open(&out).unwrap();
         let ft = panpak_core::read_footer(&mut f).unwrap();
         let (_man, raw) = panpak_core::verify(&mut f, &ft).unwrap();
@@ -5324,12 +5501,12 @@ mod tests {
         }
         // Same input -> same package (licenses do not break determinism).
         let out2 = dir.join("b.panpak");
-        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out2), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out2), Vec::new(), Previous::None, 3).unwrap();
         assert_eq!(fs::read(&out).unwrap(), fs::read(&out2).unwrap());
         // The reserved top level cannot come from the user's tree.
         fs::create_dir_all(tree.join(".panpak")).unwrap();
         fs::write(tree.join(".panpak/x"), "x").unwrap();
-        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&dir.join("c.panpak")), Vec::new(), Previous::None).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&dir.join("c.panpak")), Vec::new(), Previous::None, 3).unwrap_err();
         assert!(panpak_core::err_text(&e).contains("reserved"), "{e:?}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -5357,14 +5534,14 @@ mod tests {
         let stub = dir.join("stub");
         fs::write(&stub, b"FAKE-STUB").unwrap();
         let out = dir.join("a.panpak");
-        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None).unwrap_err();
+        let e = cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None, 3).unwrap_err();
         let text = panpak_core::render(&e, ErrorCode::E0000);
         assert!(text.contains("invalid") && text.contains("abi.needs") && text.contains("nothing was written"), "{text}");
         assert!(!out.exists(), "a file was written for an invalid manifest");
         // The same tree with a valid name is packed.
         elf[241..250].copy_from_slice(b"libc.so.6");
         fs::write(tree.join("bin/app"), &elf).unwrap();
-        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None).unwrap();
+        cmd_pack(&tree, &stub, &secret, &TrustArgs { recovery: format!("blake3:{}", "0".repeat(64)), rotation: None, command: None, ..Default::default() }, Some(&out), Vec::new(), Previous::None, 3).unwrap();
         assert!(out.exists());
         let _ = fs::remove_dir_all(&dir);
     }
