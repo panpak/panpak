@@ -47,7 +47,7 @@ def main():
         (tmp / 'secret.key').write_text((bytes([41]) * 32).hex() + '\n')
         (tmp / 'secret.key').chmod(0o600)
         rnd = random.Random(7)
-        big = bytearray(rnd.randbytes(3 << 20))
+        big = bytearray(rnd.randbytes(10 << 20))
         small = rnd.randbytes(200_000)
         tree = tmp / 'tree'
         tree.mkdir()
@@ -109,17 +109,17 @@ def main():
         print(f'patch: {with_patch} bytes downloaded')
 
         without, paths, p = update_with(None)
-        assert without > 2_000_000, f'without a patches file the chunks of the file come: {without}'
+        assert without > 8_000_000, f'without a patches file the chunks of the file come: {without}'
         print(f'no patches file (404): {without} bytes, the update works from the chunks')
 
         damaged = bytearray(original)
         damaged[len(damaged) // 2] ^= 1
         bad, paths, p = update_with(bytes(damaged))
-        assert bad > 2_000_000, f'a damaged patch is not used and the chunks come: {bad}'
+        assert bad > 8_000_000, f'a damaged patch is not used and the chunks come: {bad}'
         print(f'damaged patches file: {bad} bytes, the update works from the chunks')
 
         short, paths, p = update_with(original[:len(original) // 2])
-        assert short > 2_000_000, f'a short patches file is not used: {short}'
+        assert short > 8_000_000, f'a short patches file is not used: {short}'
         print('short patches file: PASS')
         print('patches PASS')
         isolation.safe_rmtree(tmp / 'data', tmp)

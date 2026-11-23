@@ -554,9 +554,11 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
     // The work: the large files by parts (they are the long pieces, first), then the other blobs, one piece each.
     let mut work: Vec<Work> = Vec::new();
     let mut large: Vec<usize> = Vec::new();
+    // A large file that a patch rebuilds is made by one piece of work (the patch is applied from start to end), not by parts.
+    let by_patch = |i: usize| jobs[i].patch.is_some() && src.patches().is_some() && jobs[i].ids.iter().any(|&id| !src.has(&chunks[id as usize]));
     for &(i, missing) in &unique {
         let total = total_of(&jobs[i]);
-        if missing && total > MAX_ASSEMBLE {
+        if missing && total > MAX_ASSEMBLE && !by_patch(i) {
             let f = File::create(work_dir.join(&names[i]))?;
             f.set_len(total)?;
             let mut off = 0u64;
@@ -568,7 +570,7 @@ fn make_files(src: &dyn ChunkSource, chunks: &[Chunk], jobs: &[FileJob], blobs: 
         }
     }
     for &(i, missing) in &unique {
-        if !(missing && total_of(&jobs[i]) > MAX_ASSEMBLE) {
+        if !(missing && total_of(&jobs[i]) > MAX_ASSEMBLE && !by_patch(i)) {
             work.push(Work::Blob(i));
         }
     }
