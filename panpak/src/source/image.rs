@@ -346,7 +346,7 @@ fn patched_id(lock: &Lock) -> String {
 
 /// The rebuilt packages of the lock's patches, in a folder of the cache. They are built once for an image version (the base image, the snapshot and the
 /// patches), not once per recipe: the first image that needs them builds them in a separate image with the build dependencies, and every later image
-/// installs the same files. The build is deterministic as far as Debian's packaging is (fixed SOURCE_DATE_EPOCH, fixed changelog date, no tests, no
+/// installs the same files. The build is deterministic as far as Debian's packaging is (fixed SOURCE_DATE_EPOCH, PYTHONHASHSEED=0 for the scripts that order a set, fixed changelog date, no tests, no
 /// documentation); the hash of each file is written to `SHA256SUMS` next to them.
 pub fn patched_debs(cache: &Path, lock: &Lock, k: &Known) -> Result<PathBuf> {
     let dir = cache.join("patched").join(patched_id(lock));
@@ -391,7 +391,7 @@ pub fn patched_debs(cache: &Path, lock: &Lock, k: &Known) -> Result<PathBuf> {
             "set -e\ncd /work\napt-get source -q {pkg}\ncd {pkg}-*/\npatch -p1 < /work/{name}\nV=$(dpkg-parsechangelog -S Version)\n\
              {{ printf '{pkg} (%s+panpak1) {suite}; urgency=medium\\n\\n  * Patch {name}.\\n\\n -- Panpak <noreply@invalid>  %s\\n\\n' \"$V\" \"$(date -u -d @{epoch} -R)\"; cat debian/changelog; }} > /work/changelog.new\n\
              cp /work/changelog.new debian/changelog\n\
-             SOURCE_DATE_EPOCH={epoch} TZ=UTC LC_ALL=C DEB_BUILD_OPTIONS='nocheck nodoc noautodbgsym parallel={jobs}' dpkg-buildpackage -b -uc -us\n\
+             SOURCE_DATE_EPOCH={epoch} PYTHONHASHSEED=0 TZ=UTC LC_ALL=C DEB_BUILD_OPTIONS='nocheck nodoc noautodbgsym parallel={jobs}' dpkg-buildpackage -b -uc -us\n\
              cp /work/*.deb /out/\n",
             pkg = p.package, name = p.name, suite = k.suite, epoch = epoch, jobs = jobs
         );
