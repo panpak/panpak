@@ -14,6 +14,11 @@
   and is small; another size, another base, a cut or a longer frame are errors; the window), the index (written and read back), the stub (a patch with the wrong hash or the wrong
   installed file is refused and the chunk check stops a wrong index), `tests/patches.py` (a 10 MB file, larger than the 8 MiB that are made by parts, changed in every chunk: the update downloads a few KB instead of 10 MB; no patches
   file, a damaged one and a short one end in the chunks, and the update works).
+- **The patched Debian packages of `panpak build` are built with `PYTHONHASHSEED=0`, and two cold builds now give the same files.** The weekly run of the app harness (16 and 23 November) failed its check that a cold build of the patched packages
+  is the one in the cache. Two cold builds on the host (10.5 and 10.9 minutes, 1.6 GB) differed in one file of one package: `usr/bin/gtk4-demo` of `gtk-4-examples_4.18.6+ds-2+panpak1` (1091 bytes: the keyword lists of the demos
+  are in another order in the string table, so the addresses, the relocations and the build-id differ); the libraries and every other package were the same, and the Text Editor package built twice from scratch had the same root hash
+  (`8cd118de5ef1bccc…`), so no app package was affected. The order is that of a Python set, which depends on the hash seed. With `PYTHONHASHSEED=0` in the build of the patched packages two more cold builds had identical `SHA256SUMS` for every
+  package (root `2e105886…`). The key of the CI cache holds `image.rs`, so the cache is made again. A note for the Debian Reproducible Builds project is in `~/panpak-dogfood/reports` (to be reviewed and sent by hand).
 - **CI: `apt-install.sh` no longer stops the installation.** The job `private-bus` failed twice on 2026-11-23 (pull request 95, main run 317) with `Could not get lock /var/lib/dpkg/lock`: the first attempt killed `apt-get install` after 180 s while
   dpkg was at its last triggers, dpkg went on with its lock, and the second and third attempts failed on it. Now only the update and the download (`--download-only`) have the limit and the second mirror; the installation itself is not stopped and waits for
   the lock for 300 s (`-o DPkg::Lock::Timeout=300`). `tests/apt_install_test.py` has a case for an installation that is longer than the limit. `tests/UNSTABLE.md` has the cause.
