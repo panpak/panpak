@@ -859,10 +859,13 @@ def main():
             time.sleep(0.3)
             assert rep['ns_net'] == host_ns['net'], 'an app with network does not share the network namespace'
             assert 'udp' in net_got, net_got
+            # `network = true` without ports is the whole network: the connection to a TCP port gets through too.
+            assert rep['tcp_loopback'] == 'ok', rep['tcp_loopback']
+            assert 'tcp' in net_got, net_got
             # Names: the resolver socket is in the view for an app that asks for network.
             if subprocess.run(['getent', 'hosts', 'example.com'], capture_output=True).returncode == 0:
                 assert rep['dns'] == 'ok', 'name resolution fails for an app with network'
-            print('network = true: same network namespace, a datagram reaches the host, names resolve')
+            print('network = true: same network namespace, a datagram and a TCP connection reach the host, names resolve')
 
         # 6i. The FUSE tree of GVfs (`$XDG_RUNTIME_DIR/gvfs`): with the permission `gvfs` it is in the view, as a mount, when `gvfsd-fuse` has mounted it for the user; it is never made
         # by us; without the permission nothing changes. A test server stands for `gvfsd-fuse`.

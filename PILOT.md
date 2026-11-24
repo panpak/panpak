@@ -101,7 +101,7 @@ assigned ephemeral port, closes; then the HTTP server binds
 `('127.0.0.1', port+attempt)` for attempt in 0..2. Probe with a minimal
 package (same pattern) on kernel 7.0.0-38, Landlock **V8**:
 
-- default and `network = true` without ports: `bind(0)` denied (EPERM);
+- default and `network = true` without ports: `bind(0)` denied (EPERM) (this was true when the probe was made; since then `network = true` without ports is not filtered and `bind(0)` works);
 - `network = true` + `network_bind_tcp = [0]`: `bind(('', 0))`
   succeeds (e.g. port 44329), but rebinding the assigned port stays
   denied; the port-0 rule only covers the 0 request;

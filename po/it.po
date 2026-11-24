@@ -62,8 +62,8 @@ msgstr "Può mostrare messaggi nell'area di notifica del tuo desktop, anche ment
 msgid "It can talk to every service of your session, also to start programs and to read what other apps publish. The sandbox does not isolate it any more."
 msgstr "Può parlare con ogni servizio della tua sessione, anche per avviare programmi e leggere ciò che le altre app pubblicano. Il sandbox non la isola più."
 
-msgid "It can use the network. The ports are not listed by the package."
-msgstr "Può usare la rete. Le porte non sono elencate dal pacchetto."
+msgid "Can use the network without limits."
+msgstr "Può usare la rete senza limiti."
 
 msgid "It can use the sound system of your session: play sounds and record from the microphone."
 msgstr "Può usare il sistema audio della tua sessione: riprodurre suoni e registrare dal microfono."
@@ -112,6 +112,9 @@ msgstr "Aprire i link che iniziano con {subject}:"
 
 msgid "Other computers can connect to this app on these TCP ports."
 msgstr "Altri computer possono collegarsi a questa app su queste porte TCP."
+
+msgid "Other network traffic, such as UDP, is not limited."
+msgstr "Il resto del traffico di rete, come l'UDP, non è limitato."
 
 msgid "Panpak could not take back the files that {name} was given ({why}). Nothing was removed; try again."
 msgstr "Panpak non è riuscito a ritirare i file dati a {name} ({why}). Non è stato rimosso nulla; riprova."

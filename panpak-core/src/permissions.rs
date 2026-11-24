@@ -81,8 +81,10 @@ pub static ROWS: &[Row] = &[
         "It can reach any computer on these TCP ports, also on the internet. The filter is by port, not by address.", ""),
     row("network-listen", Level::Attention, "network-wireless-symbolic", "\u{21c4}", "Accept connections from the network on the ports {subject}",
         "Other computers can connect to this app on these TCP ports.", ""),
+    row("network-other", Level::Attention, "network-wireless-symbolic", "\u{21c4}", "Other network traffic, such as UDP, is not limited.",
+        "", ""),
     row("network-any", Level::Attention, "network-wireless-symbolic", "\u{21c4}", "Use the network",
-        "It can use the network. The ports are not listed by the package.", ""),
+        "Can use the network without limits.", ""),
     row("audio", Level::Attention, "audio-input-microphone-symbolic", "\u{266a}", "Play sound and use the microphone",
         "It can use the sound system of your session: play sounds and record from the microphone.", ""),
     row("folder-write", Level::Attention, "folder-symbolic", "\u{25a3}", "Read, change and delete the files in your {subject} folder",
@@ -142,7 +144,8 @@ fn item(lang: Option<&Catalog>, id: &'static str, subjects: Vec<String>) -> Item
         icon: r.icon,
         glyph: r.glyph,
         text: fill(&tr_in(lang, r.text), &[("subject", subject.clone())]),
-        detail: fill(&tr_in(lang, r.detail), &[("subject", subject)]),
+        // A row may have no detail line (the empty string is the header of a catalog, never a message).
+        detail: if r.detail.is_empty() { String::new() } else { fill(&tr_in(lang, r.detail), &[("subject", subject)]) },
         subjects,
     }
 }
@@ -221,6 +224,10 @@ fn from_permissions(lang: Option<&Catalog>, p: &Permissions) -> Vec<Item> {
     }
     if !bind.is_empty() {
         out.push(item(lang, "network-listen", bind.clone()));
+    }
+    if !allow.is_empty() || !bind.is_empty() {
+        // Said once, under the rows of the ports: the filter is of TCP ports only.
+        out.push(item(lang, "network-other", vec![]));
     }
     if p.network == Some(true) && allow.is_empty() && bind.is_empty() {
         out.push(item(lang, "network-any", vec![]));
@@ -567,7 +574,9 @@ pub fn msgids() -> Vec<&'static str> {
     v.extend_from_slice(crate::messages::ALL);
     for r in ROWS {
         v.push(r.text);
-        v.push(r.detail);
+        if !r.detail.is_empty() {
+            v.push(r.detail);
+        }
         if !r.reason.is_empty() {
             v.push(r.reason);
         }
@@ -773,6 +782,24 @@ mod tests {
     }
 
     #[test]
+    fn the_note_on_other_traffic_is_one_row_under_the_ports_and_never_with_the_whole_network() {
+        let ids = |extra: &str| items_in(None, &man(extra)).iter().map(|i| i.id).collect::<Vec<_>>();
+        let n = |v: &[&str]| v.iter().filter(|i| **i == "network-other").count();
+        // Ports to connect and to bind: the note once.
+        assert_eq!(n(&ids("[permissions]\nnetwork=true\nnetwork_allow_tcp=[80,443]\nnetwork_bind_tcp=[6881]\n")), 1);
+        assert_eq!(n(&ids("[permissions]\nnetwork=true\nnetwork_bind_tcp=[6881]\n")), 1);
+        // The whole network, or none: no note.
+        assert_eq!(n(&ids("[permissions]\nnetwork=true\n")), 0);
+        assert_eq!(n(&ids("[permissions]\n")), 0);
+        // The note has no detail line, and an Italian sentence.
+        let it = i18n::catalogs().iter().find(|c| c.name == "it");
+        let note = items_in(it, &man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n")).into_iter().find(|i| i.id == "network-other").unwrap();
+        assert_eq!((note.detail.as_str(), note.text.as_str()), ("", "Il resto del traffico di rete, come l'UDP, non è limitato."));
+        let any = items_in(None, &man("[permissions]\nnetwork=true\n")).into_iter().find(|i| i.id == "network-any").unwrap();
+        assert_eq!(any.detail, "Can use the network without limits.");
+    }
+
+    #[test]
     fn added_lists_new_subjects_and_raised_access() {
         let old = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n");
         let same = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n");
@@ -783,7 +810,7 @@ mod tests {
         let from_ro = man("[permissions]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n");
         let to_rw = man("[permissions]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n");
         assert_eq!(added(&from_ro, &to_rw).len(), 1);
-        assert_eq!(added(&man(""), &old).len(), 2);
+        assert_eq!(added(&man(""), &old).len(), 3);
         assert!(added(&old, &man("")).is_empty());
     }
 

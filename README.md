@@ -184,7 +184,8 @@ below is printed by `panpak permissions --markdown`, and a test fails when it is
 | \[!!\] High risk | Read *x* in your home folder, a place of passwords, keys or startup files | This place holds passwords, keys, browser data or files that run at login. The app can read them. |
 | \[!\] Attention | Connect to the network on the ports *x* | It can reach any computer on these TCP ports, also on the internet. The filter is by port, not by address. |
 | \[!\] Attention | Accept connections from the network on the ports *x* | Other computers can connect to this app on these TCP ports. |
-| \[!\] Attention | Use the network | It can use the network. The ports are not listed by the package. |
+| \[!\] Attention | Other network traffic, such as UDP, is not limited. |  |
+| \[!\] Attention | Use the network | Can use the network without limits. |
 | \[!\] Attention | Play sound and use the microphone | It can use the sound system of your session: play sounds and record from the microphone. |
 | \[!\] Attention | Read, change and delete the files in your *x* folder | The folder is the one of your user-dirs.dirs, not a copy. |
 | \[!\] Attention | Read the files in your *x* folder | The folder is the one of your user-dirs.dirs. The app cannot change it. |

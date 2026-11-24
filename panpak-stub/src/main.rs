@@ -1074,6 +1074,12 @@ fn decide_net(has_v4: bool, wants_net: bool, allow_unfiltered: bool) -> NetDecis
     }
 }
 
+/// `network = true` with no port listed asks for the whole network: nothing is filtered, so the kernel does not need Landlock V4 and no start is refused.
+/// With any port listed the filter of TCP ports stays, and only those ports pass.
+fn network_unlimited(network: bool, allow_tcp: &[u16], bind_tcp: &[u16]) -> bool {
+    network && allow_tcp.is_empty() && bind_tcp.is_empty()
+}
+
 /// The view of an app that asks for no network has a network namespace of its own with only the loopback interface (see
 /// `ViewPlan::no_network`). Nothing in it reaches the host or another app, so the Landlock filter of TCP ports is not
 /// applied there: the app may use the loopback as it likes (a local server on a port it picks, as OpenShot does).
@@ -1349,12 +1355,13 @@ fn build_ruleset(
     let exec_written = man.permissions.as_ref().and_then(|p| p.exec_written).unwrap_or(false);
     let no_exec = |a: landlock::BitFlags<AccessFs>| if exec_written { a } else { a & !AccessFs::Execute };
     // TCP network: Enforce / UnfilteredWarn / Refuse (never silent fallback).
-    // unfilterable network=true is always an error, even with the flag.
+    // `network = true` with ports that cannot be filtered is always an error, even with the flag.
+    // `network = true` without ports is not filtered and needs no kernel support.
     let net_wanted = man.permissions.as_ref().and_then(|p| p.network).unwrap_or(false);
     let allow_tcp = man.permissions.as_ref().and_then(|p| p.network_allow_tcp.clone()).unwrap_or_default();
     let bind_tcp = man.permissions.as_ref().and_then(|p| p.network_bind_tcp.clone()).unwrap_or_default();
     let any_net = net_wanted || !allow_tcp.is_empty() || !bind_tcp.is_empty();
-    let handle_net = if loopback_only_view(access.in_view, any_net) {
+    let handle_net = if loopback_only_view(access.in_view, any_net) || network_unlimited(net_wanted, &allow_tcp, &bind_tcp) {
         false
     } else {
         match decide_net(new_abi, any_net, allow_unfiltered) {
@@ -1537,8 +1544,8 @@ fn build_ruleset(
             }
         }
     }
-    // Network: port allowlist (deny-all if network=true without ports, or if
-    // network=false and the ABI allows it).
+    // Network: port allowlist (deny-all if network=false and the ABI allows it).
+    // `network = true` without ports is not filtered at all (`network_unlimited`).
     if handle_net {
         for port in &allow_tcp {
             rs = rs.add_rule(NetPort::new(*port, AccessNet::ConnectTcp))?;
@@ -3301,10 +3308,26 @@ mod tests {
         });
         assert!(res2.contains("tcp_allow=ok"), "allowlist does not grant access:\n{res2}");
         assert!(res2.contains("tcp_other=deny"), "unlisted port open:\n{res2}");
+
+        // `network = true` without ports: no filter, every port connects.
+        let (dir3, panpak3, tree3, appdata3) = fixture_tree("net-any", "[permissions]\nnetwork = true\n");
+        unsafe { std::env::set_var("PANPAK_TPORT3", port.to_string()) };
+        let res3 = fork_lines(&appdata3.join("r.txt"), |res| {
+            let _man = child_sandboxed(res, &panpak3, &tree3, &appdata3, None)?;
+            let p: u16 = std::env::var("PANPAK_TPORT3").unwrap().parse().unwrap();
+            let o: u16 = std::env::var("PANPAK_TPORT_OTHER").unwrap().parse().unwrap();
+            for (tag, port) in [("tcp_any_first", p), ("tcp_any_second", o)] {
+                let c = std::net::TcpStream::connect_timeout(&std::net::SocketAddr::from(([127, 0, 0, 1], port)), std::time::Duration::from_secs(2));
+                res.push(format!("{tag}={}\n", if c.is_ok() { "ok" } else { "FAIL" }));
+            }
+            Ok(())
+        });
+        assert!(res3.contains("tcp_any_first=ok") && res3.contains("tcp_any_second=ok"), "network = true without ports must not filter:\n{res3}");
         drop(listener);
         drop(listener2);
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&dir2);
+        let _ = fs::remove_dir_all(&dir3);
     }
 
     /// Nothing the app can write is executed, unless the package says `exec_written`: a program copied into the folders of the
@@ -4987,6 +5010,19 @@ mod tests {
         assert!(matches!(decide_net(false, false, false), Refuse(_)));
         // ...opt-out only explicit, with warning.
         assert_eq!(decide_net(false, false, true), UnfilteredWarn);
+    }
+
+    #[test]
+    fn network_true_without_ports_is_the_whole_network() {
+        // No filter at all: the start does not depend on the kernel (the refusal of `decide_net` is never reached).
+        assert!(network_unlimited(true, &[], &[]));
+        // A port to connect to or to bind keeps the filter.
+        assert!(!network_unlimited(true, &[443], &[]));
+        assert!(!network_unlimited(true, &[], &[6881]));
+        assert!(!network_unlimited(true, &[80, 443], &[6881]));
+        // Without `network = true` nothing is unlimited, whatever the ports.
+        assert!(!network_unlimited(false, &[], &[]));
+        assert!(!network_unlimited(false, &[443], &[]));
     }
 
     /// A fake `gsettings` printing the given values (and sleeping `delay` seconds first).

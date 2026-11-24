@@ -243,9 +243,9 @@ coverage = "best-effort"       # "build" or "best-effort"
 [permissions]                  # static, applied by Landlock
 x11 = false                    # opt-in: X11 access, default false
 audio = false                  # opt-in: the PipeWire and PulseAudio sockets of the session (playing and recording), default false
-network = false                # master switch; false+ABI>=4 => TCP denied
-network_allow_tcp = [80, 443]  # outbound ports (connect); only with network=true
-network_bind_tcp = []          # listen ports (bind); only with network=true
+network = false                # master switch; false+ABI>=4 => TCP denied; true with no port below => the whole network, no filter
+network_allow_tcp = [80, 443]  # outbound ports (connect); only with network=true; with any port the filter stays
+network_bind_tcp = []          # listen ports (bind); only with network=true; with any port the filter stays
 sockets_allow = ["$XDG_RUNTIME_DIR/bus"]  # path Unix sockets (requires ABI V9);
                                # leading $XDG_RUNTIME_DIR and $HOME expanded
 notifications = false           # opt-in, §3.1.5: desktop notifications
@@ -1522,14 +1522,18 @@ before distributing the converted package.
   and the device ioctls (window size, session, job control); `TIOCSTI` and `TIOCLINUX` stay refused by the system call filter (§9.8).
 - Read-only: the system caches of §9.9 (`/var/cache/fontconfig`), mounted into the view and given
   one Landlock rule each.
-- TCP networking: denied by default (`network = false`); with
-  `network = true` only manifest-allowlisted ports (`network_allow_tcp`
+- TCP networking: denied by default (`network = false`). With
+  `network = true` and no port listed, the app has the whole network: the
+  runtime MUST NOT filter TCP, and MUST NOT refuse the start on a kernel
+  without Landlock V4 (there is nothing to filter). With `network = true`
+  and ports, only the manifest-allowlisted ports pass (`network_allow_tcp`
   for connect, `network_bind_tcp` for listen). Landlock filters the TCP
   port, not the address: a granted port is open to every address,
-  loopback or not. Needs Landlock V4 (kernel 6.7 or later). On kernels without
+  loopback or not. The filter of ports needs Landlock V4 (kernel 6.7 or later). On kernels without
   Landlock V4 the network is not filterable: the runtime MUST refuse
   by default, and MAY start ONLY with `--network-unfiltered` from the
-  CLI (never from the manifest), with a warning at every start. Landlock
+  CLI (never from the manifest), with a warning at every start; ports
+  listed with `network = true` are always refused there. Landlock
   never filters UDP; in the isolated view (§9.2) an app that asks for no network has no
   network but the loopback interface.
 - Landlock ABI: highest supported detected with HardRequirement (kernel 7.0:

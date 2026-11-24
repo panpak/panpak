@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`network = true` without ports is the whole network.** Until now it denied every TCP connection (Landlock handled the TCP rights and no port rule was added), and was refused on a kernel without Landlock V4; only UDP and DNS got out.
+  Now a package that asks for `network = true` and lists no port has the network as `--share=network` gives it in Flatpak: TCP is not filtered, and the start does not depend on the kernel. With `network_allow_tcp` or `network_bind_tcp` the filter of ports
+  stays, and a kernel without V4 still refuses it. The permission screen says "Can use the network without limits."; a package with ports gets one more row, once, under the rows of the ports: "Other network traffic, such as UDP, is not limited." (no detail line; Italian in `po/it.po`).
+  This **widens** what `network = true` allows: a package that was declared with it and worked only for UDP now also reaches TCP. PANPAK-FORMAT.md §3.1 and §9, THREAT-MODEL.md §4, README.md, PILOT.md (a note on the old probe).
+  Tests: a unit test of the rule, a Landlock test (a connect to two ports succeeds with `network = true`, and still fails for the unlisted port with a list), `tests/view.py` (a TCP connect from the view).
+
 - **The permission `gvfs` opens the FUSE tree of GVfs too, so that `sftp://` and `smb://` should be paths of files, as in Flatpak** (expected, not tried yet with the real daemon)**.** The entry below about the permission `gvfs` says that the tree is not opened: it is, since this change. The router that would have emptied the path of the FUSE mount (a design, tried with a stand-in on 2026-11-24:
   GIMP opened the file but could not export PNG or JPEG to it) is not done. With `gvfs = true`, `$XDG_RUNTIME_DIR/gvfs` is put in the isolated view (a read and write bind mount) and gets a Landlock rule, **only if it is there,
   is the mount point of a FUSE file system and belongs to the user** (read from `/proc/self/mountinfo`, so that nothing touches a stuck mount before the start); it is never made, and a link, a file, a plain folder or the

@@ -512,6 +512,14 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
 - **TCP networking**: `network = false` (default) denies bind+connect
   (ABI ≥ V4); `network = true` + allowlist opens only the listed ports
   (e2e with local server: default deny, targeted allow, rest denied).
+  `network = true` **without ports is the whole network** (as `--share=network`
+  in Flatpak): TCP is not filtered, any port of any address, the loopback and the
+  local network included, and the start does not need Landlock V4. The permission
+  screen says "Can use the network without limits." An app with such a permission can
+  send any data it can read to any server, and can reach services that listen on the
+  loopback of the host; the answer is to list the ports (the filter then stays), or not
+  to give the permission. The listed ports of an app with ports are a real limit only for TCP:
+  the screen says it once, in a row under the rows of the ports: other traffic, such as UDP, is not limited.
   Ephemeral ports (`bind` on port 0 + rebind, e.g. the OpenShot
   thumbnail server) canNOT be expressed with discrete allowlists:
   verified with a probe on ABI V8 (bind(0) denied by default and with
@@ -519,8 +527,9 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   rebind to the assigned port) → no permission added. Filtering by
   address (loopback only) is not possible: Landlock filters ports, not
   addresses — the warning would stay mandatory even with a permission.
-  On ABI < V4 the network is NOT filterable: `network = true` is always
-  a hard error; `network = false` is default refusal, bypassable ONLY
+  On ABI < V4 the network is NOT filterable: `network = true` with ports is always
+  a hard error (`network = true` without ports has no filter and starts);
+  `network = false` is default refusal, bypassable ONLY
   with `--network-unfiltered` from the CLI (never from the manifest),
   which prints a warning at every start. **Landlock never filters UDP,
   in any ABI** (its rules cover TCP bind and connect only). What stops UDP is the isolated view: when

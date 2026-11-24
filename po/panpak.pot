@@ -40,6 +40,9 @@ msgstr ""
 msgid "Can access network locations, shared folders and connected drives through your system's file services. This lets it read and modify any of your files."
 msgstr ""
 
+msgid "Can use the network without limits."
+msgstr ""
+
 msgid "Cancel"
 msgstr ""
 
@@ -98,9 +101,6 @@ msgid "It can show messages in the notification area of your desktop, also while
 msgstr ""
 
 msgid "It can talk to every service of your session, also to start programs and to read what other apps publish. The sandbox does not isolate it any more."
-msgstr ""
-
-msgid "It can use the network. The ports are not listed by the package."
 msgstr ""
 
 msgid "It can use the sound system of your session: play sounds and record from the microphone."
@@ -176,6 +176,9 @@ msgid "Open the links that start with {subject}:"
 msgstr ""
 
 msgid "Other computers can connect to this app on these TCP ports."
+msgstr ""
+
+msgid "Other network traffic, such as UDP, is not limited."
 msgstr ""
 
 msgid "Panpak could not take back the files that {name} was given ({why}). Nothing was removed; try again."

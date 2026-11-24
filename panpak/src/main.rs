@@ -3888,7 +3888,9 @@ fn cmd_inspect(arg: &str, json: bool) -> Result<()> {
         // The sentence of each permission is followed by what it means.
         if l.starts_with("  ") && !l.starts_with("  - ") {
             if let Some(it) = shown.next() {
-                println!("        {}", it.detail);
+                if !it.detail.is_empty() {
+                    println!("        {}", it.detail);
+                }
             }
         }
     }
