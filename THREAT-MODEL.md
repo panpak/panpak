@@ -240,7 +240,7 @@ entry. A link put in place of a folder must not make the command delete somethin
 
 The menu action `remove --ask` runs with the rights of the user from an entry that panpak wrote with the absolute path of
 its own binary; it uses `zenity`, `kdialog`, `notify-send` or `gdbus` only from `/usr/bin`, `/bin` and `/run/current-system/sw/bin`,
-passes the app name (which comes from the package) as one argument without a shell, removes markup characters and control
+passes the app name (which comes from the package) as one argument without a shell (and, without those tools, as text of a notification of the portal of the user's own session, with no markup and no control characters; the buttons are the only way to answer, and a question is withdrawn after 5 minutes: a late click does nothing), removes markup characters and control
 characters from it, and never deletes data. Another program that can write the user's `~/.local/share/applications` could
 point an action elsewhere, but it could do the same with the launcher entry itself.
 

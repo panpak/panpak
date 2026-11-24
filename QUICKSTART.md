@@ -117,7 +117,7 @@ panpak remove --purge-data org.example.hello   # also deletes settings, data and
 ```
 
 The entry of an installed app in the menu also has a right-click action "Uninstall" (it asks in a dialog and never deletes your
-data; it needs `zenity` or `kdialog`, otherwise it only shows the command for a terminal). An app installed before this
+data; it uses `zenity` or `kdialog`, and without them a notification with two buttons: see `docs/DIALOGS.md`). An app installed before this
 version gets the action when you install or update it again.
 
 `remove` refuses while the app is running (`PANPAK-E2002`). It prints where the data stays and how much it weighs. The

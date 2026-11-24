@@ -1039,6 +1039,11 @@ pub fn cmd_remove_ask(id: &str) -> Result<()> {
             println!("cancelled: nothing was removed");
             return Ok(());
         }
+        crate::dialog::Answer::Unanswered => {
+            // No answer is no: the question is not kept, and nothing is removed.
+            println!("no answer: nothing was removed");
+            return Ok(());
+        }
         crate::dialog::Answer::Yes => {}
     }
     match cmd_remove(id, false, true) {

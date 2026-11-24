@@ -935,6 +935,7 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
         remove_store_tree(&aside)?;
     }
     let _ = fs::remove_dir_all(store.join("staging").join(app_id));
+    panpak_core::starts::clear_pending(&store.join("apps").join(app_id));
     // The cache of the app can be made again, and some caches only see files that are newer than themselves (PANPAK-FORMAT.md section 6.9).
     if let Err(e) = panpak_core::cachewipe::after_change(app_id) {
         eprintln!("panpak: the cache of {app_id} was not emptied: {}", panpak_core::err_text(&e));
@@ -1030,11 +1031,23 @@ fn cmd_rollback_ask(app_id: &str) -> Result<()> {
     let store = store_dir()?;
     let appdir = store.join("apps").join(app_id);
     let cur = panpak_core::durable::resolve_link(&appdir.join("current")).context("missing current")?;
-    let good = panpak_core::starts::last_good(&appdir).filter(|g| g != &cur).context("no earlier version that worked")?;
+    let Some(good) = panpak_core::starts::last_good(&appdir).filter(|g| g != &cur) else {
+        // The situation of the question is gone (the version was proven, or there is nothing to go back to): a pending question is dropped.
+        panpak_core::starts::clear_pending(&appdir);
+        anyhow::bail!("no earlier version that worked");
+    };
     let (now, before) = (panpak_core::record::open_verified(&cur)?.manifest, panpak_core::record::open_verified(&good)?.manifest);
     let clean = |s: &str| -> String { s.chars().filter(|c| !c.is_control()).collect() };
     let vals = vec![("name", clean(&now.app.name)), ("new", clean(&now.app.version)), ("old", clean(&before.app.version))];
-    match crate::dialog::ask(&fill(&tr(m::NO_START_TITLE), &vals), &fill(&tr(m::NO_START_BODY), &vals), &fill(&tr(m::NO_START_GO_BACK), &vals), &tr(m::NO_START_TRY_AGAIN)) {
+    // The question is pending from now until a button or a window answers it. One process waits at a time: the lock is on the pending file.
+    let Some(_waiting) = panpak_core::starts::hold_pending(&appdir, &cur.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()) else { return Ok(()) };
+    let answer = crate::dialog::ask(&fill(&tr(m::NO_START_TITLE), &vals), &fill(&tr(m::NO_START_BODY), &vals), &fill(&tr(m::NO_START_GO_BACK), &vals), &tr(m::NO_START_TRY_AGAIN));
+    match answer {
+        // Nobody answered: the file stays, and the next start of the app asks again.
+        crate::dialog::Answer::Unanswered | crate::dialog::Answer::NoTool => return Ok(()),
+        _ => panpak_core::starts::clear_pending(&appdir),
+    }
+    match answer {
         crate::dialog::Answer::Yes => {
             cmd_rollback(app_id)?;
         }
@@ -1044,7 +1057,7 @@ fn cmd_rollback_ask(app_id: &str) -> Result<()> {
             let err = std::process::Command::new(&runtime).arg("run").arg(appdir.join("current")).exec();
             anyhow::bail!("exec failed: {err}");
         }
-        crate::dialog::Answer::NoTool => {}
+        crate::dialog::Answer::NoTool | crate::dialog::Answer::Unanswered => {}
     }
     Ok(())
 }

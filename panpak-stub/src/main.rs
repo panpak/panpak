@@ -2063,6 +2063,12 @@ fn background_work(pkg: &Path) {
     if !panpak.exists() {
         return;
     }
+    // A question of kept versions that nobody answered (no window tool, the notification was not pressed): ask again, detached.
+    let current = panpak_core::durable::resolve_link(&appdir.join("current")).ok().and_then(|c| c.file_name().map(|n| n.to_string_lossy().into_owned()));
+    if current.is_some_and(|root| panpak_core::starts::is_pending(&appdir, &root)) {
+        eprintln!("panpak: {id}: this version failed to start twice; to go back to the version that worked, run `panpak rollback {id}`");
+        spawn_detached(&panpak, &["rollback", "--ask", &id]);
+    }
     // `PANPAK_NO_BACKGROUND` (set by the tests, and by whoever packages panpak for a machine without a network) keeps the daily job from starting.
     if state.next_check > panpak_core::bgstate::now() || std::env::var_os("PANPAK_NO_BACKGROUND").is_some() {
         return;
@@ -2071,6 +2077,21 @@ fn background_work(pkg: &Path) {
     let mut cmd = Command::new(&panpak);
     cmd.args(["background", "--after-start", &id]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     // SAFETY: setsid is async-signal-safe; the job leaves the process group of the app and survives the exec of the app.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let _ = cmd.spawn();
+}
+
+/// Start `panpak` with `args`, detached and with nothing on its standard streams. Trouble is ignored.
+fn spawn_detached(panpak: &Path, args: &[&str]) {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new(panpak);
+    cmd.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    // SAFETY: setsid is async-signal-safe; the process leaves the process group of the app and survives the exec of the app.
     unsafe {
         cmd.pre_exec(|| {
             libc::setsid();

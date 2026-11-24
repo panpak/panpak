@@ -456,7 +456,8 @@ fn update_with_windows(st: &Status) {
         let title = fill(&tr(m::UPDATE_DIALOG_TITLE), &[("name", st.name.clone())]);
         match dialog::ask(&title, &text, &tr(m::UPDATE_DIALOG_OK), &tr(m::NOT_NOW)) {
             Answer::Yes => {}
-            Answer::No => return,
+            // No button in time: the update stays staged, and the question comes back with the next notice.
+            Answer::No | Answer::Unanswered => return,
             Answer::NoTool => return tell(&st.title(), &fill(&tr(m::NO_DIALOG_FOR_PERMISSIONS), &[("name", st.name.clone()), ("id", st.app_id.clone())])),
         }
     }
@@ -525,7 +526,8 @@ pub fn cmd_allow_internet(app_id: &str, undo: bool, yes: bool, ask: bool) -> Res
                 set_internet(app_id, !on_now)?;
                 tell(&fill(&tr(m::PROTECTED_TITLE), &vals()), &fill(&tr(if on_now { m::INTERNET_OFF_DONE } else { m::INTERNET_ON_DONE }), &vals()));
             }
-            Answer::No => {}
+            // No button in time: nothing changes, and the menu action asks again.
+            Answer::No | Answer::Unanswered => {}
             Answer::NoTool => tell(&fill(&tr(m::PROTECTED_TITLE), &vals()), &fill(&tr(if on_now { m::NO_DIALOG_FOR_INTERNET_OFF } else { m::NO_DIALOG_FOR_INTERNET }), &[("name", name.clone()), ("id", app_id.to_string())])),
         }
         return Ok(());

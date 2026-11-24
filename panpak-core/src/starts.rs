@@ -187,6 +187,42 @@ pub fn record_end(appdir: &Path, root: &str, outcome: Outcome) -> Result<Event> 
     Ok(ev)
 }
 
+/// The file that says a question of kept versions has been asked and not answered.
+pub const PENDING: &str = "pending-question";
+
+/// Make the question pending and take the right to wait for its answer: a lock on the pending file, held until the returned file is dropped. `None` when another
+/// process holds it (a notification of the same question is already waiting) or the file cannot be made.
+pub fn hold_pending(appdir: &Path, root: &str) -> Option<std::fs::File> {
+    use std::os::unix::io::AsRawFd;
+    let path = appdir.join(PENDING);
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).ok()?;
+    // SAFETY: flock on a descriptor that `f` owns.
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return None;
+    }
+    let _ = std::fs::write(&path, format!("kind=kept-versions\nroot={root}\n"));
+    Some(f)
+}
+
+/// The question was answered, or it is not the case any more.
+pub fn clear_pending(appdir: &Path) {
+    let _ = std::fs::remove_file(appdir.join(PENDING));
+}
+
+/// A question that was asked and not answered, about the version `root` (the one that `current` names): a question about another version is not the case any
+/// more and is dropped.
+pub fn is_pending(appdir: &Path, root: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(appdir.join(PENDING)) else { return false };
+    if text.lines().any(|l| l.strip_prefix("root=") == Some(root)) {
+        return true;
+    }
+    // A file that is being written has no root yet: leave it. Any other one is old.
+    if !text.is_empty() {
+        clear_pending(appdir);
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
