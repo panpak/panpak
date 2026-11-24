@@ -52,6 +52,8 @@ def on_call(conn, sender, path, iface, method, params, inv):
 def poll():
     if os.path.exists(click) and conn_box and last:
         action = open(click).read().strip()
+        if not action:
+            return True
         os.unlink(click)
         conn_box[0].emit_signal(None, '/org/freedesktop/portal/desktop', 'org.freedesktop.portal.Notification', 'ActionInvoked', GLib.Variant('(ssav)', (last[-1], action, [])))
     return True
@@ -80,6 +82,13 @@ def wait_for(cond, what, seconds=20):
             return
         time.sleep(0.1)
     raise AssertionError(f'timeout: {what}')
+
+
+def put_click(click, action):
+    # Written whole and then renamed, so the fake portal never reads a half-written file.
+    tmp = click.with_name(click.name + '.new')
+    tmp.write_text(action)
+    os.replace(tmp, click)
 
 
 def records(log):
@@ -173,7 +182,7 @@ def main():
             n = len([r for r in records(log) if 'add' in r])
             run(start, env, ok=False)
             wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n, 'the question is shown again at the next start')
-            click.write_text('yes')
+            put_click(click, 'yes')
             wait_for(lambda: os.readlink(appdir / 'current') == good, 'the button "Go back" goes back')
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the question is no longer pending')
             print('1. button 1: went back, not pending: ok')
@@ -184,7 +193,7 @@ def main():
                 run(start, env, ok=False)
             wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n and (appdir / 'pending-question').exists(), 'the question is shown')
             time.sleep(0.5)
-            click.write_text('no')
+            put_click(click, 'no')
             try:
                 wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button ends the question')
             except AssertionError:
