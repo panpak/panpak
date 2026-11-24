@@ -2398,7 +2398,7 @@ fn real_main() -> Result<()> {
                 access.rw.push(d);
             }
             Some(panpak_core::GvfsFuse::NotAnswering) => {
-                eprintln!("panpak: the FUSE tree of GVfs does not answer (its daemon is stuck or has stopped); the app starts without it, and without paths for network locations");
+                eprintln!("panpak: network locations can't be opened as files right now (the GVfs FUSE service isn't responding). The app starts without them.");
             }
             _ => {}
         }

@@ -890,7 +890,7 @@ def main():
                     srv.wait()
                     p, rep = run_report(lab, [], mask=False)
                     assert rep.get('gvfs_fuse') == 'absent', f'a dead mount is left out and the app starts: {rep.get("gvfs_fuse")} {p.stderr[-300:]}'
-                    assert 'does not answer' in p.stderr, p.stderr[-300:]
+                    assert "isn't responding" in p.stderr, p.stderr[-300:]
                     fuse_server.unmount(gv, None)
                     # A mount whose daemon is stuck (the stat of its root waits and cannot be ended): the start does not wait for it either.
                     hang = Path(lab.runtime) / 'gvfs-hang'
@@ -903,7 +903,7 @@ def main():
                     waited = time.time() - t0
                     hang.write_text('0')
                     assert rep.get('gvfs_fuse') == 'absent', f'a stuck mount is left out and the app starts: {rep.get("gvfs_fuse")} {p.stderr[-300:]}'
-                    assert 'does not answer' in p.stderr and waited < 60, (waited, p.stderr[-300:])
+                    assert "isn't responding" in p.stderr and waited < 60, (waited, p.stderr[-300:])
                     srv.kill()
                     srv.wait()
                     fuse_server.unmount(gv, None)
