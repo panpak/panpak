@@ -1110,6 +1110,9 @@ struct Access {
     home_list: Option<PathBuf>,
     /// Places below a writable folder that stay executable (read and execute): the opener names of the runtime folder, which are the stub mounted read-only.
     exec: Vec<PathBuf>,
+    /// Paths of `rw` that are the root of a FUSE mount (the tree of GVfs): they are already canonical and nothing may `stat` them or resolve them before the app starts, because
+    /// the stat of the root of a stuck FUSE mount waits for its daemon and cannot be ended (docs/COMPATIBILITY.md, "Network locations with the permission gvfs").
+    mount_roots: Vec<PathBuf>,
 }
 
 /// Refuse a link in `rel` below `home`: every part that exists must be a real
@@ -2383,6 +2386,11 @@ fn real_main() -> Result<()> {
         if let Some(d) = runtime_dir.as_deref().and_then(panpak_core::prepare_gvfsd_dir) {
             access.rw.push(d);
         }
+        // The FUSE tree of GVfs (`$XDG_RUNTIME_DIR/gvfs`), as Flatpak gives it with `--filesystem=xdg-run/gvfs`: only when `gvfsd-fuse` has mounted it for the user, never made here.
+        if let Some(d) = runtime_dir.as_deref().and_then(panpak_core::prepare_gvfs_fuse_dir) {
+            access.mount_roots.push(d.clone());
+            access.rw.push(d);
+        }
     }
     access.sockets = panpak_core::implied_sockets(
         man.permissions.as_ref(),
@@ -2643,7 +2651,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     };
     let private = home.as_ref().zip(app_dirs.as_ref()).map(|(h, d)| (h.clone(), d.clone()));
     let in_home = |p: &Path| home.as_ref().is_some_and(|h| p.starts_with(h));
-    let real = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let real = |p: &Path| if ctx.access.mount_roots.iter().any(|m| m == p) { p.to_path_buf() } else { fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()) };
     let stub = std::env::current_exe().context("path of the stub")?;
     let mut ro_wanted: Vec<PathBuf> = vec![ctx.tree.to_path_buf(), stub.clone()];
     ro_wanted.extend(ctx.store_paths.iter().cloned());

@@ -217,6 +217,19 @@ try:
 except OSError as e:
     out['dns'] = 'fail'
 
+# The FUSE tree of GVfs: is `$XDG_RUNTIME_DIR/gvfs` a mount of its own (another device than the runtime folder), and can the app list it (Landlock lets it)?
+try:
+    _g, _r = os.lstat(rt + '/gvfs'), os.lstat(rt)
+    out['gvfs_fuse'] = 'mount' if _g.st_dev != _r.st_dev else 'folder'
+    try:
+        out['gvfs_fuse_list'] = 'ok' if os.listdir(rt + '/gvfs') == [] else 'full'
+    except OSError as e:
+        out['gvfs_fuse_list'] = f'err{e.errno}'
+except FileNotFoundError:
+    out['gvfs_fuse'] = 'absent'
+except OSError as e:
+    out['gvfs_fuse'] = f'err{e.errno}'
+
 # Network: a datagram and a connection to the listeners the harness keeps on the loopback of the host.
 net_port = [a.split('=')[1] for a in sys.argv[1:] if a.startswith('--net-port=')]
 if net_port:
@@ -850,6 +863,46 @@ def main():
             if subprocess.run(['getent', 'hosts', 'example.com'], capture_output=True).returncode == 0:
                 assert rep['dns'] == 'ok', 'name resolution fails for an app with network'
             print('network = true: same network namespace, a datagram reaches the host, names resolve')
+
+        # 6i. The FUSE tree of GVfs (`$XDG_RUNTIME_DIR/gvfs`): with the permission `gvfs` it is in the view, as a mount, when `gvfsd-fuse` has mounted it for the user; it is never made
+        # by us; without the permission nothing changes. A test server stands for `gvfsd-fuse`.
+        if view_here:
+            import fuse_server
+            gv = Path(lab.runtime) / 'gvfs'
+            gv.mkdir()
+            srv = fuse_server.mount(gv)
+            if srv is None:
+                print('FUSE tree of GVfs: SKIPPED (no fusermount3 or /dev/fuse here: a known skip, tests/UNSTABLE.md does not list it)')
+                gv.rmdir()
+            else:
+                try:
+                    lab.install('[permissions]\ngvfs = true\n')
+                    _, rep = run_report(lab, [], mask=False)
+                    assert rep.get('gvfs_fuse') == 'mount', f'with gvfs the FUSE tree is in the view as a mount: {rep.get("gvfs_fuse")}'
+                    assert rep.get('gvfs_fuse_list') == 'ok', f'the app can list the FUSE tree: {rep.get("gvfs_fuse_list")}'
+                    lab.install('[permissions]\n')
+                    _, rep = run_report(lab, [], mask=False)
+                    assert rep.get('gvfs_fuse') == 'absent', f'without gvfs the FUSE tree is not in the view: {rep.get("gvfs_fuse")}'
+                    # Not a mount point: a plain folder, a link, a file are never opened.
+                    fuse_server.unmount(gv, srv)
+                    srv = None
+                    lab.install('[permissions]\ngvfs = true\n')
+                    _, rep = run_report(lab, [], mask=False)
+                    assert rep.get('gvfs_fuse') == 'absent', f'a plain folder is not opened: {rep.get("gvfs_fuse")}'
+                    gv.rmdir()
+                    _, rep = run_report(lab, [], mask=False)
+                    assert rep.get('gvfs_fuse') == 'absent' and not gv.exists(), 'the tree is never made by the stub'
+                    os.symlink('/tmp', gv)
+                    _, rep = run_report(lab, [], mask=False)
+                    assert rep.get('gvfs_fuse') == 'absent', f'a link is not opened: {rep.get("gvfs_fuse")}'
+                    gv.unlink()
+                    print('FUSE tree of GVfs: in the view as a mount with gvfs, absent without it, absent when not mounted, a folder, a link; never made')
+                finally:
+                    if srv is not None:
+                        fuse_server.unmount(gv, srv)
+                    if gv.is_symlink():
+                        gv.unlink()
+                    lab.install('')
 
         # 6g. The tree is made by install (step 8a): a start without it stops with a message that names `panpak repair`; after a new
         # install, several starts at once all work.

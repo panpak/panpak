@@ -100,6 +100,18 @@ Open, in the converter unless noted:
 - Medium, resolution (defect 26, not the converter): Cura (PyInstaller) gets `libc.so.6` from the farm and fails with `GLIBC_2.38 not found`: a libc of the bundle is chosen next to libraries that need a newer one.
 - Medium, launch (defect 27): Etcher aborts on the Chromium SUID sandbox (`chrome-sandbox` found, not setuid; user namespaces cannot be nested in the view). Other Electron apps ran without `--no-sandbox`. Needs a launch option or a documented flag.
 
+## Network locations with the permission `gvfs` (2026-11-24)
+
+With `gvfs = true` the FUSE tree of GVfs (`$XDG_RUNTIME_DIR/gvfs`) is in the view when `gvfsd-fuse` has mounted it before the app starts, so `sftp://` and `smb://` locations open as paths of files, as in Flatpak
+(`--filesystem=xdg-run/gvfs`). Status: **expected to work, not tried yet with the real `gvfsd-fuse`.** What was tried: a stand-in FUSE server in `tests/view.py` (the tree is in the view as a mount, listable, only with the permission),
+and, before this change, GIMP 3.2.8 on the Silverblue test machine: with the permission `https://` worked and `sftp://` failed with "No such file" because the FUSE path was not in the view (1 trial each, 2026-11-23). The
+test of the new package with GIMP (Open Location, the portal dialog, Overwrite, Export PNG and JPEG, Save XCF on `sftp://localhost`) is planned; `smb://` has not been tried at all.
+
+Limits, as in Flatpak: (1) the tree is opened only if it is mounted when the app starts; a mount made later is seen at the next start of the app. (2) A stuck `gvfsd-fuse` (a share that does not answer) can stop the
+app that reads it, and can delay the start of an app that has the permission, because bubblewrap makes a `stat` of the mount for the bind and that `stat` waits for the daemon and cannot be ended (measured on the host with a
+stand-in FUSE server that stops answering, 1 trial per case: with the attributes of the root not in the cache, `stat`, `realpath` and `bwrap --bind` wait; the open for the Landlock rule does not; with the attributes in the cache nothing waits;
+this section). Flatpak's `xdg-run/gvfs` was not measured; the same bubblewrap `stat` is in its path.
+
 ## D-Bus summary
 
 Apps logged, 18: MuseScore, PCSX2, qBittorrent, Krita, Jitsi, Obsidian, Zulip, Bitwarden, Neovim, Audacity,

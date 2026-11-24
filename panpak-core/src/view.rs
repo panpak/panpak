@@ -243,6 +243,57 @@ pub fn prepare_gvfsd_dir(runtime_dir: &Path) -> Option<PathBuf> {
     }
 }
 
+/// The FUSE tree of GVfs (`gvfsd-fuse`): the mounts of the session as paths of files (`$XDG_RUNTIME_DIR/gvfs/sftp:host=...`). It is made by `gvfsd-fuse`, never by us.
+pub const GVFS_FUSE_DIR: &str = "gvfs";
+
+/// Undo the octal escapes of `/proc/self/mountinfo` (`\040` is a space, `\134` a backslash).
+fn unescape_mountinfo(field: &str) -> String {
+    let b = field.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\' && i + 4 <= b.len() && b[i + 1..i + 4].iter().all(|c| (b'0'..=b'7').contains(c)) {
+            let v = (b[i + 1] - b'0') as u32 * 64 + (b[i + 2] - b'0') as u32 * 8 + (b[i + 3] - b'0') as u32;
+            out.push(v as u8);
+            i += 4;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Is `dir` the mount point of a FUSE file system that the user `uid` mounted, according to the text of `/proc/self/mountinfo`? The last line for the path is the
+/// one that counts (a later mount covers an earlier one). It never touches the folder: a stat of the root of a stuck FUSE mount waits for its daemon, and the wait cannot be
+/// ended (measured, docs/COMPATIBILITY.md, "Network locations with the permission gvfs"). A link is not a mount point, so it never matches.
+pub fn is_fuse_mount_of(mountinfo: &str, dir: &Path, uid: u32) -> bool {
+    let mut found = false;
+    for line in mountinfo.lines() {
+        let Some((head, tail)) = line.split_once(" - ") else { continue };
+        let mut h = head.split(' ');
+        let Some(point) = h.nth(4) else { continue };
+        if Path::new(&unescape_mountinfo(point)) != dir {
+            continue;
+        }
+        let mut t = tail.split(' ');
+        let fstype = t.next().unwrap_or("");
+        let super_opts = t.nth(1).unwrap_or("");
+        found = fstype.starts_with("fuse") && super_opts.split(',').any(|o| o.strip_prefix("user_id=").and_then(|v| v.parse::<u32>().ok()) == Some(uid));
+    }
+    found
+}
+
+/// The FUSE tree of GVfs, ready for an app with the permission `gvfs`: it is opened only when it is there, is a mount point of FUSE and is the user's (see `is_fuse_mount_of`).
+/// It is never made (`gvfsd-fuse` makes it); a link, a file, a folder of another user or a folder where nothing is mounted give `None`. An app that starts before the mount
+/// does not get it until its next start. The path is the canonical one of the runtime folder, so that nothing has to resolve it again.
+pub fn prepare_gvfs_fuse_dir(runtime_dir: &Path) -> Option<PathBuf> {
+    let dir = fs::canonicalize(runtime_dir).ok()?.join(GVFS_FUSE_DIR);
+    // SAFETY: geteuid cannot fail.
+    let me = unsafe { libc::geteuid() };
+    is_fuse_mount_of(&fs::read_to_string("/proc/self/mountinfo").ok()?, &dir, me).then_some(dir)
+}
+
 /// Is GVfs on this system? The daemon is started by the session bus when something asks for `org.gtk.vfs.Daemon`, so the service file or the program is what tells.
 pub fn gvfs_installed() -> bool {
     gvfs_installed_at(&["/usr/share/dbus-1/services/org.gtk.vfs.Daemon.service", "/usr/libexec/gvfsd", "/usr/lib/gvfs/gvfsd", "/usr/lib/gvfsd", "/usr/lib/x86_64-linux-gnu/gvfs/gvfsd"])
@@ -382,6 +433,55 @@ mod tests {
         assert!(network_requested(Some(&conn)));
         let bind: Permissions = toml::from_str("network_bind_tcp = [8080]").unwrap();
         assert!(network_requested(Some(&bind)));
+    }
+
+    #[test]
+    fn the_fuse_tree_of_gvfs_is_a_mount_of_the_user_and_nothing_else() {
+        let info = "36 35 0:30 / /run/user/1000 rw,nosuid shared:1 - tmpfs tmpfs rw,size=1k\n\
+                    8172 39 0:167 / /run/user/1000/gvfs rw,nosuid,nodev,relatime shared:2489 - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1000,group_id=1000\n";
+        let dir = Path::new("/run/user/1000/gvfs");
+        assert!(is_fuse_mount_of(info, dir, 1000));
+        // Another user's mount, a mount of another kind, another path, a parent folder: no.
+        assert!(!is_fuse_mount_of(info, dir, 1001));
+        assert!(!is_fuse_mount_of(&info.replace("fuse.gvfsd-fuse", "tmpfs"), dir, 1000));
+        assert!(!is_fuse_mount_of(info, Path::new("/run/user/1000/gvfsd"), 1000));
+        assert!(!is_fuse_mount_of(info, Path::new("/run/user/1000"), 1000));
+        assert!(!is_fuse_mount_of("", dir, 1000));
+        assert!(!is_fuse_mount_of("garbage\nmore garbage - x\n", dir, 1000));
+        // The last line for the path counts: a later mount that is not FUSE covers it.
+        let covered = format!("{info}9000 39 0:200 / /run/user/1000/gvfs rw - tmpfs tmpfs rw\n");
+        assert!(!is_fuse_mount_of(&covered, dir, 1000));
+        // Escapes in the path: a space is \040.
+        let spaced = "1 2 0:3 / /run/user/1000/g\\040vfs rw - fuse.x x rw,user_id=1000\n";
+        assert!(is_fuse_mount_of(spaced, Path::new("/run/user/1000/g vfs"), 1000));
+        // `user_id=10000` is not `user_id=1000`.
+        assert!(!is_fuse_mount_of(&info.replace("user_id=1000,", "user_id=10000,"), dir, 1000));
+    }
+
+    #[test]
+    fn the_fuse_tree_is_never_made_and_a_plain_folder_or_a_link_is_not_it() {
+        let rt = std::env::temp_dir().join(format!("panpak-gvfsfuse-{}", std::process::id()));
+        let _ = fs::create_dir_all(&rt);
+        let gv = rt.join("gvfs");
+        // Absent: nothing is made.
+        assert_eq!(prepare_gvfs_fuse_dir(&rt), None);
+        assert!(!gv.exists(), "the tree must not be made by us");
+        // A plain folder is not a mount point.
+        fs::create_dir(&gv).unwrap();
+        assert_eq!(prepare_gvfs_fuse_dir(&rt), None);
+        // A link, and a file, are not either.
+        let rt2 = std::env::temp_dir().join(format!("panpak-gvfsfuse2-{}", std::process::id()));
+        let _ = fs::create_dir_all(&rt2);
+        std::os::unix::fs::symlink("/tmp", rt2.join("gvfs")).unwrap();
+        assert_eq!(prepare_gvfs_fuse_dir(&rt2), None);
+        let rt3 = std::env::temp_dir().join(format!("panpak-gvfsfuse3-{}", std::process::id()));
+        let _ = fs::create_dir_all(&rt3);
+        fs::write(rt3.join("gvfs"), b"x").unwrap();
+        assert_eq!(prepare_gvfs_fuse_dir(&rt3), None);
+        assert_eq!(prepare_gvfs_fuse_dir(&rt.join("missing/deeper")), None);
+        for d in [&rt, &rt2, &rt3] {
+            let _ = fs::remove_dir_all(d);
+        }
     }
 
     #[test]

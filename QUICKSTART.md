@@ -163,9 +163,9 @@ A rollback to a version below the floor that the author set is refused. A rollba
 ## Network locations and drives (`gvfs`)
 
 An app that opens `sftp://`, `smb://` or `https://` locations, shared folders or connected drives through the file services of the system (GIMP's "Open Location", file managers) declares `gvfs = true` in `[permissions]`.
-The runtime then lets its calls to `org.gtk.vfs.*` reach the session bus of your computer, as Flatpak does with `--talk-name=org.gtk.vfs.*`, and opens the folder of the sockets of the GVfs daemon. **This is a high risk,
+The runtime then lets its calls to `org.gtk.vfs.*` reach the session bus of your computer, as Flatpak does with `--talk-name=org.gtk.vfs.*`, opens the folder of the sockets of the GVfs daemon and the FUSE tree of GVfs (`$XDG_RUNTIME_DIR/gvfs`), so that the mounts of your session (`sftp://`, `smb://`) also exist as paths of files, as in Flatpak. **This is a high risk,
 the same as access to your whole home folder**: through GVfs the app can read and change any of your files, also outside its sandbox. `install` and `update` show it ("Can access network locations, shared folders and connected
-drives through your system's file services. This lets it read and modify any of your files.") and an update that adds it asks again. If GVfs is not installed (`panpak doctor` says it) the app works without those locations.
+drives through your system's file services. This lets it read and modify any of your files.") and an update that adds it asks again. If GVfs is not installed (`panpak doctor` says it) the app works without those locations. Two limits: the FUSE tree is opened only if it is mounted when the app starts (a mount made later is seen at the next start of the app; if the paths of a share do not work, close the app and open it again), and a share that is stuck can stop an app that reads it, and can delay its start.
 
 ## Kept versions: going back
 
