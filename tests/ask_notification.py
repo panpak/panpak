@@ -152,6 +152,14 @@ def main():
         store = home / '.local/share/panpak'
         appdir = store / 'apps' / ID
         start = [store / 'bin/panpak-stub', 'run', appdir / 'current']
+        for _ in range(3):
+            run(start, env, ok=False)
+        assert (appdir / 'last_good').is_symlink()
+        good = os.readlink(appdir / 'last_good')
+        run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', v2], env)
+        bad = os.readlink(appdir / 'current')
+        assert bad != good
+
         # 3 first (no bus), while nothing else is going on: the question stays pending and the next start says so.
         for _ in range(2):
             run(start, env, ok=False)
