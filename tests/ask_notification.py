@@ -19,7 +19,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,9 +71,8 @@ GLib.MainLoop().run()
 '''
 
 
-# Diagnostics (the guard of a flaw that showed in the CI and not locally): what every command printed, and a sample of the state every 100 ms, shown when a step fails.
+# What every command printed, shown when a step fails (a flaw of this test showed in the CI and not locally: see the pull request that fixed it).
 RUNLOG = []
-SAMPLES = []
 
 
 def run(args, env, ok=True, timeout=60):
@@ -106,37 +104,6 @@ def failed_starts(appdir):
     """The failed starts in a row that the file `starts` of the app holds."""
     m = re.search(r'failed=(\d+)', (appdir / 'starts').read_text())
     return int(m.group(1)) if m else None
-
-
-def procs():
-    out = []
-    for d in os.listdir('/proc'):
-        if d.isdigit():
-            try:
-                cmd = Path(f'/proc/{d}/cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace').strip()
-                if ('panpak' in cmd and 'ask_notification' not in cmd and 'sampler' not in cmd) or 'hello' in cmd.split(' ')[0:1]:
-                    out.append(f'{d}:{cmd[-90:]}')
-            except OSError:
-                pass
-    return out
-
-
-def sample(appdir, log):
-    pend = appdir / 'pending-question'
-    try:
-        text = pend.read_text().replace('\n', ' ') if pend.exists() else '-'
-    except OSError:
-        text = '?'
-    try:
-        cur = os.readlink(appdir / 'current')[-12:]
-    except OSError:
-        cur = '?'
-    try:
-        starts = (appdir / 'starts').read_text().replace('\n', ' ')
-    except OSError:
-        starts = '-'
-    recs = records(log)
-    return f'{time.time():.3f} pending=[{text[-40:]}] current=..{cur} starts=[{starts[-70:]}] adds={sum(1 for r in recs if "add" in r)} removes={sum(1 for r in recs if "remove" in r)} procs={procs()}'
 
 
 def records(log):
@@ -185,31 +152,6 @@ def main():
         store = home / '.local/share/panpak'
         appdir = store / 'apps' / ID
         start = [store / 'bin/panpak-stub', 'run', appdir / 'current']
-        # Every start of the `panpak` of the store (the questions are asked by `panpak rollback --ask`, started detached by the stub) is written down, with its exit.
-        wlog = tmp / 'panpak-calls.log'
-        real = store / 'bin/panpak.real'
-        os.replace(store / 'bin/panpak', real)
-        (store / 'bin/panpak').write_text(f'#!/bin/sh\necho "$(date +%s.%N) start pid=$$ ppid=$PPID args=$*" >> {wlog}\n{real} "$@"\nrc=$?\necho "$(date +%s.%N) end pid=$$ rc=$rc" >> {wlog}\nexit $rc\n')
-        (store / 'bin/panpak').chmod(0o755)
-        stop = threading.Event()
-
-        def sampler():
-            while not stop.is_set():
-                try:
-                    SAMPLES.append(sample(appdir, tmp / 'portal.log'))
-                except Exception as e:  # noqa: BLE001
-                    SAMPLES.append(f'{time.time():.3f} sample failed: {e}')
-                time.sleep(0.1)
-
-        threading.Thread(target=sampler, daemon=True).start()
-        for _ in range(3):
-            run(start, env, ok=False)
-        assert (appdir / 'last_good').is_symlink()
-        good = os.readlink(appdir / 'last_good')
-        run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', v2], env)
-        bad = os.readlink(appdir / 'current')
-        assert bad != good
-
         # 3 first (no bus), while nothing else is going on: the question stays pending and the next start says so.
         for _ in range(2):
             run(start, env, ok=False)
@@ -283,7 +225,6 @@ def main():
             if os.environ.get('PANPAK_ASKN_DUMP_TEST'):
                 raise AssertionError('forced, to see the diagnostics')
         except BaseException:
-            stop.set()
             print('=== DIAGNOSTICS (the test failed) ===')
             print('--- commands run by the test (start, end, command, status, stdout, stderr)')
             for t0, t1, cmd, rc, out, err in RUNLOG:
@@ -291,16 +232,11 @@ def main():
             print('--- the portal log')
             for r in records(log):
                 print(json.dumps({k: v for k, v in r.items() if k not in ('body', 'buttons')}))
-            print('--- the calls of the panpak of the store')
-            print(wlog.read_text() if wlog.exists() else '(none)')
-            print('--- the state every 100 ms, the last 600 lines')
-            print('\n'.join(SAMPLES[-600:]))
             print('--- files of the app')
             for f in sorted(appdir.iterdir()):
                 print(f.name, '->', os.readlink(f) if f.is_symlink() else (f.read_text()[-200:] if f.is_file() else 'dir'))
             raise
         finally:
-            stop.set()
             for pr in (portal, bus):
                 pr.terminate()
                 pr.wait()
