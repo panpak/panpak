@@ -247,6 +247,7 @@ def main():
             # The second button: a new bad version, the question, "Try again": the app is started again and the question ends.
             run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', v2], env)
             n = len([r for r in records(log) if 'add' in r])
+            print('STATE before the two starts of 1b:', (appdir / 'starts').read_text().replace(chr(10), ' '), '| current', os.readlink(appdir / 'current')[-14:], flush=True)
             for _ in range(2):
                 run(start, env, ok=False)
             wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n and (appdir / 'pending-question').exists(), 'the question is shown')
