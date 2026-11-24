@@ -4797,7 +4797,9 @@ fn thread_cost(level: i32) -> u64 {
     match level {
         ..=9 => 48 << 20,
         10..=15 => 112 << 20,
-        _ => 144 << 20,
+        16..=19 => 144 << 20,
+        // Levels 20 to 22 use a window of 2^27 and larger tables: `zstd --ultra -22` on 40 MB peaked at 738 MiB, at level 19 at 158 MiB (2026-11-24).
+        _ => 768 << 20,
     }
 }
 
@@ -5754,6 +5756,8 @@ mod tests {
         assert_eq!(compression_threads(16, 19, Some(2 * gib)), 10, "2 GiB hold ten contexts of level 19");
         assert_eq!(compression_threads(16, 19, Some(gib / 4)), 1, "never less than one");
         assert_eq!(compression_threads(16, 3, Some(2 * gib)), 16, "level 3 is light");
+        assert_eq!(compression_threads(16, 22, Some(7 * gib)), 8, "7 GiB hold eight contexts of level 22, not sixteen");
+        assert_eq!(compression_threads(16, 22, Some(gib)), 1);
         assert_eq!(compression_threads(4, 19, Some(64 * gib)), 4);
     }
 

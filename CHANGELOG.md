@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **`pack` and `convert` at levels 20 to 22 no longer ask for more memory than they have.** The memory of one compression thread was taken as 144 MiB for every level above 15; at level 22 it is about 740 MiB (`zstd --ultra -22` on 40 MB: 738 MiB; level 19: 158 MiB), so 16 threads wanted about 11 GB and a machine with 7 GB free had the process killed by the kernel (found by `ci-local.sh` in a 7 GB scope). Levels 20 to 22 now count 768 MiB per thread, so fewer threads work on a small machine. Test: `the_compression_threads_follow_the_free_memory`.
 - **`panpak doctor`: no runtime installed is a note, not a failure.** On a fresh machine the runtime is installed by the first `panpak install` or `panpak build`, so a line that said KO and named `install-runtime` was wrong. It now prints `NOTE no runtime is installed yet: the first `panpak install` installs it`.
 - **A page on updates: `docs/UPDATES.md`, and a short section in QUICKSTART.md.** It says when the check runs (once a day, 20 s after a start or when the last copy ends), what is downloaded and checked, when the update is applied (when the app is closed; new permissions wait for the person), and how to turn it off. PANPAK-FORMAT.md section 4.1 gives the measured count of plug-ins that GIMP queries again after an update (46 of 135: the 43 that changed and 3 that are always queried).
 - **The `.pyc` files made by `pack` are removed (they were added by the change of the same release).** `pack`, `convert` and `build` no longer run the Python of a package in a sandbox to make `__pycache__`
