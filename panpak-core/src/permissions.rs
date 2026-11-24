@@ -510,7 +510,8 @@ pub fn short_summary(lang: Option<&Catalog>, items: &[Item]) -> String {
     match top_level(items) {
         None => tr_in(lang, "none").into_owned(),
         Some(l) => {
-            let n = items.len() as u64;
+            // The note on the other traffic is a row under the ports, not a permission of its own.
+            let n = items.iter().filter(|i| i.id != "network-other").count() as u64;
             let count = fill(&trn_in(lang, "{n} permission", "{n} permissions", n), &[("n", n.to_string())]);
             format!("{}, {count}", l.word(lang))
         }
@@ -800,6 +801,10 @@ mod tests {
         let it = i18n::catalogs().iter().find(|c| c.name == "it");
         let note = items_in(it, &man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n")).into_iter().find(|i| i.id == "network-other").unwrap();
         assert_eq!(note.detail, "");
+        // The note is not a permission: the count of `list` does not include it.
+        let with_ports = items_in(None, &man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n"));
+        assert_eq!(with_ports.len(), 2);
+        assert_eq!(short_summary(None, &with_ports), "Attention, 1 permission");
         assert!(!note.text.is_empty() && note.text != "Other network traffic, such as UDP, is not limited.", "{}", note.text);
         let any = items_in(None, &man("[permissions]\nnetwork=true\n")).into_iter().find(|i| i.id == "network-any").unwrap();
         assert_eq!(any.detail, "Can use the network without limits.");
