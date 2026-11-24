@@ -183,7 +183,7 @@ def main():
         tmp.mkdir(parents=True, exist_ok=True)
         lab = Lab(tmp)
         bus_addr = f'unix:path={lab.runtime}/bus'
-        bus = subprocess.Popen(['dbus-daemon', '--session', '--nofork', f'--address={bus_addr}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        bus = subprocess.Popen(['dbus-daemon', f'--config-file={ROOT}/tests/bus-no-activation.conf', '--nofork', f'--address={bus_addr}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait_for(lambda: (Path(lab.runtime) / 'bus').exists(), 'the private bus')
         lab.env_bus = dict(lab.env, DBUS_SESSION_BUS_ADDRESS=bus_addr)
         lab.nlog_daemon, lab.click = tmp / 'daemon.log', tmp / 'click'

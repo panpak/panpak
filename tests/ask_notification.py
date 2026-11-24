@@ -148,7 +148,7 @@ def main():
 
         # The portal and the bus.
         log, click = tmp / 'portal.log', tmp / 'click'
-        bus = subprocess.Popen(['dbus-daemon', '--session', '--nofork', f'--address={bus_addr}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        bus = subprocess.Popen(['dbus-daemon', f'--config-file={ROOT}/tests/bus-no-activation.conf', '--nofork', f'--address={bus_addr}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         env['DBUS_SESSION_BUS_ADDRESS'] = bus_addr
         (tmp / 'portal.py').write_text(FAKE_PORTAL)
         portal = subprocess.Popen([sys.executable, tmp / 'portal.py', log, click], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
