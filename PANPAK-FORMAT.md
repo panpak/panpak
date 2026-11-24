@@ -1236,10 +1236,10 @@ it is refused for a version below the floor (§3.1.10). A client MUST NOT keep a
 the installed or staged one).
 
 *The outcome of a start.* The process that holds the app counts how each start ended, in `apps/<id>/starts` (lines `root=<hex>`, `good=<n>`, `failed=<n>`; the counters are of the
-version `root`, and a start of another version begins them again). A start is **good** when the app ran for 20 s or more and did not end by a signal that the person or the
+version `root`; the end of a start of a version that is not the installed one (the one `current` names) is not counted, and a start of another version begins them again). A start is **good** when the app ran for 20 s or more and did not end by a signal that the person or the
 system sent; **failed** when it ended within 20 s with a non-zero status or a fatal signal of the program (SEGV, ABRT, BUS, ILL, FPE, SYS and the like); and counts **neither way**
 when it ended within 20 s with status 0 (a program that hands over to a copy that runs), by SIGKILL, by a stop signal that the client passed on (the end of the session, a window
-closed), or when the arguments were `--version` or `--help`. A good start sets `failed` to 0. After 3 good starts the version is *proven*: it becomes the last good version. After 2
+closed), or when the arguments were `--version` or `--help`. A good start sets `failed` to 0, and so do the changes of the installed version (an install, an update that is applied, a rollback) and the answer "Try again": the failed starts in a row are forgotten, the good ones are kept, so that the question comes back only after 2 new failed starts in a row (the start that follows "Try again" is the first). After 3 good starts the version is *proven*: it becomes the last good version. After 2
 failed starts in a row a client MUST ask the person, in a window, whether to go back to the last good version, when there is one and it is not the installed one; it MUST NOT go back by itself.
 The question says the name of the app (not its id), the two versions, and that the documents stay as they are; the answers are "Go back to <version>" and "Try again". The line of
 `panpak rollback` says that the documents are not touched and that settings changed by the newer version may not work in the older one: a client cannot undo a migration of the

@@ -204,26 +204,39 @@ def main():
             time.sleep(0.5)
             assert failed_starts(appdir) == 0, f'a rollback forgets the failed starts: {failed_starts(appdir)}'
             print('1. button 1: went back, not pending, the failed starts forgotten: ok')
-            # The second button: the same bad package is installed again (it has the same root as before): an install forgets the failed starts too.
-            run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', v2], env)
+            # The bad package is installed again (the same root as before): one failed start is counted, and one failure does not ask.
+            install_v2 = [BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', v2]
+            run(install_v2, env)
             assert failed_starts(appdir) == 0, f'an install forgets the failed starts: {failed_starts(appdir)}'
             n = len([r for r in records(log) if 'add' in r])
+            run(start, env, ok=False)
+            time.sleep(1.0)
+            assert failed_starts(appdir) == 1, f'one failed start is one: {failed_starts(appdir)}'
+            assert len([r for r in records(log) if 'add' in r]) == n and not (appdir / 'pending-question').exists(), 'the question is asked after one failure'
+            # An install of the same package forgets that failure (the same root: the counter would stay otherwise).
+            run(install_v2, env)
+            assert failed_starts(appdir) == 0, f'an install of the same package forgets the failed starts: {failed_starts(appdir)}'
+            print('1a. an install forgets the failed starts; one failure does not ask: ok')
+            # Two failures in a row ask, once.
             for _ in range(2):
                 run(start, env, ok=False)
-            wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n and (appdir / 'pending-question').exists(), 'the question is shown')
-            assert len([r for r in records(log) if 'add' in r]) == n + 1, 'the question is asked once after two failures in a row, not after one'
+            wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n and (appdir / 'pending-question').exists(), 'the question is shown after two failures')
+            assert len([r for r in records(log) if 'add' in r]) == n + 1, 'the question is asked once'
+            # The second button. While the question waits one more start fails (one failure is counted); "Try again" forgets it, so the start that follows is the first failure and
+            # does not ask. Without that, the two would make a pair and the question would come back at once.
+            run(start, env, ok=False)
+            assert failed_starts(appdir) == 1, f'a start while the question waits is counted: {failed_starts(appdir)}'
             time.sleep(0.5)
             put_click(click, 'no')
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button ends the question')
             assert os.readlink(appdir / 'current') == bad, 'Try again does not go back'
-            # "Try again" forgets the failed starts: the app was started again and failed (one), and for a second a new question must not appear, nor the pending file.
             n2 = len([r for r in records(log) if 'add' in r])
             time.sleep(1.0)
             assert len([r for r in records(log) if 'add' in r]) == n2, 'a new notification appeared after Try again'
             assert not (appdir / 'pending-question').exists(), 'the question came back after Try again'
             assert failed_starts(appdir) == 1, f'after Try again the start that follows is the first failure: {failed_starts(appdir)}'
-            print('1b. button 2: nothing changed, not pending, no new question for a second: ok')
-            # Two failed starts in a row (the one that followed Try again and one more) ask again; the answer "Go back" ends it.
+            print('1b. button 2: nothing changed, not pending, the failed starts forgotten, no new question for a second: ok')
+            # One more failed start (a second in a row) asks again; the answer "Go back" ends it.
             run(start, env, ok=False)
             wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n2 and (appdir / 'pending-question').exists(), 'the question comes back after two failures in a row')
             time.sleep(0.5)

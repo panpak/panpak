@@ -1043,6 +1043,11 @@ fn cmd_rollback_ask(app_id: &str) -> Result<()> {
     let vals = vec![("name", clean(&now.app.name)), ("new", clean(&now.app.version)), ("old", clean(&before.app.version))];
     // The question is pending from now until a button or a window answers it. One process waits at a time: the lock is on the pending file.
     let Some(_waiting) = panpak_core::starts::hold_pending(&appdir, &cur.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()) else { return Ok(()) };
+    // The version may have been changed back between the look above and the lock (another process of the same question was answered): then there is nothing to ask.
+    if panpak_core::durable::resolve_link(&appdir.join("current")).ok().as_ref() != Some(&cur) {
+        panpak_core::starts::clear_pending(&appdir);
+        return Ok(());
+    }
     let answer = crate::dialog::ask(&fill(&tr(m::NO_START_TITLE), &vals), &fill(&tr(m::NO_START_BODY), &vals), &fill(&tr(m::NO_START_GO_BACK), &vals), &tr(m::NO_START_TRY_AGAIN));
     match answer {
         // Nobody answered: the file stays, and the next start of the app asks again.
