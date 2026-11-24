@@ -1049,9 +1049,11 @@ fn cmd_rollback_ask(app_id: &str) -> Result<()> {
     }
     match answer {
         crate::dialog::Answer::Yes => {
-            // The lock on the pending file is kept until the version is changed back (`cmd_rollback` clears the file at its end): a second process that was started for the same
+            // The lock on the pending file is kept until the version is changed back, and the file is cleared after it: a second process that was started for the same
             // failure finds the lock and ends, instead of asking the same question again between the answer and the change.
-            cmd_rollback(app_id)?;
+            let done = cmd_rollback(app_id);
+            panpak_core::starts::clear_pending(&appdir);
+            done?;
         }
         crate::dialog::Answer::No => {
             panpak_core::starts::clear_pending(&appdir);
