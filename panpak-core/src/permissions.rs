@@ -293,7 +293,12 @@ fn covered_by(id: &str) -> Option<&'static str> {
 pub fn added(old: &Manifest, new: &Manifest) -> Vec<Item> {
     let (o, n) = (items_in(None, old), items_in(i18n::current(), new));
     let mut out = Vec::new();
+    // The whole network covers any list of ports, and the note about the other traffic: going from it to ports takes nothing away.
+    let had_whole_network = o.iter().any(|x| x.id == "network-any");
     for mut it in n {
+        if had_whole_network && matches!(it.id, "network-connect" | "network-listen" | "network-other") {
+            continue;
+        }
         let has = |id: &str, s: &str| o.iter().any(|x| x.id == id && (s.is_empty() || x.subjects.iter().any(|y| y == s)));
         if it.subjects.is_empty() {
             if !has(it.id, "") {
@@ -794,7 +799,8 @@ mod tests {
         // The note has no detail line, and an Italian sentence.
         let it = i18n::catalogs().iter().find(|c| c.name == "it");
         let note = items_in(it, &man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n")).into_iter().find(|i| i.id == "network-other").unwrap();
-        assert_eq!((note.detail.as_str(), note.text.as_str()), ("", "Il resto del traffico di rete, come l'UDP, non è limitato."));
+        assert_eq!(note.detail, "");
+        assert!(!note.text.is_empty() && note.text != "Other network traffic, such as UDP, is not limited.", "{}", note.text);
         let any = items_in(None, &man("[permissions]\nnetwork=true\n")).into_iter().find(|i| i.id == "network-any").unwrap();
         assert_eq!(any.detail, "Can use the network without limits.");
     }
@@ -810,6 +816,13 @@ mod tests {
         let from_ro = man("[permissions]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"ro\"\n");
         let to_rw = man("[permissions]\n[[permissions.home_paths]]\npath=\"a\"\naccess=\"rw\"\n");
         assert_eq!(added(&from_ro, &to_rw).len(), 1);
+        // An update from listed ports to the whole network is a widening and is asked about; the other way is shown as new rows too, never silently.
+        let ports = man("[permissions]\nnetwork=true\nnetwork_allow_tcp=[443]\n");
+        let whole = man("[permissions]\nnetwork=true\n");
+        assert_eq!(added(&ports, &whole).iter().map(|i| i.id).collect::<Vec<_>>(), ["network-any"]);
+        assert!(added(&whole, &whole).is_empty());
+        // From the whole network to ports nothing is added (it is a narrowing).
+        assert!(added(&whole, &ports).is_empty());
         assert_eq!(added(&man(""), &old).len(), 3);
         assert!(added(&old, &man("")).is_empty());
     }

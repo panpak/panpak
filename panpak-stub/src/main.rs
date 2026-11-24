@@ -1587,8 +1587,8 @@ fn build_ruleset(
 /// - /usr /lib /etc /proc /sys /run: read-only (host runtime);
 /// - /dev: only null/zero/full/urandom/random/tty nodes + dri/shm dirs
 ///   (explicit fallback to whole /dev if the kernel refuses per-file rules);
-/// - network: denied by default (V4+), allowlist from the manifest;
-///   on kernels without V4, explicit --network-unfiltered is required (warning at every start).
+/// - network: denied by default (V4+), allowlist from the manifest; `network = true` without ports is not filtered;
+///   on kernels without V4, explicit --network-unfiltered is required (warning at every start), and listed ports are refused.
 fn sandbox(tree: &Path, man: &panpak_core::Manifest, access: &Access, allow_unfiltered: bool, open: Option<(&Path, OpenGrant)>) -> Result<()> {
     let st = apply_landlock(tree, access, man, allow_unfiltered, open)?;
     // No silent fallback: if not applied, explicit consent is required.
@@ -5003,7 +5003,8 @@ mod tests {
         assert_eq!(decide_net(true, false, false), Enforce);
         assert_eq!(decide_net(true, true, false), Enforce);
         assert_eq!(decide_net(true, false, true), Enforce);
-        // Old kernel + network=true: always refuse (not even with the flag).
+        // Old kernel + ports (`wants_net` is true when ports are listed): always refuse (not even with the flag).
+        // `network = true` without ports never gets here: `network_unlimited` leaves the filter out.
         assert!(matches!(decide_net(false, true, false), Refuse(_)));
         assert!(matches!(decide_net(false, true, true), Refuse(_)));
         assert_eq!(decide_net(false, true, false), Refuse("this app's network rules (allowed ports) need Linux 6.7 or newer (Landlock ABI >= V4)"));

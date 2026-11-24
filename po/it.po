@@ -29,6 +29,9 @@ msgstr "Essere controllata dai tasti multimediali"
 msgid "Be told when devices are plugged in or removed ({subject})"
 msgstr "Essere avvisata quando si collegano o si scollegano dispositivi ({subject})"
 
+msgid "Can use the network without limits."
+msgstr "Può usare la rete senza limiti."
+
 msgid "Cancel"
 msgstr "Annulla"
 
@@ -61,9 +64,6 @@ msgstr "Può mostrare messaggi nell'area di notifica del tuo desktop, anche ment
 
 msgid "It can talk to every service of your session, also to start programs and to read what other apps publish. The sandbox does not isolate it any more."
 msgstr "Può parlare con ogni servizio della tua sessione, anche per avviare programmi e leggere ciò che le altre app pubblicano. Il sandbox non la isola più."
-
-msgid "Can use the network without limits."
-msgstr "Può usare la rete senza limiti."
 
 msgid "It can use the sound system of your session: play sounds and record from the microphone."
 msgstr "Può usare il sistema audio della tua sessione: riprodurre suoni e registrare dal microfono."

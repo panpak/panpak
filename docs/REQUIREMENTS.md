@@ -16,8 +16,8 @@ The tests and the distributions behind these statements are in [COMPATIBILITY.md
   architectures are not supported yet.
 - **Kernel, with Landlock enabled** (`landlock` among the active security modules). Linux 5.13 is the minimum (Landlock 1,
   file rules): below it the runtime refuses to start an app. Later versions add rules, and the runtime uses what the kernel has:
-  - Linux 6.7 (Landlock 4): TCP port rules. Without them an app can only be started with `--network-unfiltered`, and an app that
-    asks for network is refused.
+  - Linux 6.7 (Landlock 4): TCP port rules. Without them an app that asks for no network can only be started with `--network-unfiltered`, and an
+    app that lists ports is refused. An app with `network = true` and no ports starts (it asks for no filter).
   - Linux 6.12 (Landlock 6): scopes that confine abstract Unix sockets and signals.
   - Linux 7.1 (Landlock 9): rules for Unix sockets by path.
 

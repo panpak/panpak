@@ -518,7 +518,12 @@ Ubuntu 24.04 (closed list and direct checks; the stub itself was run only with t
   screen says "Can use the network without limits." An app with such a permission can
   send any data it can read to any server, and can reach services that listen on the
   loopback of the host; the answer is to list the ports (the filter then stays), or not
-  to give the permission. The listed ports of an app with ports are a real limit only for TCP:
+  to give the permission. **The change reaches apps that are already installed:** the stub of
+  the installed runtime does the filtering, so an app that was installed with
+  `network = true` and no ports (and could use only UDP until now) gets TCP as soon as the runtime
+  is updated, with no new question: its signed manifest did not change, and the row the person
+  accepted ("Use the network") is the same. An update of the app that goes from listed ports to no
+  ports is a new row and is asked about. The listed ports of an app with ports are a real limit only for TCP:
   the screen says it once, in a row under the rows of the ports: other traffic, such as UDP, is not limited.
   Ephemeral ports (`bind` on port 0 + rebind, e.g. the OpenShot
   thumbnail server) canNOT be expressed with discrete allowlists:
@@ -770,7 +775,8 @@ Status of the project: pre-beta.
   address, and a rule cannot express `bind` on port 0 followed by a connect to the
   assigned port. In practice: apps that use a random local port (OpenShot thumbnails) do
   not work with a network allowlist. On kernels below V4 the network cannot be filtered
-  at all (the stub refuses unless `--network-unfiltered`). See §3.
+  at all: an app with no network is refused unless `--network-unfiltered`, an app with ports is refused
+  even with it, and an app with `network = true` and no ports starts, because it asks for no filter. See §3.
 
 **Trust and the store**
 

@@ -74,6 +74,8 @@ else
 fi
 # RUSTFLAGS replaces the `rustflags` of .cargo/config.toml: repeat its flag.
 LINKFLAGS="-C link-self-contained=no"
+# A trailing slash would hide a link from the test `-L` in `cleanup`.
+while [ "${#work}" -gt 1 ] && [ "${work%/}" != "$work" ]; do work="${work%/}"; done
 made=0
 cleanup() {
   status=$?

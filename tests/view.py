@@ -856,7 +856,10 @@ def main():
             lab.install('[permissions]\nnetwork = true\n')
             net_got.clear()
             _, rep = run_report(lab, [net_arg], mask=False)
-            time.sleep(0.3)
+            for _ in range(40):  # the listeners of the host are threads: wait up to 2 s for both
+                if 'udp' in net_got and 'tcp' in net_got:
+                    break
+                time.sleep(0.05)
             assert rep['ns_net'] == host_ns['net'], 'an app with network does not share the network namespace'
             assert 'udp' in net_got, net_got
             # `network = true` without ports is the whole network: the connection to a TCP port gets through too.
