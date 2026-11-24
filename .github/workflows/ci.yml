@@ -201,8 +201,16 @@ jobs:
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/kept_versions.py
       - name: Questions without a window tool (the notification of the portal with two buttons, withdrawn when nobody presses, the pending question; a fake portal)
-        timeout-minutes: 3
-        run: python3 tests/with_timeout.py 120 tests/ask_notification.py
+        timeout-minutes: 25
+        # DIAGNOSTIC BRANCH ONLY (a draft pull request, never merged): the step runs 20 times in the same job and prints what the test collects when a run fails.
+        run: |
+          fails=0
+          for i in $(seq 1 20); do
+            echo "=== run $i of 20"
+            python3 tests/with_timeout.py 120 tests/ask_notification.py > "$RUNNER_TEMP/askn-$i.log" 2>&1 || { fails=$((fails+1)); echo "run $i FAILED"; cat "$RUNNER_TEMP/askn-$i.log"; }
+          done
+          echo "failed runs: $fails of 20"
+          [ "$fails" = 0 ]
       - name: The tests that cannot run on this runner (named, never silent)
         timeout-minutes: 3
         run: |
