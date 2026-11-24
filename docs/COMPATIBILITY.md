@@ -108,7 +108,7 @@ and, before this change, GIMP 3.2.8 on the Silverblue test machine: with the per
 test of the new package with GIMP (Open Location, the portal dialog, Overwrite, Export PNG and JPEG, Save XCF on `sftp://localhost`) is planned; `smb://` has not been tried at all.
 
 Limits, as in Flatpak: (1) the tree is opened only if it is mounted when the app starts; a mount made later is seen at the next start of the app. (2) A stuck `gvfsd-fuse` (a share that does not answer) can stop the
-app that reads it, and can delay the start of an app that has the permission, because bubblewrap makes a `stat` of the mount for the bind and that `stat` waits for the daemon and cannot be ended (measured on the host with a
+app that reads it. It could also delay the start of an app that has the permission, because bubblewrap makes a `stat` of the mount for the bind and that `stat` waits for the daemon and cannot be ended; so the stub tests the mount with a `stat` in a child process (half a second at most) and leaves the tree out when it does not answer, or when its daemon is dead and the mount was left behind (without that test bubblewrap refuses the bind: `Can't get type of source ... Transport endpoint is not connected`, and the app would not start; 1 trial). What the test saw on the host (measured with a
 stand-in FUSE server that stops answering, 1 trial per case: with the attributes of the root not in the cache, `stat`, `realpath` and `bwrap --bind` wait; the open for the Landlock rule does not; with the attributes in the cache nothing waits;
 this section). Flatpak's `xdg-run/gvfs` was not measured; the same bubblewrap `stat` is in its path.
 

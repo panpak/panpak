@@ -4,7 +4,8 @@
 
 Usage as a module: `mount(path)` returns the server process (or None when the machine cannot make a FUSE mount: no `fusermount3`, no `/dev/fuse`, or the mount is refused);
 `unmount(path, proc)` ends it. It speaks the raw protocol of /dev/fuse (INIT, GETATTR, LOOKUP, OPENDIR, READDIR, RELEASEDIR, STATFS) and nothing else.
-Run as a program, `fuse_server.py MOUNTPOINT` serves until it is stopped; it prints `mounted` when the mount is there.
+Run as a program, `fuse_server.py MOUNTPOINT [HANGFILE]` serves until it is stopped; it prints `mounted` when the mount is there. While the file HANGFILE holds `1`, every request is read and never answered
+(a stuck `gvfsd-fuse`). The attributes of the root are valid for 0 seconds, so every `stat` of the root asks the server.
 """
 import array
 import os
@@ -13,12 +14,13 @@ import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 DIR_MODE = 0o40755
 
 
-def serve(mnt):
+def serve(mnt, hangfile=None):
     a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     env = dict(os.environ, _FUSE_COMMFD=str(b.fileno()))
     p = subprocess.Popen(['fusermount3', '-o', 'fsname=panpak-test,subtype=panpak-test', '--', mnt], env=env, pass_fds=[b.fileno()],
@@ -45,10 +47,12 @@ def serve(mnt):
         except OSError:
             return 0
         _, op, unique = struct.unpack('<IIQ', req[:16])
+        if op != 26 and hangfile and os.path.exists(hangfile) and open(hangfile).read().strip() == '1':
+            continue
         if op == 26:  # INIT
             reply(unique, 0, (struct.pack('<IIIIHHIIHHI', 7, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0) + bytes(64))[:64])
         elif op == 3:  # GETATTR
-            reply(unique, 0, struct.pack('<QII', 1, 0, 0) + attr)
+            reply(unique, 0, struct.pack('<QII', 0, 0, 0) + attr)
         elif op == 27:  # OPENDIR
             reply(unique, 0, struct.pack('<QII', 1, 0, 0))
         elif op == 28:  # READDIR: nothing in it
@@ -65,13 +69,18 @@ def serve(mnt):
             reply(unique, -38)
 
 
-def mount(path):
-    """Mount the server at `path` (a folder that exists). None if this machine cannot."""
+def mount(path, hangfile=None):
+    """Mount the server at `path` (a folder that exists). None if this machine cannot. `hangfile`: see above."""
     if not (shutil.which('fusermount3') and os.path.exists('/dev/fuse')):
         return None
-    proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-    line = proc.stdout.readline()
-    if line.strip() != 'mounted':
+    proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), str(path)] + ([str(hangfile)] if hangfile else []), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    ready = []
+    threading.Thread(target=lambda: ready.append(proc.stdout.readline()), daemon=True).start()
+    for _ in range(100):
+        if ready:
+            break
+        time.sleep(0.1)
+    if not ready or ready[0].strip() != 'mounted':
         proc.kill()
         proc.wait()
         return None
@@ -94,4 +103,4 @@ def unmount(path, proc):
 
 
 if __name__ == '__main__':
-    sys.exit(serve(sys.argv[1]))
+    sys.exit(serve(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None))

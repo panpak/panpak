@@ -883,8 +883,31 @@ def main():
                     lab.install('[permissions]\n')
                     _, rep = run_report(lab, [], mask=False)
                     assert rep.get('gvfs_fuse') == 'absent', f'without gvfs the FUSE tree is not in the view: {rep.get("gvfs_fuse")}'
+                    # A mount whose daemon has died (the mount is left behind: "Transport endpoint is not connected"): bubblewrap would refuse the bind and the app would not
+                    # start, so the tree is left out and the app starts without it.
+                    lab.install('[permissions]\ngvfs = true\n')
+                    srv.kill()
+                    srv.wait()
+                    p, rep = run_report(lab, [], mask=False)
+                    assert rep.get('gvfs_fuse') == 'absent', f'a dead mount is left out and the app starts: {rep.get("gvfs_fuse")} {p.stderr[-300:]}'
+                    assert 'does not answer' in p.stderr, p.stderr[-300:]
+                    fuse_server.unmount(gv, None)
+                    # A mount whose daemon is stuck (the stat of its root waits and cannot be ended): the start does not wait for it either.
+                    hang = Path(lab.runtime) / 'gvfs-hang'
+                    hang.write_text('0')
+                    srv = fuse_server.mount(gv, hang)
+                    assert srv is not None, 'the second test server did not mount'
+                    hang.write_text('1')
+                    t0 = time.time()
+                    p, rep = run_report(lab, [], mask=False)
+                    waited = time.time() - t0
+                    hang.write_text('0')
+                    assert rep.get('gvfs_fuse') == 'absent', f'a stuck mount is left out and the app starts: {rep.get("gvfs_fuse")} {p.stderr[-300:]}'
+                    assert 'does not answer' in p.stderr and waited < 60, (waited, p.stderr[-300:])
+                    srv.kill()
+                    srv.wait()
+                    fuse_server.unmount(gv, None)
                     # Not a mount point: a plain folder, a link, a file are never opened.
-                    fuse_server.unmount(gv, srv)
                     srv = None
                     lab.install('[permissions]\ngvfs = true\n')
                     _, rep = run_report(lab, [], mask=False)
@@ -896,7 +919,7 @@ def main():
                     _, rep = run_report(lab, [], mask=False)
                     assert rep.get('gvfs_fuse') == 'absent', f'a link is not opened: {rep.get("gvfs_fuse")}'
                     gv.unlink()
-                    print('FUSE tree of GVfs: in the view as a mount with gvfs, absent without it, absent when not mounted, a folder, a link; never made')
+                    print('FUSE tree of GVfs: in the view as a mount with gvfs, absent without it, left out (and the app starts) when its daemon is dead or stuck, absent when not mounted, a folder, a link; never made')
                 finally:
                     if srv is not None:
                         fuse_server.unmount(gv, srv)

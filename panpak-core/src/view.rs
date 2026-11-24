@@ -284,14 +284,80 @@ pub fn is_fuse_mount_of(mountinfo: &str, dir: &Path, uid: u32) -> bool {
     found
 }
 
-/// The FUSE tree of GVfs, ready for an app with the permission `gvfs`: it is opened only when it is there, is a mount point of FUSE and is the user's (see `is_fuse_mount_of`).
-/// It is never made (`gvfsd-fuse` makes it); a link, a file, a folder of another user or a folder where nothing is mounted give `None`. An app that starts before the mount
-/// does not get it until its next start. The path is the canonical one of the runtime folder, so that nothing has to resolve it again.
-pub fn prepare_gvfs_fuse_dir(runtime_dir: &Path) -> Option<PathBuf> {
-    let dir = fs::canonicalize(runtime_dir).ok()?.join(GVFS_FUSE_DIR);
+/// What the FUSE tree of GVfs is, for an app with the permission `gvfs`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum GvfsFuse {
+    /// A mount of FUSE of the user, and it answers: ready to be put in the view (the canonical path).
+    Ready(PathBuf),
+    /// Not a mount point of FUSE of the user (absent, a plain folder, a link, a file, a mount of another user): nothing is opened, and nothing is made.
+    NotMounted,
+    /// A mount that does not answer: its daemon is stuck, or is dead and the mount was left behind (the error is "Transport endpoint is not connected"). Bubblewrap would wait for it, or refuse
+    /// the bind and the app would not start at all; so the tree is left out and the app starts without it.
+    NotAnswering,
+}
+
+/// Does `stat` of `dir` answer within `wait`? The `stat` is made by a child process (`fork`, then only `stat` and `_exit`): the stat of the root of a stuck FUSE mount waits for its
+/// daemon and cannot be ended, so nothing of ours may wait for it. A child that does not answer is left behind (it ends when the daemon answers or goes away).
+fn answers(dir: &Path, wait: std::time::Duration) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else { return false };
+    // The child that is left behind must hold nothing of ours: not the pipes of whoever waits for our output (it would never see the end of the file), not a lock of the app
+    // (a lock held by a stuck child would never be let go). So its descriptors are the null device and nothing else.
+    // SAFETY: opens a file, the descriptor is closed below in the parent.
+    let null = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+    // SAFETY: after `fork` the child calls only `dup2`, `close_range`, `stat` and `_exit`, which are safe in a child of a process with threads; the C string was made before.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        // SAFETY: `null` is ours (or -1, which `close` refuses).
+        unsafe { libc::close(null) };
+        return false;
+    }
+    if pid == 0 {
+        // SAFETY: as above; `stat` writes in a buffer that is on the stack of the child.
+        unsafe {
+            if null >= 0 {
+                libc::dup2(null, 0);
+                libc::dup2(null, 1);
+                libc::dup2(null, 2);
+            }
+            libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32);
+            let mut st: libc::stat = std::mem::zeroed();
+            libc::_exit(if libc::stat(c.as_ptr(), &mut st) == 0 { 0 } else { 1 });
+        }
+    }
+    // SAFETY: `null` is ours (or -1).
+    unsafe { libc::close(null) };
+    let end = std::time::Instant::now() + wait;
+    loop {
+        let mut status = 0;
+        // SAFETY: `pid` is our child; `status` is a valid place.
+        let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+        if r == pid {
+            return libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0;
+        }
+        if r < 0 || std::time::Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// The FUSE tree of GVfs for an app with the permission `gvfs`: opened only when it is there, is a mount point of FUSE, is the user's (see `is_fuse_mount_of`) and answers.
+/// It is never made (`gvfsd-fuse` makes it); a link, a file, a folder of another user or a folder where nothing is mounted is `NotMounted`; a mount that does not answer is
+/// `NotAnswering`. An app that starts before the mount does not get it until its next start. The path is the canonical one of the runtime folder, so that nothing has to resolve it again.
+pub fn gvfs_fuse_state(runtime_dir: &Path) -> GvfsFuse {
+    let Some(dir) = fs::canonicalize(runtime_dir).ok().map(|d| d.join(GVFS_FUSE_DIR)) else { return GvfsFuse::NotMounted };
     // SAFETY: geteuid cannot fail.
     let me = unsafe { libc::geteuid() };
-    is_fuse_mount_of(&fs::read_to_string("/proc/self/mountinfo").ok()?, &dir, me).then_some(dir)
+    let Ok(info) = fs::read_to_string("/proc/self/mountinfo") else { return GvfsFuse::NotMounted };
+    if !is_fuse_mount_of(&info, &dir, me) {
+        return GvfsFuse::NotMounted;
+    }
+    if answers(&dir, std::time::Duration::from_millis(500)) {
+        GvfsFuse::Ready(dir)
+    } else {
+        GvfsFuse::NotAnswering
+    }
 }
 
 /// Is GVfs on this system? The daemon is started by the session bus when something asks for `org.gtk.vfs.Daemon`, so the service file or the program is what tells.
@@ -459,26 +525,32 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_answers_and_a_missing_path_does_not() {
+        assert!(answers(&std::env::temp_dir(), std::time::Duration::from_millis(500)));
+        assert!(!answers(Path::new("/nonexistent/panpak-test"), std::time::Duration::from_millis(500)));
+    }
+
+    #[test]
     fn the_fuse_tree_is_never_made_and_a_plain_folder_or_a_link_is_not_it() {
         let rt = std::env::temp_dir().join(format!("panpak-gvfsfuse-{}", std::process::id()));
         let _ = fs::create_dir_all(&rt);
         let gv = rt.join("gvfs");
         // Absent: nothing is made.
-        assert_eq!(prepare_gvfs_fuse_dir(&rt), None);
+        assert_eq!(gvfs_fuse_state(&rt), GvfsFuse::NotMounted);
         assert!(!gv.exists(), "the tree must not be made by us");
         // A plain folder is not a mount point.
         fs::create_dir(&gv).unwrap();
-        assert_eq!(prepare_gvfs_fuse_dir(&rt), None);
+        assert_eq!(gvfs_fuse_state(&rt), GvfsFuse::NotMounted);
         // A link, and a file, are not either.
         let rt2 = std::env::temp_dir().join(format!("panpak-gvfsfuse2-{}", std::process::id()));
         let _ = fs::create_dir_all(&rt2);
         std::os::unix::fs::symlink("/tmp", rt2.join("gvfs")).unwrap();
-        assert_eq!(prepare_gvfs_fuse_dir(&rt2), None);
+        assert_eq!(gvfs_fuse_state(&rt2), GvfsFuse::NotMounted);
         let rt3 = std::env::temp_dir().join(format!("panpak-gvfsfuse3-{}", std::process::id()));
         let _ = fs::create_dir_all(&rt3);
         fs::write(rt3.join("gvfs"), b"x").unwrap();
-        assert_eq!(prepare_gvfs_fuse_dir(&rt3), None);
-        assert_eq!(prepare_gvfs_fuse_dir(&rt.join("missing/deeper")), None);
+        assert_eq!(gvfs_fuse_state(&rt3), GvfsFuse::NotMounted);
+        assert_eq!(gvfs_fuse_state(&rt.join("missing/deeper")), GvfsFuse::NotMounted);
         for d in [&rt, &rt2, &rt3] {
             let _ = fs::remove_dir_all(d);
         }

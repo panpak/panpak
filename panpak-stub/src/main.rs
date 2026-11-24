@@ -1115,6 +1115,11 @@ struct Access {
     mount_roots: Vec<PathBuf>,
 }
 
+/// The writable roots that may be resolved (`canonicalize`) before the app starts: all but the roots of FUSE mounts (the stat of a stuck one cannot be ended).
+fn roots_to_resolve(access: &Access) -> Vec<PathBuf> {
+    access.rw.iter().filter(|p| !access.mount_roots.contains(p)).cloned().collect()
+}
+
 /// Refuse a link in `rel` below `home`: every part that exists must be a real
 /// directory (the last one may be a file). Missing parts end the check.
 fn reject_links(home: &Path, rel: &str) -> Result<()> {
@@ -2386,10 +2391,16 @@ fn real_main() -> Result<()> {
         if let Some(d) = runtime_dir.as_deref().and_then(panpak_core::prepare_gvfsd_dir) {
             access.rw.push(d);
         }
-        // The FUSE tree of GVfs (`$XDG_RUNTIME_DIR/gvfs`), as Flatpak gives it with `--filesystem=xdg-run/gvfs`: only when `gvfsd-fuse` has mounted it for the user, never made here.
-        if let Some(d) = runtime_dir.as_deref().and_then(panpak_core::prepare_gvfs_fuse_dir) {
-            access.mount_roots.push(d.clone());
-            access.rw.push(d);
+        // The FUSE tree of GVfs (`$XDG_RUNTIME_DIR/gvfs`), as Flatpak gives it with `--filesystem=xdg-run/gvfs`: only when `gvfsd-fuse` has mounted it for the user and it answers; never made here.
+        match runtime_dir.as_deref().map(panpak_core::gvfs_fuse_state) {
+            Some(panpak_core::GvfsFuse::Ready(d)) => {
+                access.mount_roots.push(d.clone());
+                access.rw.push(d);
+            }
+            Some(panpak_core::GvfsFuse::NotAnswering) => {
+                eprintln!("panpak: the FUSE tree of GVfs does not answer (its daemon is stuck or has stopped); the app starts without it, and without paths for network locations");
+            }
+            _ => {}
         }
     }
     access.sockets = panpak_core::implied_sockets(
@@ -2475,7 +2486,7 @@ fn real_main() -> Result<()> {
     if let Some(theme) = dark_theme {
         cmd.env("GTK_THEME", theme);
     }
-    let app_args = if layer_ok && installed_mode { share_start_files(app_args, &man.app.id, runtime_dir.as_deref(), access.rw.as_slice(), open_file.as_ref().is_none_or(|(_, g)| g.write)) } else { app_args };
+    let app_args = if layer_ok && installed_mode { share_start_files(app_args, &man.app.id, runtime_dir.as_deref(), roots_to_resolve(&access).as_slice(), open_file.as_ref().is_none_or(|(_, g)| g.write)) } else { app_args };
     // With the document portal served, the file the launcher names with `--panpak-open` is shared as a document with the other arguments (just above), so the older rule
     // of Landlock on the path of the host is not added: it would be a second, read-only grant to the same file, and a line on standard error that says so.
     let served = layer_ok && installed_mode && documents_served(runtime_dir.as_deref());
@@ -4950,6 +4961,16 @@ mod tests {
         assert_eq!(ia, ib, "same inode across different trees");
         assert!(fs::metadata(ta.join("bin/hello")).unwrap().nlink() >= 2);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_roots_to_resolve_leave_out_the_roots_of_fuse_mounts() {
+        let access = Access {
+            rw: vec![PathBuf::from("/home/u/Docs"), PathBuf::from("/run/user/1000/gvfs"), PathBuf::from("/run/user/1000/gvfsd")],
+            mount_roots: vec![PathBuf::from("/run/user/1000/gvfs")],
+            ..Access::default()
+        };
+        assert_eq!(roots_to_resolve(&access), vec![PathBuf::from("/home/u/Docs"), PathBuf::from("/run/user/1000/gvfsd")]);
     }
 
     #[test]
