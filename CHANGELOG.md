@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`scripts/repro-build.sh` removes the work folder it made** when it ends (identical, different or failed) and when it is interrupted, and only that folder; a folder that existed before is never touched. `PANPAK_REPRO_KEEP=1` keeps it. A failed build shows the end of its log first. A test with a fake Zig and a fake cargo (`tests/repro-cleanup-test.sh`) runs in the CI. RELEASE.md says the new rule.
+
 - **`network = true` without ports is the whole network.** Until now it denied every TCP connection (Landlock handled the TCP rights and no port rule was added), and was refused on a kernel without Landlock V4; only UDP and DNS got out.
   Now a package that asks for `network = true` and lists no port has the network as `--share=network` gives it in Flatpak: TCP is not filtered, and the start does not depend on the kernel. With `network_allow_tcp` or `network_bind_tcp` the filter of ports
   stays, and a kernel without V4 still refuses it. The permission screen says "Can use the network without limits."; a package with ports gets one more row, once, under the rows of the ports: "Other network traffic, such as UDP, is not limited." (no detail line; Italian in `po/it.po`).

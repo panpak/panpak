@@ -77,13 +77,12 @@ No automatic succession exists for runtimes (unlike apps). Procedure:
 `scripts/repro-build.sh` builds twice in different directories and compares
 the hashes. The working directory is `${XDG_CACHE_HOME:-$HOME/.cache}/panpak-repro`
 by default (not `/tmp`); override it with `PANPAK_REPRO_DIR`. The script never
-deletes an existing directory: if the default one exists, a timestamped
+deletes a directory that existed before it: if the default one exists, a timestamped
 sibling (`panpak-repro-<date>-<time>-<pid>`) is used; if `PANPAK_REPRO_DIR`
-points to an existing path, the script exits with an error. The directory is
-kept after the run for inspection and must be removed manually.
-
-Previous work directories are never deleted, and each one takes about 1 GB.
-To clean them up: `rm -rf ~/.cache/panpak-repro*`
+points to an existing path, the script exits with an error. The directory that the
+run itself made (about 1 GB) is removed when the script ends, with any result, and
+when it is interrupted. To keep it, to look at the builds and their logs, run with
+`PANPAK_REPRO_KEEP=1`; the script says where it is, and you remove it yourself.
 
 ## What is NOT guaranteed
 

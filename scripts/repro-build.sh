@@ -14,6 +14,8 @@
 # `pip install --require-hashes -r tools/requirements-zig.txt`); see
 # scripts/zig-env.sh for how Zig is found. The script refuses to run with any
 # other Zig version. Exit status: 0 identical, 1 different or failed.
+# The working folder of the run is removed when the script ends, whatever the result, and when it is interrupted (INT, TERM, HUP); only the folder
+# that this run made. PANPAK_REPRO_KEEP=1 keeps it, to look at the builds and their logs.
 set -eu
 . "$(dirname "$0")/zig-env.sh"
 zig_check || exit 1
@@ -55,7 +57,8 @@ export CARGO_INCREMENTAL=0
 # Working directory: PANPAK_REPRO_DIR if set, else a per-user cache dir
 # (not /tmp, which is world-writable). An existing directory is never
 # deleted: an explicit PANPAK_REPRO_DIR is refused, the default gets a
-# timestamped name instead.
+# timestamped name instead. The folder is made by this run (`mkdir` without -p, so it fails if the folder appeared meanwhile), and only a folder
+# made here is removed at the end (`cleanup`).
 if [ -n "${PANPAK_REPRO_DIR:-}" ]; then
   work="$PANPAK_REPRO_DIR"
   if [ -e "$work" ]; then
@@ -71,7 +74,38 @@ else
 fi
 # RUSTFLAGS replaces the `rustflags` of .cargo/config.toml: repeat its flag.
 LINKFLAGS="-C link-self-contained=no"
-mkdir -p "$work/a" "$work/b"
+made=0
+cleanup() {
+  status=$?
+  trap - EXIT INT TERM HUP
+  if [ "$made" = 1 ]; then
+    if [ "${PANPAK_REPRO_KEEP:-0}" = 1 ]; then
+      echo "kept: $work (PANPAK_REPRO_KEEP=1)"
+    else
+      # Only the folder this run made, and never a folder that is not a plain one of its own: not empty, absolute, not a link, not one of the
+      # folders it was built from.
+      case "$work" in
+        /?*) ;;
+        *) echo "not removed (not an absolute path): $work" >&2; exit "$status" ;;
+      esac
+      if [ -L "$work" ] || [ ! -d "$work" ] || [ "$work" = "$HOME" ] || [ "$work" = "$SRC" ] || [ "$work" = "${XDG_CACHE_HOME:-$HOME/.cache}" ]; then
+        echo "not removed: $work" >&2
+      else
+        rm -rf -- "$work"
+        echo "removed: $work (PANPAK_REPRO_KEEP=1 keeps it)"
+      fi
+    fi
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+mkdir -p "$(dirname "$work")"
+mkdir "$work" || { echo "error: could not make $work" >&2; exit 1; }
+made=1
+mkdir "$work/a" "$work/b"
 # Identical sources, different paths (no target/, no .git).
 # Through a tarball, not a pipe: a failing first tar must stop the script.
 tar --exclude=target --exclude=.git -cf "$work/src.tar" -C "$SRC" .
@@ -91,7 +125,7 @@ for d in a b; do
   fi
   (cd "$work/$d" && cargo build --locked --release \
     --target x86_64-unknown-linux-musl) > "$work/$d.log" 2>&1 \
-    || { echo "BUILD FAILED in $d (see $work/$d.log)"; exit 1; }
+    || { echo "BUILD FAILED in $d (see $work/$d.log; run again with PANPAK_REPRO_KEEP=1 to keep the folder and read it)"; tail -n 20 "$work/$d.log"; exit 1; }
 done
 
 echo "== sha256 =="
@@ -106,7 +140,7 @@ if cmp -s "$work/a/target/x86_64-unknown-linux-musl/release/panpak-stub" \
           "$work/b/target/x86_64-unknown-linux-musl/release/panpak"; then
   echo "IDENTICAL"
 else
-  echo "DIFFERENT (see the OB6 summary for the cause)"
+  echo "DIFFERENT (see the OB6 summary for the cause; run again with PANPAK_REPRO_KEEP=1 to keep the folder and compare the builds)"
   result=1
 fi
 if [ "$UPDATE" = 1 ] && [ "$result" = 0 ]; then
@@ -134,6 +168,4 @@ if [ "$UPDATE" = 1 ] && [ "$result" = 0 ]; then
   cat "$work/ref.new" > "$ref"
   echo "REPRODUCIBLE-HASHES.md written"
 fi
-echo "workdir retained at: $work"
-echo "Previous work dirs are never deleted; each uses ~1 GB. Clean up: rm -rf ~/.cache/panpak-repro*"
 exit "$result"

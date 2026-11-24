@@ -738,6 +738,7 @@ jobs:
         run: |
           ./tests/ci-changes-test.sh
           ./tests/check-repro-date-test.sh
+          ./tests/repro-cleanup-test.sh
           ./tests/ci-gate-test.sh
           python3 -I tests/ci-workflow-test.py
       - name: Cache the cargo-deny binary
