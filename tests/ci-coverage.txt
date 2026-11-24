@@ -10,6 +10,7 @@ tests/dbus_lab.py | helper | the private bus, portals and fake backends of dbus_
 tests/dbus_fake_backend.py | helper | a fake portal backend for dbus_filter.py
 tests/fake_native.py | helper | a fake native application on the session bus for dbus_filter.py
 tests/fake_portal_files.py | helper | a fake file-chooser portal for gtk_filechooser.py
+tests/fuse_server.py | helper | a small FUSE server that stands for gvfsd-fuse, started by view.py (section 6i)
 tests/gui_session.py | helper | a dedicated Xvfb session and key injector for the pilot tests
 tests/apps/appcfg.py | helper | the reader of the list of apps of the harness
 tests/apps/display.py | helper | the display, window and process checks of the harness
