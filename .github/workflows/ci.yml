@@ -207,7 +207,8 @@ jobs:
           fails=0
           for i in $(seq 1 20); do
             echo "=== run $i of 20"
-            python3 tests/with_timeout.py 120 tests/ask_notification.py > "$RUNNER_TEMP/askn-$i.log" 2>&1 || { fails=$((fails+1)); echo "run $i FAILED"; cat "$RUNNER_TEMP/askn-$i.log"; }
+            python3 tests/with_timeout.py 120 tests/ask_notification.py > "$RUNNER_TEMP/askn-$i.log" 2>&1 && echo "run $i PASSED" || { fails=$((fails+1)); echo "run $i FAILED"; cat "$RUNNER_TEMP/askn-$i.log"; }
+            grep "STATE before" "$RUNNER_TEMP/askn-$i.log" | sed "s/^/run $i: /" || true
           done
           echo "failed runs: $fails of 20"
           [ "$fails" = 0 ]
