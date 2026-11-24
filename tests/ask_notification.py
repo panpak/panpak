@@ -14,10 +14,12 @@ The portal is a fake (PyGObject owns `org.freedesktop.portal.Desktop` on a priva
 """
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +41,7 @@ XML = """<node><interface name="org.freedesktop.portal.Notification">
 <signal name="ActionInvoked"><arg type="s"/><arg type="s"/><arg type="av"/></signal></interface></node>"""
 conn_box, last = [], []
 def note(d):
+    d['ts'] = round(__import__('time').time(), 3)
     with open(log, 'a') as f:
         f.write(json.dumps(d) + '\n')
 def on_call(conn, sender, path, iface, method, params, inv):
@@ -55,6 +58,7 @@ def poll():
         if not action:
             return True
         os.unlink(click)
+        note({'click': action, 'to': last[-1]})
         conn_box[0].emit_signal(None, '/org/freedesktop/portal/desktop', 'org.freedesktop.portal.Notification', 'ActionInvoked', GLib.Variant('(ssav)', (last[-1], action, [])))
     return True
 def acquired(conn, name):
@@ -68,8 +72,15 @@ GLib.MainLoop().run()
 '''
 
 
+# Diagnostics (the guard of a flaw that showed in the CI and not locally): what every command printed, and a sample of the state every 100 ms, shown when a step fails.
+RUNLOG = []
+SAMPLES = []
+
+
 def run(args, env, ok=True, timeout=60):
+    t0 = time.time()
     p = subprocess.run([str(x) for x in args], env=env, capture_output=True, text=True, timeout=timeout)
+    RUNLOG.append((t0, time.time(), [Path(str(x)).name if i == 0 else str(x)[-60:] for i, x in enumerate(args)][:6], p.returncode, p.stdout[-600:], p.stderr[-600:]))
     if ok:
         assert p.returncode == 0, f'{[str(x) for x in args][:3]} ended with status {p.returncode}\n{p.stdout}{p.stderr}'
     return p
@@ -89,6 +100,43 @@ def put_click(click, action):
     tmp = click.with_name(click.name + '.new')
     tmp.write_text(action)
     os.replace(tmp, click)
+
+
+def failed_starts(appdir):
+    """The failed starts in a row that the file `starts` of the app holds."""
+    m = re.search(r'failed=(\d+)', (appdir / 'starts').read_text())
+    return int(m.group(1)) if m else None
+
+
+def procs():
+    out = []
+    for d in os.listdir('/proc'):
+        if d.isdigit():
+            try:
+                cmd = Path(f'/proc/{d}/cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace').strip()
+                if ('panpak' in cmd and 'ask_notification' not in cmd and 'sampler' not in cmd) or 'hello' in cmd.split(' ')[0:1]:
+                    out.append(f'{d}:{cmd[-90:]}')
+            except OSError:
+                pass
+    return out
+
+
+def sample(appdir, log):
+    pend = appdir / 'pending-question'
+    try:
+        text = pend.read_text().replace('\n', ' ') if pend.exists() else '-'
+    except OSError:
+        text = '?'
+    try:
+        cur = os.readlink(appdir / 'current')[-12:]
+    except OSError:
+        cur = '?'
+    try:
+        starts = (appdir / 'starts').read_text().replace('\n', ' ')
+    except OSError:
+        starts = '-'
+    recs = records(log)
+    return f'{time.time():.3f} pending=[{text[-40:]}] current=..{cur} starts=[{starts[-70:]}] adds={sum(1 for r in recs if "add" in r)} removes={sum(1 for r in recs if "remove" in r)} procs={procs()}'
 
 
 def records(log):
@@ -137,6 +185,23 @@ def main():
         store = home / '.local/share/panpak'
         appdir = store / 'apps' / ID
         start = [store / 'bin/panpak-stub', 'run', appdir / 'current']
+        # Every start of the `panpak` of the store (the questions are asked by `panpak rollback --ask`, started detached by the stub) is written down, with its exit.
+        wlog = tmp / 'panpak-calls.log'
+        real = store / 'bin/panpak.real'
+        os.replace(store / 'bin/panpak', real)
+        (store / 'bin/panpak').write_text(f'#!/bin/sh\necho "$(date +%s.%N) start pid=$$ ppid=$PPID args=$*" >> {wlog}\n{real} "$@"\nrc=$?\necho "$(date +%s.%N) end pid=$$ rc=$rc" >> {wlog}\nexit $rc\n')
+        (store / 'bin/panpak').chmod(0o755)
+        stop = threading.Event()
+
+        def sampler():
+            while not stop.is_set():
+                try:
+                    SAMPLES.append(sample(appdir, tmp / 'portal.log'))
+                except Exception as e:  # noqa: BLE001
+                    SAMPLES.append(f'{time.time():.3f} sample failed: {e}')
+                time.sleep(0.1)
+
+        threading.Thread(target=sampler, daemon=True).start()
         for _ in range(3):
             run(start, env, ok=False)
         assert (appdir / 'last_good').is_symlink()
@@ -185,23 +250,57 @@ def main():
             put_click(click, 'yes')
             wait_for(lambda: os.readlink(appdir / 'current') == good, 'the button "Go back" goes back')
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the question is no longer pending')
-            print('1. button 1: went back, not pending: ok')
-            # The second button: a new bad version, the question, "Try again": the app is started again and the question ends.
+            # A rollback forgets the failed starts: a start of the other version that is counted late does not count (its version is not the installed one any more).
+            time.sleep(0.5)
+            assert failed_starts(appdir) == 0, f'a rollback forgets the failed starts: {failed_starts(appdir)}'
+            print('1. button 1: went back, not pending, the failed starts forgotten: ok')
+            # The second button: the same bad package is installed again (it has the same root as before): an install forgets the failed starts too.
             run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', v2], env)
+            assert failed_starts(appdir) == 0, f'an install forgets the failed starts: {failed_starts(appdir)}'
             n = len([r for r in records(log) if 'add' in r])
             for _ in range(2):
                 run(start, env, ok=False)
             wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n and (appdir / 'pending-question').exists(), 'the question is shown')
+            assert len([r for r in records(log) if 'add' in r]) == n + 1, 'the question is asked once after two failures in a row, not after one'
             time.sleep(0.5)
             put_click(click, 'no')
-            try:
-                wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button ends the question')
-            except AssertionError:
-                print('DEBUG', records(log), sorted(x.name for x in appdir.iterdir()), (appdir / 'pending-question').read_text())
-                raise
+            wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button ends the question')
             assert os.readlink(appdir / 'current') == bad, 'Try again does not go back'
-            print('1b. button 2: nothing changed, not pending: ok')
+            # "Try again" forgets the failed starts: the app was started again and failed (one), and for a second a new question must not appear, nor the pending file.
+            n2 = len([r for r in records(log) if 'add' in r])
+            time.sleep(1.0)
+            assert len([r for r in records(log) if 'add' in r]) == n2, 'a new notification appeared after Try again'
+            assert not (appdir / 'pending-question').exists(), 'the question came back after Try again'
+            assert failed_starts(appdir) == 1, f'after Try again the start that follows is the first failure: {failed_starts(appdir)}'
+            print('1b. button 2: nothing changed, not pending, no new question for a second: ok')
+            # Two failed starts in a row (the one that followed Try again and one more) ask again; the answer "Go back" ends it.
+            run(start, env, ok=False)
+            wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n2 and (appdir / 'pending-question').exists(), 'the question comes back after two failures in a row')
+            time.sleep(0.5)
+            put_click(click, 'yes')
+            wait_for(lambda: os.readlink(appdir / 'current') == good and not (appdir / 'pending-question').exists(), 'the last question is answered')
+            print('1c. two failures in a row ask again: ok')
+            if os.environ.get('PANPAK_ASKN_DUMP_TEST'):
+                raise AssertionError('forced, to see the diagnostics')
+        except BaseException:
+            stop.set()
+            print('=== DIAGNOSTICS (the test failed) ===')
+            print('--- commands run by the test (start, end, command, status, stdout, stderr)')
+            for t0, t1, cmd, rc, out, err in RUNLOG:
+                print(f'{t0:.3f}-{t1:.3f} {cmd} rc={rc} out={out!r} err={err!r}')
+            print('--- the portal log')
+            for r in records(log):
+                print(json.dumps({k: v for k, v in r.items() if k not in ('body', 'buttons')}))
+            print('--- the calls of the panpak of the store')
+            print(wlog.read_text() if wlog.exists() else '(none)')
+            print('--- the state every 100 ms, the last 600 lines')
+            print('\n'.join(SAMPLES[-600:]))
+            print('--- files of the app')
+            for f in sorted(appdir.iterdir()):
+                print(f.name, '->', os.readlink(f) if f.is_symlink() else (f.read_text()[-200:] if f.is_file() else 'dir'))
+            raise
         finally:
+            stop.set()
             for pr in (portal, bus):
                 pr.terminate()
                 pr.wait()
