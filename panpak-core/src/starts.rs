@@ -173,6 +173,13 @@ pub fn last_good(appdir: &Path) -> Option<PathBuf> {
 /// A start of the installed version `root` ended: count it, and act on the event. `current` is the record that `current` names now. Returns the event, so that the
 /// caller can ask the person.
 pub fn record_end(appdir: &Path, root: &str, outcome: Outcome) -> Result<Event> {
+    // The outcome of a start of a version that is not the installed one any more does not count: the end of a start is recorded a little after the app ended, and by then the
+    // person may have gone back to another version (or installed one). Counting it would overwrite the counters of the version that is installed now.
+    if let Ok(cur) = crate::durable::resolve_link(&appdir.join("current")) {
+        if record_root(&cur).is_some_and(|r| r != root) {
+            return Ok(Event::Nothing);
+        }
+    }
     let mut s = read(appdir);
     let before = s.clone();
     let ev = s.count(root, outcome);
@@ -185,6 +192,23 @@ pub fn record_end(appdir: &Path, root: &str, outcome: Outcome) -> Result<Event> 
         }
     }
     Ok(ev)
+}
+
+/// The root (hex) in the name of a record, `<id>@<version>@<root>.rec`; `None` for any other name.
+fn record_root(rec: &Path) -> Option<&str> {
+    let name = rec.file_name()?.to_str()?.strip_suffix(".rec")?;
+    let root = name.rsplit('@').next()?;
+    (root.len() == 64 && root.bytes().all(|b| b.is_ascii_hexdigit())).then_some(root)
+}
+
+/// The failed starts in a row are forgotten (the good ones are kept): after the version was changed (an install, an update that is applied, a rollback) and after the person chose
+/// "Try again". The question is then asked again only after `ASK_AFTER` new failures. The same package installed again has the same root, so the counters would stay otherwise.
+pub fn reset_failed(appdir: &Path) {
+    let mut s = read(appdir);
+    if s.failed != 0 {
+        s.failed = 0;
+        let _ = write(appdir, &s);
+    }
 }
 
 /// The file that says a question of kept versions has been asked and not answered.
@@ -271,6 +295,40 @@ mod tests {
         assert_eq!(State::parse(&s.text()), s);
         let bad = State::parse("root=zz\ngood=x\nfailed=-1\nnoise\n");
         assert_eq!(bad, State::default());
+    }
+
+    #[test]
+    fn the_end_of_a_start_of_a_version_that_is_not_installed_does_not_count() {
+        let d = std::env::temp_dir().join(format!("panpak-starts-notcurrent-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let rec = d.join(format!("org.x@1.0@{R2}.rec"));
+        std::fs::write(&rec, b"r").unwrap();
+        crate::durable::replace_symlink(&rec, &d.join("current")).unwrap();
+        // The installed version is R2: a failure of R is not counted and writes nothing.
+        assert_eq!(record_end(&d, R, Outcome::Failed).unwrap(), Event::Nothing);
+        assert_eq!(record_end(&d, R, Outcome::Failed).unwrap(), Event::Nothing);
+        assert!(!d.join(FILE).exists());
+        // The installed version's own failures count, two in a row ask.
+        assert_eq!(record_end(&d, R2, Outcome::Failed).unwrap(), Event::Nothing);
+        assert_eq!(record_end(&d, R2, Outcome::Failed).unwrap(), Event::Ask);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_failed_starts_are_forgotten_and_the_good_ones_kept() {
+        let d = std::env::temp_dir().join(format!("panpak-starts-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        write(&d, &State { root: R.into(), good: 2, failed: 1 }).unwrap();
+        reset_failed(&d);
+        assert_eq!(read(&d), State { root: R.into(), good: 2, failed: 0 });
+        // Nothing to forget: the file is not rewritten (and not made).
+        let e = d.join("empty");
+        std::fs::create_dir_all(&e).unwrap();
+        reset_failed(&e);
+        assert!(!e.join(FILE).exists());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

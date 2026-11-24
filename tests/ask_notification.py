@@ -14,6 +14,7 @@ The portal is a fake (PyGObject owns `org.freedesktop.portal.Desktop` on a priva
 """
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -39,6 +40,7 @@ XML = """<node><interface name="org.freedesktop.portal.Notification">
 <signal name="ActionInvoked"><arg type="s"/><arg type="s"/><arg type="av"/></signal></interface></node>"""
 conn_box, last = [], []
 def note(d):
+    d['ts'] = round(__import__('time').time(), 3)
     with open(log, 'a') as f:
         f.write(json.dumps(d) + '\n')
 def on_call(conn, sender, path, iface, method, params, inv):
@@ -55,6 +57,7 @@ def poll():
         if not action:
             return True
         os.unlink(click)
+        note({'click': action, 'to': last[-1]})
         conn_box[0].emit_signal(None, '/org/freedesktop/portal/desktop', 'org.freedesktop.portal.Notification', 'ActionInvoked', GLib.Variant('(ssav)', (last[-1], action, [])))
     return True
 def acquired(conn, name):
@@ -68,8 +71,14 @@ GLib.MainLoop().run()
 '''
 
 
+# What every command printed, shown when a step fails (a flaw of this test showed in the CI and not locally: see the pull request that fixed it).
+RUNLOG = []
+
+
 def run(args, env, ok=True, timeout=60):
+    t0 = time.time()
     p = subprocess.run([str(x) for x in args], env=env, capture_output=True, text=True, timeout=timeout)
+    RUNLOG.append((t0, time.time(), [Path(str(x)).name if i == 0 else str(x)[-60:] for i, x in enumerate(args)][:6], p.returncode, p.stdout[-600:], p.stderr[-600:]))
     if ok:
         assert p.returncode == 0, f'{[str(x) for x in args][:3]} ended with status {p.returncode}\n{p.stdout}{p.stderr}'
     return p
@@ -89,6 +98,12 @@ def put_click(click, action):
     tmp = click.with_name(click.name + '.new')
     tmp.write_text(action)
     os.replace(tmp, click)
+
+
+def failed_starts(appdir):
+    """The failed starts in a row that the file `starts` of the app holds."""
+    m = re.search(r'failed=(\d+)', (appdir / 'starts').read_text())
+    return int(m.group(1)) if m else None
 
 
 def records(log):
@@ -185,22 +200,63 @@ def main():
             put_click(click, 'yes')
             wait_for(lambda: os.readlink(appdir / 'current') == good, 'the button "Go back" goes back')
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the question is no longer pending')
-            print('1. button 1: went back, not pending: ok')
-            # The second button: a new bad version, the question, "Try again": the app is started again and the question ends.
-            run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', v2], env)
+            # A rollback forgets the failed starts: a start of the other version that is counted late does not count (its version is not the installed one any more).
+            time.sleep(0.5)
+            assert failed_starts(appdir) == 0, f'a rollback forgets the failed starts: {failed_starts(appdir)}'
+            print('1. button 1: went back, not pending, the failed starts forgotten: ok')
+            # The bad package is installed again (the same root as before): one failed start is counted, and one failure does not ask.
+            install_v2 = [BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', v2]
+            run(install_v2, env)
+            assert failed_starts(appdir) == 0, f'an install forgets the failed starts: {failed_starts(appdir)}'
             n = len([r for r in records(log) if 'add' in r])
+            run(start, env, ok=False)
+            time.sleep(1.0)
+            assert failed_starts(appdir) == 1, f'one failed start is one: {failed_starts(appdir)}'
+            assert len([r for r in records(log) if 'add' in r]) == n and not (appdir / 'pending-question').exists(), 'the question is asked after one failure'
+            # An install of the same package forgets that failure (the same root: the counter would stay otherwise).
+            run(install_v2, env)
+            assert failed_starts(appdir) == 0, f'an install of the same package forgets the failed starts: {failed_starts(appdir)}'
+            print('1a. an install forgets the failed starts; one failure does not ask: ok')
+            # Two failures in a row ask, once.
             for _ in range(2):
                 run(start, env, ok=False)
-            wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n and (appdir / 'pending-question').exists(), 'the question is shown')
+            wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n and (appdir / 'pending-question').exists(), 'the question is shown after two failures')
+            assert len([r for r in records(log) if 'add' in r]) == n + 1, 'the question is asked once'
+            # The second button. While the question waits one more start fails (one failure is counted); "Try again" forgets it, so the start that follows is the first failure and
+            # does not ask. Without that, the two would make a pair and the question would come back at once.
+            run(start, env, ok=False)
+            assert failed_starts(appdir) == 1, f'a start while the question waits is counted: {failed_starts(appdir)}'
             time.sleep(0.5)
             put_click(click, 'no')
-            try:
-                wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button ends the question')
-            except AssertionError:
-                print('DEBUG', records(log), sorted(x.name for x in appdir.iterdir()), (appdir / 'pending-question').read_text())
-                raise
+            wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button ends the question')
             assert os.readlink(appdir / 'current') == bad, 'Try again does not go back'
-            print('1b. button 2: nothing changed, not pending: ok')
+            n2 = len([r for r in records(log) if 'add' in r])
+            time.sleep(1.0)
+            assert len([r for r in records(log) if 'add' in r]) == n2, 'a new notification appeared after Try again'
+            assert not (appdir / 'pending-question').exists(), 'the question came back after Try again'
+            assert failed_starts(appdir) == 1, f'after Try again the start that follows is the first failure: {failed_starts(appdir)}'
+            print('1b. button 2: nothing changed, not pending, the failed starts forgotten, no new question for a second: ok')
+            # One more failed start (a second in a row) asks again; the answer "Go back" ends it.
+            run(start, env, ok=False)
+            wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n2 and (appdir / 'pending-question').exists(), 'the question comes back after two failures in a row')
+            time.sleep(0.5)
+            put_click(click, 'yes')
+            wait_for(lambda: os.readlink(appdir / 'current') == good and not (appdir / 'pending-question').exists(), 'the last question is answered')
+            print('1c. two failures in a row ask again: ok')
+            if os.environ.get('PANPAK_ASKN_DUMP_TEST'):
+                raise AssertionError('forced, to see the diagnostics')
+        except BaseException:
+            print('=== DIAGNOSTICS (the test failed) ===')
+            print('--- commands run by the test (start, end, command, status, stdout, stderr)')
+            for t0, t1, cmd, rc, out, err in RUNLOG:
+                print(f'{t0:.3f}-{t1:.3f} {cmd} rc={rc} out={out!r} err={err!r}')
+            print('--- the portal log')
+            for r in records(log):
+                print(json.dumps({k: v for k, v in r.items() if k not in ('body', 'buttons')}))
+            print('--- files of the app')
+            for f in sorted(appdir.iterdir()):
+                print(f.name, '->', os.readlink(f) if f.is_symlink() else (f.read_text()[-200:] if f.is_file() else 'dir'))
+            raise
         finally:
             for pr in (portal, bus):
                 pr.terminate()

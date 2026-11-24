@@ -649,6 +649,7 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
     panpak_core::durable::replace_symlink(&current_rec, &appdir.join("previous"))?;
     panpak_core::failpoint!("apply.previous_linked");
     panpak_core::durable::replace_symlink(&staged, &current_link)?;
+    panpak_core::starts::reset_failed(&appdir);
     panpak_core::failpoint!("apply.current_linked");
     if rotated_to.is_none() {
         panpak_core::trust::modify(&appdir, |st| st.switch_note = switch_note.clone())?;
@@ -1009,6 +1010,7 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     panpak_core::durable::replace_symlink(&prev_t, &current)?;
     panpak_core::failpoint!("rollback.between_links");
     panpak_core::durable::replace_symlink(&cur_t, &previous)?;
+    panpak_core::starts::reset_failed(&appdir);
     // The cache of the app can be made again, and some caches only see files that are newer than themselves (PANPAK-FORMAT.md section 6.9).
     if let Err(e) = panpak_core::cachewipe::after_change(app_id) {
         eprintln!("panpak: the cache of {app_id} was not emptied: {}", panpak_core::err_text(&e));
@@ -1041,6 +1043,11 @@ fn cmd_rollback_ask(app_id: &str) -> Result<()> {
     let vals = vec![("name", clean(&now.app.name)), ("new", clean(&now.app.version)), ("old", clean(&before.app.version))];
     // The question is pending from now until a button or a window answers it. One process waits at a time: the lock is on the pending file.
     let Some(_waiting) = panpak_core::starts::hold_pending(&appdir, &cur.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()) else { return Ok(()) };
+    // The version may have been changed back between the look above and the lock (another process of the same question was answered): then there is nothing to ask.
+    if panpak_core::durable::resolve_link(&appdir.join("current")).ok().as_ref() != Some(&cur) {
+        panpak_core::starts::clear_pending(&appdir);
+        return Ok(());
+    }
     let answer = crate::dialog::ask(&fill(&tr(m::NO_START_TITLE), &vals), &fill(&tr(m::NO_START_BODY), &vals), &fill(&tr(m::NO_START_GO_BACK), &vals), &tr(m::NO_START_TRY_AGAIN));
     match answer {
         // Nobody answered: the file stays, and the next start of the app asks again.
@@ -1049,13 +1056,15 @@ fn cmd_rollback_ask(app_id: &str) -> Result<()> {
     }
     match answer {
         crate::dialog::Answer::Yes => {
-            // The lock on the pending file is kept until the version is changed back, and the file is cleared after it: a second process that was started for the same
-            // failure finds the lock and ends, instead of asking the same question again between the answer and the change.
+            // The lock on the pending file is kept until the version is changed back, and the file is cleared after that: a second process that was started for the same failure finds
+            // the lock and ends, instead of asking the same question again between the answer and the change.
             let done = cmd_rollback(app_id);
             panpak_core::starts::clear_pending(&appdir);
             done?;
         }
         crate::dialog::Answer::No => {
+            // "Try again": the failures so far are forgotten, so that the question comes back only after two new failures in a row (the start that follows is the first).
+            panpak_core::starts::reset_failed(&appdir);
             panpak_core::starts::clear_pending(&appdir);
             use std::os::unix::process::CommandExt;
             let (_, runtime) = best_runtime(&store)?;
@@ -4260,6 +4269,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     // current -> record: launchers follow it, update/rollback move it.
     let current = appdir.join("current");
     panpak_core::durable::replace_symlink(&dest, &current)?;
+    panpak_core::starts::reset_failed(&appdir);
     mark("record and current link written");
     panpak_core::failpoint!("install.current_linked");
     if let Some(apps) = appdir.parent() {
