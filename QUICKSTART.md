@@ -124,6 +124,12 @@ version gets the action when you install or update it again.
 runtime and the shared blobs stay. If `remove` is interrupted, the next `panpak` command finishes it. An app that was
 cleaned by hand, or half installed, is finished without errors. A launcher or an entry that panpak did not write is left alone.
 
+### Updates
+
+An app checks for a new version once a day in the background and applies it when the app is closed; a version that asks for new
+permissions waits for you. `panpak update <id>` does it by hand, and `panpak config set background.updates false` turns the
+check off. The details, and what runs when, are in `docs/UPDATES.md`.
+
 ### Trust on first use (TOFU) prompt
 
 At the first install `panpak install` prints the key fingerprint (first 16

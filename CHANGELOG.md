@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`panpak doctor`: no runtime installed is a note, not a failure.** On a fresh machine the runtime is installed by the first `panpak install` or `panpak build`, so a line that said KO and named `install-runtime` was wrong. It now prints `NOTE no runtime is installed yet: the first `panpak install` installs it`.
+- **A page on updates: `docs/UPDATES.md`, and a short section in QUICKSTART.md.** It says when the check runs (once a day, 20 s after a start or when the last copy ends), what is downloaded and checked, when the update is applied (when the app is closed; new permissions wait for the person), and how to turn it off. PANPAK-FORMAT.md section 4.1 gives the measured count of plug-ins that GIMP queries again after an update (46 of 135: the 43 that changed and 3 that are always queried).
 - **The `.pyc` files made by `pack` are removed (they were added by the change of the same release).** `pack`, `convert` and `build` no longer run the Python of a package in a sandbox to make `__pycache__`
   files, and `PANPAK_NO_PYC` does nothing. The reason is the measure: on the VM (Silverblue, external SSD with TRIM, 2026-11-23, GIMP 3.2.8) a first start with the `.pyc` files is 15.7 s and without them 15.9 s
   (series 3), inside the spread of the runs; a Python plug-in starts 0.15 to 0.2 s faster in isolation (0.10 s against 0.25 to 0.34 s), which does not show in the first start; and the package is 15 MB larger

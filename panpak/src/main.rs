@@ -4423,7 +4423,8 @@ fn cmd_doctor(pkg: Option<&Path>) -> Result<bool> {
     // Installed runtime.
     match best_runtime(&store) {
         Ok((abi, p)) => line(true, &format!("installed runtime: ABI {abi} ({})", p.display())),
-        Err(e) => line(false, &panpak_core::err_text(&e)),
+        // No runtime on a fresh machine is not a fault: the first `panpak install` or `panpak build` installs the one that comes with this program.
+        Err(_) => println!("NOTE no runtime is installed yet: the first `panpak install` installs it"),
     }
     // The apps that are in protected mode (a floor above the installed version): a fixed state, said at every `doctor`, with the way out.
     for l in protected::doctor_lines() {
