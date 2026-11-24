@@ -1066,7 +1066,7 @@ enum NetDecision {
 fn decide_net(has_v4: bool, wants_net: bool, allow_unfiltered: bool) -> NetDecision {
     match (has_v4, wants_net, allow_unfiltered) {
         (true, _, _) => NetDecision::Enforce,
-        (false, true, _) => NetDecision::Refuse("network=true requires Landlock ABI >= V4"),
+        (false, true, _) => NetDecision::Refuse("this app's network rules (allowed ports) need Linux 6.7 or newer (Landlock ABI >= V4)"),
         (false, false, true) => NetDecision::UnfilteredWarn,
         (false, false, false) => NetDecision::Refuse(
             "network cannot be filtered on this kernel (Landlock < V4): rerun with --network-unfiltered or upgrade the kernel",
@@ -5006,6 +5006,7 @@ mod tests {
         // Old kernel + network=true: always refuse (not even with the flag).
         assert!(matches!(decide_net(false, true, false), Refuse(_)));
         assert!(matches!(decide_net(false, true, true), Refuse(_)));
+        assert_eq!(decide_net(false, true, false), Refuse("this app's network rules (allowed ports) need Linux 6.7 or newer (Landlock ABI >= V4)"));
         // Old kernel + network=false: default refusal...
         assert!(matches!(decide_net(false, false, false), Refuse(_)));
         // ...opt-out only explicit, with warning.

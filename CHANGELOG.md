@@ -6,7 +6,7 @@
 
 - **`network = true` without ports is the whole network.** Until now it denied every TCP connection (Landlock handled the TCP rights and no port rule was added), and was refused on a kernel without Landlock V4; only UDP and DNS got out.
   Now a package that asks for `network = true` and lists no port has the network as `--share=network` gives it in Flatpak: TCP is not filtered, and the start does not depend on the kernel. With `network_allow_tcp` or `network_bind_tcp` the filter of ports
-  stays, and a kernel without V4 still refuses it. The permission screen says "Can use the network without limits."; a package with ports gets one more row, once, under the rows of the ports: "Other network traffic, such as UDP, is not limited." (no detail line; Italian in `po/it.po`).
+  stays, and a kernel without V4 still refuses it. The permission screen says "Can use the network without limits."; a package with ports gets one more row, once, under the rows of the ports: "Other network traffic, such as UDP, is not limited." (no detail line; Italian in `po/it.po`). The error of a kernel without Landlock V4 (only for a package with ports) now says what is wrong: "this app's network rules (allowed ports) need Linux 6.7 or newer (Landlock ABI >= V4)", where it said "network=true requires Landlock ABI >= V4".
   This **widens** what `network = true` allows: a package that was declared with it and worked only for UDP now also reaches TCP. PANPAK-FORMAT.md §3.1 and §9, THREAT-MODEL.md §4, README.md, PILOT.md (a note on the old probe).
   Tests: a unit test of the rule, a Landlock test (a connect to two ports succeeds with `network = true`, and still fails for the unlisted port with a list), `tests/view.py` (a TCP connect from the view).
 
