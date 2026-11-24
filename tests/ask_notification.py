@@ -101,7 +101,7 @@ def main():
         bus_addr = f'unix:path={tmp}/bus'
         env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(home / '.local/share'), XDG_CACHE_HOME=str(home / '.cache'), XDG_CONFIG_HOME=str(home / '.config'),
                    XDG_RUNTIME_DIR=str(runtime), LC_ALL='C', PANPAK_QUICK_SECS='0.3', PANPAK_NO_BACKGROUND='1', PANPAK_TEST_TOOLS_DIR=str(tools),
-                   PANPAK_TEST_ASK_SECS='3', DBUS_SESSION_BUS_ADDRESS='unix:path=' + str(tmp / 'nobus'))
+                   PANPAK_TEST_ASK_SECS='60', DBUS_SESSION_BUS_ADDRESS='unix:path=' + str(tmp / 'nobus'))
         env.pop('WAYLAND_DISPLAY', None)
         (tmp / 'secret.key').write_text((bytes([41]) * 32).hex() + '\n')
         (tmp / 'secret.key').chmod(0o600)
@@ -155,7 +155,7 @@ def main():
         try:
             wait_for(lambda: Path(str(log) + '.ready').exists(), 'the fake portal is up')
             # 2. Nobody presses: the notification is withdrawn after the wait, the question stays pending.
-            run(start, env, ok=False)
+            run(start, dict(env, PANPAK_TEST_ASK_SECS='3'), ok=False)
             wait_for(lambda: any('add' in r for r in records(log)), 'the notification is shown')
             first = records(log)[0]
             assert first['title'] == "Ask App doesn't start" and first['default_action'] is False, first
@@ -179,13 +179,17 @@ def main():
             print('1. button 1: went back, not pending: ok')
             # The second button: a new bad version, the question, "Try again": the app is started again and the question ends.
             run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--accept-new-permissions', '--runtime', BIN / 'panpak-stub', v2], env)
+            n = len([r for r in records(log) if 'add' in r])
             for _ in range(2):
                 run(start, env, ok=False)
-            n = len([r for r in records(log) if 'add' in r])
-            wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n - 1 and (appdir / 'pending-question').exists(), 'the question is shown')
+            wait_for(lambda: len([r for r in records(log) if 'add' in r]) > n and (appdir / 'pending-question').exists(), 'the question is shown')
             time.sleep(0.5)
             click.write_text('no')
-            wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button ends the question')
+            try:
+                wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button ends the question')
+            except AssertionError:
+                print('DEBUG', records(log), sorted(x.name for x in appdir.iterdir()), (appdir / 'pending-question').read_text())
+                raise
             assert os.readlink(appdir / 'current') == bad, 'Try again does not go back'
             print('1b. button 2: nothing changed, not pending: ok')
         finally:
