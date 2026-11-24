@@ -872,7 +872,9 @@ def main():
             gv.mkdir()
             srv = fuse_server.mount(gv)
             if srv is None:
-                print('FUSE tree of GVfs: SKIPPED (no fusermount3 or /dev/fuse here: a known skip, tests/UNSTABLE.md does not list it)')
+                # In the CI a skip is a test that passes without having run (isolation.in_ci): it fails there; fuse3 is installed by the workflow.
+                assert not isolation.in_ci(), 'FUSE tree of GVfs: no fusermount3 or /dev/fuse in the CI (the workflow installs fuse3)'
+                print('FUSE tree of GVfs: SKIPPED (no fusermount3 or /dev/fuse here)')
                 gv.rmdir()
             else:
                 try:
@@ -903,7 +905,7 @@ def main():
                     waited = time.time() - t0
                     hang.write_text('0')
                     assert rep.get('gvfs_fuse') == 'absent', f'a stuck mount is left out and the app starts: {rep.get("gvfs_fuse")} {p.stderr[-300:]}'
-                    assert "isn't responding" in p.stderr and waited < 60, (waited, p.stderr[-300:])
+                    assert "isn't responding" in p.stderr and waited < 20, (waited, p.stderr[-300:])
                     srv.kill()
                     srv.wait()
                     fuse_server.unmount(gv, None)

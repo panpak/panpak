@@ -180,7 +180,7 @@ jobs:
         # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
         # tests after it run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
         run: |
-          ./scripts/apt-install.sh --no-update bubblewrap xvfb x11-utils python3-gi gir1.2-gtk-3.0
+          ./scripts/apt-install.sh --no-update bubblewrap xvfb x11-utils python3-gi gir1.2-gtk-3.0 fuse3
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
           bwrap --version
@@ -290,7 +290,7 @@ jobs:
         # Ubuntu 24.04 lets an unprivileged program make a user namespace only under an AppArmor profile; the
         # tests after it run bubblewrap as the runner user, so the restriction is lifted for this job's machine.
         run: |
-          ./scripts/apt-install.sh --no-update bubblewrap xvfb x11-utils python3-gi gir1.2-gtk-3.0
+          ./scripts/apt-install.sh --no-update bubblewrap xvfb x11-utils python3-gi gir1.2-gtk-3.0 fuse3
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 /bin/true && echo "bubblewrap works"
           bwrap --version

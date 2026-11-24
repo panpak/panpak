@@ -320,7 +320,10 @@ fn answers(dir: &Path, wait: std::time::Duration) -> bool {
                 libc::dup2(null, 1);
                 libc::dup2(null, 2);
             }
-            libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32);
+            // If the descriptors cannot be closed the child ends at once: the parent then reads "does not answer" (fail closed), and nothing of ours is held by a child that stays behind.
+            if libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, 0u32) != 0 {
+                libc::_exit(2);
+            }
             let mut st: libc::stat = std::mem::zeroed();
             libc::_exit(if libc::stat(c.as_ptr(), &mut st) == 0 { 0 } else { 1 });
         }
@@ -334,6 +337,9 @@ fn answers(dir: &Path, wait: std::time::Duration) -> bool {
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
         if r == pid {
             return libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0;
+        }
+        if r < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
         }
         if r < 0 || std::time::Instant::now() >= end {
             return false;
