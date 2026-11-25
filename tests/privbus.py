@@ -838,6 +838,7 @@ def bench_rawlat(lab, csv_path, rounds=3):
     """The round trip of a `Ping` to the bus daemon of the lab over a raw socket, 1000 counted pings per run: with no layer (the probe outside, on the bus
     of the lab) and through the layer (the probe in the sandbox of an app), alternating, `rounds` times, in this one session. Adds a series to the CSV
     (an existing file keeps its series). The load average of the last minute is read before every run, and a run does not start above 0.5."""
+    import csv
     import hashlib
     import platform
     probe = lab.work / 'rawlat-probe.py'
@@ -861,22 +862,26 @@ def bench_rawlat(lab, csv_path, rounds=3):
         subprocess.run(['chmod', '-R', 'u+rwX', str(nolayer_rt)], capture_output=True)
         isolation.safe_rmtree(nolayer_rt, nolayer_rt.parent)
     cpu = next((l.split(':', 1)[1].strip() for l in open('/proc/cpuinfo') if l.startswith('model name')), '?')
-    meta = f'{time.strftime("%Y-%m-%d")},{cpu} / {platform.release()} / {os.cpu_count()} threads'
+    meta = (time.strftime('%Y-%m-%d'), f'{cpu} / {platform.release()} / {os.cpu_count()} threads')
     cmd = 'python3 tests/privbus.py --rawlat docs/bench-data/privbus-rawlat.csv'
     # The build the product figures belong to: the commit as `git describe` says it now ("-dirty" if the tree has changes), the last commit that touched the
     # code, and the hash of the two binaries. Build the release from that commit just before the series, so that they agree.
     describe = subprocess.run(['git', 'describe', '--always', '--dirty'], cwd=ROOT, capture_output=True, text=True).stdout.strip() or '?'
     code_commit = subprocess.run(['git', 'log', '-1', '--format=%h', '--', 'panpak', 'panpak-core', 'panpak-stub', 'Cargo.toml', 'Cargo.lock'], cwd=ROOT, capture_output=True, text=True).stdout.strip() or '?'
-    sums = ' '.join(hashlib.sha256((BIN / b).read_bytes()).hexdigest()[:12] for b in ('panpak', 'panpak-stub'))
-    old = Path(csv_path).read_text().splitlines()[1:] if Path(csv_path).exists() else []
-    series = 1 + max([int(l.split(',')[0]) for l in old] or [0])
-    header = 'series,date,machine,command,build,last_code_commit,binary_sha256_panpak_and_stub,round,configuration,load_1min_before,median_us,p99_us'
-    with open(csv_path, 'w') as f:
-        f.write(header + '\n')
-        for l in old:
-            f.write(l + '\n')
+    sums = ' '.join(hashlib.sha256((BIN / b).read_bytes()).hexdigest() for b in ('panpak', 'panpak-stub'))
+    old = []
+    if Path(csv_path).exists():
+        with open(csv_path, newline='') as f:
+            old = list(csv.reader(f))[1:]
+    series = 1 + max([int(r[0]) for r in old] or [0])
+    header = ['series', 'date', 'machine', 'command', 'build', 'last_code_commit', 'binary_sha256_panpak_and_stub', 'round', 'configuration', 'load_1min_before', 'median_us', 'p99_us']
+    date, machine = meta
+    with open(csv_path, 'w', newline='') as f:
+        w = csv.writer(f, lineterminator='\n')
+        w.writerow(header)
+        w.writerows(old)
         for rnd, cfg, load, med, p99 in rows:
-            f.write(f'{series},{meta},"{cmd}",{describe},{code_commit},{sums},{rnd},{cfg},{load},{med},{p99}\n')
+            w.writerow([series, date, machine, cmd, describe, code_commit, sums, rnd, cfg, load, med, p99])
     for rnd, cfg, load, med, p99 in rows:
         print(f'series {series} round {rnd}  {cfg:30s} load {load:4.2f}  median {med:6.1f} us  p99 {p99:6.1f} us')
 
