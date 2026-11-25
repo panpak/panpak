@@ -16,7 +16,7 @@
 # history and no cache, and the fetch of the RustSec database when there is no network. A failure of the infrastructure (apt locked, a download that times
 # out) is written in tests/UNSTABLE.md, and the job is run again.
 #
-# Temporary files: the tests run with their own TMPDIR (a new folder under $PANPAK_CI_TMP_BASE, default ~/.cache), and after every step the script lists what the step left
+# Temporary files: the tests run with their own TMPDIR (a new folder under $PANPAK_CI_TMP_BASE, default /tmp; not under $HOME, which the view of the sandbox hides), and after every step the script lists what the step left
 # there and what it left in /tmp outside it. A test that leaves a folder fails the run, unless the name matches a line of tests/ci-tmp-allowed.txt (a reason on the same line).
 # The folder of the run is removed with rmdir only when it is empty; when something was left it is kept and named, to be looked at and cleaned by hand.
 #
@@ -55,9 +55,10 @@ skipped=()
 timings=()
 leftovers=()
 started=$(date +%s)
-ci_tmp_base="${PANPAK_CI_TMP_BASE:-$HOME/.cache}"
+# Not under $HOME: the view of the sandbox puts an empty tmpfs on it, so the tests could not see their own files.
+ci_tmp_base="${PANPAK_CI_TMP_BASE:-/tmp}"
 mkdir -p "$ci_tmp_base"
-ci_tmp=$(mktemp -d "$ci_tmp_base/panpak-ci-tmp.XXXXXX")
+ci_tmp=$(mktemp -d "$ci_tmp_base/ci-local-tmp.XXXXXX")
 export TMPDIR="$ci_tmp"
 trap 'rmdir "$ci_tmp" 2>/dev/null' EXIT
 allowed="tests/ci-tmp-allowed.txt"
@@ -81,7 +82,7 @@ step() { # step "name" command...
 	shift
 	printf '\n=== %s\n' "$name"
 	local t0 t1 before after n
-	before=$(tmp_listing | sort)
+	before=$(tmp_listing | LC_ALL=C sort)
 	t0=$(date +%s)
 	if "$@"; then
 		printf 'ok   %s\n' "$name"
@@ -91,13 +92,13 @@ step() { # step "name" command...
 	fi
 	t1=$(date +%s)
 	timings+=("$((t1 - t0)) s  $name")
-	after=$(tmp_listing | sort)
+	after=$(tmp_listing | LC_ALL=C sort)
 	while read -r n; do
 		[ -n "$n" ] || continue
 		is_allowed "${n#*:}" && continue
 		printf 'LEFT %s (after the step "%s")\n' "$n" "$name"
 		leftovers+=("$n  <- $name")
-	done < <(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
+	done < <(LC_ALL=C comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 }
 skip() {
 	printf '\n=== %s\nskip %s\n' "$1" "$2"
