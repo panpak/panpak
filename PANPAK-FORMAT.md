@@ -705,7 +705,7 @@ entered, or was refused, or was staged) is not blocked: the person keeps the app
     default;
   - a start with nobody to ask (a script, a pipe): no question, one line on the standard error, and the app goes on in protected mode;
 - "Update now" opens the window of the system (`zenity` or `kdialog`, the one of the menu action "Uninstall") with the new permissions, when the update asks
-  for any; "No" changes nothing; "Yes" updates. Without a window tool the question is a notification of the portal with two buttons (§6.10); with no portal either, nothing is accepted and the person is told;
+  for any; "No" changes nothing; "Yes" updates. Without a window tool the question is a notification with two buttons (§6.10); with no notification service and no portal either, nothing is accepted and the person is told;
 - the menu of the app has, while the mode lasts, the action "Turn the internet back on…" (and "Turn the internet off again…" when it is on), with a
   window that explains the risk;
 - the state is shown in `panpak list`, `panpak doctor` and as JSON by `panpak protected --json [<app-id>]` (the state, whether an update is ready and the
@@ -1244,14 +1244,18 @@ The question says the name of the app (not its id), the two versions, and that t
 `panpak rollback` says that the documents are not touched and that settings changed by the newer version may not work in the older one: a client cannot undo a migration of the
 data of the app, and it does not pretend to.
 
-*The window, and the question that nobody answered.* The question is a window of `zenity` or `kdialog`. Where neither exists, a client MUST ask with a notification of the
-portal (`org.freedesktop.portal.Notification`) with the two buttons as the only actions (a click on the body is no answer). A client MUST NOT take a closed or unseen
-notification, or a window that was closed with the cross, for an answer, and MUST NOT count the question as answered until a button was pressed. The process that asks stays alive and
-waits for the button for at most 5 minutes, then it withdraws the notification (`RemoveNotification`), so that no button is left that nobody listens to. The question is
+*The window, and the question that nobody answered.* The question is a window of `zenity` or `kdialog`. Where neither exists, a client MUST ask with a notification with the
+two buttons as the only actions (a click on the body is no answer): to the notification service of the desktop (`org.freedesktop.Notifications`, `Notify`) first, and, when the service is
+not there or does not take it, to the notification portal (`org.freedesktop.portal.Notification`). The service is first because a process that the shell starts from the menu is in no
+application scope and the portal cannot tell which app it is (`InvalidApp`), while the service takes any caller. The answer signals of the service (`ActionInvoked`, `NotificationClosed`) are
+broadcasts and the number of a notification is small and can be guessed, so a client MUST accept them only from the owner of the name `org.freedesktop.Notifications`, and only for the number that
+`Notify` returned. A client MUST NOT take a closed or unseen notification, or a window that was closed with the cross, for an answer: a notification that the person dismisses (or that expires) ends the wait at once and the
+question stays unanswered; a client MUST NOT count the question as answered until a button was pressed. The process that asks stays alive and
+waits for the button for at most 5 minutes, then it withdraws the notification (`CloseNotification`, or `RemoveNotification` of the portal), so that no button is left that nobody listens to. The question is
 **pending** from the moment it is asked until a button answers it: the file `apps/<id>/pending-question` (`kind=kept-versions`, `root=<record>`) holds it, and one process at a
 time (a lock on the file) waits for the answer. At the next start of the app the client asks again when the file names the installed version, and writes one line on its
 standard error with the command (`panpak rollback <id>`); a file about another version, or a question that has no last good version to go back to, is dropped. `panpak rollback` ends the
-question. With no window tool, no portal and no bus, the question stays pending and only the line is shown. The action "Uninstall" is not kept: with no answer nothing is removed.
+question. With no window tool, no notification service, no portal and no bus, the question stays pending and only the line is shown. The action "Uninstall" is not kept: with no answer nothing is removed.
 
 *Privacy.* The outcomes never leave the computer: they are a few numbers in a file of the store, read by the client and the runtime, and no client sends them anywhere. The file
 is not trusted for anything but this question: a damaged or edited file can make the question appear or not appear, and it changes no version.
@@ -1865,7 +1869,7 @@ happened to run `install`). If that file does not exist when the entry is writte
 `panpak remove --ask <id>` asks in a dialog (`zenity` or `kdialog`, from fixed folders, never from `PATH`) with the name of the
 app, what is removed, that the settings and data are kept (with their size) and that a new install finds them; no command and no folder path (they are in the output of `panpak remove`); the texts are in the language of the system
 (`po/<language>.po`, §3.1.4 of the translations). Only a yes starts the removal, which never deletes data. A `remove` that finds itself in the scope `app-*panpak.<id>-*.scope` of the app (the scope that the shell makes for the
-action) first moves into a scope of its own, because the document portal takes the caller of such a scope for the app and refuses it to revoke the app's documents. It ends with a notification (`notify-send` or `gdbus`, if present). Without a window tool the question is a notification of the portal with two buttons that waits 5 minutes and is then withdrawn; with no answer nothing is removed. With neither it removes nothing, explains the
+action) first moves into a scope of its own, because the document portal takes the caller of such a scope for the app and refuses it to revoke the app's documents. It ends with a notification (`notify-send` or `gdbus`, if present). Without a window tool the question is a notification with two buttons (§6.10) that waits 5 minutes and is then withdrawn; with no answer nothing is removed. With neither it removes nothing, explains the
 terminal command by notification and ends with `PANPAK-E5004`. `--ask` takes no other option.
 
 The runtime and the shared blobs and chunks stay. Every step below the store, the data, the cache and the runtime

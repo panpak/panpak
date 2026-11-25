@@ -241,7 +241,7 @@ entry. A link put in place of a folder must not make the command delete somethin
 
 The menu action `remove --ask` runs with the rights of the user from an entry that panpak wrote with the absolute path of
 its own binary; it uses `zenity`, `kdialog`, `notify-send` or `gdbus` only from `/usr/bin`, `/bin` and `/run/current-system/sw/bin`,
-passes the app name (which comes from the package) as one argument without a shell (and, without those tools, as text of a notification of the portal of the user's own session, with no markup and no control characters; the buttons are the only way to answer, and a question is withdrawn after 5 minutes: a late click does nothing), removes markup characters and control
+passes the app name (which comes from the package) as one argument without a shell (and, without those tools, as text of a notification of the user's own session, to the notification service of the desktop and, if it is not there, to the portal, with the characters that start markup written as entities and no control characters; the buttons are the only way to answer, an answer from the service counts only if the signal is sent by the owner of the name `org.freedesktop.Notifications` and carries the number of that notification (the number is small and another program of the session can guess it, but cannot write another sender), and a question is withdrawn after 5 minutes: a late click does nothing), removes markup characters and control
 characters from it, and never deletes data. Another program that can write the user's `~/.local/share/applications` could
 point an action elsewhere, but it could do the same with the launcher entry itself.
 
@@ -843,7 +843,7 @@ Status of the project: pre-beta.
   of apps that use `org.freedesktop.Notifications` directly (libnotify, so Electron and most Qt apps through
   KNotification) are shown, but a click or an action button does not reach the app. Apps that use the portal are not
   affected, and GTK apps use it because the layer sets `GTK_USE_PORTAL=1`. Which apps lose actions is derived from the
-  toolkit, not measured with each app.
+  toolkit, not measured with each app. The questions of Panpak itself are not affected: the process that asks runs outside the sandbox, on the user's own bus, and receives these broadcasts (measured on GNOME Shell 51 on 2026-11-25: `notify-send -w` got the button and the click on the body, from a terminal and from a process started by the menu).
 - **KL-27 The single-instance name is the upstream id, on the app's own bus.** The app owns its `app.id` on its private bus
   (step 13p), as GTK and KDE applications do for single instance, so the copies of the app find each other through the router. A Flatpak or a
   distribution package of the same program on the host bus no longer competes for the name (before 13p it could, see KL-31). The portals know the

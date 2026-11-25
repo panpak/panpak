@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""Questions without `zenity` or `kdialog` (PANPAK-FORMAT.md 6.10): the question of kept versions is a notification of the portal with two buttons.
+"""Questions without `zenity` or `kdialog` (PANPAK-FORMAT.md 6.10): the question of kept versions is a notification with two buttons, of the notification
+service of the desktop (`org.freedesktop.Notifications`) when there is one and of the portal when there is not.
 
 Usage: python3 tests/ask_notification.py   (debug musl binaries built first; an isolated HOME; a private bus; no real window or notification)
 The portal is a fake (PyGObject owns `org.freedesktop.portal.Desktop` on a private bus, records `AddNotification` and `RemoveNotification`, and sends
@@ -10,7 +11,11 @@ The portal is a fake (PyGObject owns `org.freedesktop.portal.Desktop` on a priva
      pending file is gone;
   2. nobody presses: after the wait the notification is withdrawn, the question stays pending and nothing changes; the next start asks again, and "Try again"
      (the other button) ends the question;
-  3. no bus and no tool: nothing is asked, the question stays pending, and the next start says so on its standard error.
+  3. no bus and no tool: nothing is asked, the question stays pending, and the next start says so on its standard error;
+  4. the service of the desktop (a fake that owns `org.freedesktop.Notifications` next to the fake portal): the question goes to the service and not to the portal,
+     with the two buttons as the only actions, no default action and no hint; a button of the service answers (as the broadcast that GNOME Shell sends); the same
+     signal sent by another client is not an answer; a notification that the person dismisses ends the wait at once and leaves the question pending; with no answer
+     the notification is closed after the wait.
 """
 import json
 import os
@@ -70,6 +75,70 @@ GLib.timeout_add(100, poll)
 GLib.MainLoop().run()
 '''
 
+
+# A fake notification service: it owns `org.freedesktop.Notifications`, records `Notify` and `CloseNotification`, and sends `ActionInvoked` and `NotificationClosed`
+# when told, as broadcasts (no destination), as GNOME Shell does.
+FAKE_SERVICE = r'''
+import gi, json, os, sys, time
+gi.require_version('Gio', '2.0')
+from gi.repository import Gio, GLib
+log, cmd = sys.argv[1], sys.argv[2]
+XML = """<node><interface name="org.freedesktop.Notifications">
+<method name="Notify"><arg type="s" direction="in"/><arg type="u" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="as" direction="in"/><arg type="a{sv}" direction="in"/><arg type="i" direction="in"/><arg type="u" direction="out"/></method>
+<method name="CloseNotification"><arg type="u" direction="in"/></method>
+<method name="GetCapabilities"><arg type="as" direction="out"/></method>
+<signal name="ActionInvoked"><arg type="u"/><arg type="s"/></signal>
+<signal name="NotificationClosed"><arg type="u"/><arg type="u"/></signal></interface></node>"""
+conn_box, last = [], []
+def note(d):
+    d['ts'] = round(time.time(), 3)
+    with open(log, 'a') as f:
+        f.write(json.dumps(d) + '\n')
+def on_call(conn, sender, path, iface, method, params, inv):
+    p = params.unpack()
+    if method == 'Notify':
+        n = len(last) + 100
+        last.append(n)
+        note({'notify': n, 'app': p[0], 'replaces': p[1], 'title': p[3], 'body': p[4], 'actions': list(p[5]), 'hints': dict(p[6]), 'expire': p[7]})
+        inv.return_value(GLib.Variant('(u)', (n,)))
+    elif method == 'CloseNotification':
+        note({'close': p[0]})
+        inv.return_value(None)
+    else:
+        inv.return_value(GLib.Variant('(as)', (['actions', 'body'],)))
+def poll():
+    if os.path.exists(cmd) and conn_box and last:
+        text = open(cmd).read().strip()
+        if not text:
+            return True
+        os.unlink(cmd)
+        what, _, arg = text.partition(' ')
+        note({'send': text, 'to': last[-1]})
+        if what == 'action':
+            conn_box[0].emit_signal(None, '/org/freedesktop/Notifications', 'org.freedesktop.Notifications', 'ActionInvoked', GLib.Variant('(us)', (last[-1], arg)))
+        elif what == 'closed':
+            conn_box[0].emit_signal(None, '/org/freedesktop/Notifications', 'org.freedesktop.Notifications', 'NotificationClosed', GLib.Variant('(uu)', (last[-1], int(arg))))
+    return True
+def acquired(conn, name):
+    conn_box.append(conn)
+    node = Gio.DBusNodeInfo.new_for_xml(XML)
+    conn.register_object('/org/freedesktop/Notifications', node.interfaces[0], on_call, None, None)
+    open(log + '.ready', 'w').write('1')
+Gio.bus_own_name(Gio.BusType.SESSION, 'org.freedesktop.Notifications', Gio.BusNameOwnerFlags.NONE, acquired, None, None)
+GLib.timeout_add(100, poll)
+GLib.MainLoop().run()
+'''
+
+# Another client of the bus sends the signal of the service with the number of the notification: its sender is its own name, so it is not an answer.
+SPOOFER = r'''
+import gi, sys
+gi.require_version('Gio', '2.0')
+from gi.repository import Gio, GLib
+number, key = int(sys.argv[1]), sys.argv[2]
+conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+conn.emit_signal(None, '/org/freedesktop/Notifications', 'org.freedesktop.Notifications', 'ActionInvoked', GLib.Variant('(us)', (number, key)))
+conn.flush_sync(None)
+'''
 
 # What every command printed, shown when a step fails (a flaw of this test showed in the CI and not locally: see the pull request that fixed it).
 RUNLOG = []
@@ -176,6 +245,8 @@ def main():
         env['DBUS_SESSION_BUS_ADDRESS'] = bus_addr
         (tmp / 'portal.py').write_text(FAKE_PORTAL)
         portal = subprocess.Popen([sys.executable, tmp / 'portal.py', log, click], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        procs = [portal, bus]
+        slog = tmp / 'service.log'
         try:
             wait_for(lambda: Path(str(log) + '.ready').exists(), 'the fake portal is up')
             # 2. Nobody presses: the notification is withdrawn after the wait, the question stays pending.
@@ -243,6 +314,84 @@ def main():
             put_click(click, 'yes')
             wait_for(lambda: os.readlink(appdir / 'current') == good and not (appdir / 'pending-question').exists(), 'the last question is answered')
             print('1c. two failures in a row ask again: ok')
+            # 4. The service of the desktop. It is started while the fake portal is still there: the question must go to the service and not to the portal.
+            slog, scmd = tmp / 'service.log', tmp / 'service-cmd'
+            (tmp / 'service.py').write_text(FAKE_SERVICE)
+            (tmp / 'spoof.py').write_text(SPOOFER)
+            service = subprocess.Popen([sys.executable, tmp / 'service.py', slog, scmd], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            procs.append(service)
+            wait_for(lambda: Path(str(slog) + '.ready').exists(), 'the fake notification service is up')
+
+            def notifies():
+                return [r for r in records(slog) if 'notify' in r]
+
+            def send(text):
+                put_click(scmd, text)
+                wait_for(lambda: not scmd.exists(), 'the fake service took the command')
+
+            def ask_again():
+                # The bad version again (the same root: the counter is forgotten), then two failures in a row ask.
+                run(install_v2, env)
+                n = len(notifies())
+                for _ in range(2):
+                    run(start, env, ok=False)
+                wait_for(lambda: len(notifies()) > n and (appdir / 'pending-question').exists(), 'the question is shown by the service')
+                return notifies()[-1]
+
+            portal_adds = len([r for r in records(log) if 'add' in r])
+            first = ask_again()
+            assert first['app'] == 'Panpak', first
+            assert first['actions'] == ['yes', 'Go back to 1.0', 'no', 'Try again'], first
+            assert first['hints'] == {} and first['expire'] == 0 and 'default' not in first['actions'], first
+            assert first['title'] == "Ask App doesn't start" and 'failed to start twice' in first['body'], first
+            assert len([r for r in records(log) if 'add' in r]) == portal_adds, 'the portal was asked although the service is there'
+            print('4a. the question goes to the service, two buttons, no default action, no hint, the portal not asked: ok')
+            # The same signal from another client is not an answer; the answer of the service is.
+            subprocess.run([sys.executable, tmp / 'spoof.py', str(first['notify']), 'yes'], env=env, check=True, timeout=30)
+            time.sleep(1.0)
+            assert os.readlink(appdir / 'current') == bad and (appdir / 'pending-question').exists(), 'a signal of another client answered the question'
+            send('action yes')
+            wait_for(lambda: os.readlink(appdir / 'current') == good and not (appdir / 'pending-question').exists(), 'the button of the service goes back')
+            wait_for(lambda: any(r.get('close') == first['notify'] for r in records(slog)), 'the notification is closed after the answer')
+            print("4b. another client's signal ignored; the button of the service goes back; the notification is closed: ok")
+            # The person dismisses the notification: the wait ends at once (the test waits up to 60 s), the question stays pending, nothing changes.
+            second = ask_again()
+            send('closed 2')
+            wait_for(lambda: any(r.get('close') == second['notify'] for r in records(slog)), 'the process stops waiting when the notification is dismissed', seconds=10)
+            assert (appdir / 'pending-question').exists() and os.readlink(appdir / 'current') == bad, 'a dismissal answered the question'
+            print('4c. dismissed: the wait ends at once, pending, nothing changed: ok')
+            # Nobody presses: after the wait the notification is closed, the question stays pending.
+            n = len(notifies())
+            run(start, dict(env, PANPAK_TEST_ASK_SECS='3'), ok=False)
+            wait_for(lambda: len(notifies()) > n, 'the question is asked again at the next start')
+            third = notifies()[-1]
+            wait_for(lambda: any(r.get('close') == third['notify'] for r in records(slog)), 'the notification is closed after the wait', seconds=15)
+            assert (appdir / 'pending-question').exists() and os.readlink(appdir / 'current') == bad
+            print('4d. nobody presses: closed after the wait, pending: ok')
+            # The second button of the service ends the question and changes nothing.
+            n = len(notifies())
+            run(start, env, ok=False)
+            wait_for(lambda: len(notifies()) > n, 'the question is asked again')
+            time.sleep(0.5)  # a failed start is counted a moment after it ends; "Try again" forgets the count, so the count must be in before the answer (as in 1b)
+            send('action no')
+            wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button of the service ends the question')
+            assert os.readlink(appdir / 'current') == bad
+            print('4e. the second button of the service: nothing changed, not pending: ok')
+            # "Uninstall" through the service: "Cancel" removes nothing; the answer "Remove" removes the app (the last thing of this test).
+            for key, removed in (('no', False), ('yes', True)):
+                time.sleep(3)  # the router of the private bus of the app stays 1.5 s after the last copy, and an app that is open is not removed
+                n = len(notifies())
+                pr = subprocess.Popen([BIN / 'panpak', 'remove', '--ask', ID], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                wait_for(lambda: len(notifies()) > n, 'the question to remove is shown by the service')
+                q = notifies()[-1]
+                assert q['app'] == 'Panpak' and q['actions'][0] == 'yes' and q['actions'][2] == 'no' and 'default' not in q['actions'], q
+                send('action ' + key)
+                out, err = pr.communicate(timeout=60)
+                assert pr.returncode == 0, (out, err)
+                assert appdir.exists() != removed, f'{key}: removed={not appdir.exists()}'
+                if not removed:
+                    assert 'cancelled: nothing was removed' in out, out
+            print('4f. uninstall through the service: Cancel removes nothing, Remove removes: ok')
             if os.environ.get('PANPAK_ASKN_DUMP_TEST'):
                 raise AssertionError('forced, to see the diagnostics')
         except BaseException:
@@ -250,6 +399,9 @@ def main():
             print('--- commands run by the test (start, end, command, status, stdout, stderr)')
             for t0, t1, cmd, rc, out, err in RUNLOG:
                 print(f'{t0:.3f}-{t1:.3f} {cmd} rc={rc} out={out!r} err={err!r}')
+            print('--- the service log')
+            for r in records(slog):
+                print(json.dumps(r))
             print('--- the portal log')
             for r in records(log):
                 print(json.dumps({k: v for k, v in r.items() if k not in ('body', 'buttons')}))
@@ -258,7 +410,7 @@ def main():
                 print(f.name, '->', os.readlink(f) if f.is_symlink() else (f.read_text()[-200:] if f.is_file() else 'dir'))
             raise
         finally:
-            for pr in (portal, bus):
+            for pr in reversed(procs):
                 pr.terminate()
                 pr.wait()
         print('questions without a window tool PASS')

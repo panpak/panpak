@@ -16,14 +16,14 @@ The window of the tool that the desktop uses (`kdialog` on KDE, else `zenity`). 
 
 ## Without them (Fedora Silverblue, for example)
 
-The question is a notification of the system with the same two buttons (the notification portal). A click on the text of the notification is not an answer.
+The question is a notification with the same two buttons: of the notification service of the desktop (`org.freedesktop.Notifications`, which also takes a question that starts from the menu of GNOME) and, if there is none, of the notification portal. A click on the text of the notification is not an answer. If you dismiss the notification, the question stays unanswered at once and the process does not wait any longer.
 
 - A small process waits for a button for **5 minutes**. Then it withdraws the notification, so that no button stays on the screen that would do nothing.
 - "Uninstall": with no answer nothing is removed, and the question is not kept. Use the menu action again, or run `panpak remove <id>`.
 - "{app} doesn't start": the question stays **pending** until a button answers it. At the next start of the app it is asked again, and one line with the command (`panpak rollback <id>`)
   appears on the standard error of the start. The pending question is dropped when it is not the case any more (the version was proven, or you went back by command).
 - Protected mode and the update with new permissions: nothing changes without an answer; the next notice asks again.
-- With no tool, no notification service and no session bus: nothing is asked. The commands in the text of the messages (`panpak rollback`, `panpak update`, `panpak allow-internet`,
+- With no tool, no notification service, no portal and no session bus: nothing is asked. The commands in the text of the messages (`panpak rollback`, `panpak update`, `panpak allow-internet`,
   `panpak remove`) do the same in a terminal.
 
 Nothing about a question leaves the computer.
