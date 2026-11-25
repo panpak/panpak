@@ -58,7 +58,7 @@ started=$(date +%s)
 # Not under $HOME: the view of the sandbox puts an empty tmpfs on it, so the tests could not see their own files.
 ci_tmp_base="${PANPAK_CI_TMP_BASE:-/tmp}"
 mkdir -p "$ci_tmp_base"
-ci_tmp=$(mktemp -d "$ci_tmp_base/ci-local-tmp.XXXXXX")
+ci_tmp=$(mktemp -d "$ci_tmp_base/ci.XXXXXX")
 export TMPDIR="$ci_tmp"
 trap 'rmdir "$ci_tmp" 2>/dev/null' EXIT
 allowed="tests/ci-tmp-allowed.txt"

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Every test binary includes this file (`#[cfg(test)] #[path = "..."] mod testtmp;`). Before `main` runs, the process gets its own temporary folder
-//! (`panpak-test-<pid>` under the usual one) and `TMPDIR` points to it, so every `std::env::temp_dir()` of the tests, and of the programs they start, is inside it.
+//! (`t<pid>` under the usual one; short, because a socket path has 108 bytes at most) and `TMPDIR` points to it, so every `std::env::temp_dir()` of the tests, and of the programs they start, is inside it.
 //! When the process ends the folder is removed, also what a test made unreadable. `PANPAK_KEEP_TEST_TMP=1` keeps it, to look at a failure.
-//! A forked child that ends does not remove it: only the process that made it does.
+//! A forked child that ends does not remove it: only the process that made it does. A test that starts its own binary again (the helper that runs one test alone)
+//! finds `PANPAK_TEST_TMP_OWNED` and uses the folder of its parent, which removes it.
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -14,15 +15,16 @@ static DIR: OnceLock<(u32, PathBuf)> = OnceLock::new();
 static INIT: extern "C" fn() = init;
 
 extern "C" fn init() {
-    if std::env::var_os("PANPAK_KEEP_TEST_TMP").is_some() {
+    if std::env::var_os("PANPAK_KEEP_TEST_TMP").is_some() || std::env::var_os("PANPAK_TEST_TMP_OWNED").is_some() {
         return;
     }
     let me = std::process::id();
-    let dir = std::env::temp_dir().join(format!("panpak-test-{me}"));
+    let dir = std::env::temp_dir().join(format!("t{me}"));
     if std::fs::create_dir(&dir).is_err() {
         return;
     }
     std::env::set_var("TMPDIR", &dir);
+    std::env::set_var("PANPAK_TEST_TMP_OWNED", "1");
     let _ = DIR.set((me, dir));
     // SAFETY: `cleanup` is a plain function that takes no argument.
     unsafe {

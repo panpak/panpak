@@ -429,9 +429,11 @@ def main():
         (h / rel).write_text(text)
     fake = Fake(lab.runtime, h)
     lab.env['WAYLAND_DISPLAY'] = 'wayland-0'
-    marker = Path('/tmp') / f'panpak-view-marker-{os.getpid()}'
-    marker.write_text('host tmp\n')
-    atexit.register(lambda: marker.unlink(missing_ok=True))  # the marker has to be in /tmp itself (the test is that the view hides it), so it is removed here
+    # The marker has to be in /tmp itself (the test is that the view hides it). It has its own name: `marker` is used again below for another file, and the
+    # `finally` that removes this one used to remove that one instead, so the marker was left in /tmp at every run.
+    tmp_marker = Path('/tmp') / f'panpak-view-marker-{os.getpid()}'
+    tmp_marker.write_text('host tmp\n')
+    atexit.register(lambda m=tmp_marker: m.unlink(missing_ok=True))
     # A listening socket in /var/tmp: outside the folders the view replaces (home, /tmp, /run).
     outside = Path('/var/tmp') / f'panpak-view-outside-{os.getpid()}.sock'
     outside.unlink(missing_ok=True)
@@ -484,7 +486,7 @@ def main():
         print(p.stdout.strip().splitlines()[-3:])
         if view_here:
             assert 'isolated view (bubblewrap)' in layers, layers
-        p, rep = run_report(lab, ['--marker', str(marker), str(outside), net_arg], mask=False)
+        p, rep = run_report(lab, ['--marker', str(tmp_marker), str(outside), net_arg], mask=False)
         assert p.returncode == 0, p.stderr
         gone = dict(sock_ssh_cm='absent', sock_gpg_home='absent', home_ssh_dir='absent', home_gnupg_dir='absent', home_secret='absent',
                     home_xauthority='absent', store_packages='absent', store_blobs='absent', store_apps='absent',
@@ -534,7 +536,7 @@ def main():
         assert 'isolation layers: Landlock abstract-socket scope (V6)' in installed or 'Landlock path sockets' in installed, installed
         assert 'NOTE: no isolated view: /usr/bin/bwrap is missing or cannot be run' in installed, installed
         net_got.clear()
-        p, rep = run_report(lab, ['--marker', str(marker), str(outside), net_arg], mask=True)
+        p, rep = run_report(lab, ['--marker', str(tmp_marker), str(outside), net_arg], mask=True)
         assert p.returncode == 0, p.stdout + p.stderr
         # Without the view, Landlock stops TCP only: a datagram still reaches the host (documented limit).
         time.sleep(0.3)
@@ -966,7 +968,7 @@ def main():
     finally:
         if x:
             x.terminate()
-        marker.unlink(missing_ok=True)
+        tmp_marker.unlink(missing_ok=True)
         outside.unlink(missing_ok=True)
         outside_srv.close()
         for s in fake.socks:
