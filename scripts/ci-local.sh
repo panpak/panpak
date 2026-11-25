@@ -16,6 +16,10 @@
 # history and no cache, and the fetch of the RustSec database when there is no network. A failure of the infrastructure (apt locked, a download that times
 # out) is written in tests/UNSTABLE.md, and the job is run again.
 #
+# Temporary files: the tests run with their own TMPDIR (a new folder under $PANPAK_CI_TMP_BASE, default ~/.cache), and after every step the script lists what the step left
+# there and what it left in /tmp outside it. A test that leaves a folder fails the run, unless the name matches a line of tests/ci-tmp-allowed.txt (a reason on the same line).
+# The folder of the run is removed with rmdir only when it is empty; when something was left it is kept and named, to be looked at and cleaned by hand.
+#
 # Priority limits: every heavy step runs under `nice -n 19` and `ionice -c 3`; PANPAK_LOWRUN=<wrapper> puts a wrapper in front instead (a systemd scope with a
 # memory cap), for example ~/panpak-dogfood/tools/lowrun.sh. Never run it from a graphical terminal's tests by hand with another environment: the runners take the
 # desktop out of the environment of the tests (CONTRIBUTING.md).
@@ -49,12 +53,35 @@ lowrun() {
 failed=()
 skipped=()
 timings=()
+leftovers=()
 started=$(date +%s)
+ci_tmp_base="${PANPAK_CI_TMP_BASE:-$HOME/.cache}"
+mkdir -p "$ci_tmp_base"
+ci_tmp=$(mktemp -d "$ci_tmp_base/panpak-ci-tmp.XXXXXX")
+export TMPDIR="$ci_tmp"
+trap 'rmdir "$ci_tmp" 2>/dev/null' EXIT
+allowed="tests/ci-tmp-allowed.txt"
+# The names in the run's TMPDIR and the names in /tmp (outside it) that are not the ones of other users of the machine: one per line, sorted.
+tmp_listing() {
+	ls -A "$ci_tmp" 2>/dev/null | sed 's|^|T:|'
+	ls -A /tmp 2>/dev/null | grep -E '^(panpak|\.panpak)' | sed 's|^|/tmp:|'
+}
+is_allowed() { # is_allowed NAME: a line of the allow-list (a glob, then a reason) matches it
+	[ -f "$allowed" ] || return 1
+	local pat
+	while read -r pat _; do
+		case "$pat" in '' | '#'*) continue ;; esac
+		# shellcheck disable=SC2254
+		case "$1" in $pat) return 0 ;; esac
+	done <"$allowed"
+	return 1
+}
 step() { # step "name" command...
 	local name="$1"
 	shift
 	printf '\n=== %s\n' "$name"
-	local t0 t1
+	local t0 t1 before after n
+	before=$(tmp_listing | sort)
 	t0=$(date +%s)
 	if "$@"; then
 		printf 'ok   %s\n' "$name"
@@ -64,6 +91,13 @@ step() { # step "name" command...
 	fi
 	t1=$(date +%s)
 	timings+=("$((t1 - t0)) s  $name")
+	after=$(tmp_listing | sort)
+	while read -r n; do
+		[ -n "$n" ] || continue
+		is_allowed "${n#*:}" && continue
+		printf 'LEFT %s (after the step "%s")\n' "$n" "$name"
+		leftovers+=("$n  <- $name")
+	done < <(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 }
 skip() {
 	printf '\n=== %s\nskip %s\n' "$1" "$2"
@@ -128,6 +162,14 @@ printf 'times (seconds):\n'
 printf '  %s\n' "${timings[@]}"
 printf '  total %d s\n' "$(($(date +%s) - started))"
 for s in "${skipped[@]:-}"; do [ -n "$s" ] && printf 'skipped: %s\n' "$s"; done
+if rmdir "$ci_tmp" 2>/dev/null; then :; else
+	printf 'The temporary folder of this run was kept, it is not empty: %s\n' "$ci_tmp"
+fi
+if [ "${#leftovers[@]}" -gt 0 ]; then
+	printf 'LEFT BEHIND (%d), T: is in the folder of the run, /tmp: is in /tmp:\n' "${#leftovers[@]}"
+	printf '  %s\n' "${leftovers[@]}"
+	failed+=("temporary files left by the steps")
+fi
 if [ "${#failed[@]}" -gt 0 ]; then
 	printf 'FAILED (%d):\n' "${#failed[@]}"
 	printf '  %s\n' "${failed[@]}"

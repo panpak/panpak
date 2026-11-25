@@ -1,0 +1,2 @@
+# Names that a step of scripts/ci-local.sh may leave in its temporary folder (T:name) or in /tmp (name starting with panpak), one glob per line, then the reason.
+# Empty on purpose: a test that leaves a folder is fixed, not listed. A line here needs a reason that says why the leftover cannot be removed.
