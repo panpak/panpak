@@ -822,22 +822,37 @@ def load_1min():
     return float(open('/proc/loadavg').read().split()[0])
 
 
-def wait_for_quiet(limit=0.5, wait_s=300):
-    """The load average of the last minute, read just before a run. A bench does not start above `limit`: it waits, then stops and says so."""
+def cpu_pressure_some_avg10():
+    """`some avg10` of /proc/pressure/cpu (percent of time some task waited for a CPU, last 10 s), or None when the kernel does not give the file."""
+    try:
+        for line in open('/proc/pressure/cpu'):
+            if line.startswith('some '):
+                return float(dict(kv.split('=') for kv in line.split()[1:])['avg10'])
+    except OSError:
+        pass
+    return None
+
+
+def wait_for_quiet(limit=0.5, pressure_limit=1.0, wait_s=300):
+    """The load average of the last minute and the CPU pressure (`some avg10`), read just before a run. A bench does not start above `limit` or above
+    `pressure_limit`: it waits, then stops and says so. Without /proc/pressure/cpu only the load is checked, and it says so (once). Returns (load, pressure or None)."""
     t_end = time.time() + wait_s
+    if cpu_pressure_some_avg10() is None and not getattr(wait_for_quiet, 'said', False):
+        print('/proc/pressure/cpu is not available: only the load average is checked')
+        wait_for_quiet.said = True
     while True:
-        load = load_1min()
-        if load <= limit:
-            return load
+        load, psi = load_1min(), cpu_pressure_some_avg10()
+        if load <= limit and (psi is None or psi < pressure_limit):
+            return load, psi
         if time.time() > t_end:
-            raise SystemExit(f'the machine is not quiet: load average {load} (limit {limit}) for {wait_s} s; no measure was made')
+            raise SystemExit(f'the machine is not quiet: load average {load} (limit {limit}), CPU pressure some avg10 {psi} (limit {pressure_limit}) for {wait_s} s; no measure was made')
         time.sleep(10)
 
 
 def bench_rawlat(lab, csv_path, rounds=3):
     """The round trip of a `Ping` to the bus daemon of the lab over a raw socket, 1000 counted pings per run: with no layer (the probe outside, on the bus
     of the lab) and through the layer (the probe in the sandbox of an app), alternating, `rounds` times, in this one session. Adds a series to the CSV
-    (an existing file keeps its series). The load average of the last minute is read before every run, and a run does not start above 0.5."""
+    (an existing file keeps its series). The load average of the last minute and the CPU pressure (`some avg10`) are read before every run; a run does not start above load 0.5 or pressure 1.0."""
     import csv
     import hashlib
     import platform
@@ -850,14 +865,14 @@ def bench_rawlat(lab, csv_path, rounds=3):
         data.mkdir()
         rows = []
         for rnd in range(1, rounds + 1):
-            load = wait_for_quiet()
+            load, psi = wait_for_quiet()
             env = dict(lab.env, XDG_RUNTIME_DIR=str(nolayer_rt), XDG_DATA_HOME=str(data))
             subprocess.run([sys.executable, str(probe), 'rawlat', 'x', '0'], env=env, check=True, timeout=120, stdin=subprocess.DEVNULL)
             r = json.loads((data / 'probe-rawlat.json').read_text())
-            rows.append((rnd, 'no layer', load, r['median_us'], r['p99_us']))
-            load = wait_for_quiet()
+            rows.append((rnd, 'no layer', load, psi, r['median_us'], r['p99_us']))
+            load, psi = wait_for_quiet()
             r = lab.run('org.panpaktest.Squat', 'rawlat', 'x', 0)
-            rows.append((rnd, 'through the layer (product)', load, r['median_us'], r['p99_us']))
+            rows.append((rnd, 'through the layer (product)', load, psi, r['median_us'], r['p99_us']))
     finally:
         subprocess.run(['chmod', '-R', 'u+rwX', str(nolayer_rt)], capture_output=True)
         isolation.safe_rmtree(nolayer_rt, nolayer_rt.parent)
@@ -874,16 +889,17 @@ def bench_rawlat(lab, csv_path, rounds=3):
         with open(csv_path, newline='') as f:
             old = list(csv.reader(f))[1:]
     series = 1 + max([int(r[0]) for r in old] or [0])
-    header = ['series', 'date', 'machine', 'command', 'build', 'last_code_commit', 'binary_sha256_panpak_and_stub', 'round', 'configuration', 'load_1min_before', 'median_us', 'p99_us']
+    header = ['series', 'date', 'machine', 'command', 'build', 'last_code_commit', 'binary_sha256_panpak_and_stub', 'round', 'configuration', 'load_1min_before', 'median_us', 'p99_us', 'cpu_pressure_some_avg10_before']
     date, machine = meta
     with open(csv_path, 'w', newline='') as f:
         w = csv.writer(f, lineterminator='\n')
         w.writerow(header)
-        w.writerows(old)
-        for rnd, cfg, load, med, p99 in rows:
-            w.writerow([series, date, machine, cmd, describe, code_commit, sums, rnd, cfg, load, med, p99])
-    for rnd, cfg, load, med, p99 in rows:
-        print(f'series {series} round {rnd}  {cfg:30s} load {load:4.2f}  median {med:6.1f} us  p99 {p99:6.1f} us')
+        # Series made before this column existed keep what was written then; the new column says so.
+        w.writerows(r + ['not recorded'] * (len(header) - len(r)) for r in old)
+        for rnd, cfg, load, psi, med, p99 in rows:
+            w.writerow([series, date, machine, cmd, describe, code_commit, sums, rnd, cfg, load, med, p99, 'not available' if psi is None else psi])
+    for rnd, cfg, load, psi, med, p99 in rows:
+        print(f'series {series} round {rnd}  {cfg:30s} load {load:4.2f} psi {psi}  median {med:6.1f} us  p99 {p99:6.1f} us')
 
 
 def main():
