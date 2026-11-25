@@ -2,7 +2,7 @@
 
 **A package format for Linux apps, desktop and command line: one signed file, a layered sandbox, no runtime to download, no root.**
 
-What we want and how we judge our work: [guiding principles](docs/PRINCIPLES.md).
+What we want and how we judge our work: [guiding principles](docs/PRINCIPLES.md). Why the project is the way it is: [decision records](docs/decisions/README.md).
 
 A `.panpak` file carries an application, a signed manifest of what it may do, and a signed index of
 every byte. The signature is checked at every start, and every piece when the app is first unpacked. Then it starts in a sandbox

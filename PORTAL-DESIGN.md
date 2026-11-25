@@ -120,7 +120,7 @@ and the result comes back as an explicit path.
 Covers: opening known documents, attachments, files from
 terminal/file manager. Tested: the granted file reads (even with
 spaces/special characters), non-granted siblings/symlinks/hardlinks do
-not; the write is on the granted file only, so a save by a temporary file and a rename is refused (opt-in `--write-rename`, without the document portal) and `--read-only` takes the write away.
+not; the write is on the granted file only, so a save by a temporary file and a rename is refused (opt-in `--write-rename`, without the document portal) and `--read-only` takes the write away of that grant (not a folder right that the app has from its manifest).
 
 Left to the broker (c): everything born INSIDE the app — Save As,
 app-invoked file picker, drag&drop, recent-files, whole-directory
