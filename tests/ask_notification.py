@@ -162,6 +162,37 @@ def wait_for(cond, what, seconds=20):
     raise AssertionError(f'timeout: {what}')
 
 
+
+def poll(cond, what, seconds=5.0, step=0.05):
+    """Check `cond` every `step` seconds until it holds, at most `seconds`; fail with a clear message when the time is up."""
+    end = time.time() + seconds
+    while True:
+        if cond():
+            return
+        if time.time() >= end:
+            raise AssertionError(f'not settled after {seconds} s: {what}')
+        time.sleep(step)
+
+
+def askers():
+    """How many processes `panpak rollback --ask <id>` there are: one holds the lock of the pending question and waits; the others, started by the same start, try the lock and end."""
+    n = 0
+    for d in Path('/proc').iterdir():
+        if d.name.isdigit():
+            try:
+                argv = (d / 'cmdline').read_bytes().split(b'\0')
+            except OSError:
+                continue
+            if b'rollback' in argv and b'--ask' in argv and ID.encode() in argv:
+                n += 1
+    return n
+
+
+def settled_askers():
+    """Wait until the processes that ask have tried the lock: only the one that holds it is left. An answer before that would be taken by a process that has not tried the lock yet,
+    and it would ask the question again."""
+    poll(lambda: askers() <= 1, 'more than one process "panpak rollback --ask" is still there')
+
 def put_click(click, action):
     # Written whole and then renamed, so the fake portal never reads a half-written file.
     tmp = click.with_name(click.name + '.new')
@@ -297,7 +328,7 @@ def main():
             # does not ask. Without that, the two would make a pair and the question would come back at once.
             run(start, env, ok=False)
             assert failed_starts(appdir) == 1, f'a start while the question waits is counted: {failed_starts(appdir)}'
-            time.sleep(0.5)
+            settled_askers()
             put_click(click, 'no')
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button ends the question')
             assert os.readlink(appdir / 'current') == bad, 'Try again does not go back'
@@ -372,7 +403,7 @@ def main():
             n = len(notifies())
             run(start, env, ok=False)
             wait_for(lambda: len(notifies()) > n, 'the question is asked again')
-            time.sleep(0.5)  # a failed start is counted a moment after it ends; "Try again" forgets the count, so the count must be in before the answer (as in 1b)
+            settled_askers()
             send('action no')
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button of the service ends the question')
             assert os.readlink(appdir / 'current') == bad
