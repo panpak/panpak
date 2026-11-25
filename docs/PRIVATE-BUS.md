@@ -652,20 +652,22 @@ Measures. Machine: the author's workstation, release build, medians; every compa
 
 | What | Method | Study (prototype) | First product build | Product now |
 |---|---|---|---|---|
-| Round trip of a call through the layer, bus daemon `Ping` over a raw socket (no client library) | `tests/privbus.py`, mode `rawlat` (1100 pings, the first 100 dropped, over a raw socket): the product from a probe inside the sandbox, "no layer" by the command below, from outside it | study of 2026-11-08, bench not kept in the repository, the prototype no longer exists and its raw data were not kept: prototype router and proxy 66 to 70 us, proxy alone 56, no layer 22 (same series) | 170 to 240 us | 77 to 83 us (+55 to 60 us over no layer, +10 over the prototype) |
+| Round trip of a call through the layer, bus daemon `Ping` over a raw socket (no client library) | `python3 tests/privbus.py --rawlat docs/bench-data/privbus-rawlat.csv`: on one bus daemon of the lab, in one session, three alternating rounds of 1100 pings (the first 100 dropped): the probe outside the sandbox (no layer) and the probe of an app inside it (through the layer); medians of the 1000 counted | historical, study of 2026-11-08 (another series: its bench is not kept, the prototype no longer exists, its raw data were not kept; **not directly comparable with the new series**): prototype router and proxy 66 to 70 us, proxy alone 56, no layer 22 | 170 to 240 us (earlier series) | series of 2026-11-25 (raw data in `docs/bench-data/privbus-rawlat.csv`): through the layer 84.0, 84.3 and 87.3 us; no layer 23.8, 22.4 and 22.8 us in the same session (+61 to 64 us over no layer) |
 | Portal call through the layer (`Settings.ReadOne`, Python fake backend, GDBus client) | `tests/privbus.py`, mode `lat`, 2000 calls | no layer 486 to 506 us | 843 to 959 us | 650 to 700 us (+150 to 200 us) |
 | Memory of the router | `Pss` and `Rss` of `/proc/<pid>/smaps_rollup` (the router was run dumpable only for this measure) | PSS 0.55 MB (1.03 for router and proxy together) | RSS 2.3 MB | PSS 0.9 to 1.15 MB, RSS 2.3 MB, anonymous 0.38 MB |
 | Memory of one proxy | same | PSS 0.48 MB | RSS 6.3 MB | PSS 0.48 MB, RSS 6.0 MB |
 | Fixed cost, from a terminal (the stub makes its own scope), D-Bus layer | `tests/startup_budget.py --dbus --runs 30`, two rounds, `main` and the branch alternating | 36 to 37 ms (another day) | 41.7 ms | `main` 40.5 to 41.0 ms, branch 41.0 to 41.8 ms (+0.5 to 0.8) |
 | Fixed cost, from the menu (the launcher is in a scope the portal reads as the app: `systemd-run --user --scope --unit app-panpak.org.example.budget-<n>.scope` around the script) | same, inside that scope | 34.6 to 35.0 ms (study setup) | not measured | `main` 26.9 to 27.3 ms, branch 27.5 to 27.6 ms (+0.3 to 0.6); no layer 25 ms |
 
-To repeat "no layer" (a ping to the bus daemon of the session, with no layer between), from the root of the repository, with `python3-gi` installed:
+The file `docs/bench-data/privbus-rawlat.csv` has every run (date, machine, command, round, configuration, median and 99th percentile in microseconds). The series of 2026-11-25 ran on the author's workstation (AMD Ryzen 7 7735HS, Linux 7.0.0-43, an idle machine), with the release build of that day. The 99th percentile through the layer was 193 to 238 us.
+
+Compare numbers only inside one series: the load of the machine, the bus daemon and the kernel change the absolute figures, and the historical column of the study was made another day with another bench. For a check against the bus of a running desktop instead of the bus of the lab (no layer), from the root of the repository, with `python3-gi` installed:
 
 ```
 d=$(mktemp -d) && python3 -c "import re,sys; open(sys.argv[1],'w').write(re.search(r\"PROBE = r'''(.*?)'''\", open('tests/privbus.py').read(), re.S).group(1))" "$d/probe.py" && XDG_DATA_HOME="$d" python3 "$d/probe.py" rawlat x 0 && cat "$d/probe-rawlat.json"
 ```
 
-It prints `median_us` and `p99_us`. Remove the folder `$d` when you are done. Compare numbers only inside one series: on 2026-11-25 (the author's workstation, session bus of a running desktop) three runs gave 34.3, 34.5 and 46.7 us, and the old bench on a private lab bus gave 33 us the same day, against 22 us in the study of 2026-11-08; the whole series was about one and a half times slower that day (proxy alone 82 us against 56), so the "no layer" figure of the study is a reference of that day, not a limit.
+It prints `median_us` and `p99_us`; remove the folder `$d` afterwards. On 2026-11-25 three runs on the session bus of the desktop gave 34.3, 34.5 and 46.7 us: a busy session bus is slower than the idle bus of the lab, which is why the two are not mixed.
 
 Where the differences come from:
 

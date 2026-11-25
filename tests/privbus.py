@@ -3,6 +3,7 @@
 """The private bus of an app (step 13p), end to end, against the real stub and the real sandbox.
 
 Usage: python3 tests/privbus.py [work-directory]
+       python3 tests/privbus.py --rawlat out.csv [work-directory]   (only the round trip of a Ping, with and without the layer; see docs/PRIVATE-BUS.md)
 Build release first (cargo build --release --target x86_64-unknown-linux-musl). Everything runs in a private session (tests/dbus_lab.py): a bus of
 its own, the real xdg-desktop-portal, a fake backend, an isolated HOME. The only thing outside is the transient systemd scope of each start.
 
@@ -26,6 +27,7 @@ import signal
 import os
 from pathlib import Path
 import shutil
+import tempfile
 import subprocess
 import sys
 import time
@@ -816,6 +818,39 @@ def skip(why):
         sys.exit(1)
 
 
+def bench_rawlat(lab, csv_path, rounds=3):
+    """The round trip of a `Ping` to the bus daemon of the lab over a raw socket, 1000 counted pings per run: with no layer (the probe outside, on the bus
+    of the lab) and through the layer (the probe in the sandbox of an app), alternating, `rounds` times, in this one session. Writes a CSV."""
+    import platform
+    probe = lab.work / 'rawlat-probe.py'
+    probe.write_text(PROBE)
+    nolayer_rt = Path(tempfile.mkdtemp(prefix='rl-', dir=f'/run/user/{os.getuid()}'))
+    try:
+        (nolayer_rt / 'bus').symlink_to(lab.sess.addr[len('unix:path='):])
+        data = lab.work / 'rawlat-data'
+        data.mkdir()
+        rows = []
+        for rnd in range(1, rounds + 1):
+            env = dict(lab.env, XDG_RUNTIME_DIR=str(nolayer_rt), XDG_DATA_HOME=str(data))
+            subprocess.run([sys.executable, str(probe), 'rawlat', 'x', '0'], env=env, check=True, timeout=120, stdin=subprocess.DEVNULL)
+            r = json.loads((data / 'probe-rawlat.json').read_text())
+            rows.append((rnd, 'no layer', r['median_us'], r['p99_us']))
+            r = lab.run('org.panpaktest.Squat', 'rawlat', 'x', 0)
+            rows.append((rnd, 'through the layer (product)', r['median_us'], r['p99_us']))
+    finally:
+        subprocess.run(['chmod', '-R', 'u+rwX', str(nolayer_rt)], capture_output=True)
+        isolation.safe_rmtree(nolayer_rt, nolayer_rt.parent)
+    cpu = next((l.split(':', 1)[1].strip() for l in open('/proc/cpuinfo') if l.startswith('model name')), '?')
+    meta = f'{time.strftime("%Y-%m-%d")},{cpu} / {platform.release()} / {os.cpu_count()} threads'
+    cmd = 'python3 tests/privbus.py --rawlat docs/bench-data/privbus-rawlat.csv'
+    with open(csv_path, 'w') as f:
+        f.write('date,machine,command,round,configuration,median_us,p99_us\n')
+        for rnd, cfg, med, p99 in rows:
+            f.write(f'{meta},"{cmd}",{rnd},{cfg},{med},{p99}\n')
+    for rnd, cfg, med, p99 in rows:
+        print(f'round {rnd}  {cfg:30s} median {med:6.1f} us  p99 {p99:6.1f} us')
+
+
 def main():
     # `--only A,B,C,F` runs those scenarios: A, B, C, F (F11, F22 and F23), S, R (life cycle), E, I, L, M, X. Default: all.
     args = sys.argv[1:]
@@ -824,6 +859,9 @@ def main():
         only = set(args[1].split(','))
         args = args[2:]
     want = lambda k: only is None or k in only
+    rawlat_csv = None
+    if args[:1] == ['--rawlat']:
+        rawlat_csv, args = Path(args[1]).resolve(), args[2:]
     diagnose = args[:1] == ['--diagnose']
     if diagnose:
         args = args[1:]
@@ -849,6 +887,9 @@ def main():
             f = lab.report_path('org.panpaktest.Portal', 'portal')
             print('report:', f.read_text() if f.exists() else 'none')
             return
+        if rawlat_csv:
+            lab.run('org.panpaktest.Squat', 'rawlat', 'x', 0)  # a first start, so the caches of the runtime are warm for the series
+            return bench_rawlat(lab, rawlat_csv)
         smoke = lab.run('org.panpaktest.Squat', 'call', 'org.example.Nobody')
         if 'connect_error' in smoke or not smoke.get('unique'):
             # Say why: the start again with the debug output of the runtime.

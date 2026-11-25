@@ -1,0 +1,7 @@
+date,machine,command,round,configuration,median_us,p99_us
+2026-11-25,AMD Ryzen 7 7735HS with Radeon Graphics / 7.0.0-43-generic / 16 threads,"python3 tests/privbus.py --rawlat docs/bench-data/privbus-rawlat.csv",1,no layer,23.8,48.6
+2026-11-25,AMD Ryzen 7 7735HS with Radeon Graphics / 7.0.0-43-generic / 16 threads,"python3 tests/privbus.py --rawlat docs/bench-data/privbus-rawlat.csv",1,through the layer (product),84.0,194.8
+2026-11-25,AMD Ryzen 7 7735HS with Radeon Graphics / 7.0.0-43-generic / 16 threads,"python3 tests/privbus.py --rawlat docs/bench-data/privbus-rawlat.csv",2,no layer,22.4,36.6
+2026-11-25,AMD Ryzen 7 7735HS with Radeon Graphics / 7.0.0-43-generic / 16 threads,"python3 tests/privbus.py --rawlat docs/bench-data/privbus-rawlat.csv",2,through the layer (product),84.3,237.7
+2026-11-25,AMD Ryzen 7 7735HS with Radeon Graphics / 7.0.0-43-generic / 16 threads,"python3 tests/privbus.py --rawlat docs/bench-data/privbus-rawlat.csv",3,no layer,22.8,56.4
+2026-11-25,AMD Ryzen 7 7735HS with Radeon Graphics / 7.0.0-43-generic / 16 threads,"python3 tests/privbus.py --rawlat docs/bench-data/privbus-rawlat.csv",3,through the layer (product),87.3,192.9
