@@ -843,10 +843,16 @@ def bench_rawlat(lab, csv_path, rounds=3):
     cpu = next((l.split(':', 1)[1].strip() for l in open('/proc/cpuinfo') if l.startswith('model name')), '?')
     meta = f'{time.strftime("%Y-%m-%d")},{cpu} / {platform.release()} / {os.cpu_count()} threads'
     cmd = 'python3 tests/privbus.py --rawlat docs/bench-data/privbus-rawlat.csv'
+    # The build the product figures belong to: the commit as `git describe` says it now ("-dirty" if the tree has changes), and the hash of the two binaries.
+    # Build the release from that commit just before the series, so that the two agree.
+    describe = subprocess.run(['git', 'describe', '--always', '--dirty'], cwd=ROOT, capture_output=True, text=True).stdout.strip() or '?'
+    code_commit = subprocess.run(['git', 'log', '-1', '--format=%h', '--', 'panpak', 'panpak-core', 'panpak-stub', 'Cargo.toml', 'Cargo.lock'], cwd=ROOT, capture_output=True, text=True).stdout.strip() or '?'
+    import hashlib
+    sums = ' '.join(hashlib.sha256((BIN / b).read_bytes()).hexdigest()[:12] for b in ('panpak', 'panpak-stub'))
     with open(csv_path, 'w') as f:
-        f.write('date,machine,command,round,configuration,median_us,p99_us\n')
+        f.write('date,machine,command,build,last_code_commit,binary_sha256_panpak_and_stub,round,configuration,median_us,p99_us\n')
         for rnd, cfg, med, p99 in rows:
-            f.write(f'{meta},"{cmd}",{rnd},{cfg},{med},{p99}\n')
+            f.write(f'{meta},"{cmd}",{describe},{code_commit},{sums},{rnd},{cfg},{med},{p99}\n')
     for rnd, cfg, med, p99 in rows:
         print(f'round {rnd}  {cfg:30s} median {med:6.1f} us  p99 {p99:6.1f} us')
 
