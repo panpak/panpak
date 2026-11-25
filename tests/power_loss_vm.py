@@ -20,10 +20,10 @@ page that was not written back. It does not reorder writes the way a disk with a
 
 Usage (the VM must be running, ssh must work without a password, python3 must be in the guest):
   tests/power_loss_vm.py --domain "Bluefin #1" --ssh panpak-vm --yes-destroy "Bluefin #1" [--cycles 30] [--seed N] [--work DIR]
+  (without --work a new folder `panpak-power-*` is made in the temporary folder of the system, and printed at the end)
 `--yes-destroy` must repeat the name of the domain: the test kills it, again and again. Build the release first (`target/x86_64-unknown-linux-musl/release`).
 """
 import argparse
-import os
 from pathlib import Path
 import random
 import socket
@@ -135,7 +135,7 @@ def main():
         sys.exit(f'the domain {a.domain!r} is {state!r}: start it first (this script does not start the first time)')
     rnd = random.Random(a.seed)
     print('seed', a.seed)
-    work = Path(a.work) if a.work else Path(tempfile.mkdtemp(prefix='panpak-power-', dir=os.path.expanduser('~/panpak-dogfood')))
+    work = Path(a.work) if a.work else Path(tempfile.mkdtemp(prefix='panpak-power-'))
     work.mkdir(parents=True, exist_ok=True)
     (work / 'failures').mkdir(exist_ok=True)
     sock = socket.socket()

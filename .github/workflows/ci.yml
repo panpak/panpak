@@ -730,6 +730,9 @@ jobs:
       - name: No large tracked files outside the allow-list
         timeout-minutes: 3
         run: ./scripts/check-large-files.sh
+      - name: No tracked file names a private folder
+        timeout-minutes: 3
+        run: ./scripts/check-private-paths.sh
       - name: panpak-core and panpak-stub use only zstd 0.14
         timeout-minutes: 3
         run: ./scripts/check-zstd-copies.sh

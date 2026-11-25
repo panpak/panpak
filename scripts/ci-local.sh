@@ -21,7 +21,7 @@
 # The folder of the run is removed with rmdir only when it is empty; when something was left it is kept and named, to be looked at and cleaned by hand.
 #
 # Priority limits: every heavy step runs under `nice -n 19` and `ionice -c 3`; PANPAK_LOWRUN=<wrapper> puts a wrapper in front instead (a systemd scope with a
-# memory cap), for example ~/panpak-dogfood/tools/lowrun.sh. Never run it from a graphical terminal's tests by hand with another environment: the runners take the
+# memory cap, made with systemd-run). Never run it from a graphical terminal's tests by hand with another environment: the runners take the
 # desktop out of the environment of the tests (CONTRIBUTING.md).
 set -u
 cd "$(dirname "$0")/.."
@@ -38,8 +38,6 @@ done
 # The Zig that builds for musl: the one of the pinned wheel (scripts/zig-env.sh finds it); a venv of it on PATH is allowed, but not its python3 (it would hide the system one).
 if [ -n "${PANPAK_ZIG_VENV:-}" ]; then
 	zigdir=$("$PANPAK_ZIG_VENV/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' 2>/dev/null) && export PATH="$zigdir:$PATH"
-elif [ -d "$HOME/panpak-dogfood/zigvenv" ]; then
-	zigdir=$("$HOME/panpak-dogfood/zigvenv/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' 2>/dev/null) && export PATH="$zigdir:$PATH"
 fi
 
 lowrun() {
@@ -114,6 +112,7 @@ head=$(git rev-parse HEAD)
 step "DCO (every commit of $base..HEAD is signed off)" ./scripts/check-dco.sh "$base" "$head"
 step "SPDX headers" ./scripts/check-spdx.sh
 step "large files" ./scripts/check-large-files.sh
+step "no tracked file names a private folder" ./scripts/check-private-paths.sh
 step "copies of zstd" ./scripts/check-zstd-copies.sh
 step "the rules of the workflow, and every test in a level of the CI" python3 -I tests/ci-workflow-test.py
 step "the date of REPRODUCIBLE-HASHES.md is the one of the last code commit" ./scripts/check-repro-date.sh "$base" "$head"

@@ -48,7 +48,7 @@ In the description of the pull request, say which documents you updated, or why 
 - **Run the checks of the CI here first, with one command: `scripts/ci-local.sh`** (`--quick` for the static checks, clippy, cargo-deny and gitleaks only). It runs the DCO check, SPDX headers,
   large files, copies of zstd, the rules of the workflow, the date of `REPRODUCIBLE-HASHES.md`, formatting (when rustfmt is installed), clippy with `-D warnings`, cargo-deny, gitleaks,
   `cargo test` on musl through the runner of the CI, the scripts of `tests/` that the workflow runs, and the double build of the reproducible hashes, under `nice` and `ionice`
-  (`PANPAK_LOWRUN=<wrapper>` puts your own wrapper, for example a systemd scope with a memory cap, in front). If it fails here, do not push.
+  (`PANPAK_LOWRUN=<wrapper>` puts your own wrapper, for example a systemd scope with a memory cap, in front; `PANPAK_ZIG_VENV=<folder>` names a Python venv that holds the pinned `ziglang` wheel, when `zig` is not on `PATH`, see `scripts/zig-env.sh`). If it fails here, do not push.
 - **A test leaves nothing behind.** `scripts/ci-local.sh` runs the steps with their own `TMPDIR` (a new folder `ci.XXXXXX` in `/tmp`, or under `PANPAK_CI_TMP_BASE`; not under `$HOME`, which the view of the
   sandbox hides) and after every step lists what the step left there and what it left in `/tmp` with a name that starts with `panpak`. A leftover fails the run, unless its name is in `tests/ci-tmp-allowed.txt`
   with the reason (the list is empty on purpose: fix the test). Every Rust test binary includes `testsupport/testtmp.rs`: it gives the process its own folder (`panpak-t<pid>`), points `TMPDIR` to it and removes it when the
