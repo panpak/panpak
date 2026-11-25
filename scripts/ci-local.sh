@@ -39,6 +39,11 @@ done
 if [ -n "${PANPAK_ZIG_VENV:-}" ]; then
 	zigdir=$("$PANPAK_ZIG_VENV/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' 2>/dev/null) && export PATH="$zigdir:$PATH"
 fi
+# The steps that build for musl need Zig. Say it now, not at a step far down.
+if [ "$quick" = 0 ] && [ -z "${PANPAK_ZIG:-}" ] && ! command -v zig >/dev/null 2>&1 && ! python3 -c 'import ziglang' >/dev/null 2>&1; then
+	echo "Zig was not found: put \`zig\` on PATH, or set PANPAK_ZIG (the zig executable) or PANPAK_ZIG_VENV (a Python venv that holds the pinned ziglang wheel, tools/requirements-zig.txt). \`--quick\` does not need it." >&2
+	exit 2
+fi
 
 lowrun() {
 	if [ -n "${PANPAK_LOWRUN:-}" ]; then

@@ -231,7 +231,7 @@ elif mode == "lat":
         lat[label] = round((time.perf_counter() - t0) / n * 1e6, 1)
     res["lat_us"] = lat
 elif mode == "rawlat":
-    # The bench of the study (~/panpak-dogfood/privbus/lat.py): 1000 pings to the bus daemon over a raw socket, so that no client library is measured.
+    # 1000 pings to the bus daemon over a raw socket, so that no client library is measured (docs/PRIVATE-BUS.md, section Measures, says how to run it without the layer).
     import socket, struct, statistics
     def msg(serial, member, iface="org.freedesktop.DBus.Peer", path="/org/freedesktop/DBus", dest="org.freedesktop.DBus"):
         f = b""
