@@ -58,7 +58,7 @@ started=$(date +%s)
 # Not under $HOME: the view of the sandbox puts an empty tmpfs on it, so the tests could not see their own files.
 ci_tmp_base="${PANPAK_CI_TMP_BASE:-/tmp}"
 mkdir -p "$ci_tmp_base"
-ci_tmp=$(mktemp -d "$ci_tmp_base/ci.XXXXXX")
+ci_tmp=$(mktemp -d "$ci_tmp_base/ci.XXXXXX") || { echo "Cannot make a temporary folder in $ci_tmp_base (PANPAK_CI_TMP_BASE)." >&2; exit 2; }
 export TMPDIR="$ci_tmp"
 trap 'rmdir "$ci_tmp" 2>/dev/null' EXIT
 allowed="tests/ci-tmp-allowed.txt"
@@ -155,7 +155,7 @@ if [ "$quick" = 0 ]; then
 		step "$line" bash -c "$line"
 	done
 	# The reference of the reproducible build, last: the double build starts from nothing and takes the longest. It is compared with the committed file.
-	step "reproducible build: the reference is what the script makes" bash -c 'lowrun() { "$@"; }; ./scripts/repro-build.sh --update | tee /tmp/panpak-repro-local.log && grep -q IDENTICAL /tmp/panpak-repro-local.log && git diff --exit-code -- REPRODUCIBLE-HASHES.md'
+	step "reproducible build: the reference is what the script makes" bash -c 'lowrun() { "$@"; }; out=$(./scripts/repro-build.sh --update | tee /dev/stderr) && printf "%s\n" "$out" | grep -q IDENTICAL && git diff --exit-code -- REPRODUCIBLE-HASHES.md'
 fi
 
 printf '\n--------\n'

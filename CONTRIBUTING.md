@@ -51,8 +51,8 @@ In the description of the pull request, say which documents you updated, or why 
   (`PANPAK_LOWRUN=<wrapper>` puts your own wrapper, for example a systemd scope with a memory cap, in front). If it fails here, do not push.
 - **A test leaves nothing behind.** `scripts/ci-local.sh` runs the steps with their own `TMPDIR` (a new folder `ci.XXXXXX` in `/tmp`, or under `PANPAK_CI_TMP_BASE`; not under `$HOME`, which the view of the
   sandbox hides) and after every step lists what the step left there and what it left in `/tmp` with a name that starts with `panpak`. A leftover fails the run, unless its name is in `tests/ci-tmp-allowed.txt`
-  with the reason (the list is empty on purpose: fix the test). Every Rust test binary includes `testsupport/testtmp.rs`: it gives the process its own folder (`t<pid>`), points `TMPDIR` to it and removes it when the
-  process ends; `PANPAK_KEEP_TEST_TMP=1` keeps it, to look at a failure. A Python test that must write in `/tmp` itself removes what it wrote, in a `finally` or with `atexit`, and does not reuse the name of the variable.
+  with the reason (the list is empty on purpose: fix the test). Every Rust test binary includes `testsupport/testtmp.rs`: it gives the process its own folder (`panpak-t<pid>`), points `TMPDIR` to it and removes it when the
+  process ends; `PANPAK_KEEP_TEST_TMP=1` leaves it in place, to look at a failure. A Python test that must write in `/tmp` itself removes what it wrote, in a `finally` or with `atexit`, and does not reuse the name of the variable.
 - It does not repeat what needs a machine of the CI: the `private-bus` job (a systemd user session), `sway` (a headless Sway), the `distro` matrix, `fuzz-smoke` (nightly), the app harness, the kernel of the
   runner (a test that needs a newer Landlock than yours skips here and fails there), and a fresh checkout with no cache.
 - **`REPRODUCIBLE-HASHES.md` is made after the last commit of code, and committed alone**: commit the code, run `scripts/repro-build.sh --update`, commit the file. The build date in it is the date of the last
