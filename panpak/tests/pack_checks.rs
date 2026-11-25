@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // What `pack` works out from the files of a tree (the glibc it needs, the Qt plugins it lacks) and what `install` does with it.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,

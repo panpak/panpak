@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // What `install`, `update` and the other commands write outside the store, and what
 // they refuse: hostile manifest fields, links and foreign files in the destinations.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{
     fs,
     os::unix::fs::{symlink, PermissionsExt},

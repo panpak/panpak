@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // The host side of the file dialog against a fake desktop portal on a private bus: what is asked of the portal, what is shared with which permissions,
 // what a link, a cancel and a revoke do. Skipped (with a message) where `dbus-daemon` or python3-gi is missing.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use panpak_core::chooserhost::{run, HostCtx, Outcome};
 use panpak_core::dbus::{encode_message, Connection, Message, Value, CALL};
 use panpak_core::{docshare, filechooser};

@@ -2,6 +2,8 @@
 // The `[host]` table (PANPAK-FORMAT.md 3.1.11): `pack` writes the architecture and the glibc, an author gives the rest; `install` refuses a package that the system
 // cannot run and says what is needed, what is there and what to do; `--force-host` installs it anyway and `doctor` keeps saying it; the start looks again at the
 // display and the Landlock ABI.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,

@@ -2,6 +2,8 @@
 // The release table and the history (PANPAK-FORMAT.md 3.1.10): what `pack --previous` makes, and what `install`, and `rollback` refuse when a
 // package enters over an installed one: an older revision, two publications of one revision, a revision below the floor, another channel,
 // a history that does not continue the installed version.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,

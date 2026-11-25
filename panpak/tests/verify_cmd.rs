@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // `panpak verify <app-id>`: every file of the installed version against the signed index, on request, read only. A file that changed, a file that is missing and a file
 // that nobody signed are all named; `repair` makes it right again.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,

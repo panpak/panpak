@@ -2,6 +2,8 @@
 // Protected mode, the client side (PANPAK-FORMAT.md 3.1.10): what `list` and `doctor` say about an installed version below the floor its author set,
 // `allow-internet` (the confirmation, the choice kept for one app, its cancelling), and the end of the mode when the fixed version arrives. The start
 // itself (no network, no written programs) is tested in `tests/protected_mode.py` and in the unit tests of the stub.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,

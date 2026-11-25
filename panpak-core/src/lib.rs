@@ -3,6 +3,9 @@
 //!
 //! All numbers in the format are little-endian. See PANPAK-FORMAT.md.
 
+#[cfg(test)]
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 pub mod dbus;
 pub mod desktop;
 pub mod frames;

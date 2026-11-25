@@ -5,6 +5,9 @@
 // the musl allocator returns each large block to the system, which costs an
 // mmap/munmap pair and fresh page faults per chunk. mimalloc reuses the memory
 // (CLI only; the stub keeps the default allocator).
+#[cfg(test)]
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

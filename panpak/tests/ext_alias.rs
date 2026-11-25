@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // File extensions: `.panpak` is the official one, `.pan` an accepted alias. A package
 // is recognised by its magic and signature only, never by its extension.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,

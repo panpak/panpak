@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // `panpak convert` with icons, end to end: an AppImage is built here (squashfs written by `backhand`), converted, installed, and
 // what is installed is looked at. Includes hostile AppImages: links that lead out of the tree must make nothing land outside.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{
     fs,
     io::Cursor,

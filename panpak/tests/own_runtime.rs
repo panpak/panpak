@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // The runtime that comes with `panpak` (the file `panpak-stub` in the same folder): `install` puts it in the store when there is none, replaces it when it is
 // older, and never replaces one that was installed by hand with the same ABI.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{
     fs,
     os::unix::fs::PermissionsExt,

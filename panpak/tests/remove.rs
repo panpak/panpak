@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // `panpak list` and `panpak remove`: what they take away, what they keep, what they refuse, and that
 // a link put in place of any folder they touch never makes them delete anything outside.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{
     fs::{self, File},
     os::unix::{

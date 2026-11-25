@@ -431,6 +431,7 @@ def main():
     lab.env['WAYLAND_DISPLAY'] = 'wayland-0'
     marker = Path('/tmp') / f'panpak-view-marker-{os.getpid()}'
     marker.write_text('host tmp\n')
+    atexit.register(lambda: marker.unlink(missing_ok=True))  # the marker has to be in /tmp itself (the test is that the view hides it), so it is removed here
     # A listening socket in /var/tmp: outside the folders the view replaces (home, /tmp, /run).
     outside = Path('/var/tmp') / f'panpak-view-outside-{os.getpid()}.sock'
     outside.unlink(missing_ok=True)

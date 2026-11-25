@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Secret-key handling of the CLI: file permissions, symlinks, keygen, no --secret.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{
     fs,
     os::unix::fs::{symlink, PermissionsExt},

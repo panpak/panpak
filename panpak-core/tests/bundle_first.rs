@@ -7,6 +7,8 @@
 //! `decide`. With the system library the loader stops with "symbol lookup error". Nothing is
 //! installed and nothing outside the temporary folder is touched. The test is skipped, with a
 //! message, when Zig cannot be run (set PANPAK_ZIG).
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use panpak_core::abi::{apply, decide, Source};
 use std::{
     collections::HashMap,

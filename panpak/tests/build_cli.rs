@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // `panpak init` and the checks of `panpak build` that need neither the network nor an image: a recipe with holes, a lock for another image,
 // a source that is not pinned. The build itself (image, compiler, sandbox) is tried by hand and by the harness.
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use std::{fs, path::{Path, PathBuf}, process::{Command, Output}};
 
 fn cli(dir: &Path, args: &[&str]) -> Output {

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // Panpak stub: verify (spec §5) -> materialize -> Landlock sandbox -> exec.
 // Build: cargo build --release --target x86_64-unknown-linux-musl
+#[cfg(test)]
+#[path = "../../testsupport/testtmp.rs"]
+mod testtmp;
 use anyhow::{bail, ensure, Context, Result};
 use panpak_core::{bail_code, coded, ensure_code, ErrorCode};
 use panpak_core::{hex, ChunkDecoder, parse_index, verify, Chunk, Entry, Kind};
