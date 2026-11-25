@@ -73,8 +73,8 @@ The local store (`~/.local/share/panpak`) is considered **trusted**
 - **Explicit file open** (`panpak open <app> <file>`, double click):
   the sandbox grants ONLY that file, for reading and writing (a person
   who opens a file with an app means to work on it: principle 3 of
-  docs/PRINCIPLES.md; `--read-only` takes the write away of that grant, not a folder right that the manifest
-  already gives the app: with `folder-write` on the folder the file can still be overwritten), before startup,
+  docs/PRINCIPLES.md; `--read-only` takes away only the write of that grant, not a read-write folder right that the
+  manifest already gives the app: with such a right the file can still be overwritten), before startup,
   without widening anything else: a program that saves by a temporary
   file and a rename in the folder fails (fail-closed, tested), and the
   folder is never opened but by `--write-rename`. Since 2026-11-23 the

@@ -1,7 +1,7 @@
 # 0002. The `.pyc` files are not made by `pack`
 
 - Status: accepted
-- Date: 2026-11-23
+- Date: 2026-11-24
 - Pull requests: #102 (added), #105 (removed)
 
 ## Context

@@ -15,7 +15,7 @@ With the permission `gvfs`, `$XDG_RUNTIME_DIR/gvfs` goes into the view as a read
 - Leaving `sftp://` and `smb://` unsupported.
 
 ## Consequences
-`sftp://` and `smb://` should work as paths of files (expected, not yet tried with the real daemon). A stuck `gvfsd-fuse` can stop an app that reads it, and the `stat` of bubblewrap on the bind can delay a start (the same limit as Flatpak); a mount that does not answer is left out. An app that starts before the mount has no FUSE paths until its next start.
+`sftp://` works as paths of files with the real `gvfsd-fuse` (GIMP, one trial of each step, 2026-11-24: open, overwrite, export PNG and JPEG, save XCF; docs/COMPATIBILITY.md); `smb://` was not tried. A stuck `gvfsd-fuse` can stop an app that reads it, and the `stat` of bubblewrap on the bind can delay a start (the same limit as Flatpak); a mount that does not answer is left out. An app that starts before the mount has no FUSE paths until its next start.
 
 ## Sources
 PANPAK-FORMAT.md §3.1.5, §9.2; THREAT-MODEL.md §4 (GVfs); docs/COMPATIBILITY.md ("Network locations with the permission gvfs"); pull request #109.
