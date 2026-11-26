@@ -1914,9 +1914,14 @@ fn tell_blocked_start(text: &str) {
     if args.get(1).and_then(|a| a.to_str()) != Some("run") || args.iter().skip(2).any(|a| matches!(a.to_str(), Some("--version" | "--help" | "-h" | "-V"))) {
         return;
     }
+    // A start with one of the stub's own flags (a file to open, the licenses) is not told this way: the error text of such a start can carry the name of a file that the
+    // person chose, and these are not the plain start that the notice is for.
+    if args.iter().skip(2).any(|a| a.to_str().is_some_and(|s| s.starts_with("--panpak-"))) {
+        return;
+    }
     let Some(pkg) = args.get(2) else { return };
     let Some((panpak, id)) = installed_panpak(Path::new(pkg)) else { return };
-    let first: String = text.lines().next().unwrap_or("").chars().filter(|c| !c.is_control()).take(300).collect();
+    let first: String = text.lines().next().unwrap_or("").chars().filter(|c| !c.is_control()).take(1000).collect();
     spawn_detached(&panpak, &["start-failed", &id, "blocked", &first]);
 }
 

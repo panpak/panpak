@@ -19,7 +19,9 @@ The portal is a fake (PyGObject owns `org.freedesktop.portal.Desktop` on a priva
      "actions" is not used (the portal is); out of a scope of an app (`PANPAK_TEST_CGROUP`) the portal is not asked and the way to answer is told on the standard error;
   5. after "Go back" the person is told in a notification (a stand-in `notify-send`): the app is back, or why it could not go back; after "Try again" nothing.
   6. an app that did not start: the first failed start gives a `transient` notice with the reason and the button "Show details" (the reason in front of the question
-     of the second failure); the standard error of the app still reaches its place and its tail is in `last-start.log` (mode 0600); the button opens the log (a stand-in `xdg-open`).
+     of the second failure); the standard error of the app still reaches its place and its tail is in `last-start.log` (mode 0600); the button opens the log (a stand-in `xdg-open`);
+     a start that Panpak stops before the app runs (the files of the version are taken out of the store) is told in the first line of its error, without a path, with no
+     button, and is not counted (cases 5 and 5b of the output).
 """
 import json
 import os
