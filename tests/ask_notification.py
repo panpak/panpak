@@ -393,6 +393,10 @@ def main():
             def notices():
                 return [r for r in records(slog) if 'notify' in r and 'details' in r['actions']]
 
+            def all_notices():
+                # every notice of an app that did not start, with or without the button
+                return [r for r in records(slog) if 'notify' in r and r['title'] == "Ask App didn't start"]
+
             def send(text):
                 put_click(scmd, text)
                 wait_for(lambda: not scmd.exists(), 'the fake service took the command')
@@ -522,6 +526,24 @@ def main():
             send('action details')
             wait_for(lambda: [str(start_log)] in opened(), 'the button opens the log')
             print('5. an app that did not start: a transient notice with the reason and the button, the log (0600), the standard error kept, the button opens the log: ok')
+            # A start that Panpak itself stops before the app runs (here: the files of the version are missing from the store): the person is told in the error text of Panpak,
+            # with no path, no button; nothing is counted as a failed start of the version.
+            root = os.path.basename(os.path.realpath(appdir / 'current')).rsplit('@', 1)[-1].removesuffix('.rec')
+            tree_dir = store / 'trees' / root
+            assert (tree_dir / '.complete').exists(), tree_dir
+            os.chmod(tree_dir, 0o755)
+            os.unlink(tree_dir / '.complete')
+            failed_before, notices_before = failed_starts(appdir), len(all_notices())
+            p = run(start, env, ok=False)
+            assert 'PANPAK-E2007' in p.stderr, p.stderr
+            wait_for(lambda: len(all_notices()) > notices_before, 'the blocked start is told')
+            blocked = all_notices()[-1]
+            assert blocked['title'] == "Ask App didn't start" and blocked['body'].startswith('PANPAK-E2007: the files of the app are missing from the store'), blocked
+            assert blocked['actions'] == [] and blocked['hints'] == {'transient': True} and '/' not in blocked['body'] and 'home' not in blocked['body'], blocked
+            assert failed_starts(appdir) == failed_before, 'a start that Panpak stopped was counted as a failed start of the version'
+            (tree_dir / '.complete').write_text('')
+            os.chmod(tree_dir, 0o555)
+            print('5b. a start that Panpak stops before the app runs is told in its error text, without a path: ok')
             # "Uninstall" through the service: "Cancel" removes nothing; the answer "Remove" removes the app (the last thing of this test).
             for key, removed in (('no', False), ('yes', True)):
                 time.sleep(3)  # the router of the private bus of the app stays 1.5 s after the last copy, and an app that is open is not removed

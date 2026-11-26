@@ -1895,9 +1895,29 @@ fn main() {
         if panpak_core::is_storage_full(&e) {
             eprintln!("out of space: free disk space and retry");
         }
-        eprintln!("{}", panpak_core::render(&e, ErrorCode::E2000));
+        let text = panpak_core::render(&e, ErrorCode::E2000);
+        eprintln!("{text}");
+        tell_blocked_start(&text);
         std::process::exit(1);
     }
+}
+
+/// A start of an installed app that Panpak itself stopped before the app ran (the signature does not verify, the kernel is too old, a permission is refused, the files are
+/// missing): the person is told in a notification, in the existing error text (the first line), as for any other app that did not start. Only for `run <installed app>` that
+/// is a start, only when the standard error is not a terminal (there the error has just been written), and best effort: any trouble is ignored. Nothing is counted: the
+/// app did not run, so it is no failed start of a version for the question of the kept versions.
+fn tell_blocked_start(text: &str) {
+    if stderr_is_terminal() {
+        return;
+    }
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args.get(1).and_then(|a| a.to_str()) != Some("run") || args.iter().skip(2).any(|a| matches!(a.to_str(), Some("--version" | "--help" | "-h" | "-V"))) {
+        return;
+    }
+    let Some(pkg) = args.get(2) else { return };
+    let Some((panpak, id)) = installed_panpak(Path::new(pkg)) else { return };
+    let first: String = text.lines().next().unwrap_or("").chars().filter(|c| !c.is_control()).take(300).collect();
+    spawn_detached(&panpak, &["start-failed", &id, "blocked", &first]);
 }
 
 /// The tree of a record: it must be there and complete (`PANPAK-E2007` otherwise: a record holds no chunks to make it again).

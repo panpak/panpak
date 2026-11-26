@@ -1070,8 +1070,9 @@ fn without_paths(s: &str, hide: &[String]) -> String {
     t.split(' ')
         .map(|w| {
             if w.contains('/') {
+                let head: String = w.chars().take_while(|c| matches!(c, '(' | '[' | '<' | '\'' | '"' | '`')).collect();
                 let tail: String = w.chars().rev().take_while(|c| matches!(c, ':' | ',' | ';' | '.' | '\'' | '"' | ')' | ']' | '>' | '`')).collect::<Vec<_>>().into_iter().rev().collect();
-                format!("...{tail}")
+                format!("{head}...{tail}")
             } else {
                 w.to_string()
             }
@@ -1092,24 +1093,51 @@ fn hidden_folders() -> Vec<String> {
     v
 }
 
+/// Why the notice of an app that did not start is shown: the reason of a failed start (an error code, a crash, a stop), or the first line of an error of Panpak that stopped
+/// the start before the app ran.
+enum StartCause {
+    Reason(panpak_core::starts::Reason),
+    Blocked(String),
+}
+
+/// The reason that a start stopped by Panpak shows: the first line of its error, the paths taken out (the home and the store by name, then every word with a `/`), no control
+/// characters, at most 200 characters. Panpak's own words: nothing of the app is in an error that stops the start before the app runs.
+fn blocked_text(t: &str, hide: &[String]) -> String {
+    without_paths(t.lines().next().unwrap_or(""), hide).chars().filter(|c| !c.is_control()).take(200).collect()
+}
+
 /// How long the notice of an app that did not start waits for its button: a banner is on the screen for a few seconds, and a person who reaches for it can take longer.
 const NOT_STARTED_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// `panpak start-failed <app-id> <reason>` (started detached by the stub, never by a person): the notification that the app did not start, with the reason in Panpak's
 /// words and, when the log of the start is there, the button "Show details" that opens it. The notification is `transient` (not kept in the list). No notification
 /// service: nothing is shown, and the log stays.
-fn cmd_start_failed(app_id: &str, reason: panpak_core::starts::Reason) -> Result<()> {
+fn cmd_start_failed(app_id: &str, cause: StartCause) -> Result<()> {
     use panpak_core::i18n::{fill, tr};
     use panpak_core::messages as m;
     panpak_core::validate_app_id(app_id)?;
     let appdir = store_dir()?.join("apps").join(app_id);
-    let cur = panpak_core::durable::resolve_link(&appdir.join("current")).context("missing current")?;
-    let name: String = panpak_core::record::open_verified(&cur)?.manifest.app.name.chars().filter(|c| !c.is_control()).collect();
+    // The name of the app from its verified record; when the record itself does not verify (a start that Panpak stopped for that) the id stands for it.
+    let name: String = panpak_core::durable::resolve_link(&appdir.join("current"))
+        .ok()
+        .and_then(|cur| panpak_core::record::open_verified(&cur).ok())
+        .map(|o| o.manifest.app.name)
+        .unwrap_or_else(|| app_id.to_string())
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect();
     let title = fill(&tr(m::NOT_STARTED_TITLE), &[("name", name)]);
+    // The button opens the log of the start that failed; a start that Panpak stopped before the app ran has no log of its own (an old one would mislead), so no button.
+    let blocked = matches!(cause, StartCause::Blocked(_));
+    let text = match cause {
+        StartCause::Reason(r) => panpak_core::starts::reason_text(r),
+        // The error text of Panpak (the first line), without the paths of the person's folders and without control characters, at most 200 characters.
+        StartCause::Blocked(t) => blocked_text(&t, &hidden_folders()),
+    };
     let log = appdir.join("last-start.log");
     let button = tr(m::NOT_STARTED_DETAILS);
-    let has_log = fs::symlink_metadata(&log).is_ok_and(|md| md.is_file());
-    if crate::dialog::notice(&title, &panpak_core::starts::reason_text(reason), has_log.then_some(button.as_ref()), NOT_STARTED_WAIT) {
+    let has_log = !blocked && fs::symlink_metadata(&log).is_ok_and(|md| md.is_file());
+    if crate::dialog::notice(&title, &text, has_log.then_some(button.as_ref()), NOT_STARTED_WAIT) {
         // The file of the log, with the program of the desktop that opens a file of that kind.
         if let Some(open) = crate::remove::find_tool("xdg-open") {
             let _ = std::process::Command::new(open).arg(&log).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
@@ -5660,8 +5688,15 @@ fn real_main() -> Result<()> {
         Some("protected-start") => protected::cmd_start(args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "protected-start <app-id>"))?),
         // Started by the stub, detached, when an app did not start (never by a person): the notification with the reason.
         Some("start-failed") => {
-            let (Some(id), Some(reason)) = (args.get(2), args.get(3).and_then(|r| panpak_core::starts::Reason::parse(r))) else { bail_code!(ErrorCode::E5002, "start-failed <app-id> <reason>") };
-            cmd_start_failed(id, reason)
+            let usage = || coded(ErrorCode::E5002, "start-failed <app-id> <reason> | start-failed <app-id> blocked <text>");
+            let id = args.get(2).ok_or_else(usage)?;
+            let cause = match args.get(3).map(String::as_str) {
+                // Panpak stopped the start itself: the first line of its own error text.
+                Some("blocked") => StartCause::Blocked(args.get(4).ok_or_else(usage)?.clone()),
+                Some(r) => StartCause::Reason(panpak_core::starts::Reason::parse(r).ok_or_else(usage)?),
+                None => return Err(usage()),
+            };
+            cmd_start_failed(id, cause)
         }
         Some("protected-notice") => {
             let pressed = args.get(2).is_some_and(|a| a == "--pressed");
@@ -6294,6 +6329,17 @@ mod tests {
     }
 
     #[test]
+    fn a_start_that_panpak_stopped_shows_the_first_line_of_its_error_without_paths() {
+        let hide = vec!["/home/Ann Lee".to_string()];
+        let t = "PANPAK-E2007: the files of the app are missing from the store (/home/Ann Lee/.local/share/panpak/trees/ab12); run `panpak repair org.x` to fetch them again\nsecond line";
+        assert_eq!(blocked_text(t, &hide), "PANPAK-E2007: the files of the app are missing from the store (...); run `panpak repair org.x` to fetch them again");
+        let long = format!("PANPAK-E3000: {}", "x".repeat(500));
+        assert_eq!(blocked_text(&long, &[]).chars().count(), 200);
+        assert_eq!(blocked_text("a\u{1b}[31mb\u{7}", &[]), "a[31mb");
+        assert_eq!(blocked_text("", &[]), "");
+    }
+
+    #[test]
     fn the_notification_after_go_back_says_that_it_is_back_or_why_it_is_not() {
         // success: the title is the name of the app, the body is the approved sentence
         let (t, b) = rollback_notice_in(None, &[], "Ask App", "1.0", Ok(()));
@@ -6323,7 +6369,7 @@ mod tests {
         let (_, b) = rollback_notice_in(None, &hide, "A", "1", Err(&sp));
         assert_eq!(b, "A could not go back to version 1: open ...: No such file");
         assert!(!b.contains("Ann") && !b.contains("Lee") && !b.contains('/'));
-        assert_eq!(without_paths("a /x/y: b, /z. (/q) c `/h/u/x` file:///h/u/y rel/ative ok", &[]), "a ...: b, .... ...) c ...` ... ... ok");
+        assert_eq!(without_paths("a /x/y: b, /z. (/q) c `/h/u/x` file:///h/u/y rel/ative ok", &[]), "a ...: b, .... (...) c `...` ... ... ok");
         // the Italian catalog has both texts (the sentences are in `po/it.po`): they are not the English ones, and they keep the placeholders that the program fills
         let it = panpak_core::i18n::pick(&["it"], panpak_core::i18n::catalogs());
         assert!(it.is_some());
