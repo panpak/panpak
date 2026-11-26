@@ -5,6 +5,7 @@
 
 use super::wire::{self, encode_message, message_len, parse_message, Limits, Message, Value};
 use anyhow::{bail, ensure, Context, Result};
+use std::collections::VecDeque;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -40,6 +41,18 @@ pub struct Connection {
     pending_fds: Vec<OwnedFd>,
     /// Unique name given by the daemon after `Hello`.
     pub unique_name: String,
+    /// Signals that arrived while a call waited for its reply, oldest first: `wait_signal` looks at them before it reads the socket.
+    kept: VecDeque<Message>,
+    /// How many signals were dropped because `kept` was full, over the life of the connection.
+    lost: u64,
+}
+
+/// The most signals that are kept during calls. A signal beyond that drops the oldest one.
+const KEPT_MAX: usize = 64;
+
+/// The line for standard error when signals were dropped during one call (one line per call, not one per signal), or `None` when none were.
+fn lost_note(lost: usize) -> Option<String> {
+    (lost > 0).then(|| format!("panpak: D-Bus: {lost} signal(s) were dropped during a call because {KEPT_MAX} were already kept; an answer that arrived then may be missing"))
 }
 
 /// The socket path of a `unix:path=...` address (the first such entry of a `;`-separated list).
@@ -115,7 +128,7 @@ impl Connection {
         let sock = UnixStream::connect(path).with_context(|| format!("cannot connect to {}", path.display()))?;
         sock.set_read_timeout(Some(timeout))?;
         sock.set_write_timeout(Some(timeout))?;
-        let mut c = Connection { sock, serial: 0, lim: Limits::default(), pending_fds: Vec::new(), unique_name: String::new() };
+        let mut c = Connection { sock, serial: 0, lim: Limits::default(), pending_fds: Vec::new(), unique_name: String::new(), kept: VecDeque::new(), lost: 0 };
         c.authenticate()?;
         let r = c.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "Hello", vec![], vec![])?;
         match r.body.as_slice() {
@@ -273,9 +286,19 @@ impl Connection {
         Ok((m, fds))
     }
 
-    /// Send a method call and wait for its reply. Signals and unrelated messages that arrive
-    /// meanwhile are dropped (at most 1000).
+    /// Send a method call and wait for its reply. Signals that arrive meanwhile are kept (at most `KEPT_MAX`; `wait_signal` gives them out, in order, before it reads the
+    /// socket; beyond that the oldest is dropped, and one line on standard error says how many, once per call). Other messages that arrive meanwhile are dropped
+    /// (at most 1000 are read).
     pub fn call(&mut self, dest: &str, path: &str, iface: &str, member: &str, args: Vec<Value>, fds: Vec<RawFd>) -> Result<Reply> {
+        let before = self.lost;
+        let res = self.call_inner(dest, path, iface, member, args, fds);
+        if let Some(note) = lost_note((self.lost - before) as usize) {
+            eprintln!("{note}");
+        }
+        res
+    }
+
+    fn call_inner(&mut self, dest: &str, path: &str, iface: &str, member: &str, args: Vec<Value>, fds: Vec<RawFd>) -> Result<Reply> {
         self.serial = self.serial.checked_add(1).context("serial overflow")?;
         let serial = self.serial;
         let m = Message {
@@ -297,6 +320,13 @@ impl Connection {
             let (r, rfds) = self.recv()?;
             if r.reply_serial != Some(serial) {
                 ensure!(started.elapsed() < Duration::from_secs(60), "no reply to {member}");
+                if r.kind == wire::SIGNAL {
+                    if self.kept.len() >= KEPT_MAX {
+                        self.kept.pop_front();
+                        self.lost += 1;
+                    }
+                    self.kept.push_back(r);
+                }
                 continue;
             }
             return match r.kind {
@@ -314,8 +344,19 @@ impl Connection {
         bail!("no reply to {member} among 1000 messages")
     }
 
-    /// Wait up to `wait` for a signal that `accept` likes. `None` on timeout.
+    /// How many signals were dropped, over the life of the connection, because the ones kept during calls were too many.
+    pub fn lost_signals(&self) -> u64 {
+        self.lost
+    }
+
+    /// Wait up to `wait` for a signal that `accept` likes. `None` on timeout. The signals that arrived during calls are looked at first, oldest first; one that `accept`
+    /// does not like is dropped.
     pub fn wait_signal(&mut self, wait: Duration, mut accept: impl FnMut(&Message) -> bool) -> Result<Option<Message>> {
+        while let Some(m) = self.kept.pop_front() {
+            if accept(&m) {
+                return Ok(Some(m));
+            }
+        }
         let end = Instant::now() + wait;
         let restore = self.sock.read_timeout()?;
         let res = loop {
@@ -377,7 +418,7 @@ mod tests {
         let h = std::thread::spawn(move || {
             let (s, _) = l.accept().unwrap();
             s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-            let mut c = Connection { sock: s, serial: 0, lim: Limits::default(), pending_fds: Vec::new(), unique_name: ":1.7".into() };
+            let mut c = Connection { sock: s, serial: 0, lim: Limits::default(), pending_fds: Vec::new(), unique_name: ":1.7".into(), kept: VecDeque::new(), lost: 0 };
             // authentication: "\0AUTH EXTERNAL ..", NEGOTIATE_UNIX_FD, BEGIN
             let mut line = Vec::new();
             let mut b = [0u8; 1];
@@ -430,6 +471,18 @@ mod tests {
                         let sig = Message { kind: wire::SIGNAL, serial: 9, path: Some("/x".into()), interface: Some("org.x.I".into()), member: Some("Hi".into()), ..Default::default() };
                         c.send(&encode_message(&sig).unwrap(), &[]).unwrap();
                     }
+                    Some("Burst") => {
+                        // `n` signals (the body of each is its number), then a call to us and a reply to nobody, then the reply
+                        let Some(Value::U32(n)) = m.body.first() else { return };
+                        for i in 0..*n {
+                            let sig = Message { kind: wire::SIGNAL, serial: 10 + i, path: Some("/x".into()), interface: Some("org.x.I".into()), member: Some("Hi".into()), signature: "u".into(), body: vec![Value::U32(i)], ..Default::default() };
+                            c.send(&encode_message(&sig).unwrap(), &[]).unwrap();
+                        }
+                        let knock = Message { kind: wire::CALL, serial: 5000, path: Some("/x".into()), interface: Some("org.x.I".into()), member: Some("Knock".into()), destination: Some(":1.7".into()), ..Default::default() };
+                        c.send(&encode_message(&knock).unwrap(), &[]).unwrap();
+                        let stray = Message { kind: wire::RETURN, serial: 5001, reply_serial: Some(4242), ..Default::default() };
+                        c.send(&encode_message(&stray).unwrap(), &[]).unwrap();
+                    }
                     _ => return,
                 }
                 let bytes = encode_message(&reply).unwrap();
@@ -468,6 +521,72 @@ mod tests {
         drop(c);
         h.join().unwrap();
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The numbers (`u`) of the `Hi` signals that `wait_signal` gives out while it likes them, with a short wait.
+    fn drain(c: &mut Connection, mut like: impl FnMut(u32) -> bool) -> Vec<u32> {
+        let mut got = vec![];
+        while let Some(m) = c.wait_signal(Duration::from_millis(200), |m| matches!(m.body.as_slice(), [Value::U32(i)] if like(*i))).unwrap() {
+            if let [Value::U32(i)] = m.body.as_slice() {
+                got.push(*i);
+            }
+        }
+        got
+    }
+
+    #[test]
+    fn signals_that_arrive_during_a_call_are_kept_for_the_next_wait() {
+        let dir = scratch("kept");
+        let (path, h) = fake_daemon(&dir);
+        let mut c = Connection::open(&path, Duration::from_secs(10)).unwrap();
+        // 1. a signal before the reply of a call: the next wait gives it (before, it was lost)
+        c.call("org.x", "/x", "org.x.I", "Burst", vec![Value::U32(1)], vec![]).unwrap();
+        let m = c.wait_signal(Duration::from_millis(200), |m| m.member.as_deref() == Some("Hi")).unwrap().expect("the signal of the call");
+        assert_eq!(m.body, vec![Value::U32(0)]);
+        // nothing is given twice, and a wait with nothing kept times out as before
+        assert!(c.wait_signal(Duration::from_millis(100), |_| true).unwrap().is_none());
+        // 2. a call to us and a reply to nobody are not kept; the order of the signals is the one in which they arrived
+        c.call("org.x", "/x", "org.x.I", "Burst", vec![Value::U32(3)], vec![]).unwrap();
+        assert_eq!(drain(&mut c, |_| true), vec![0, 1, 2]);
+        // 3. a signal that `accept` does not like is dropped, and the next one is given: 0 and 1 are refused, 2 is given, and nothing is left
+        c.call("org.x", "/x", "org.x.I", "Burst", vec![Value::U32(4)], vec![]).unwrap();
+        assert_eq!(drain(&mut c, |i| i == 2), vec![2]);
+        // (the drain went on: the signal 3 was looked at by the next wait, not liked, and dropped)
+        assert!(c.wait_signal(Duration::from_millis(100), |_| true).unwrap().is_none(), "nothing is left");
+        drop(c);
+        h.join().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn at_most_sixty_four_signals_are_kept_and_the_loss_is_counted() {
+        let dir = scratch("kept-full");
+        let (path, h) = fake_daemon(&dir);
+        let mut c = Connection::open(&path, Duration::from_secs(10)).unwrap();
+        // 100 signals in one call: the last 64 are kept (36..99), 36 are counted as lost
+        c.call("org.x", "/x", "org.x.I", "Burst", vec![Value::U32(100)], vec![]).unwrap();
+        assert_eq!(c.lost_signals(), 36);
+        let got = drain(&mut c, |_| true);
+        assert_eq!(got.len(), 64);
+        assert_eq!((got[0], got[63]), (36, 99));
+        // a call without a loss adds nothing
+        c.call("org.x", "/x", "org.x.I", "Burst", vec![Value::U32(10)], vec![]).unwrap();
+        assert_eq!(c.lost_signals(), 36);
+        // another call with a loss adds to the total
+        c.call("org.x", "/x", "org.x.I", "Burst", vec![Value::U32(70)], vec![]).unwrap();
+        assert_eq!(c.lost_signals(), 36 + 16);
+        drop(c);
+        h.join().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_line_about_lost_signals_is_one_per_call() {
+        assert_eq!(lost_note(0), None);
+        let one = lost_note(1).unwrap();
+        let many = lost_note(36).unwrap();
+        assert!(one.starts_with("panpak: D-Bus: 1 signal(s) were dropped during a call") && many.starts_with("panpak: D-Bus: 36 signal(s) were dropped during a call"));
+        assert!(!many.contains('\n'), "a single line");
     }
 
     #[test]
