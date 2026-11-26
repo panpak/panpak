@@ -1030,11 +1030,11 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
 /// The notification after "Go back": the title is the name of the app, the body says that it is back (`name`, `old`), or that it could not go back and why. The reason is
 /// the first line of the error, without control characters and at most 200 characters; it comes from Panpak, never from the app.
 fn rollback_notice(name: &str, old: &str, done: std::result::Result<(), &anyhow::Error>) -> (String, String) {
-    rollback_notice_in(panpak_core::i18n::current(), name, old, done)
+    rollback_notice_in(panpak_core::i18n::current(), &hidden_folders(), name, old, done)
 }
 
 /// `rollback_notice` in the language of the catalog `cat` (`None`: English), so that a test does not depend on the language of the machine.
-fn rollback_notice_in(cat: Option<&panpak_core::i18n::Catalog>, name: &str, old: &str, done: std::result::Result<(), &anyhow::Error>) -> (String, String) {
+fn rollback_notice_in(cat: Option<&panpak_core::i18n::Catalog>, hide: &[String], name: &str, old: &str, done: std::result::Result<(), &anyhow::Error>) -> (String, String) {
     use panpak_core::i18n::{fill, tr_in};
     use panpak_core::messages as m;
     // The body of a notification can be read as markup by the desktop: the characters that start it are written as entities (the name is chosen by the author of the app).
@@ -1050,40 +1050,46 @@ fn rollback_notice_in(cat: Option<&panpak_core::i18n::Catalog>, name: &str, old:
         Ok(()) => fill(&tr_in(cat, m::ROLLBACK_DONE), &vals(None)),
         Err(e) => {
             // The first line of the error, without the paths of the store (they hold the name of the user), without control characters, at most 200 characters.
-            let reason: String = without_paths(panpak_core::err_text(e).lines().next().unwrap_or("")).chars().filter(|c| !c.is_control()).take(200).collect();
+            let reason: String = without_paths(panpak_core::err_text(e).lines().next().unwrap_or(""), hide).chars().filter(|c| !c.is_control()).take(200).collect();
             fill(&tr_in(cat, m::ROLLBACK_FAILED), &vals(Some(reason)))
         }
     };
     (name.to_string(), body)
 }
 
-/// The text with every path (a `/` at the start of a word, or after `(`, `'`, `"` or `=`, up to the next space, quote or `)`) replaced by `...`: an error of the store names
-/// files in the home of the person. What follows the path (`:`, `,`, `.`) stays.
-fn without_paths(s: &str) -> String {
-    let mut out = String::new();
-    let mut prev = ' ';
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '/' && matches!(prev, ' ' | '(' | '\'' | '"' | '=') {
-            let mut path = String::from(c);
-            while let Some(&n) = chars.peek() {
-                if matches!(n, ' ' | '\'' | '"' | ')') {
-                    break;
-                }
-                path.push(n);
-                chars.next();
-            }
-            // a `:`, `,`, `;` or `.` that ends the path is not part of it
-            let tail: String = path.chars().rev().take_while(|c| matches!(c, ':' | ',' | ';' | '.')).collect::<Vec<_>>().into_iter().rev().collect();
-            out.push_str("...");
-            out.push_str(&tail);
-            prev = out.chars().last().unwrap_or(' ');
-        } else {
-            out.push(c);
-            prev = c;
-        }
+/// The text with the paths taken out. First the folders that are known (`hide`: the home of the person and the store, which can hold spaces) are replaced as a whole, then every
+/// word that still holds a `/` is replaced by `...` (a path, a `file://` address, a relative path). What ends the word (`:`, `,`, `;`, `.`, a quote, a bracket) stays. An
+/// error of the store names files in the home of the person, and the name of the user is in them.
+fn without_paths(s: &str, hide: &[String]) -> String {
+    let mut t = s.to_string();
+    let mut known: Vec<&String> = hide.iter().filter(|h| h.len() > 1).collect();
+    known.sort_by_key(|h| std::cmp::Reverse(h.len()));
+    for h in known {
+        t = t.replace(h.as_str(), "...");
     }
-    out
+    t.split(' ')
+        .map(|w| {
+            if w.contains('/') {
+                let tail: String = w.chars().rev().take_while(|c| matches!(c, ':' | ',' | ';' | '.' | '\'' | '"' | ')' | ']' | '>' | '`')).collect::<Vec<_>>().into_iter().rev().collect();
+                format!("...{tail}")
+            } else {
+                w.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The folders that a notification must not show: the home of the person and the store.
+fn hidden_folders() -> Vec<String> {
+    let mut v = Vec::new();
+    if let Some(h) = std::env::var_os("HOME") {
+        v.push(h.to_string_lossy().into_owned());
+    }
+    if let Ok(d) = store_dir() {
+        v.push(d.to_string_lossy().into_owned());
+    }
+    v
 }
 
 /// `panpak rollback --ask <app-id>`: the window that the stub opens when the installed version failed to start twice in a row (`panpak_core::starts`) and an
@@ -6252,35 +6258,41 @@ mod tests {
     #[test]
     fn the_notification_after_go_back_says_that_it_is_back_or_why_it_is_not() {
         // success: the title is the name of the app, the body is the approved sentence
-        let (t, b) = rollback_notice_in(None, "Ask App", "1.0", Ok(()));
+        let (t, b) = rollback_notice_in(None, &[], "Ask App", "1.0", Ok(()));
         assert_eq!((t.as_str(), b.as_str()), ("Ask App", "Ask App is back to version 1.0. Your documents stay as they are."));
         // failure: the reason is the first line of the error, with no control character, at most 200 characters
         let e = anyhow::anyhow!("open /store/x.rec: No such file\u{7} or directory").context("the files of the previous version are missing\nsecond line");
-        let (t, b) = rollback_notice_in(None, "Ask App", "1.0", Err(&e));
+        let (t, b) = rollback_notice_in(None, &[], "Ask App", "1.0", Err(&e));
         assert_eq!(t, "Ask App");
         assert_eq!(b, "Ask App could not go back to version 1.0: the files of the previous version are missing");
         let long = anyhow::anyhow!("{}", "x".repeat(500));
-        let (_, b) = rollback_notice_in(None, "A", "1", Err(&long));
+        let (_, b) = rollback_notice_in(None, &[], "A", "1", Err(&long));
         assert_eq!(b.chars().count(), "A could not go back to version 1: ".len() + 200);
         assert!(b.ends_with(&"x".repeat(200)));
         let ctl = anyhow::anyhow!("a\u{1b}[31mb");
-        assert_eq!(rollback_notice_in(None, "A", "1", Err(&ctl)).1, "A could not go back to version 1: a[31mb");
+        assert_eq!(rollback_notice_in(None, &[], "A", "1", Err(&ctl)).1, "A could not go back to version 1: a[31mb");
         // the name is chosen by the author: markup is written as entities in the body, not in the title; a path of the store is not shown
-        let (t, b) = rollback_notice_in(None, "<b>X</b> & Y", "1.0", Ok(()));
+        let (t, b) = rollback_notice_in(None, &[], "<b>X</b> & Y", "1.0", Ok(()));
         assert_eq!(t, "<b>X</b> & Y");
         assert_eq!(b, "&lt;b&gt;X&lt;/b&gt; &amp; Y is back to version 1.0. Your documents stay as they are.");
         let p = anyhow::anyhow!("No such file or directory (os error 2)").context("open /home/someone/.local/share/panpak/packages/x.rec");
-        let (_, b) = rollback_notice_in(None, "A", "1", Err(&p));
+        let (_, b) = rollback_notice_in(None, &[], "A", "1", Err(&p));
         assert_eq!(b, "A could not go back to version 1: open ...: No such file or directory (os error 2)");
         assert!(!b.contains('/') && !b.contains("someone"));
-        assert_eq!(without_paths("a /x/y: b, /z. (/q) c"), "a ...: b, .... (...) c");
+        // known folders are taken out as a whole, also with a space in them; any other word with a `/` goes too (a `file://` address, a relative path, after a backtick)
+        let hide = vec!["/home/Ann Lee".to_string(), "/home/Ann Lee/.local/share/panpak".to_string()];
+        let sp = anyhow::anyhow!("No such file").context("open /home/Ann Lee/.local/share/panpak/packages/x.rec");
+        let (_, b) = rollback_notice_in(None, &hide, "A", "1", Err(&sp));
+        assert_eq!(b, "A could not go back to version 1: open ...: No such file");
+        assert!(!b.contains("Ann") && !b.contains("Lee") && !b.contains('/'));
+        assert_eq!(without_paths("a /x/y: b, /z. (/q) c `/h/u/x` file:///h/u/y rel/ative ok", &[]), "a ...: b, .... ...) c ...` ... ... ok");
         // the Italian catalog has both texts (the sentences are in `po/it.po`): they are not the English ones, and they keep the placeholders that the program fills
         let it = panpak_core::i18n::pick(&["it"], panpak_core::i18n::catalogs());
         assert!(it.is_some());
-        let (_, done_it) = rollback_notice_in(it, "Ask App", "1.0", Ok(()));
-        let (_, failed_it) = rollback_notice_in(it, "Ask App", "1.0", Err(&ctl));
-        assert!(done_it.contains("Ask App") && done_it.contains("1.0") && done_it != rollback_notice_in(None, "Ask App", "1.0", Ok(())).1);
-        assert!(failed_it.contains("Ask App") && failed_it.contains("1.0") && failed_it.ends_with("a[31mb") && failed_it != rollback_notice_in(None, "Ask App", "1.0", Err(&ctl)).1);
+        let (_, done_it) = rollback_notice_in(it, &[], "Ask App", "1.0", Ok(()));
+        let (_, failed_it) = rollback_notice_in(it, &[], "Ask App", "1.0", Err(&ctl));
+        assert!(done_it.contains("Ask App") && done_it.contains("1.0") && done_it != rollback_notice_in(None, &[], "Ask App", "1.0", Ok(())).1);
+        assert!(failed_it.contains("Ask App") && failed_it.contains("1.0") && failed_it.ends_with("a[31mb") && failed_it != rollback_notice_in(None, &[], "Ask App", "1.0", Err(&ctl)).1);
     }
 
     #[test]
