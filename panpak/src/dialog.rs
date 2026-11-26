@@ -104,6 +104,50 @@ pub fn notify_args(title: &str, text: &str, ok: &str, cancel: &str) -> Vec<panpa
     ]
 }
 
+/// The arguments of `Notify` for the notice of an app that did not start: a warning with the reason as the body, an optional button (`details`), and the hint `transient`:
+/// it shows as a banner and the desktop does not keep it in the list of notifications. The body is read as markup by some servers, so the characters that start it are written
+/// as entities. The server chooses how long the banner stays (-1).
+pub(crate) fn notice_args(title: &str, body: &str, button: Option<&str>) -> Vec<panpak_core::dbus::Value> {
+    use panpak_core::dbus::Value;
+    let actions = match button {
+        Some(label) => vec![Value::str("details"), Value::Str(clean(label))],
+        None => Vec::new(),
+    };
+    vec![
+        Value::str("Panpak"),
+        Value::U32(0),
+        Value::str("dialog-warning-symbolic"),
+        Value::Str(clean(title)),
+        Value::Str(lines(body, markup_safe)),
+        Value::Array("s".into(), actions),
+        Value::Array("{sv}".into(), vec![Value::Entry(Box::new(Value::str("transient")), Box::new(Value::variant(Value::Bool(true))))]),
+        Value::I32(-1),
+    ]
+}
+
+/// Show that notice through the notification service of the desktop and wait up to `wait` for the button. `true` when the button was pressed (and only by the service
+/// itself, for our number). With no service nothing is shown (`false`): the log stays on disk. The button is offered only when the service lists `actions` and the answer can be heard.
+pub(crate) fn notice(title: &str, body: &str, button: Option<&str>, wait: std::time::Duration) -> bool {
+    use panpak_core::dbus::{Connection, Value};
+    let Ok(mut conn) = Connection::session(std::time::Duration::from_secs(3)) else { return false };
+    let Some(owner) = notification_owner(&mut conn) else { return false };
+    let caps = conn.call(&owner, "/org/freedesktop/Notifications", FDO, "GetCapabilities", vec![], vec![]).ok();
+    let button = button.filter(|_| caps.is_some_and(|c| shows_buttons(&c.body)) && subscribe(&mut conn, &["ActionInvoked"]));
+    let id = match conn.call(&owner, "/org/freedesktop/Notifications", FDO, "Notify", notice_args(title, body, button), vec![]) {
+        Ok(r) => match r.body.as_slice() {
+            [Value::U32(i)] => *i,
+            _ => return false,
+        },
+        Err(_) => return false,
+    };
+    if button.is_none() {
+        return false;
+    }
+    let pressed = matches!(conn.wait_signal(wait, |m| action_of(m, &owner, id).as_deref() == Some("details")), Ok(Some(_)));
+    let _ = conn.call(&owner, "/org/freedesktop/Notifications", FDO, "CloseNotification", vec![Value::U32(id)], vec![]);
+    pressed
+}
+
 /// What a signal of the notification service says about the question `id`, if it comes from `owner` (the unique name that owns the service).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Signal {
@@ -340,6 +384,23 @@ mod tests {
         let hints = format!("{:?}", a[6]);
         assert!(hints.contains("resident") && hints.contains("Bool(true)") && !hints.contains("desktop-entry"), "{hints}");
         assert_eq!(a[7], Value::I32(0));
+    }
+
+    #[test]
+    fn the_notice_of_an_app_that_did_not_start_is_transient_has_the_button_only_when_asked_and_escapes_the_body() {
+        let a = notice_args("Ask\u{7} App didn't start", "The app <b>closed</b> & stopped.\nSecond line", Some("Show details"));
+        assert_eq!(a.len(), 8);
+        assert_eq!((&a[0], &a[1]), (&Value::str("Panpak"), &Value::U32(0)));
+        assert_eq!(a[3], Value::str("Ask? App didn't start"));
+        assert_eq!(a[4], Value::str("The app &lt;b&gt;closed&lt;/b&gt; &amp; stopped.\nSecond line"));
+        // the button `details` only (a click on the body is no answer and no default action is made), and the hint `transient`: it is not kept in the list
+        assert_eq!(a[5], Value::Array("s".into(), vec![Value::str("details"), Value::str("Show details")]));
+        let hints = format!("{:?}", a[6]);
+        assert!(hints.contains("transient") && hints.contains("Bool(true)") && !hints.contains("resident") && !hints.contains("desktop-entry"), "{hints}");
+        // the server chooses how long the banner stays
+        assert_eq!(a[7], Value::I32(-1));
+        // no button: no action at all
+        assert_eq!(notice_args("T", "t", None)[5], Value::Array("s".into(), Vec::new()));
     }
 
     #[test]

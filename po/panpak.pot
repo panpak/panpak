@@ -250,6 +250,9 @@ msgstr ""
 msgid "See what other apps show and what you type in them (X11)"
 msgstr ""
 
+msgid "Show details"
+msgstr ""
+
 msgid "Show notifications"
 msgstr ""
 
@@ -266,6 +269,15 @@ msgid "The app can read and change the files in {folders}."
 msgstr ""
 
 msgid "The app can read the files in {folders}."
+msgstr ""
+
+msgid "The app closed right after starting (error code {code})."
+msgstr ""
+
+msgid "The app crashed while starting."
+msgstr ""
+
+msgid "The app was stopped by the system."
 msgstr ""
 
 msgid "The author of {name} reported a serious problem in this version. Until you update, it runs without internet. Your files are safe and stay open."
@@ -533,6 +545,9 @@ msgid "{name} asks for new permissions, but there is no window to show them to y
 msgstr ""
 
 msgid "{name} could not go back to version {old}: {reason}"
+msgstr ""
+
+msgid "{name} didn't start"
 msgstr ""
 
 msgid "{name} doesn't start"

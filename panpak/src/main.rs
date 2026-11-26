@@ -1092,9 +1092,35 @@ fn hidden_folders() -> Vec<String> {
     v
 }
 
+/// How long the notice of an app that did not start waits for its button: a banner is on the screen for a few seconds, and a person who reaches for it can take longer.
+const NOT_STARTED_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `panpak start-failed <app-id> <reason>` (started detached by the stub, never by a person): the notification that the app did not start, with the reason in Panpak's
+/// words and, when the log of the start is there, the button "Show details" that opens it. The notification is `transient` (not kept in the list). No notification
+/// service: nothing is shown, and the log stays.
+fn cmd_start_failed(app_id: &str, reason: panpak_core::starts::Reason) -> Result<()> {
+    use panpak_core::i18n::{fill, tr};
+    use panpak_core::messages as m;
+    panpak_core::validate_app_id(app_id)?;
+    let appdir = store_dir()?.join("apps").join(app_id);
+    let cur = panpak_core::durable::resolve_link(&appdir.join("current")).context("missing current")?;
+    let name: String = panpak_core::record::open_verified(&cur)?.manifest.app.name.chars().filter(|c| !c.is_control()).collect();
+    let title = fill(&tr(m::NOT_STARTED_TITLE), &[("name", name)]);
+    let log = appdir.join("last-start.log");
+    let button = tr(m::NOT_STARTED_DETAILS);
+    let has_log = fs::symlink_metadata(&log).is_ok_and(|md| md.is_file());
+    if crate::dialog::notice(&title, &panpak_core::starts::reason_text(reason), has_log.then_some(button.as_ref()), NOT_STARTED_WAIT) {
+        // The file of the log, with the program of the desktop that opens a file of that kind.
+        if let Some(open) = crate::remove::find_tool("xdg-open") {
+            let _ = std::process::Command::new(open).arg(&log).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+        }
+    }
+    Ok(())
+}
+
 /// `panpak rollback --ask <app-id>`: the window that the stub opens when the installed version failed to start twice in a row (`panpak_core::starts`) and an
 /// earlier version that worked is still there. "Go back" is `panpak rollback`; "Try again" starts the app again. No window tool, or no earlier version: nothing happens.
-fn cmd_rollback_ask(app_id: &str) -> Result<()> {
+fn cmd_rollback_ask(app_id: &str, reason: Option<panpak_core::starts::Reason>) -> Result<()> {
     use panpak_core::i18n::{fill, tr};
     use panpak_core::messages as m;
     panpak_core::validate_app_id(app_id)?;
@@ -1116,7 +1142,12 @@ fn cmd_rollback_ask(app_id: &str) -> Result<()> {
         panpak_core::starts::clear_pending(&appdir);
         return Ok(());
     }
-    let answer = crate::dialog::ask(&fill(&tr(m::NO_START_TITLE), &vals), &fill(&tr(m::NO_START_BODY), &vals), &fill(&tr(m::NO_START_GO_BACK), &vals), &tr(m::NO_START_TRY_AGAIN));
+    // The reason, when the stub gave one, goes in front of the sentence of the question (Panpak's words, never the output of the app).
+    let body = match reason {
+        Some(r) => format!("{} {}", panpak_core::starts::reason_text(r), fill(&tr(m::NO_START_BODY), &vals)),
+        None => fill(&tr(m::NO_START_BODY), &vals),
+    };
+    let answer = crate::dialog::ask(&fill(&tr(m::NO_START_TITLE), &vals), &body, &fill(&tr(m::NO_START_GO_BACK), &vals), &tr(m::NO_START_TRY_AGAIN));
     match answer {
         // Nobody answered: the file stays, and the next start of the app asks again.
         crate::dialog::Answer::Unanswered | crate::dialog::Answer::NoTool => return Ok(()),
@@ -5251,8 +5282,10 @@ fn real_main() -> Result<()> {
         }
         Some("rollback") => {
             if args.get(2).map(String::as_str) == Some("--ask") {
-                let id = args.get(3).ok_or_else(|| coded(ErrorCode::E5002, "rollback --ask <app-id>"))?;
-                return cmd_rollback_ask(id);
+                let id = args.get(3).ok_or_else(|| coded(ErrorCode::E5002, "rollback --ask <app-id> [--reason <reason>]"))?;
+                // `--reason` is given by the stub (`exit:3`, `crash`, `stopped`); a bad one is ignored, the question is asked without it.
+                let reason = (args.get(4).map(String::as_str) == Some("--reason")).then(|| args.get(5)).flatten().and_then(|r| panpak_core::starts::Reason::parse(r));
+                return cmd_rollback_ask(id, reason);
             }
             let id = args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "rollback <app-id>"))?;
             cmd_rollback(id)?;
@@ -5625,6 +5658,11 @@ fn real_main() -> Result<()> {
             protected::cmd_protected(json, id)
         }
         Some("protected-start") => protected::cmd_start(args.get(2).ok_or_else(|| coded(ErrorCode::E5002, "protected-start <app-id>"))?),
+        // Started by the stub, detached, when an app did not start (never by a person): the notification with the reason.
+        Some("start-failed") => {
+            let (Some(id), Some(reason)) = (args.get(2), args.get(3).and_then(|r| panpak_core::starts::Reason::parse(r))) else { bail_code!(ErrorCode::E5002, "start-failed <app-id> <reason>") };
+            cmd_start_failed(id, reason)
+        }
         Some("protected-notice") => {
             let pressed = args.get(2).is_some_and(|a| a == "--pressed");
             protected::cmd_notice(args.get(if pressed { 3 } else { 2 }).ok_or_else(|| coded(ErrorCode::E5002, "protected-notice [--pressed] <app-id>"))?, pressed)

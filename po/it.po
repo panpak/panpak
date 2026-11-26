@@ -574,6 +574,21 @@ msgstr "Torna alla versione {old}"
 msgid "Try again"
 msgstr "Riprova"
 
+msgid "{name} didn't start"
+msgstr "{name} non è partita"
+
+msgid "The app closed right after starting (error code {code})."
+msgstr "L'app si è chiusa subito dopo l'avvio (codice di errore {code})."
+
+msgid "The app crashed while starting."
+msgstr "L'app si è interrotta in modo anomalo durante l'avvio."
+
+msgid "The app was stopped by the system."
+msgstr "L'app è stata fermata dal sistema."
+
+msgid "Show details"
+msgstr "Mostra dettagli"
+
 msgid "{name} is back to version {old}. Your documents stay as they are."
 msgstr "{name} è tornata alla versione {old}. I tuoi documenti restano come sono."
 

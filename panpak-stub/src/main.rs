@@ -1991,33 +1991,59 @@ fn flock_try_exclusive(lock: &File) -> bool {
 /// A start of an installed app ended: count how it went (PANPAK-FORMAT.md section 6.10) and, when the version failed to start twice in a row and an earlier
 /// version is known to work, ask the person in a window (`panpak rollback --ask`, detached). Nothing is rolled back here, and nothing leaves the computer.
 /// Any trouble is ignored: this must never change how the app ends.
-fn note_start_end(panpak: &Path, id: &str, root: &str, info: view::EndInfo) {
+fn note_start_end(panpak: &Path, id: &str, root: &str, info: view::EndInfo, tail: &[u8]) {
     use panpak_core::starts;
     let Some(store) = panpak.parent().and_then(|b| b.parent()) else { return };
     let appdir = store.join("apps").join(id);
     let a_start = !std::env::args_os().skip(1).any(|a| matches!(a.to_str(), Some("--version" | "--help" | "-h" | "-V")));
     let outcome = starts::classify_after(info.code, info.signal, info.forwarded, info.secs, a_start, starts::quick_secs());
     let Ok(ev) = starts::record_end(&appdir, root, outcome) else { return };
-    if ev != starts::Event::Ask {
-        return;
+    // An app that did not start: the person is told why, always in Panpak's words (the standard error of the app is kept for the details, never shown as the reason).
+    let failed = outcome == starts::Outcome::Failed;
+    let reason = starts::reason(info.code, info.signal);
+    // With a terminal as standard error nothing was captured (the app keeps its real terminal), and the reason is written there, with no notification.
+    let on_terminal = stderr_is_terminal();
+    if failed {
+        if !tail.is_empty() {
+            write_start_log(&appdir, tail);
+        }
+        if on_terminal {
+            eprintln!("panpak: {id}: {}", starts::reason_text(reason));
+        }
     }
     let current = panpak_core::durable::resolve_link(&appdir.join("current")).ok();
-    match (starts::last_good(&appdir), current) {
-        (Some(good), Some(cur)) if good != cur => {}
-        _ => return,
+    let can_go_back = matches!((starts::last_good(&appdir), current), (Some(good), Some(cur)) if good != cur);
+    if ev == starts::Event::Ask && can_go_back {
+        // The second failure in a row with a version that worked: the question of the kept versions, with the reason in front of its sentence.
+        spawn_detached(panpak, &["rollback", "--ask", id, "--reason", &reason.arg()]);
+    } else if failed && !on_terminal {
+        // Every other failed start tells the person on its own (a notification that does not stay in the list).
+        spawn_detached(panpak, &["start-failed", id, &reason.arg()]);
     }
-    use std::os::unix::process::CommandExt;
-    let mut cmd = Command::new(panpak);
-    cmd.args(["rollback", "--ask", id]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    // SAFETY: setsid is async-signal-safe; the window outlives this process.
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setsid();
-            Ok(())
-        });
-    }
-    let _ = cmd.spawn();
 }
+
+/// Is the standard error of this process a terminal?
+fn stderr_is_terminal() -> bool {
+    // SAFETY: isatty only looks at the descriptor.
+    unsafe { libc::isatty(2) == 1 }
+}
+
+/// The last bytes of the standard error of the app that did not start, in `apps/<id>/last-start.log` (mode 0600: it can hold personal data), written to a temporary
+/// file and renamed, so that a reader never sees half of it. The folder is outside what the app can write. Any trouble is ignored.
+fn write_start_log(appdir: &Path, tail: &[u8]) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let (tmp, log) = (appdir.join(".last-start.log.tmp"), appdir.join(START_LOG));
+    let written = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(tail));
+    if written.is_ok() {
+        let _ = fs::rename(&tmp, &log);
+    } else {
+        let _ = fs::remove_file(&tmp);
+    }
+}
+
+/// The name of the log of the last start that did not start.
+const START_LOG: &str = "last-start.log";
 
 /// The last copy of the app has ended: let go of the lock of the copies (the work needs it free) and start `panpak background --exit <id>`, detached, and go.
 /// The work is what the app left undone: the update that was staged is applied, files found damaged are repaired (this one may use the network), and the daily
@@ -2832,14 +2858,20 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     let plan = view::ViewPlan { fd, ..plan };
     let exit = ctx.exit_job.clone();
     let watch = ctx.watch.clone();
+    // The log is the one of the last start only: the one of the start before is gone now.
+    if let Some((panpak, id)) = watch.as_ref() {
+        if let Some(store) = panpak.parent().and_then(|b| b.parent()) {
+            let _ = fs::remove_file(store.join("apps").join(id).join(START_LOG));
+        }
+    }
     let root_name = ctx.tree.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let exit_lock = ctx.early_lock.and_then(|f| f.try_clone().ok());
     // The lock of the shared folders must outlive bwrap, so the outer stub stays whenever there is one, and whenever there is work for the end.
     match (opener_server, shared, dbus, wayland) {
         (None, None, None, None) if exit.is_none() && watch.is_none() => match view::exec_bwrap(&plan)? {},
-        (server, shared, dbus, wayland) => match view::run_bwrap(&plan, (server, shared, dbus, wayland), move |(_, shared, _, _), clean, info| {
+        (server, shared, dbus, wayland) => match view::run_bwrap(&plan, (server, shared, dbus, wayland), watch.is_some(), move |(_, shared, _, _), clean, info, tail| {
             if let Some((panpak, id)) = watch.as_ref() {
-                note_start_end(panpak, id, &root_name, info);
+                note_start_end(panpak, id, &root_name, info, tail);
             }
             if !clean && !exec_written {
                 let roots: Vec<&Path> = end_roots.iter().map(PathBuf::as_path).collect();

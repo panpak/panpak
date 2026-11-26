@@ -1,6 +1,6 @@
 # Questions that Panpak asks, with and without `zenity` or `kdialog`
 
-Panpak asks a question in five places. Each one is a window with two buttons.
+Panpak asks a question in five places. Each one is a window with two buttons. A sixth message is not a question: the notification that an app did not start (below).
 
 | Question | When | Buttons |
 |---|---|---|
@@ -13,6 +13,12 @@ Panpak asks a question in five places. Each one is a window with two buttons.
 ## With `zenity` or `kdialog`
 
 The window of the tool that the desktop uses (`kdialog` on KDE, else `zenity`). Panpak looks for the tool only in `/usr/bin`, `/bin` and `/run/current-system/sw/bin`.
+
+## An app that did not start (a notification, with or without those tools)
+
+Every time an app fails to start (it closes at once with an error code, it crashes, or the system stops it, within 20 seconds), a notification says so: "{app} didn't start", and the reason in one sentence: "The app closed right after starting (error code N).", "The app crashed while starting." or "The app was stopped by the system." The reason is Panpak's own words; it is never taken from what the app printed. The notification is shown as a banner and does not stay in the list of notifications (a `transient` notification), so that when the second failure in a row brings the question "{app} doesn't start" there are not two. Every failed start has its own notification: Panpak does not try to replace one with another (GNOME Shell 51 does not allow that between two processes). The question has the same reason in front of its sentence.
+
+The last part of what the app wrote to its standard error is kept in the file `last-start.log` of the app (in the store, readable by you only, 16 KiB at most, emptied at each start, removed with the app), and the notification has the button **Show details** that opens it. The log can hold personal data: do not send it anywhere without reading it. When you start the app from a terminal nothing is captured and nothing is shown as a notification: the reason is written in the terminal. With no notification service nothing is shown, and the log stays.
 
 ## After "Go back" (with or without those tools)
 

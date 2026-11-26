@@ -123,6 +123,12 @@ pub const NO_START_TITLE: &str = "{name} doesn't start";
 pub const NO_START_BODY: &str = "After the update to {new} it failed to start twice. You can go back to {old}, which worked.\nYour documents stay as they are.";
 pub const NO_START_GO_BACK: &str = "Go back to {old}";
 pub const NO_START_TRY_AGAIN: &str = "Try again";
+// An app that did not start: the notification, the reason (always Panpak's own words, never taken from what the app printed) and the button for the log.
+pub const NOT_STARTED_TITLE: &str = "{name} didn't start";
+pub const NOT_STARTED_EXIT: &str = "The app closed right after starting (error code {code}).";
+pub const NOT_STARTED_CRASH: &str = "The app crashed while starting.";
+pub const NOT_STARTED_STOPPED: &str = "The app was stopped by the system.";
+pub const NOT_STARTED_DETAILS: &str = "Show details";
 pub const ROLLBACK_DONE: &str = "{name} is back to version {old}. Your documents stay as they are.";
 pub const ROLLBACK_FAILED: &str = "{name} could not go back to version {old}: {reason}";
 pub const ROLLED_BACK: &str = "Back to {name} {old}. Your documents are not touched; settings changed by the newer version may not work in this one.";
@@ -243,6 +249,11 @@ pub const ALL: &[&str] = &[
     NO_START_BODY,
     NO_START_GO_BACK,
     NO_START_TRY_AGAIN,
+    NOT_STARTED_TITLE,
+    NOT_STARTED_EXIT,
+    NOT_STARTED_CRASH,
+    NOT_STARTED_STOPPED,
+    NOT_STARTED_DETAILS,
     ROLLBACK_DONE,
     ROLLBACK_FAILED,
     ROLLED_BACK,

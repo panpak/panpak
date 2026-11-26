@@ -18,6 +18,8 @@ The portal is a fake (PyGObject owns `org.freedesktop.portal.Desktop` on a priva
      the notification is closed after the wait; a click on the body (the key `default`) is no answer and withdraws nothing; a service that does not list
      "actions" is not used (the portal is); out of a scope of an app (`PANPAK_TEST_CGROUP`) the portal is not asked and the way to answer is told on the standard error;
   5. after "Go back" the person is told in a notification (a stand-in `notify-send`): the app is back, or why it could not go back; after "Try again" nothing.
+  6. an app that did not start: the first failed start gives a `transient` notice with the reason and the button "Show details" (the reason in front of the question
+     of the second failure); the standard error of the app still reaches its place and its tail is in `last-start.log` (mode 0600); the button opens the log (a stand-in `xdg-open`).
 """
 import json
 import os
@@ -95,7 +97,7 @@ XML = """<node><interface name="org.freedesktop.Notifications">
 <method name="GetCapabilities"><arg type="as" direction="out"/></method>
 <signal name="ActionInvoked"><arg type="u"/><arg type="s"/></signal>
 <signal name="NotificationClosed"><arg type="u"/><arg type="u"/></signal></interface></node>"""
-conn_box, last = [], []
+conn_box, last, target = [], [], {}
 def note(d):
     d['ts'] = round(time.time(), 3)
     with open(log, 'a') as f:
@@ -105,6 +107,11 @@ def on_call(conn, sender, path, iface, method, params, inv):
     if method == 'Notify':
         n = p[1] if p[1] else len(last) + 100
         last.append(n)
+        # the notification that a button or a close is meant for: the last question (it has `yes`), and the last notice of an app that did not start (it has `details`)
+        if 'yes' in list(p[5]):
+            target['q'] = n
+        if 'details' in list(p[5]):
+            target['d'] = n
         note({'notify': n, 'app': p[0], 'replaces': p[1], 'title': p[3], 'body': p[4], 'actions': list(p[5]), 'hints': dict(p[6]), 'expire': p[7]})
         inv.return_value(GLib.Variant('(u)', (n,)))
     elif method == 'CloseNotification':
@@ -114,17 +121,18 @@ def on_call(conn, sender, path, iface, method, params, inv):
         caps = open(log + '.caps').read().split() if os.path.exists(log + '.caps') else ['actions', 'body']
         inv.return_value(GLib.Variant('(as)', (caps,)))
 def poll():
-    if os.path.exists(cmd) and conn_box and last:
+    if os.path.exists(cmd) and conn_box and target:
         text = open(cmd).read().strip()
         if not text:
             return True
         os.unlink(cmd)
         what, _, arg = text.partition(' ')
-        note({'send': text, 'to': last[-1]})
+        to = target.get('d') if arg == 'details' else target.get('q')
+        note({'send': text, 'to': to})
         if what == 'action':
-            conn_box[0].emit_signal(None, '/org/freedesktop/Notifications', 'org.freedesktop.Notifications', 'ActionInvoked', GLib.Variant('(us)', (last[-1], arg)))
+            conn_box[0].emit_signal(None, '/org/freedesktop/Notifications', 'org.freedesktop.Notifications', 'ActionInvoked', GLib.Variant('(us)', (to, arg)))
         elif what == 'closed':
-            conn_box[0].emit_signal(None, '/org/freedesktop/Notifications', 'org.freedesktop.Notifications', 'NotificationClosed', GLib.Variant('(uu)', (last[-1], int(arg))))
+            conn_box[0].emit_signal(None, '/org/freedesktop/Notifications', 'org.freedesktop.Notifications', 'NotificationClosed', GLib.Variant('(uu)', (to, int(arg))))
     return True
 def acquired(conn, name):
     conn_box.append(conn)
@@ -234,6 +242,14 @@ def main():
         (tools / 'notify-send').write_text(f"#!{sys.executable}\nimport json, sys\nopen({str(told_log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n")
         (tools / 'notify-send').chmod(0o755)
 
+        # A stand-in `xdg-open` (what "Show details" runs): it records its arguments.
+        opened_log = tmp / 'opened.log'
+        (tools / 'xdg-open').write_text(f"#!{sys.executable}\nimport json, sys\nopen({str(opened_log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n")
+        (tools / 'xdg-open').chmod(0o755)
+
+        def opened():
+            return [json.loads(l) for l in opened_log.read_text().splitlines()] if opened_log.exists() else []
+
         def told():
             return [json.loads(l) for l in told_log.read_text().splitlines()] if told_log.exists() else []
         bus_addr = f'unix:path={tmp}/bus'
@@ -261,7 +277,7 @@ def main():
             return out
 
         v1 = release('1.0', 'sleep 0.6\nexit 0\n')
-        v2 = release('2.0', 'exit 3\n')
+        v2 = release('2.0', 'echo boom >&2\nexit 3\n')
         run([BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', v1], env)
         store = home / '.local/share/panpak'
         appdir = store / 'apps' / ID
@@ -366,12 +382,16 @@ def main():
             slog, scmd = tmp / 'service.log', tmp / 'service-cmd'
             (tmp / 'service.py').write_text(FAKE_SERVICE)
             (tmp / 'spoof.py').write_text(SPOOFER)
-            service = subprocess.Popen([sys.executable, tmp / 'service.py', slog, scmd], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            service = subprocess.Popen([sys.executable, tmp / 'service.py', slog, scmd], env=env, stdout=subprocess.DEVNULL, stderr=open(tmp / 'service.err', 'w'))
             procs.append(service)
             wait_for(lambda: Path(str(slog) + '.ready').exists(), 'the fake notification service is up')
 
             def notifies():
-                return [r for r in records(slog) if 'notify' in r]
+                # the questions (they have the button `yes`); the notices of an app that did not start are in `notices()`
+                return [r for r in records(slog) if 'notify' in r and 'yes' in r['actions']]
+
+            def notices():
+                return [r for r in records(slog) if 'notify' in r and 'details' in r['actions']]
 
             def send(text):
                 put_click(scmd, text)
@@ -387,8 +407,17 @@ def main():
                 return notifies()[-1]
 
             portal_adds = len([r for r in records(log) if 'add' in r])
+            notices_before = len(notices())
             first = ask_again()
             assert first['app'] == 'Panpak', first
+            # The first failed start told the person on its own: the reason in Panpak's words (never the output of the app), the button for the log, and `transient` (the
+            # desktop does not keep it in its list, so the question that comes with the second failure is not next to a second notification).
+            wait_for(lambda: len(notices()) > notices_before, 'the first failed start is told')
+            nt = notices()[notices_before]
+            assert nt['title'] == "Ask App didn't start" and nt['body'] == 'The app closed right after starting (error code 3).', nt
+            assert nt['actions'] == ['details', 'Show details'] and nt['hints'] == {'transient': True} and nt['expire'] == -1 and nt['app'] == 'Panpak', nt
+            # The second failure is the question, with the reason in front of its sentence.
+            assert first['body'].startswith('The app closed right after starting (error code 3). After the update to 2.0'), first
             assert first['actions'] == ['default', '', 'yes', 'Go back to 1.0', 'no', 'Try again'], first
             assert first['hints'] == {'resident': True} and first['expire'] == 0, first
             assert first['title'] == "Ask App doesn't start" and 'failed to start twice' in first['body'], first
@@ -476,6 +505,18 @@ def main():
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the question is not left pending after a failure')
             assert os.readlink(appdir / 'current') == bad, 'a failed rollback changed the version'
             print('1d. "Go back" is followed by a notice: back, or why not; nothing after "Try again": ok')
+            # An app that did not start: one failed start gives the notice, the log of the start has the tail of the standard error (mode 0600), the standard error still goes
+            # where it went, and "Show details" opens the log.
+            run(install_v2, env)
+            notices_before = len(notices())
+            p = run(start, env, ok=False)
+            assert 'boom' in p.stderr, f'the standard error of the app did not reach its place: {p.stderr!r}'
+            wait_for(lambda: len(notices()) > notices_before, 'the failed start is told')
+            start_log = appdir / 'last-start.log'
+            assert start_log.is_file() and 'boom' in start_log.read_text() and (start_log.stat().st_mode & 0o777) == 0o600, 'the log of the start'
+            send('action details')
+            wait_for(lambda: [str(start_log)] in opened(), 'the button opens the log')
+            print('5. an app that did not start: a transient notice with the reason and the button, the log (0600), the standard error kept, the button opens the log: ok')
             # "Uninstall" through the service: "Cancel" removes nothing; the answer "Remove" removes the app (the last thing of this test).
             for key, removed in (('no', False), ('yes', True)):
                 time.sleep(3)  # the router of the private bus of the app stays 1.5 s after the last copy, and an app that is open is not removed
@@ -498,6 +539,8 @@ def main():
             print('--- commands run by the test (start, end, command, status, stdout, stderr)')
             for t0, t1, cmd, rc, out, err in RUNLOG:
                 print(f'{t0:.3f}-{t1:.3f} {cmd} rc={rc} out={out!r} err={err!r}')
+            print('--- the standard error of the fake service')
+            print((tmp / 'service.err').read_text() if (tmp / 'service.err').exists() else '(none)')
             print('--- the service log')
             for r in records(slog):
                 print(json.dumps(r))

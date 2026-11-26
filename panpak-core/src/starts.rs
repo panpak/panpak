@@ -65,6 +65,63 @@ fn libc_sigkill() -> i32 {
     9
 }
 
+/// Why an app did not start, as Panpak says it (never taken from what the app printed): it ended with an error code, it crashed, or the system stopped it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    /// Ended by itself with this status.
+    Exit(i32),
+    /// Ended by a fatal signal of its own (SEGV, ABRT, ...), or with the status that the view gives to one (128 + the signal).
+    Crash,
+    /// Stopped by the system (SIGKILL), alone or as status 137.
+    Stopped,
+}
+
+/// The reason of a failed start. The status 128 + n is how a shell, and bubblewrap, report a program that ended by the signal n.
+pub fn reason(code: Option<i32>, signal: Option<i32>) -> Reason {
+    let sig = signal.or_else(|| code.filter(|c| (129..=192).contains(c)).map(|c| c - 128));
+    match (sig, code) {
+        (Some(9), _) => Reason::Stopped,
+        (Some(_), _) => Reason::Crash,
+        (None, Some(c)) => Reason::Exit(c),
+        (None, None) => Reason::Exit(1),
+    }
+}
+
+/// The sentence for the reason, in the language of the person (the catalog `cat`, `None` for English). Panpak's own words: never taken from what the app printed.
+pub fn reason_text_in(cat: Option<&crate::i18n::Catalog>, r: Reason) -> String {
+    use crate::{i18n, messages as m};
+    match r {
+        Reason::Exit(c) => i18n::fill(&i18n::tr_in(cat, m::NOT_STARTED_EXIT), &[("code", c.to_string())]),
+        Reason::Crash => i18n::tr_in(cat, m::NOT_STARTED_CRASH).into_owned(),
+        Reason::Stopped => i18n::tr_in(cat, m::NOT_STARTED_STOPPED).into_owned(),
+    }
+}
+
+/// `reason_text_in` in the language that is in use.
+pub fn reason_text(r: Reason) -> String {
+    reason_text_in(crate::i18n::current(), r)
+}
+
+impl Reason {
+    /// The form that travels as an argument of a detached process: `exit:3`, `crash`, `stopped`.
+    pub fn arg(&self) -> String {
+        match self {
+            Reason::Exit(c) => format!("exit:{c}"),
+            Reason::Crash => "crash".into(),
+            Reason::Stopped => "stopped".into(),
+        }
+    }
+
+    /// The inverse of `arg`; anything else is `None`.
+    pub fn parse(s: &str) -> Option<Reason> {
+        match s {
+            "crash" => Some(Reason::Crash),
+            "stopped" => Some(Reason::Stopped),
+            _ => s.strip_prefix("exit:").and_then(|n| n.parse::<i32>().ok()).filter(|c| (1..=255).contains(c)).map(Reason::Exit),
+        }
+    }
+}
+
 /// What the file says about the version that is installed now.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
@@ -253,6 +310,29 @@ mod tests {
 
     const R: &str = "0000000000000000000000000000000000000000000000000000000000000001";
     const R2: &str = "0000000000000000000000000000000000000000000000000000000000000002";
+
+    #[test]
+    fn the_reason_of_a_failed_start_is_an_error_code_a_crash_or_a_stop() {
+        assert_eq!(reason(Some(3), None), Reason::Exit(3));
+        assert_eq!(reason(Some(1), None), Reason::Exit(1));
+        assert_eq!(reason(None, Some(11)), Reason::Crash);
+        assert_eq!(reason(None, Some(6)), Reason::Crash);
+        // the status that a shell and bubblewrap give to a program that ended by a signal
+        assert_eq!(reason(Some(139), None), Reason::Crash);
+        assert_eq!(reason(Some(134), None), Reason::Crash);
+        assert_eq!(reason(Some(137), None), Reason::Stopped);
+        assert_eq!(reason(None, Some(9)), Reason::Stopped);
+        assert_eq!(reason(Some(128), None), Reason::Exit(128));
+        assert_eq!(reason(Some(193), None), Reason::Exit(193));
+        assert_eq!(reason(None, None), Reason::Exit(1));
+        // the argument of the detached process: round trip, and nothing else is read
+        for r in [Reason::Exit(3), Reason::Exit(255), Reason::Crash, Reason::Stopped] {
+            assert_eq!(Reason::parse(&r.arg()), Some(r));
+        }
+        for bad in ["", "exit:", "exit:0", "exit:256", "exit:-1", "exit:3 ", "Crash", "crash:1", "exit:3\nx"] {
+            assert_eq!(Reason::parse(bad), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn a_start_is_good_failed_or_neither() {

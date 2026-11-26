@@ -200,7 +200,7 @@ jobs:
       - name: Kept versions (three good starts, two failed ones ask, the rollback goes to the version that worked; debug build, a stand-in window tool)
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/kept_versions.py
-      - name: Questions without a window tool (the notification of the service and of the portal with two buttons, shown again, withdrawn when nobody presses, the pending question; a fake service and portal)
+      - name: Questions without a window tool (the notification of the service and of the portal with two buttons, withdrawn when nobody presses, the pending question, the notice and the log of an app that did not start; a fake service and portal)
         timeout-minutes: 5
         run: python3 tests/with_timeout.py 240 tests/ask_notification.py
       - name: The tests that cannot run on this runner (named, never silent)

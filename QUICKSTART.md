@@ -169,7 +169,7 @@ drives through your system's file services. This lets it read and modify any of 
 
 ## Kept versions: going back
 
-An app that fails to start twice in a row after an update opens a window ("<app> doesn't start") that offers to go back to the last version that worked, or to try again; after "Go back" a notification says whether it worked. A version
+An app that fails to start twice in a row after an update opens a window ("<app> doesn't start") that offers to go back to the last version that worked, or to try again; after "Go back" a notification says whether it worked. An app that does not start tells you why in a notification ("<app> didn't start"), at every failed start, with a button "Show details" that opens what the app wrote. A version
 is the one that worked after three good starts (each lasting 20 seconds or more). `panpak rollback <app-id>` does the same by hand. Your documents stay as they are; the settings
 that the newer version changed may not work in the older one, so copy anything important first. `panpak keep-previous <app-id>` keeps the previous version always (`--off` undoes it);
 by default it is kept until the installed one has worked. How the starts went never leaves your computer.

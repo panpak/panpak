@@ -500,12 +500,29 @@ pub struct EndInfo {
 /// as the app. Termination signals go on to `bwrap`; its exit status becomes ours. `ended` is called with
 /// `keep`, whether the end was normal (exit status 0, or a signal that this process passed on) and how it ended, before
 /// `keep` is dropped. Returns only on error.
-pub fn run_bwrap<K>(plan: &ViewPlan, keep: K, ended: impl FnOnce(&K, bool, EndInfo)) -> Result<std::convert::Infallible> {
+pub fn run_bwrap<K>(plan: &ViewPlan, keep: K, capture: bool, ended: impl FnOnce(&K, bool, EndInfo, &[u8])) -> Result<std::convert::Infallible> {
     use std::os::unix::process::ExitStatusExt;
     let args = bwrap_args(plan);
     ensure!(args.iter().all(|a| !a.as_bytes().contains(&0)), "NUL in a bubblewrap argument");
     let began = std::time::Instant::now();
-    let mut child = Command::new(panpak_core::BWRAP).args(&args).spawn().with_context(|| format!("cannot run {}", panpak_core::BWRAP))?;
+    // The standard error of the app goes through a pipe to this process only when `capture` is asked and it is not a terminal (an app that writes to a terminal keeps its
+    // real terminal: isatty, colours): every byte is copied to our own standard error at once (the journal gets what it got) and the last `TAIL_MAX` are kept.
+    let capturing = capture && !stderr_is_terminal();
+    let mut cmd = Command::new(panpak_core::BWRAP);
+    cmd.args(&args);
+    if capturing {
+        cmd.stderr(std::process::Stdio::piped());
+    }
+    let mut child = cmd.spawn().with_context(|| format!("cannot run {}", panpak_core::BWRAP))?;
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+    if let Some(pipe) = child.stderr.take() {
+        let tail = tail.clone();
+        std::thread::spawn(move || {
+            copy_and_keep(pipe, std::io::stderr(), &tail);
+            let _ = done_tx.send(());
+        });
+    }
     CHILD.store(child.id() as i32, std::sync::atomic::Ordering::Relaxed);
     if let Some(app) = &plan.watch_tmp {
         watch_tmp(child.id() as i32, app.clone(), plan.tmp_size);
@@ -517,9 +534,44 @@ pub fn run_bwrap<K>(plan: &ViewPlan, keep: K, ended: impl FnOnce(&K, bool, EndIn
     let status = child.wait()?;
     let forwarded = FORWARDED.load(std::sync::atomic::Ordering::Relaxed);
     let info = EndInfo { code: status.code(), signal: status.signal(), forwarded, secs: began.elapsed().as_secs_f64() };
-    ended(&keep, status.code() == Some(0) || (forwarded && status.signal().is_some()), info);
+    // The view ends with its first process (`--unshare-pid`), so the pipe is closed soon; a bound all the same, so that nothing can hold the end of the app.
+    if capturing {
+        let _ = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+    }
+    let kept = tail.lock().map(|t| t.clone()).unwrap_or_default();
+    ended(&keep, status.code() == Some(0) || (forwarded && status.signal().is_some()), info, &kept);
     drop(keep);
     std::process::exit(status.code().unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+}
+
+/// The most bytes of the standard error of an app that are kept (the last ones).
+pub const TAIL_MAX: usize = 16 * 1024;
+
+fn stderr_is_terminal() -> bool {
+    // SAFETY: isatty only looks at the descriptor.
+    unsafe { libc::isatty(2) == 1 }
+}
+
+/// Copy `from` to `to` until the end, at once (a write that fails is ignored: the app must never be held back), and keep the last `TAIL_MAX` bytes in `tail`.
+pub fn copy_and_keep(mut from: impl std::io::Read, mut to: impl std::io::Write, tail: &std::sync::Mutex<Vec<u8>>) {
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = match from.read(&mut buf) {
+            Ok(0) => return,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        };
+        let _ = to.write_all(&buf[..n]);
+        let _ = to.flush();
+        if let Ok(mut t) = tail.lock() {
+            t.extend_from_slice(&buf[..n]);
+            if t.len() > TAIL_MAX {
+                let cut = t.len() - TAIL_MAX;
+                t.drain(..cut);
+            }
+        }
+    }
 }
 
 /// Is the file system with `blocks` blocks of which `free` are free nearly full? Under 2 percent free counts.
@@ -601,6 +653,36 @@ pub fn existing_parent(p: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_standard_error_is_copied_at_once_and_only_the_last_bytes_are_kept() {
+        struct Bad;
+        impl std::io::Write for Bad {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        // everything is copied, and the tail is the last TAIL_MAX bytes
+        let data: Vec<u8> = (0..(TAIL_MAX * 2 + 123)).map(|i| (i % 251) as u8).collect();
+        let (tail, mut out) = (std::sync::Mutex::new(Vec::new()), Vec::new());
+        copy_and_keep(&data[..], &mut out, &tail);
+        assert_eq!(out, data);
+        let t = tail.lock().unwrap();
+        assert_eq!(t.len(), TAIL_MAX);
+        assert_eq!(&t[..], &data[data.len() - TAIL_MAX..]);
+        drop(t);
+        // a short input is kept whole; an output that fails does not stop the reading (the app is never held back)
+        let tail = std::sync::Mutex::new(Vec::new());
+        copy_and_keep(&b"boom\nsecond line\n"[..], Bad, &tail);
+        assert_eq!(&tail.lock().unwrap()[..], b"boom\nsecond line\n");
+        // nothing read, nothing kept
+        let tail = std::sync::Mutex::new(Vec::new());
+        copy_and_keep(&b""[..], Vec::new(), &tail);
+        assert!(tail.lock().unwrap().is_empty());
+    }
+
     use super::*;
 
     fn plan() -> ViewPlan {
