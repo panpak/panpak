@@ -113,21 +113,55 @@ pub enum Signal {
     Closed,
 }
 
+/// The key of an `ActionInvoked` of the notification service for the notification `id`, if `owner` (the unique name that owns the service) sent it. `None` for anything
+/// else: another sender, another interface or member, another number, another shape of body. These signals are broadcasts and the number is small, so the sender and the
+/// number are what make a signal an answer.
+pub(crate) fn action_of(m: &panpak_core::dbus::Message, owner: &str, id: u32) -> Option<String> {
+    use panpak_core::dbus::Value;
+    if m.sender.as_deref() != Some(owner) || m.interface.as_deref() != Some(FDO) || m.member.as_deref() != Some("ActionInvoked") {
+        return None;
+    }
+    match m.body.as_slice() {
+        [Value::U32(i), Value::Str(a), ..] if *i == id => Some(a.clone()),
+        _ => None,
+    }
+}
+
 /// The meaning of one message: `Some` only for an `ActionInvoked` with our two keys or a `NotificationClosed` for `id`, sent by `owner`.
 pub fn read_signal(m: &panpak_core::dbus::Message, owner: &str, id: u32) -> Option<Signal> {
     use panpak_core::dbus::Value;
+    if let Some(a) = action_of(m, owner, id) {
+        return match a.as_str() {
+            "yes" => Some(Signal::Yes),
+            "no" => Some(Signal::No),
+            _ => None,
+        };
+    }
     if m.sender.as_deref() != Some(owner) || m.interface.as_deref() != Some(FDO) {
         return None;
     }
     match (m.member.as_deref(), m.body.as_slice()) {
-        (Some("ActionInvoked"), [Value::U32(i), Value::Str(a), ..]) if *i == id => match a.as_str() {
-            "yes" => Some(Signal::Yes),
-            "no" => Some(Signal::No),
-            _ => None,
-        },
         (Some("NotificationClosed"), [Value::U32(i), Value::U32(reason), ..]) if *i == id && (*reason == 1 || *reason == 2) => Some(Signal::Closed),
         _ => None,
     }
+}
+
+/// The unique name that owns the notification service, or `None` when nobody does (or the bus does not say).
+pub(crate) fn notification_owner(conn: &mut panpak_core::dbus::Connection) -> Option<String> {
+    use panpak_core::dbus::Value;
+    match conn.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", vec![Value::str(FDO)], vec![]).ok()?.body.as_slice() {
+        [Value::Str(n)] => Some(n.clone()),
+        _ => None,
+    }
+}
+
+/// Ask the bus for the signals `members` of the notification service, and only from it. `false` when one subscription fails: without it the press would never arrive.
+pub(crate) fn subscribe(conn: &mut panpak_core::dbus::Connection, members: &[&str]) -> bool {
+    use panpak_core::dbus::Value;
+    members.iter().all(|member| {
+        let rule = format!("type='signal',sender='{FDO}',interface='{FDO}',member='{member}'");
+        conn.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", vec![Value::str(&rule)], vec![]).is_ok()
+    })
 }
 
 /// The question as a notification of the desktop's notification service. `None` when the service is not there or does not take it (the portal is tried then).
@@ -145,20 +179,16 @@ fn ask_by_service(title: &str, text: &str, ok: &str, cancel: &str) -> Option<Ans
         return None;
     }
     let mut conn = Connection::session(std::time::Duration::from_secs(3)).ok()?;
-    // The owner of the name first: after `Notify` nothing else is called before the wait, because a call drops the signals that arrive during it.
-    let owner = match conn.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", vec![Value::str(FDO)], vec![]).ok()?.body.as_slice() {
-        [Value::Str(n)] => n.clone(),
-        _ => return None,
-    };
+    // The owner of the name first: its name is what an answer has to come from.
+    let owner = notification_owner(&mut conn)?;
     // A service that does not list "actions" shows no buttons: the portal is the way then.
     let caps = conn.call(&owner, "/org/freedesktop/Notifications", FDO, "GetCapabilities", vec![], vec![]).ok()?;
     if !shows_buttons(&caps.body) {
         return None;
     }
     // Without both subscriptions the press would never arrive: the portal is the way then.
-    for member in ["ActionInvoked", "NotificationClosed"] {
-        let rule = format!("type='signal',sender='{FDO}',interface='{FDO}',member='{member}'");
-        conn.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", vec![Value::str(&rule)], vec![]).ok()?;
+    if !subscribe(&mut conn, &["ActionInvoked", "NotificationClosed"]) {
+        return None;
     }
     let id = match conn.call(&owner, "/org/freedesktop/Notifications", FDO, "Notify", notify_args(title, text, ok, cancel), vec![]).ok()?.body.as_slice() {
         [Value::U32(i)] => *i,
@@ -310,6 +340,25 @@ mod tests {
         let hints = format!("{:?}", a[6]);
         assert!(hints.contains("resident") && hints.contains("Bool(true)") && !hints.contains("desktop-entry"), "{hints}");
         assert_eq!(a[7], Value::I32(0));
+    }
+
+    #[test]
+    fn the_key_of_an_action_counts_only_from_the_owner_for_our_number() {
+        let owner = ":1.28";
+        let act = |id: u32, key: &str| vec![Value::U32(id), Value::str(key)];
+        // the right sender and number: the key, whatever it is (the callers decide which keys they take)
+        assert_eq!(action_of(&signal(owner, "ActionInvoked", act(7, "update")), owner, 7).as_deref(), Some("update"));
+        assert_eq!(action_of(&signal(owner, "ActionInvoked", act(7, "default")), owner, 7).as_deref(), Some("default"));
+        // another client that sends the same signal, with the right number and key
+        assert_eq!(action_of(&signal(":1.99", "ActionInvoked", act(7, "update")), owner, 7), None);
+        // another number, another member, another interface, a body that is not (u, s)
+        assert_eq!(action_of(&signal(owner, "ActionInvoked", act(8, "update")), owner, 7), None);
+        assert_eq!(action_of(&signal(owner, "NotificationClosed", act(7, "update")), owner, 7), None);
+        let mut other = signal(owner, "ActionInvoked", act(7, "update"));
+        other.interface = Some("org.example.Other".into());
+        assert_eq!(action_of(&other, owner, 7), None);
+        assert_eq!(action_of(&signal(owner, "ActionInvoked", vec![Value::str("update"), Value::U32(7)]), owner, 7), None);
+        assert_eq!(action_of(&signal(owner, "ActionInvoked", vec![]), owner, 7), None);
     }
 
     #[test]

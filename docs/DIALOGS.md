@@ -23,7 +23,8 @@ The question is a notification with the same two buttons: of the notification se
 - "Uninstall": with no answer nothing is removed, and the question is not kept. Use the menu action again, or run `panpak remove <id>`.
 - "{app} doesn't start": the question stays **pending** until a button answers it. At the next start of the app it is asked again, and one line with the command (`panpak rollback <id>`)
   appears on the standard error of the start. The pending question is dropped when it is not the case any more (the version was proven, or you went back by command).
-- Protected mode and the update with new permissions: nothing changes without an answer; the next notice asks again.
+- Protected mode and the update with new permissions: nothing changes without an answer; the next notice asks again. The button "Update now" answers only when the press comes from the notification service of the desktop: a signal that another program of the session sends is ignored.
+- Known limit (postponed until after the beta): if a question is not answered, its notification stays in the list of notifications of the desktop, and the question comes back at the next start of the app. Another start while the question still waits does not show the notification again: the desktop (GNOME Shell 51, measured on 2026-11-26) accepts a new `replaces_id` only from the process that made the notification, as long as that process is alive. To find a question that you did not see, open the list of notifications, or start the app again after the wait (5 minutes on the service, 1 minute on the portal).
 - With no tool, no notification service, no portal and no session bus: nothing is asked. The commands in the text of the messages (`panpak rollback`, `panpak update`, `panpak allow-internet`,
   `panpak remove`) do the same in a terminal.
 

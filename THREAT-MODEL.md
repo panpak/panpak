@@ -843,7 +843,7 @@ Status of the project: pre-beta.
   of apps that use `org.freedesktop.Notifications` directly (libnotify, so Electron and most Qt apps through
   KNotification) are shown, but a click or an action button does not reach the app. Apps that use the portal are not
   affected, and GTK apps use it because the layer sets `GTK_USE_PORTAL=1`. Which apps lose actions is derived from the
-  toolkit, not measured with each app. The questions of Panpak itself are not affected: the process that asks runs outside the sandbox, on the user's own bus, and receives these broadcasts (measured on GNOME Shell 51 on 2026-11-25: `notify-send -w` got the button and the click on the body, from a terminal and from a process started by the menu).
+  toolkit, not measured with each app. The questions of Panpak itself are not affected: the process that asks runs outside the sandbox, on the user's own bus, and receives these broadcasts (measured on GNOME Shell 51 on 2026-11-25: `notify-send -w` got the button and the click on the body, from a terminal and from a process started by the menu). The button "Update now" of the notice of protected mode counts the same way as the questions: only a signal sent by the owner of the name of the service, for the number that `Notify` returned (a test sends the same signal from another client and nothing happens).
 - **KL-27 The single-instance name is the upstream id, on the app's own bus.** The app owns its `app.id` on its private bus
   (step 13p), as GTK and KDE applications do for single instance, so the copies of the app find each other through the router. A Flatpak or a
   distribution package of the same program on the host bus no longer competes for the name (before 13p it could, see KL-31). The portals know the

@@ -698,7 +698,9 @@ entered, or was refused, or was staged) is not blocked: the person keeps the app
   app can run the `xdg-open` of the system itself, so the addresses are not stopped in that case;
 - the person is told at every start, in the way that fits how the app was started, and never has to type a command to answer:
   - a program with windows (its package has a window class or icons, or asks for X11), started from the menu or from a terminal: a desktop
-    notification with the text and, **only when an update that fixes the problem is ready**, one button "Update now"; in a terminal the most that is
+    notification with the text and, **only when an update that fixes the problem is ready**, one button "Update now"; the press counts only when the signal
+    is sent by the owner of the name `org.freedesktop.Notifications` and carries the number of that notification (§6.10): the signals are broadcasts, and
+    another client of the bus must not be able to start the window of the update; in a terminal the most that is
     written is one line that says what is happening (no instruction);
   - a program of the terminal started with an interactive terminal (standard input and error are terminals): the text, and the questions are asked
     there with one key: the update when one is ready (with the new permissions it asks for, if any), then the internet; one key each, `Enter` is the

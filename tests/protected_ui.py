@@ -10,7 +10,7 @@ notification service is a fake too (PyGObject owns `org.freedesktop.Notification
 Everything runs in an isolated HOME. An update is made ready with `panpak update --stage` from a local server.
 
   1. an update that is ready and asks for a permission: the state says so (`protected --json`), with the permissions and the actions;
-  2. the notification has the button only when an update is ready; pressing it opens a window with the new permissions: No leaves everything as it is, Yes
+  2. the notification has the button only when an update is ready; the same signal sent by another client is no answer (no window, nothing changes); pressing it opens a window with the new permissions: No leaves everything as it is, Yes
      updates and ends the mode with a message; with no dialog tool nothing is accepted and the person is told, with no command to type;
   3. the same window and the same update when a copy of the app is running: it is accepted, waits, and the next start applies it without asking;
   4. the menu action: the window that explains the risk (and the one that turns the internet off again), No changes nothing, Yes does; with no window tool the question is a
@@ -68,6 +68,17 @@ def acquired(conn, name):
 Gio.bus_own_name(Gio.BusType.SESSION, 'org.freedesktop.Notifications', Gio.BusNameOwnerFlags.NONE, acquired, None, None)
 GLib.timeout_add(100, poll)
 GLib.MainLoop().run()
+'''
+
+# Another client of the bus sends the signal of the service with the number of the notification: its sender is its own name, so it is not an answer.
+SPOOFER = r'''
+import gi, sys
+gi.require_version('Gio', '2.0')
+from gi.repository import Gio, GLib
+number, key = int(sys.argv[1]), sys.argv[2]
+conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+conn.emit_signal(None, '/org/freedesktop/Notifications', 'org.freedesktop.Notifications', 'ActionInvoked', GLib.Variant('(us)', (number, key)))
+conn.flush_sync(None)
 '''
 
 
@@ -247,6 +258,13 @@ def main_inner(lab, tmp):
     assert n['summary'] == 'Prui is running in protected mode' and 'Your files are safe' in n['body'] and n['actions'] == ['update', 'Update now'], n
     assert 'panpak update' not in n['body'] and 'allow-internet' not in n['body'], n
     assert 'will download the fixed version' not in n['body'] and 'downloaded' not in n['body'], n
+    # Another client of the bus sends the same signal (the number of the fake service is 7, the key is `update`): it is no answer, no window appears and nothing changes.
+    (lab.tmp / 'spoof.py').write_text(SPOOFER)
+    run([sys.executable, lab.tmp / 'spoof.py', '7', 'update'], env_bus)
+    time.sleep(1.5)
+    assert not lab.zenity_calls(), f'a signal of another client opened the window: {lab.zenity_calls()}'
+    assert 'v1' in lab.current_version() and lab.state()['update']['accepted'] is False, 'a signal of another client changed something'
+    print('  a signal of another client with the right number and key is no answer: no window, nothing changed: ok')
     # The window of the new permissions: No leaves everything as it is.
     lab.answer.write_text('1')
     click.write_text('')

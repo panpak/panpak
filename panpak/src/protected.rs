@@ -410,14 +410,13 @@ pub fn cmd_notice(app_id: &str, pressed: bool) -> Result<()> {
         update_with_windows(&st);
         return Ok(());
     }
-    let buttons = st.update.is_some();
     // No bus, no notification service: nothing to show and nothing to wait for.
     let Ok(mut conn) = panpak_core::dbus::Connection::session(std::time::Duration::from_secs(3)) else { return Ok(()) };
     use panpak_core::dbus::Value;
-    if buttons {
-        let rule = "type='signal',interface='org.freedesktop.Notifications',member='ActionInvoked'";
-        let _ = conn.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", vec![Value::str(rule)], vec![]);
-    }
+    let Some(owner) = crate::dialog::notification_owner(&mut conn) else { return Ok(()) };
+    // The button only when the answer can be heard, and only from the service: another client's `ActionInvoked` is no answer (the same functions as the questions of
+    // `dialog.rs`). A button that nobody hears is not shown.
+    let buttons = st.update.is_some() && crate::dialog::subscribe(&mut conn, &["ActionInvoked"]);
     let actions = if buttons { vec![Value::str("update"), Value::str(&tr(m::UPDATE_NOW))] } else { Vec::new() };
     let args = vec![
         Value::str("Panpak"),
@@ -429,14 +428,12 @@ pub fn cmd_notice(app_id: &str, pressed: bool) -> Result<()> {
         Value::Array("{sv}".into(), Vec::new()),
         Value::I32(NOTICE_SHOWN_MS),
     ];
-    let Ok(reply) = conn.call("org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "Notify", args, vec![]) else { return Ok(()) };
+    let Ok(reply) = conn.call(&owner, "/org/freedesktop/Notifications", "org.freedesktop.Notifications", "Notify", args, vec![]) else { return Ok(()) };
     if !buttons {
         return Ok(());
     }
     let Some(Value::U32(id)) = reply.body.first().cloned() else { return Ok(()) };
-    let pressed = conn.wait_signal(NOTICE_WAIT, |msg| {
-        msg.member.as_deref() == Some("ActionInvoked") && matches!(msg.body.as_slice(), [Value::U32(n), Value::Str(k)] if *n == id && k == "update")
-    });
+    let pressed = conn.wait_signal(NOTICE_WAIT, |msg| crate::dialog::action_of(msg, &owner, id).as_deref() == Some("update"));
     if matches!(pressed, Ok(Some(_))) {
         update_with_windows(&st);
     }
