@@ -1902,7 +1902,7 @@ fn main() {
     }
 }
 
-/// A start of an installed app that Panpak itself stopped before the app ran (the signature does not verify, the kernel is too old, a permission is refused, the files are
+/// A start of an installed app that Panpak itself stopped before the app ran (the signature does not verify, a requirement of `[host]` is not met, a permission is refused, the files are
 /// missing): the person is told in a notification, in the existing error text (the first line), as for any other app that did not start. Only for `run <installed app>` that
 /// is a start, only when the standard error is not a terminal (there the error has just been written), and best effort: any trouble is ignored. Nothing is counted: the
 /// app did not run, so it is no failed start of a version for the question of the kept versions.

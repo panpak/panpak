@@ -18,7 +18,7 @@ The portal is a fake (PyGObject owns `org.freedesktop.portal.Desktop` on a priva
      the notification is closed after the wait; a click on the body (the key `default`) is no answer and withdraws nothing; a service that does not list
      "actions" is not used (the portal is); out of a scope of an app (`PANPAK_TEST_CGROUP`) the portal is not asked and the way to answer is told on the standard error;
   5. after "Go back" the person is told in a notification (a stand-in `notify-send`): the app is back, or why it could not go back; after "Try again" nothing.
-  6. an app that did not start: the first failed start gives a `transient` notice with the reason and the button "Show details" (the reason in front of the question
+  6. (the outputs 4a, 4f, 5 and 5b) an app that did not start: the first failed start gives a `transient` notice with the reason and the button "Show details" (the reason in front of the question
      of the second failure); the standard error of the app still reaches its place and its tail is in `last-start.log` (mode 0600); the button opens the log (a stand-in `xdg-open`);
      a start that Panpak stops before the app runs (the files of the version are taken out of the store) is told in the first line of its error, without a path, with no
      button, and is not counted (cases 5 and 5b of the output).
@@ -191,24 +191,56 @@ def poll(cond, what, seconds=5.0, step=0.05):
         time.sleep(step)
 
 
+# The isolated HOME of this run (set in `main`). The processes of a question are made by the stub with `setsid`, so they are not children of this test and cannot be waited
+# for; they are told from any other process (another test, the desktop) by what only the descendants of this run carry: this HOME in their environment.
+MY_HOME = None
+
+
 def askers():
-    """How many processes `panpak rollback --ask <id>` there are: one holds the lock of the pending question and waits; the others, started by the same start, try the lock and end."""
-    n = 0
+    """The process numbers of `panpak rollback --ask <id>` of THIS run: one holds the lock of the pending question and waits; the others, started by the same start, try the
+    lock and end. A process is ours when its arguments are those and its environment holds the HOME of this run."""
+    mine = f'HOME={MY_HOME}'.encode()
+    pids = []
     for d in Path('/proc').iterdir():
         if d.name.isdigit():
             try:
                 argv = (d / 'cmdline').read_bytes().split(b'\0')
+                if b'rollback' in argv and b'--ask' in argv and ID.encode() in argv and mine in (d / 'environ').read_bytes().split(b'\0'):
+                    pids.append(int(d.name))
             except OSError:
                 continue
-            if b'rollback' in argv and b'--ask' in argv and ID.encode() in argv:
-                n += 1
-    return n
+    return pids
+
+
+def wait_gone(pids, what, seconds=15.0):
+    """Wait until each of the processes `pids` is gone, at most `seconds`; the error lists the ones that are still alive.
+
+    The processes of a question are not children of the test (the stub starts them with `setsid`, so they belong to init), and `waitpid` works only on one's own children: the
+    test cannot wait for them that way, it looks at them. A process counts as gone when its `/proc/<pid>/environ` cannot be read (it has ended), or no longer holds the
+    HOME of this run (a zombie that nobody has reaped yet has an empty environment, and the number can be given to another process). Test code only."""
+    mine = f'HOME={MY_HOME}'.encode()
+
+    def alive():
+        out = []
+        for pid in pids:
+            try:
+                env = (Path('/proc') / str(pid) / 'environ').read_bytes().split(b'\0')
+                if mine in env:
+                    out.append((pid, (Path('/proc') / str(pid) / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace').strip()))
+            except OSError:
+                pass
+        return out
+    end = time.time() + seconds
+    while alive():
+        if time.time() >= end:
+            raise AssertionError(f'{what}: still alive after {seconds} s: {alive()}')
+        time.sleep(0.05)
 
 
 def settled_askers():
     """Wait until the processes that ask have tried the lock: only the one that holds it is left. An answer before that would be taken by a process that has not tried the lock yet,
     and it would ask the question again."""
-    poll(lambda: askers() <= 1, 'more than one process "panpak rollback --ask" is still there')
+    poll(lambda: len(askers()) <= 1, 'more than one process "panpak rollback --ask" of this run is still there')
 
 def put_click(click, action):
     # Written whole and then renamed, so the fake portal never reads a half-written file.
@@ -234,6 +266,8 @@ def main():
         tmp = Path(tmp)
         isolation.require_isolated_home(tmp, tmp)
         home = tmp / 'home'
+        global MY_HOME
+        MY_HOME = str(home)
         home.mkdir()
         runtime = tmp / 'run'
         runtime.mkdir(mode=0o700)
@@ -488,18 +522,45 @@ def main():
             # The portal is not asked from a process that is in no scope of an app (a menu entry in the service of the shell): it would refuse in silence. Nothing is
             # asked, the question stays pending and the next start says how to answer.
             env_shell = dict(env, PANPAK_TEST_CGROUP=SHELL_SERVICE)
-            n, portal_adds = len(notifies()), len([r for r in records(log) if 'add' in r])
-            run(install_v2, env_shell)
-            for _ in range(2):
-                run(start, env_shell, ok=False)
-            wait_for(lambda: (appdir / 'pending-question').exists(), 'the question is pending')
-            time.sleep(1.5)
-            assert len([r for r in records(log) if 'add' in r]) == portal_adds, 'the portal was asked from the service of the shell'
-            assert len(notifies()) == n and os.readlink(appdir / 'current') == bad
-            p = run(start, env_shell, ok=False)
-            assert f'panpak rollback {ID}' in p.stderr, p.stderr
+
+            def case_4g():
+                n, portal_adds = len(notifies()), len([r for r in records(log) if 'add' in r])
+                run(install_v2, env_shell)
+                for _ in range(2):
+                    run(start, env_shell, ok=False)
+                wait_for(lambda: (appdir / 'pending-question').exists(), 'the question is pending')
+                time.sleep(1.5)
+                assert len([r for r in records(log) if 'add' in r]) == portal_adds, 'the portal was asked from the service of the shell'
+                assert len(notifies()) == n and os.readlink(appdir / 'current') == bad
+                p = run(start, env_shell, ok=False)
+                assert f'panpak rollback {ID}' in p.stderr, p.stderr
+                # The processes of the questions of this case must be gone before the service lists `actions` again: one that started a moment ago and is slow (a loaded
+                # machine) would look at the service only after that, find `actions`, ask for real and hold the lock of the question, and the next case would wait for a
+                # question that cannot come (seen on a runner of the CI). They are not our children, so the test waits for exactly those that carry the HOME of this run.
+                wait_gone(askers(), 'a process "panpak rollback --ask" of the case 4g')
+
+            case_4g()
             caps.unlink()
             print('4g. out of a scope of an app the portal is not asked: nothing shown, pending, said on stderr: ok')
+            # `ASKN_REPEAT_4G=N` (for the owner and for a check of this test on a loaded machine): the case 4g is made N times more, each time followed by what comes after it in
+            # the full run (a question must be shown again), and the result is counted instead of stopping at the first failure.
+            repeat = int(os.environ.get('ASKN_REPEAT_4G', '0') or 0)
+            if repeat:
+                passed = 0
+                for k in range(repeat):
+                    try:
+                        caps.write_text('body persistence')
+                        case_4g()
+                        caps.unlink()
+                        ask_again()
+                        settled_askers()
+                        send('action no')
+                        wait_for(lambda: not (appdir / 'pending-question').exists(), 'the question is answered')
+                        passed += 1
+                    except AssertionError as e:
+                        print(f'4g repeat {k + 1}: FAIL {e}')
+                        caps.unlink(missing_ok=True)
+                print(f'4g repeated: {passed} of {repeat} passed')
             # "Go back" that cannot go back: the records of the version that comes back (`last_good` and `previous`) are taken away while the question waits. The person is told why, and the question is
             # not left pending.
             ask_again()
@@ -543,6 +604,12 @@ def main():
             assert blocked['title'] == "Ask App didn't start" and blocked['body'].startswith('PANPAK-E2007: the files of the app are missing from the store'), blocked
             assert blocked['actions'] == [] and blocked['hints'] == {'transient': True} and '/' not in blocked['body'] and 'home' not in blocked['body'], blocked
             assert failed_starts(appdir) == failed_before, 'a start that Panpak stopped was counted as a failed start of the version'
+            # The same with a flag of the stub (a file to open): the error text could carry the name of that file, so no notice is made.
+            notices_blocked = len(all_notices())
+            p = run(start + ['--panpak-open', str(tmp / 'no-such-file.txt')], env, ok=False)
+            assert p.returncode != 0 and 'PANPAK-E' in p.stderr, p.stderr
+            time.sleep(2.0)
+            assert len(all_notices()) == notices_blocked, f'a start with --panpak-open got a notice: {all_notices()[notices_blocked:]}'
             (tree_dir / '.complete').write_text('')
             os.chmod(tree_dir, 0o555)
             print('5b. a start that Panpak stops before the app runs is told in its error text, without a path: ok')
