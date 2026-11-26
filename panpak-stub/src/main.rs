@@ -1997,7 +1997,8 @@ fn note_start_end(panpak: &Path, id: &str, root: &str, info: view::EndInfo, tail
     let appdir = store.join("apps").join(id);
     let a_start = !std::env::args_os().skip(1).any(|a| matches!(a.to_str(), Some("--version" | "--help" | "-h" | "-V")));
     let outcome = starts::classify_after(info.code, info.signal, info.forwarded, info.secs, a_start, starts::quick_secs());
-    let Ok(ev) = starts::record_end(&appdir, root, outcome) else { return };
+    // A start that cannot be counted (the file of the counters cannot be written) is still told to the person: only the question of the second failure needs the count.
+    let ev = starts::record_end(&appdir, root, outcome).ok();
     // An app that did not start: the person is told why, always in Panpak's words (the standard error of the app is kept for the details, never shown as the reason).
     let failed = outcome == starts::Outcome::Failed;
     let reason = starts::reason(info.code, info.signal);
@@ -2013,7 +2014,7 @@ fn note_start_end(panpak: &Path, id: &str, root: &str, info: view::EndInfo, tail
     }
     let current = panpak_core::durable::resolve_link(&appdir.join("current")).ok();
     let can_go_back = matches!((starts::last_good(&appdir), current), (Some(good), Some(cur)) if good != cur);
-    if ev == starts::Event::Ask && can_go_back {
+    if ev == Some(starts::Event::Ask) && can_go_back {
         // The second failure in a row with a version that worked: the question of the kept versions, with the reason in front of its sentence.
         spawn_detached(panpak, &["rollback", "--ask", id, "--reason", &reason.arg()]);
     } else if failed && !on_terminal {
@@ -2033,8 +2034,17 @@ fn stderr_is_terminal() -> bool {
 fn write_start_log(appdir: &Path, tail: &[u8]) {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let (tmp, log) = (appdir.join(".last-start.log.tmp"), appdir.join(START_LOG));
-    let written = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(tail));
+    let (tmp, log) = (appdir.join(START_LOG_TMP), appdir.join(START_LOG));
+    // A new file that nothing was there before and that is not followed through a link (mode 0600 holds for a new file only); the first line is Panpak's, so that what
+    // opens the file never sees the bytes that the app chose as the start of it.
+    let _ = fs::remove_file(&tmp);
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(START_LOG_HEADER.as_bytes()).and_then(|_| f.write_all(tail)));
     if written.is_ok() {
         let _ = fs::rename(&tmp, &log);
     } else {
@@ -2042,8 +2052,10 @@ fn write_start_log(appdir: &Path, tail: &[u8]) {
     }
 }
 
-/// The name of the log of the last start that did not start.
+/// The name of the log of the last start that did not start, of its temporary file, and the line that begins it.
 const START_LOG: &str = "last-start.log";
+const START_LOG_TMP: &str = ".last-start.log.tmp";
+const START_LOG_HEADER: &str = "# Panpak: the last part of what the app wrote to its standard error when it did not start (what follows is the app's own text).\n\n";
 
 /// The last copy of the app has ended: let go of the lock of the copies (the work needs it free) and start `panpak background --exit <id>`, detached, and go.
 /// The work is what the app left undone: the update that was staged is applied, files found damaged are repaired (this one may use the network), and the daily
@@ -2862,6 +2874,7 @@ fn enter_view(ctx: &ViewStart, cmd: &mut Command) -> Result<()> {
     if let Some((panpak, id)) = watch.as_ref() {
         if let Some(store) = panpak.parent().and_then(|b| b.parent()) {
             let _ = fs::remove_file(store.join("apps").join(id).join(START_LOG));
+            let _ = fs::remove_file(store.join("apps").join(id).join(START_LOG_TMP));
         }
     }
     let root_name = ctx.tree.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -3066,6 +3079,29 @@ fn run_inner(fd: i32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_log_of_a_start_that_failed_is_new_private_headed_by_panpak_and_follows_no_link() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let d = std::env::temp_dir().join(format!("panpak-startlog-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        // a link where the temporary file goes (and a file that it points to): the link is removed, not followed
+        let victim = d.join("victim");
+        fs::write(&victim, b"keep").unwrap();
+        symlink(&victim, d.join(START_LOG_TMP)).unwrap();
+        // an old log with a wide mode is replaced, not reused
+        fs::write(d.join(START_LOG), b"old").unwrap();
+        fs::set_permissions(d.join(START_LOG), fs::Permissions::from_mode(0o666)).unwrap();
+        write_start_log(&d, b"boom\nsecond\n");
+        let text = fs::read_to_string(d.join(START_LOG)).unwrap();
+        assert!(text.starts_with("# Panpak: "), "{text}");
+        assert!(text.ends_with("boom\nsecond\n") && !text.contains("old"));
+        assert_eq!(fs::metadata(d.join(START_LOG)).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::read(&victim).unwrap(), b"keep", "the file behind the link was not written");
+        assert!(!d.join(START_LOG_TMP).exists(), "no temporary file is left");
+        let _ = fs::remove_dir_all(&d);
+    }
+
     use super::*;
     use ed25519_dalek::Signer;
     use panpak_core::{encode_footer, encode_index, Footer, FOOTER_LEN, MAGIC};

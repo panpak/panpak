@@ -416,6 +416,8 @@ def main():
             nt = notices()[notices_before]
             assert nt['title'] == "Ask App didn't start" and nt['body'] == 'The app closed right after starting (error code 3).', nt
             assert nt['actions'] == ['details', 'Show details'] and nt['hints'] == {'transient': True} and nt['expire'] == -1 and nt['app'] == 'Panpak', nt
+            # The second failure is the question and no second notice (two notifications side by side are what `transient` and this rule avoid).
+            assert len(notices()) == notices_before + 1, f'a notice at the second failure: {notices()[notices_before:]}'
             # The second failure is the question, with the reason in front of its sentence.
             assert first['body'].startswith('The app closed right after starting (error code 3). After the update to 2.0'), first
             assert first['actions'] == ['default', '', 'yes', 'Go back to 1.0', 'no', 'Try again'], first
@@ -468,7 +470,10 @@ def main():
             for _ in range(2):
                 run(start, env, ok=False)
             wait_for(lambda: len([r for r in records(log) if 'add' in r]) > portal_adds and (appdir / 'pending-question').exists(), 'the question goes to the portal')
-            assert len(notifies()) == n, 'the service without "actions" was asked'
+            assert len(notifies()) == n, 'the service without "actions" was asked (a question)'
+            # The notice of the first failure goes to it all the same, as a plain notice: no button (it would never be heard), still `transient`, still the reason.
+            plain = [r for r in records(slog) if 'notify' in r and r['title'] == "Ask App didn't start" and r['actions'] == []]
+            assert plain and plain[-1]['hints'] == {'transient': True} and plain[-1]['body'] == 'The app closed right after starting (error code 3).', plain
             settled_askers()
             put_click(click, 'yes')
             wait_for(lambda: os.readlink(appdir / 'current') == good and not (appdir / 'pending-question').exists(), 'the portal button goes back')
