@@ -88,14 +88,13 @@ const FDO: &str = "org.freedesktop.Notifications";
 
 /// The arguments of `org.freedesktop.Notifications.Notify (app_name, replaces_id, app_icon, summary, body, actions, hints, expire_timeout)` for a question with two buttons.
 /// The actions are the two buttons and a `default` action that is no answer (it is what a click on the body sends; our reader ignores it), and the hint `resident` keeps
-/// the notification after such a click. There is no `desktop-entry` hint, so that the shell does not start the app of that name. `replaces` is 0 for a new notification
-/// and the number of ours to show it again. The body is read as markup by some servers: the characters that start it are written as entities. Never expires by itself (0):
+/// the notification after such a click. There is no `desktop-entry` hint, so that the shell does not start the app of that name. The body is read as markup by some servers: the characters that start it are written as entities. Never expires by itself (0):
 /// the process that asks withdraws it.
-pub fn notify_args(title: &str, text: &str, ok: &str, cancel: &str, replaces: u32) -> Vec<panpak_core::dbus::Value> {
+pub fn notify_args(title: &str, text: &str, ok: &str, cancel: &str) -> Vec<panpak_core::dbus::Value> {
     use panpak_core::dbus::Value;
     vec![
         Value::str("Panpak"),
-        Value::U32(replaces),
+        Value::U32(0),
         Value::str("dialog-question-symbolic"),
         Value::Str(clean(title)),
         Value::Str(lines(text, markup_safe)),
@@ -138,7 +137,7 @@ fn shows_buttons(body: &[panpak_core::dbus::Value]) -> bool {
     matches!(body, [Value::Array(_, caps)] if caps.iter().any(|c| matches!(c, Value::Str(s) if s == "actions")))
 }
 
-fn ask_by_service(title: &str, text: &str, ok: &str, cancel: &str, shown: &mut dyn FnMut(&str, &str)) -> Option<Answer> {
+fn ask_by_service(title: &str, text: &str, ok: &str, cancel: &str) -> Option<Answer> {
     use panpak_core::dbus::{Connection, Value};
     // A debug build can skip the service, to try the portal on a desktop that has one (`PANPAK_TEST_NO_SERVICE`).
     #[cfg(debug_assertions)]
@@ -161,12 +160,10 @@ fn ask_by_service(title: &str, text: &str, ok: &str, cancel: &str, shown: &mut d
         let rule = format!("type='signal',sender='{FDO}',interface='{FDO}',member='{member}'");
         conn.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", vec![Value::str(&rule)], vec![]).ok()?;
     }
-    let id = match conn.call(&owner, "/org/freedesktop/Notifications", FDO, "Notify", notify_args(title, text, ok, cancel, 0), vec![]).ok()?.body.as_slice() {
+    let id = match conn.call(&owner, "/org/freedesktop/Notifications", FDO, "Notify", notify_args(title, text, ok, cancel), vec![]).ok()?.body.as_slice() {
         [Value::U32(i)] => *i,
         _ => return None,
     };
-    // Told before the wait: a process that asks the same question meanwhile can show this notification again.
-    shown("service", &id.to_string());
     let mut got = None;
     let waited = conn.wait_signal(ask_wait(false), |m| {
         got = read_signal(m, &owner, id);
@@ -183,15 +180,15 @@ fn ask_by_service(title: &str, text: &str, ok: &str, cancel: &str, shown: &mut d
 
 /// The question as a notification: of the notification service of the desktop, and of the portal when the service is not there. `NoTool` when there is no session bus or
 /// neither takes it (the portal is not asked from a process that is in no scope of an app).
-fn ask_by_notification(title: &str, text: &str, ok: &str, cancel: &str, shown: &mut dyn FnMut(&str, &str)) -> Answer {
-    match ask_by_service(title, text, ok, cancel, shown) {
+fn ask_by_notification(title: &str, text: &str, ok: &str, cancel: &str) -> Answer {
+    match ask_by_service(title, text, ok, cancel) {
         Some(a) => a,
-        None => ask_by_portal(title, text, ok, cancel, shown),
+        None => ask_by_portal(title, text, ok, cancel),
     }
 }
 
 /// The question as a notification of the portal. `NoTool` when there is no session bus or the portal does not take it.
-fn ask_by_portal(title: &str, text: &str, ok: &str, cancel: &str, shown: &mut dyn FnMut(&str, &str)) -> Answer {
+fn ask_by_portal(title: &str, text: &str, ok: &str, cancel: &str) -> Answer {
     use panpak_core::dbus::{Connection, Value};
     if !portal_knows_us() {
         return Answer::NoTool;
@@ -206,7 +203,6 @@ fn ask_by_portal(title: &str, text: &str, ok: &str, cancel: &str, shown: &mut dy
     if portal(&mut conn, "AddNotification", question_args(&id, title, text, ok, cancel)).is_err() {
         return Answer::NoTool;
     }
-    shown("portal", &id);
     let pressed = conn.wait_signal(ask_wait(true), |m| {
         m.interface.as_deref() == Some("org.freedesktop.portal.Notification")
             && m.member.as_deref() == Some("ActionInvoked")
@@ -221,39 +217,6 @@ fn ask_by_portal(title: &str, text: &str, ok: &str, cancel: &str, shown: &mut dy
     }
 }
 
-/// Show the notification of a question again that another process of ours is waiting for (`via` and `id` as `ask_noting` gave them): the same number for the service
-/// (`replaces_id`), the same name for the portal. It answers nothing and changes nothing: the process that waits gets the answer. A number or name that is not ours is
-/// not used. Failures are ignored.
-pub fn show_again(title: &str, text: &str, ok: &str, cancel: &str, via: &str, id: &str) {
-    use panpak_core::dbus::{Connection, Value};
-    let Ok(mut conn) = Connection::session(std::time::Duration::from_secs(3)) else { return };
-    match via {
-        "service" => {
-            let Ok(n) = id.parse::<u32>() else { return };
-            if n == 0 {
-                return;
-            }
-            let Ok(owner) = conn.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", vec![Value::str(FDO)], vec![]) else { return };
-            let [Value::Str(owner)] = owner.body.as_slice() else { return };
-            let owner = owner.clone();
-            let Ok(r) = conn.call(&owner, "/org/freedesktop/Notifications", FDO, "Notify", notify_args(title, text, ok, cancel, n), vec![]) else { return };
-            // The notification of the other process is gone: this is a new one that nobody listens to, so it is withdrawn.
-            if let [Value::U32(new)] = r.body.as_slice() {
-                if *new != n {
-                    let _ = conn.call(&owner, "/org/freedesktop/Notifications", FDO, "CloseNotification", vec![Value::U32(*new)], vec![]);
-                }
-            }
-        }
-        "portal" => {
-            let ours = id.starts_with("panpak-ask-") && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-            if ours && portal_knows_us() {
-                let _ = conn.call("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Notification", "AddNotification", question_args(id, title, text, ok, cancel), vec![]);
-            }
-        }
-        _ => {}
-    }
-}
-
 /// The text with every line cleaned (a control character other than the line break becomes `?`), by `f`.
 fn lines(text: &str, f: impl Fn(&str) -> String) -> String {
     text.split('\n').map(f).collect::<Vec<_>>().join("\n")
@@ -262,15 +225,9 @@ fn lines(text: &str, f: impl Fn(&str) -> String) -> String {
 /// Ask `text` (plain text; line breaks are kept) with a window titled `title`, with the two buttons `ok` and `cancel`. Nothing the caller passes is read as
 /// markup.
 pub fn ask(title: &str, text: &str, ok: &str, cancel: &str) -> Answer {
-    ask_noting(title, text, ok, cancel, &mut |_, _| {})
-}
-
-/// `ask`, and `shown(via, id)` is called when a notification has been shown (`via` is `service` or `portal`, `id` its number or name), before the wait: the caller can
-/// keep it, so that another process that asks the same question shows the notification again (`show_again`).
-pub fn ask_noting(title: &str, text: &str, ok: &str, cancel: &str, shown: &mut dyn FnMut(&str, &str)) -> Answer {
     let kde = std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.to_uppercase().contains("KDE"));
     let order: [&str; 2] = if kde { ["kdialog", "zenity"] } else { ["zenity", "kdialog"] };
-    let Some((tool, path)) = order.iter().find_map(|t| find_tool(t).map(|p| (*t, p))) else { return ask_by_notification(title, text, ok, cancel, shown) };
+    let Some((tool, path)) = order.iter().find_map(|t| find_tool(t).map(|p| (*t, p))) else { return ask_by_notification(title, text, ok, cancel) };
     let mut cmd = Command::new(&path);
     if tool == "zenity" {
         cmd.args(["--question", "--no-markup", "--title", title, "--text", &lines(text, clean), "--ok-label", ok, "--cancel-label", cancel, "--width", "460"]);
@@ -342,7 +299,7 @@ mod tests {
 
     #[test]
     fn the_service_gets_two_buttons_a_default_that_is_no_answer_resident_no_desktop_entry_and_text_that_is_not_markup() {
-        let a = notify_args("Title\u{7}", "Use <b>this</b> & that\nLine two", "Yes", "No", 0);
+        let a = notify_args("Title\u{7}", "Use <b>this</b> & that\nLine two", "Yes", "No");
         assert_eq!(a.len(), 8);
         assert_eq!(a[0], Value::str("Panpak"));
         assert_eq!(a[3], Value::str("Title?"));
@@ -353,8 +310,6 @@ mod tests {
         let hints = format!("{:?}", a[6]);
         assert!(hints.contains("resident") && hints.contains("Bool(true)") && !hints.contains("desktop-entry"), "{hints}");
         assert_eq!(a[7], Value::I32(0));
-        // shown again: the number of the notification of the other process
-        assert_eq!(notify_args("T", "t", "Yes", "No", 7)[1], Value::U32(7));
     }
 
     #[test]

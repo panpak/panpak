@@ -1027,9 +1027,6 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     Ok(prev_t)
 }
 
-/// A notification of a question that was shown less than this many seconds ago is not shown again by another process of the same failed start.
-const SHOW_AGAIN_AFTER_SECS: u64 = 5;
-
 /// `panpak rollback --ask <app-id>`: the window that the stub opens when the installed version failed to start twice in a row (`panpak_core::starts`) and an
 /// earlier version that worked is still there. "Go back" is `panpak rollback`; "Try again" starts the app again. No window tool, or no earlier version: nothing happens.
 fn cmd_rollback_ask(app_id: &str) -> Result<()> {
@@ -1047,24 +1044,14 @@ fn cmd_rollback_ask(app_id: &str) -> Result<()> {
     let (now, before) = (panpak_core::record::open_verified(&cur)?.manifest, panpak_core::record::open_verified(&good)?.manifest);
     let clean = |s: &str| -> String { s.chars().filter(|c| !c.is_control()).collect() };
     let vals = vec![("name", clean(&now.app.name)), ("new", clean(&now.app.version)), ("old", clean(&before.app.version))];
-    let (title, body, ok, cancel) = (fill(&tr(m::NO_START_TITLE), &vals), fill(&tr(m::NO_START_BODY), &vals), fill(&tr(m::NO_START_GO_BACK), &vals), tr(m::NO_START_TRY_AGAIN));
     // The question is pending from now until a button or a window answers it. One process waits at a time: the lock is on the pending file.
-    let Some(_waiting) = panpak_core::starts::hold_pending(&appdir, &cur.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()) else {
-        // Another process waits for the answer: its notification is shown again (it may be in the list, out of sight), unless it was shown a moment ago (the same failed start
-        // makes two of these processes). The answer still goes to the one that waits.
-        if let Some((via, id, age)) = panpak_core::starts::shown(&appdir) {
-            if age >= SHOW_AGAIN_AFTER_SECS {
-                crate::dialog::show_again(&title, &body, &ok, &cancel, &via, &id);
-            }
-        }
-        return Ok(());
-    };
+    let Some(_waiting) = panpak_core::starts::hold_pending(&appdir, &cur.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()) else { return Ok(()) };
     // The version may have been changed back between the look above and the lock (another process of the same question was answered): then there is nothing to ask.
     if panpak_core::durable::resolve_link(&appdir.join("current")).ok().as_ref() != Some(&cur) {
         panpak_core::starts::clear_pending(&appdir);
         return Ok(());
     }
-    let answer = crate::dialog::ask_noting(&title, &body, &ok, &cancel, &mut |via, id| panpak_core::starts::note_shown(&appdir, via, id));
+    let answer = crate::dialog::ask(&fill(&tr(m::NO_START_TITLE), &vals), &fill(&tr(m::NO_START_BODY), &vals), &fill(&tr(m::NO_START_GO_BACK), &vals), &tr(m::NO_START_TRY_AGAIN));
     match answer {
         // Nobody answered: the file stays, and the next start of the app asks again.
         crate::dialog::Answer::Unanswered | crate::dialog::Answer::NoTool => return Ok(()),

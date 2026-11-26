@@ -228,30 +228,6 @@ pub fn hold_pending(appdir: &Path, root: &str) -> Option<std::fs::File> {
     Some(f)
 }
 
-/// The process that holds the question has shown its notification: keep how (`via` is `service` or `portal`), its number or name, and when, in the pending file, so that
-/// another process that asks the same question can show it again. The lock is held by the caller. This is never an answer: the number is only used to show the
-/// notification again.
-pub fn note_shown(appdir: &Path, via: &str, id: &str) {
-    let path = appdir.join(PENDING);
-    let Ok(old) = std::fs::read_to_string(&path) else { return };
-    let mut text: String = old.lines().filter(|l| !l.starts_with("via=") && !l.starts_with("id=") && !l.starts_with("shown_at=")).map(|l| format!("{l}\n")).collect();
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    text.push_str(&format!("via={via}\nid={id}\nshown_at={now}\n"));
-    let _ = std::fs::write(&path, text);
-}
-
-/// What `note_shown` kept: `(via, id, seconds since it was shown)`. `None` without it, or with a line that is not what `note_shown` writes.
-pub fn shown(appdir: &Path) -> Option<(String, String, u64)> {
-    let text = std::fs::read_to_string(appdir.join(PENDING)).ok()?;
-    let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)).map(str::to_string);
-    let (via, id, at) = (get("via=")?, get("id=")?, get("shown_at=")?.parse::<u64>().ok()?);
-    if !matches!(via.as_str(), "service" | "portal") || id.is_empty() || id.len() > 100 {
-        return None;
-    }
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    Some((via, id, now.saturating_sub(at)))
-}
-
 /// The question was answered, or it is not the case any more.
 pub fn clear_pending(appdir: &Path) {
     let _ = std::fs::remove_file(appdir.join(PENDING));
@@ -319,39 +295,6 @@ mod tests {
         assert_eq!(State::parse(&s.text()), s);
         let bad = State::parse("root=zz\ngood=x\nfailed=-1\nnoise\n");
         assert_eq!(bad, State::default());
-    }
-
-    #[test]
-    fn the_notification_that_is_shown_is_kept_to_show_it_again_and_is_never_an_answer() {
-        let d = std::env::temp_dir().join(format!("panpak-starts-shown-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        // Nothing kept before the pending file, or before the notification is shown.
-        assert_eq!(shown(&d), None);
-        let held = hold_pending(&d, R).unwrap();
-        assert_eq!(shown(&d), None);
-        note_shown(&d, "service", "7");
-        let (via, id, age) = shown(&d).unwrap();
-        assert_eq!((via.as_str(), id.as_str()), ("service", "7"));
-        assert!(age < 5);
-        // The question is still about the same version, and noting again replaces the old lines.
-        assert!(is_pending(&d, R));
-        note_shown(&d, "portal", "panpak-ask-1-2");
-        assert_eq!(shown(&d).map(|(v, i, _)| (v, i)), Some(("portal".to_string(), "panpak-ask-1-2".to_string())));
-        assert_eq!(std::fs::read_to_string(d.join(PENDING)).unwrap().matches("id=").count(), 1);
-        // The lock is still held: another process cannot take the question, and reads what to show again.
-        assert!(hold_pending(&d, R).is_none());
-        drop(held);
-        // A file with a way that is not ours, or an id that is not a text of a sensible size, is not used.
-        std::fs::write(d.join(PENDING), format!("kind=kept-versions\nroot={R}\nvia=shell\nid=7\nshown_at=1\n")).unwrap();
-        assert_eq!(shown(&d), None);
-        std::fs::write(d.join(PENDING), format!("kind=kept-versions\nroot={R}\nvia=service\nid=7\n")).unwrap();
-        assert_eq!(shown(&d), None, "no time");
-        // A file of an older version of the program (no such lines) is read as before.
-        std::fs::write(d.join(PENDING), format!("kind=kept-versions\nroot={R}\n")).unwrap();
-        assert!(is_pending(&d, R));
-        assert_eq!(shown(&d), None);
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
