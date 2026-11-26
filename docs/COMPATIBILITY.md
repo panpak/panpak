@@ -100,6 +100,14 @@ Open, in the converter unless noted:
 - Medium, resolution (defect 26, not the converter): Cura (PyInstaller) gets `libc.so.6` from the farm and fails with `GLIBC_2.38 not found`: a libc of the bundle is chosen next to libraries that need a newer one.
 - Medium, launch (defect 27): Etcher aborts on the Chromium SUID sandbox (`chrome-sandbox` found, not setuid; user namespaces cannot be nested in the view). Other Electron apps ran without `--no-sandbox`. Needs a launch option or a documented flag.
 
+## The standard error of an installed app (measured 2026-11-26)
+
+Since the notification "the app did not start" (PR 121), the stub of an installed app passes the standard error of the app through a pipe that it reads for the whole life of the app, copies at once to its own standard error, and of which it keeps the last 16 KiB for the log of a failed start. When the standard error of the start is a terminal nothing changes (the app keeps its terminal). What an app can see and a person can notice:
+
+- The standard error of the app is a pipe, no longer the socket of the journal (or whatever the start gave). A program that asks `isatty` on it gets "no", as for any redirected start, and GLib, which uses the journal only when its standard error is the socket that `JOURNAL_STREAM` names, does not find it. **So a GLib program that wrote structured entries to the journal is expected to write plain lines now, which the journal stores with the priority 6 (info)**: a `g_warning` or `g_critical` could no longer be filtered by priority, and the fields `GLIB_DOMAIN`, `CODE_FILE` and the like would be missing. The text stays. What was measured, on a Fedora 45 Silverblue machine (GNOME Shell 51.1), with a small probe program that prints the descriptor it sees, started by `systemd-run --user` with its standard error in the journal: a socket (the one of `JOURNAL_STREAM`) with the stub of before, a pipe with the stub of PR 121. The effect on the entries of a real GLib program is deduced from that, not seen.
+- The pipe is read until the app ends: a probe program that wrote 10260 lines of 1 KiB (10.05 MB) in 60 s after a 3 s pause ended with the status 0 and all 10260 lines (and its last line) were in the journal, none missing, no other line. Killing the outer stub with SIGKILL in the middle ends the app within 3 s, as with the stub of before (the view dies with its parent); the lines written until then stay in the journal.
+- Not measured: a program that sets its standard error non-blocking, and a start whose standard error is a socket or a file that a person gave.
+
 ## Network locations with the permission `gvfs` (2026-11-24)
 
 With `gvfs = true` the FUSE tree of GVfs (`$XDG_RUNTIME_DIR/gvfs`) is in the view when `gvfsd-fuse` has mounted it before the app starts, so `sftp://` and `smb://` locations open as paths of files, as in Flatpak
