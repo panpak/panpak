@@ -13,7 +13,8 @@ Everything runs in an isolated HOME. An update is made ready with `panpak update
   2. the notification has the button only when an update is ready; pressing it opens a window with the new permissions: No leaves everything as it is, Yes
      updates and ends the mode with a message; with no dialog tool nothing is accepted and the person is told, with no command to type;
   3. the same window and the same update when a copy of the app is running: it is accepted, waits, and the next start applies it without asking;
-  4. the menu action: the window that explains the risk (and the one that turns the internet off again), No changes nothing, Yes does;
+  4. the menu action: the window that explains the risk (and the one that turns the internet off again), No changes nothing, Yes does; with no window tool the question is a
+     notification with two buttons (the fake service), and with no tool and no service nothing is changed and the way is told;
   5. a program of the terminal that is run from an interactive terminal is asked: the permissions and the question for the update, then the internet;
   6. the actions as JSON for a front end;
   7. an address that a graphical app tries to open in protected mode is not opened, and the person is told in a notification (not a silent no).
@@ -303,13 +304,22 @@ def main_inner(lab, tmp):
     assert any('Close and reopen Prui to use the internet' in l for l in lab.notices()), lab.notices()
     lab.cli('allow-internet', '--ask', ID)
     assert 'Turn the internet off again for Prui?' in lab.zenity_calls()[-1] and not (lab.appdir / 'protected-net').exists()
-    # No dialog tool: nothing is changed, and the person is told that there is nothing to answer with.
+    # No dialog tool but a notification service (the fake one): the question is a notification with the two buttons, and with no answer nothing is changed.
     lab.zenity.rename(lab.tools / 'zenity.away')
-    lab.cli('allow-internet', '--ask', ID)
+    asked = len(nlog.read_text().splitlines())
+    out = run([BIN / 'panpak', 'allow-internet', '--ask', ID], dict(lab.env, PANPAK_TEST_ASK_SECS='1'))
+    lines = nlog.read_text().splitlines()
+    assert len(lines) == asked + 1, 'the question was not sent to the notification service'
+    n = json.loads(lines[-1])
+    assert n['summary'] == 'Turn the internet back on for Prui?' and n['actions'] == ['yes', 'Turn the internet on', 'no', 'Not now'], n
+    assert not (lab.appdir / 'protected-net').exists(), 'no answer changes nothing'
+    # No dialog tool and no notification service (a bus with nobody on it): nothing is changed, and the person is told that there is nothing to answer with.
+    nobody = dict(lab.env, DBUS_SESSION_BUS_ADDRESS='unix:path=' + str(lab.tmp / 'no-such-bus'))
+    run([BIN / 'panpak', 'allow-internet', '--ask', ID], nobody)
     assert not (lab.appdir / 'protected-net').exists() and any(f'Open a terminal and type: panpak allow-internet {ID}' in l for l in lab.notices()), lab.notices()
     # The same for the update that asks for permissions: no window to show them, so nothing is accepted and the way is told.
     lab.stage(lab.pack('v3', '[release]\nrevision = 3\nfloor = 3\n', desktop=graphical, permissions='[permissions]\nnetwork = true\nnetwork_allow_tcp = [443]\n'))
-    lab.cli('protected-notice', '--pressed', ID)
+    run([BIN / 'panpak', 'protected-notice', '--pressed', ID], nobody)
     assert any(f'asks for new permissions, but there is no window to show them to you. To update, open a terminal and type: panpak update {ID}' in l for l in lab.notices()), lab.notices()
     assert 'v1' in lab.current_version(), 'nothing was accepted'
     lab.zenity.with_name('zenity.away').rename(lab.zenity)
