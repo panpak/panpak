@@ -13,9 +13,11 @@ The portal is a fake (PyGObject owns `org.freedesktop.portal.Desktop` on a priva
      (the other button) ends the question;
   3. no bus and no tool: nothing is asked, the question stays pending, and the next start says so on its standard error;
   4. the service of the desktop (a fake that owns `org.freedesktop.Notifications` next to the fake portal): the question goes to the service and not to the portal,
-     with the two buttons as the only actions, no default action and no hint; a button of the service answers (as the broadcast that GNOME Shell sends); the same
+     with the two buttons and a `default` action that is no answer, the hint `resident`; a button of the service answers (as the broadcast that GNOME Shell sends); the same
      signal sent by another client is not an answer; a notification that the person dismisses ends the wait at once and leaves the question pending; with no answer
-     the notification is closed after the wait; a service that does not list "actions" is not used (the portal is).
+     the notification is closed after the wait; a click on the body (the key `default`) is no answer and withdraws nothing; a second question shows the same
+     notification again (`replaces_id`) and makes no new one; a service that does not list "actions" is not used (the portal is, and its notification is added
+     again under the same name); out of a scope of an app (`PANPAK_TEST_CGROUP`) the portal is not asked and the way to answer is told on the standard error.
 """
 import json
 import os
@@ -31,6 +33,10 @@ sys.path.insert(0, str(ROOT / 'tests'))
 import isolation  # noqa: E402
 from incremental import PUBLIC  # noqa: E402
 
+# A process in the scope of an app: the portal can tell which app it is (the portal is asked only then).
+APP_SCOPE = '0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-gnome-test-1.scope\n'
+# A process that a menu entry started in the service of the shell: the portal refuses it in silence.
+SHELL_SERVICE = '0::/user.slice/user-1000.slice/user@1000.service/session.slice/org.gnome.Shell@user.service\n'
 BIN = ROOT / 'target/x86_64-unknown-linux-musl/debug'
 ID = 'org.example.askn'
 
@@ -52,7 +58,7 @@ def on_call(conn, sender, path, iface, method, params, inv):
     p = params.unpack()
     if method == 'AddNotification':
         last.append(p[0])
-        note({'add': p[0], 'title': p[1].get('title'), 'body': p[1].get('body'), 'buttons': p[1].get('buttons'), 'default_action': 'default-action' in p[1]})
+        note({'add': p[0], 'title': p[1].get('title'), 'body': p[1].get('body'), 'buttons': p[1].get('buttons'), 'default_action': p[1].get('default-action')})
     else:
         note({'remove': p[0]})
     inv.return_value(None)
@@ -97,7 +103,7 @@ def note(d):
 def on_call(conn, sender, path, iface, method, params, inv):
     p = params.unpack()
     if method == 'Notify':
-        n = len(last) + 100
+        n = p[1] if p[1] else len(last) + 100
         last.append(n)
         note({'notify': n, 'app': p[0], 'replaces': p[1], 'title': p[3], 'body': p[4], 'actions': list(p[5]), 'hints': dict(p[6]), 'expire': p[7]})
         inv.return_value(GLib.Variant('(u)', (n,)))
@@ -226,7 +232,7 @@ def main():
         bus_addr = f'unix:path={tmp}/bus'
         env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(home / '.local/share'), XDG_CACHE_HOME=str(home / '.cache'), XDG_CONFIG_HOME=str(home / '.config'),
                    XDG_RUNTIME_DIR=str(runtime), LC_ALL='C', PANPAK_QUICK_SECS='0.3', PANPAK_NO_BACKGROUND='1', PANPAK_TEST_TOOLS_DIR=str(tools),
-                   PANPAK_TEST_ASK_SECS='60', DBUS_SESSION_BUS_ADDRESS='unix:path=' + str(tmp / 'nobus'))
+                   PANPAK_TEST_ASK_SECS='60', PANPAK_TEST_CGROUP=APP_SCOPE, DBUS_SESSION_BUS_ADDRESS='unix:path=' + str(tmp / 'nobus'))
         env.pop('WAYLAND_DISPLAY', None)
         (tmp / 'secret.key').write_text((bytes([41]) * 32).hex() + '\n')
         (tmp / 'secret.key').chmod(0o600)
@@ -285,7 +291,7 @@ def main():
             run(start, dict(env, PANPAK_TEST_ASK_SECS='3'), ok=False)
             wait_for(lambda: any('add' in r for r in records(log)), 'the notification is shown')
             first = records(log)[0]
-            assert first['title'] == "Ask App doesn't start" and first['default_action'] is False, first
+            assert first['title'] == "Ask App doesn't start" and first['default_action'] == 'ignore', first
             assert [b['label'] for b in first['buttons']] == ['Go back to 1.0', 'Try again'] and [b['action'] for b in first['buttons']] == ['yes', 'no'], first
             assert 'failed to start twice' in first['body'], first
             wait_for(lambda: any(r.get('remove') == first['add'] for r in records(log)), 'the notification is withdrawn after the wait')
@@ -355,7 +361,11 @@ def main():
             wait_for(lambda: Path(str(slog) + '.ready').exists(), 'the fake notification service is up')
 
             def notifies():
-                return [r for r in records(slog) if 'notify' in r]
+                # the new notifications; a notification shown again (`replaces` is its number) is in `replays()`
+                return [r for r in records(slog) if 'notify' in r and not r['replaces']]
+
+            def replays():
+                return [r for r in records(slog) if 'notify' in r and r['replaces']]
 
             def send(text):
                 put_click(scmd, text)
@@ -373,19 +383,25 @@ def main():
             portal_adds = len([r for r in records(log) if 'add' in r])
             first = ask_again()
             assert first['app'] == 'Panpak', first
-            assert first['actions'] == ['yes', 'Go back to 1.0', 'no', 'Try again'], first
-            assert first['hints'] == {} and first['expire'] == 0 and 'default' not in first['actions'], first
+            assert first['actions'] == ['default', '', 'yes', 'Go back to 1.0', 'no', 'Try again'], first
+            assert first['hints'] == {'resident': True} and first['expire'] == 0, first
             assert first['title'] == "Ask App doesn't start" and 'failed to start twice' in first['body'], first
             assert len([r for r in records(log) if 'add' in r]) == portal_adds, 'the portal was asked although the service is there'
-            print('4a. the question goes to the service, two buttons, no default action, no hint, the portal not asked: ok')
+            print('4a. the question goes to the service, the two buttons and a default that is no answer, resident, the portal not asked: ok')
             # The same signal from another client is not an answer; the answer of the service is.
             subprocess.run([sys.executable, tmp / 'spoof.py', str(first['notify']), 'yes'], env=env, check=True, timeout=30)
             time.sleep(1.0)
             assert os.readlink(appdir / 'current') == bad and (appdir / 'pending-question').exists(), 'a signal of another client answered the question'
+            # A click on the body (the key `default`) is no answer and the notification stays: nothing is closed, nothing changes.
+            settled_askers()
+            send('action default')
+            time.sleep(1.0)
+            assert os.readlink(appdir / 'current') == bad and (appdir / 'pending-question').exists(), 'a click on the body answered the question'
+            assert not any(r.get('close') == first['notify'] for r in records(slog)), 'a click on the body withdrew the notification'
             send('action yes')
             wait_for(lambda: os.readlink(appdir / 'current') == good and not (appdir / 'pending-question').exists(), 'the button of the service goes back')
             wait_for(lambda: any(r.get('close') == first['notify'] for r in records(slog)), 'the notification is closed after the answer')
-            print("4b. another client's signal ignored; the button of the service goes back; the notification is closed: ok")
+            print("4b. another client's signal ignored; a click on the body is no answer and withdraws nothing; the button of the service goes back; the notification is closed: ok")
             # The person dismisses the notification: the wait ends at once (the test waits up to 60 s), the question stays pending, nothing changes.
             second = ask_again()
             send('closed 2')
@@ -409,6 +425,27 @@ def main():
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button of the service ends the question')
             assert os.readlink(appdir / 'current') == bad
             print('4e. the second button of the service: nothing changed, not pending: ok')
+            # Another process asks the same question while the first waits: it shows the notification of the first again (the same number, `replaces`), a second
+            # one is not made, and the answer still goes to the first. Within 5 s of the first notification it does not, because the same failed start makes two of them.
+            third_q = ask_again()
+            settled_askers()
+            r0 = len(replays())
+            subprocess.run([BIN / 'panpak', 'rollback', '--ask', ID], env=env, check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.5)
+            assert len(replays()) == r0 or time.time() - third_q['ts'] >= 5, 'shown again too soon'
+            time.sleep(max(0.0, 5.5 - (time.time() - third_q['ts'])))
+            n_new = len(notifies())
+            subprocess.run([BIN / 'panpak', 'rollback', '--ask', ID], env=env, check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            wait_for(lambda: len(replays()) > r0, 'the notification is shown again by the second process')
+            again = replays()[-1]
+            assert again['replaces'] == third_q['notify'] and again['actions'] == third_q['actions'] and again['title'] == third_q['title'], (again, third_q)
+            assert len(notifies()) == n_new, 'a second notification was made'
+            assert (appdir / 'pending-question').exists() and os.readlink(appdir / 'current') == bad
+            put_pending = (appdir / 'pending-question').read_text()
+            assert 'via=service' in put_pending and f"id={third_q['notify']}" in put_pending, put_pending
+            send('action yes')
+            wait_for(lambda: os.readlink(appdir / 'current') == good and not (appdir / 'pending-question').exists(), 'the first process gets the answer to the notification that was shown again')
+            print('4h. a second question shows the same notification again (the same number), makes no new one, and the answer goes to the first: ok')
             # A service that does not list "actions" shows no buttons: the question goes to the portal and the service is not asked.
             caps = Path(str(slog) + '.caps')
             caps.write_text('body persistence')
@@ -419,10 +456,32 @@ def main():
             wait_for(lambda: len([r for r in records(log) if 'add' in r]) > portal_adds and (appdir / 'pending-question').exists(), 'the question goes to the portal')
             assert len(notifies()) == n, 'the service without "actions" was asked'
             settled_askers()
+            # The same question again after 5 s: the notification of the portal is added again with the same name (it replaces the first), and the answer goes to the first.
+            adds = [r for r in records(log) if 'add' in r]
+            time.sleep(5.5)
+            subprocess.run([BIN / 'panpak', 'rollback', '--ask', ID], env=env, check=True, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            wait_for(lambda: len([r for r in records(log) if 'add' in r]) > len(adds), 'the notification of the portal is shown again')
+            assert [r for r in records(log) if 'add' in r][-1]['add'] == adds[-1]['add'], 'the portal notification was shown again under another name'
+            assert 'via=portal' in (appdir / 'pending-question').read_text()
             put_click(click, 'yes')
             wait_for(lambda: os.readlink(appdir / 'current') == good and not (appdir / 'pending-question').exists(), 'the portal button goes back')
+            assert all(r['default_action'] == 'ignore' for r in records(log) if 'add' in r), 'a portal notification without a default action that is no answer'
+            print('4f. a service without "actions" is not used: the portal is (shown again under the same name, a default action that is no answer): ok')
+            # The portal is not asked from a process that is in no scope of an app (a menu entry in the service of the shell): it would refuse in silence. Nothing is
+            # asked, the question stays pending and the next start says how to answer.
+            env_shell = dict(env, PANPAK_TEST_CGROUP=SHELL_SERVICE)
+            n, portal_adds = len(notifies()), len([r for r in records(log) if 'add' in r])
+            run(install_v2, env_shell)
+            for _ in range(2):
+                run(start, env_shell, ok=False)
+            wait_for(lambda: (appdir / 'pending-question').exists(), 'the question is pending')
+            time.sleep(1.5)
+            assert len([r for r in records(log) if 'add' in r]) == portal_adds, 'the portal was asked from the service of the shell'
+            assert len(notifies()) == n and os.readlink(appdir / 'current') == bad
+            p = run(start, env_shell, ok=False)
+            assert f'panpak rollback {ID}' in p.stderr, p.stderr
             caps.unlink()
-            print('4f. a service without "actions" is not used: the portal is: ok')
+            print('4i. out of a scope of an app the portal is not asked: nothing shown, pending, said on stderr: ok')
             # "Uninstall" through the service: "Cancel" removes nothing; the answer "Remove" removes the app (the last thing of this test).
             for key, removed in (('no', False), ('yes', True)):
                 time.sleep(3)  # the router of the private bus of the app stays 1.5 s after the last copy, and an app that is open is not removed
@@ -430,14 +489,14 @@ def main():
                 pr = subprocess.Popen([BIN / 'panpak', 'remove', '--ask', ID], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
                 wait_for(lambda: len(notifies()) > n, 'the question to remove is shown by the service')
                 q = notifies()[-1]
-                assert q['app'] == 'Panpak' and q['actions'][0] == 'yes' and q['actions'][2] == 'no' and 'default' not in q['actions'], q
+                assert q['app'] == 'Panpak' and q['actions'][:5] == ['default', '', 'yes', q['actions'][3], 'no'], q
                 send('action ' + key)
                 out, err = pr.communicate(timeout=60)
                 assert pr.returncode == 0, (out, err)
                 assert appdir.exists() != removed, f'{key}: removed={not appdir.exists()}'
                 if not removed:
                     assert 'cancelled: nothing was removed' in out, out
-            print('4g. uninstall through the service: Cancel removes nothing, Remove removes: ok')
+            print('4j. uninstall through the service: Cancel removes nothing, Remove removes: ok')
             if os.environ.get('PANPAK_ASKN_DUMP_TEST'):
                 raise AssertionError('forced, to see the diagnostics')
         except BaseException:

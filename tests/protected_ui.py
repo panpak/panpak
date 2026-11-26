@@ -315,7 +315,7 @@ def main_inner(lab, tmp):
     lines = nlog.read_text().splitlines()
     assert len(lines) == asked + 1, 'the question was not sent to the notification service'
     n = json.loads(lines[-1])
-    assert n['summary'] == 'Turn the internet back on for Prui?' and n['actions'] == ['yes', 'Turn the internet on', 'no', 'Not now'], n
+    assert n['summary'] == 'Turn the internet back on for Prui?' and n['actions'] == ['default', '', 'yes', 'Turn the internet on', 'no', 'Not now'], n
     assert not (lab.appdir / 'protected-net').exists(), 'no answer changes nothing'
     # No dialog tool and no notification service (a bus with nobody on it): nothing is changed, and the person is told that there is nothing to answer with.
     nobody = dict(lab.env, DBUS_SESSION_BUS_ADDRESS='unix:path=' + str(lab.tmp / 'no-such-bus'))

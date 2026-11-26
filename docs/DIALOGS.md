@@ -16,9 +16,9 @@ The window of the tool that the desktop uses (`kdialog` on KDE, else `zenity`). 
 
 ## Without them (Fedora Silverblue, for example)
 
-The question is a notification with the same two buttons: of the notification service of the desktop (`org.freedesktop.Notifications`, which also takes a question that starts from the menu of GNOME) and, if there is none or it shows no buttons, of the notification portal. A click on the text of the notification is not an answer. If you dismiss the notification, the question stays unanswered at once and the process does not wait any longer.
+The question is a notification with the same two buttons: of the notification service of the desktop (`org.freedesktop.Notifications`, which also takes a question that starts from the menu of GNOME) and, if there is none or it shows no buttons, of the notification portal (only for a process that the desktop started as an app; otherwise it would refuse in silence, and nothing is asked). A click on the text of the notification is not an answer and does not start anything: the notification stays. If you dismiss the notification, the question stays unanswered at once and the process does not wait any longer. If you start the same action again while a question waits, the same notification is shown again, not a second one.
 
-- A small process waits for a button for **5 minutes**. Then it withdraws the notification, so that no button stays on the screen that would do nothing.
+- A small process waits for a button for **5 minutes** on the notification service of the desktop and **1 minute** on the portal. Then it withdraws the notification, so that no button stays on the screen that would do nothing.
 - "Uninstall": with no answer nothing is removed, and the question is not kept. Use the menu action again, or run `panpak remove <id>`.
 - "{app} doesn't start": the question stays **pending** until a button answers it. At the next start of the app it is asked again, and one line with the command (`panpak rollback <id>`)
   appears on the standard error of the start. The pending question is dropped when it is not the case any more (the version was proven, or you went back by command).
