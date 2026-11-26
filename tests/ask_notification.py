@@ -472,6 +472,7 @@ def main():
             wait_for(lambda: len(told()) > told_before, 'the person is told that the app could not go back')
             said = told()[-1]
             assert said[:3] == ['--app-name=Panpak', '--', 'Ask App'] and said[3].startswith('Ask App could not go back to version 1.0: ') and '\n' not in said[3], said
+            assert '/' not in said[3] and 'home' not in said[3], f'a path of the store is in the notice: {said}'
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the question is not left pending after a failure')
             assert os.readlink(appdir / 'current') == bad, 'a failed rollback changed the version'
             print('1d. "Go back" is followed by a notice: back, or why not; nothing after "Try again": ok')

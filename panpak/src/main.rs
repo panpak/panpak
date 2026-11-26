@@ -1037,21 +1037,53 @@ fn rollback_notice(name: &str, old: &str, done: std::result::Result<(), &anyhow:
 fn rollback_notice_in(cat: Option<&panpak_core::i18n::Catalog>, name: &str, old: &str, done: std::result::Result<(), &anyhow::Error>) -> (String, String) {
     use panpak_core::i18n::{fill, tr_in};
     use panpak_core::messages as m;
+    // The body of a notification can be read as markup by the desktop: the characters that start it are written as entities (the name is chosen by the author of the app).
+    let esc = |s: &str| crate::remove::markup_safe(s);
     let vals = |extra: Option<String>| {
-        let mut v = vec![("name", name.to_string()), ("old", old.to_string())];
+        let mut v = vec![("name", esc(name)), ("old", esc(old))];
         if let Some(r) = extra {
-            v.push(("reason", r));
+            v.push(("reason", esc(&r)));
         }
         v
     };
     let body = match done {
         Ok(()) => fill(&tr_in(cat, m::ROLLBACK_DONE), &vals(None)),
         Err(e) => {
-            let reason: String = panpak_core::err_text(e).lines().next().unwrap_or("").chars().filter(|c| !c.is_control()).take(200).collect();
+            // The first line of the error, without the paths of the store (they hold the name of the user), without control characters, at most 200 characters.
+            let reason: String = without_paths(panpak_core::err_text(e).lines().next().unwrap_or("")).chars().filter(|c| !c.is_control()).take(200).collect();
             fill(&tr_in(cat, m::ROLLBACK_FAILED), &vals(Some(reason)))
         }
     };
     (name.to_string(), body)
+}
+
+/// The text with every path (a `/` at the start of a word, or after `(`, `'`, `"` or `=`, up to the next space, quote or `)`) replaced by `...`: an error of the store names
+/// files in the home of the person. What follows the path (`:`, `,`, `.`) stays.
+fn without_paths(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev = ' ';
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '/' && matches!(prev, ' ' | '(' | '\'' | '"' | '=') {
+            let mut path = String::from(c);
+            while let Some(&n) = chars.peek() {
+                if matches!(n, ' ' | '\'' | '"' | ')') {
+                    break;
+                }
+                path.push(n);
+                chars.next();
+            }
+            // a `:`, `,`, `;` or `.` that ends the path is not part of it
+            let tail: String = path.chars().rev().take_while(|c| matches!(c, ':' | ',' | ';' | '.')).collect::<Vec<_>>().into_iter().rev().collect();
+            out.push_str("...");
+            out.push_str(&tail);
+            prev = out.chars().last().unwrap_or(' ');
+        } else {
+            out.push(c);
+            prev = c;
+        }
+    }
+    out
 }
 
 /// `panpak rollback --ask <app-id>`: the window that the stub opens when the installed version failed to start twice in a row (`panpak_core::starts`) and an
@@ -1090,8 +1122,12 @@ fn cmd_rollback_ask(app_id: &str) -> Result<()> {
             // the lock and ends, instead of asking the same question again between the answer and the change.
             let done = cmd_rollback(app_id);
             panpak_core::starts::clear_pending(&appdir);
-            // The person pressed a button and sees a spinner: tell them how it ended (nothing is told after "Try again": the app itself is the answer).
-            let (title, body) = rollback_notice(&vals[0].1, &vals[2].1, done.as_ref().map(|_| ()));
+            // The lock is let go before the notification: a slow tool must not hold it.
+            drop(_waiting);
+            // The person pressed a button and sees a spinner: tell them how it ended (nothing is told after "Try again": the app itself is the answer). The version in the
+            // text is the one that came back (`cmd_rollback` picks its own target and can fall back to `previous`), not the one that the question named.
+            let restored: Option<String> = done.as_ref().ok().and_then(|p| panpak_core::record::open_verified(p).ok()).map(|o| clean(&o.manifest.app.version));
+            let (title, body) = rollback_notice(&vals[0].1, restored.as_deref().unwrap_or(&vals[2].1), done.as_ref().map(|_| ()));
             crate::remove::notify(&title, &body);
             done?;
         }
@@ -6229,6 +6265,15 @@ mod tests {
         assert!(b.ends_with(&"x".repeat(200)));
         let ctl = anyhow::anyhow!("a\u{1b}[31mb");
         assert_eq!(rollback_notice_in(None, "A", "1", Err(&ctl)).1, "A could not go back to version 1: a[31mb");
+        // the name is chosen by the author: markup is written as entities in the body, not in the title; a path of the store is not shown
+        let (t, b) = rollback_notice_in(None, "<b>X</b> & Y", "1.0", Ok(()));
+        assert_eq!(t, "<b>X</b> & Y");
+        assert_eq!(b, "&lt;b&gt;X&lt;/b&gt; &amp; Y is back to version 1.0. Your documents stay as they are.");
+        let p = anyhow::anyhow!("No such file or directory (os error 2)").context("open /home/someone/.local/share/panpak/packages/x.rec");
+        let (_, b) = rollback_notice_in(None, "A", "1", Err(&p));
+        assert_eq!(b, "A could not go back to version 1: open ...: No such file or directory (os error 2)");
+        assert!(!b.contains('/') && !b.contains("someone"));
+        assert_eq!(without_paths("a /x/y: b, /z. (/q) c"), "a ...: b, .... (...) c");
         // the Italian catalog has both texts (the sentences are in `po/it.po`): they are not the English ones, and they keep the placeholders that the program fills
         let it = panpak_core::i18n::pick(&["it"], panpak_core::i18n::catalogs());
         assert!(it.is_some());
