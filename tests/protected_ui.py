@@ -44,9 +44,13 @@ from gi.repository import Gio, GLib
 log, click = sys.argv[1], sys.argv[2]
 XML = """<node><interface name="org.freedesktop.Notifications">
 <method name="Notify"><arg type="s" direction="in"/><arg type="u" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="as" direction="in"/><arg type="a{sv}" direction="in"/><arg type="i" direction="in"/><arg type="u" direction="out"/></method>
+<method name="GetCapabilities"><arg type="as" direction="out"/></method>
 <signal name="ActionInvoked"><arg type="u"/><arg type="s"/></signal></interface></node>"""
 conn_box = []
 def on_call(conn, sender, path, iface, method, params, inv):
+    if method == 'GetCapabilities':
+        inv.return_value(GLib.Variant('(as)', (['actions', 'body'],)))
+        return
     p = params.unpack()
     with open(log, 'a') as f:
         f.write(json.dumps({'summary': p[3], 'body': p[4], 'actions': p[5]}) + '\n')

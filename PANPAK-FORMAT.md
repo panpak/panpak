@@ -1246,7 +1246,7 @@ data of the app, and it does not pretend to.
 
 *The window, and the question that nobody answered.* The question is a window of `zenity` or `kdialog`. Where neither exists, a client MUST ask with a notification with the
 two buttons as the only actions (a click on the body is no answer): to the notification service of the desktop (`org.freedesktop.Notifications`, `Notify`) first, and, when the service is
-not there or does not take it, to the notification portal (`org.freedesktop.portal.Notification`). The service is first because a process that the shell starts from the menu is in no
+not there, does not show buttons (its `GetCapabilities` does not list `actions`) or does not take it (the call fails, or the subscription to its answer signals fails), to the notification portal (`org.freedesktop.portal.Notification`). The service is first because a process that the shell starts from the menu is in no
 application scope and the portal cannot tell which app it is (`InvalidApp`), while the service takes any caller. The answer signals of the service (`ActionInvoked`, `NotificationClosed`) are
 broadcasts and the number of a notification is small and can be guessed, so a client MUST accept them only from the owner of the name `org.freedesktop.Notifications`, and only for the number that
 `Notify` returned. A client MUST NOT take a closed or unseen notification, or a window that was closed with the cross, for an answer: a notification that the person dismisses (or that expires) ends the wait at once and the

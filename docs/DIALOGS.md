@@ -16,7 +16,7 @@ The window of the tool that the desktop uses (`kdialog` on KDE, else `zenity`). 
 
 ## Without them (Fedora Silverblue, for example)
 
-The question is a notification with the same two buttons: of the notification service of the desktop (`org.freedesktop.Notifications`, which also takes a question that starts from the menu of GNOME) and, if there is none, of the notification portal. A click on the text of the notification is not an answer. If you dismiss the notification, the question stays unanswered at once and the process does not wait any longer.
+The question is a notification with the same two buttons: of the notification service of the desktop (`org.freedesktop.Notifications`, which also takes a question that starts from the menu of GNOME) and, if there is none or it shows no buttons, of the notification portal. A click on the text of the notification is not an answer. If you dismiss the notification, the question stays unanswered at once and the process does not wait any longer.
 
 - A small process waits for a button for **5 minutes**. Then it withdraws the notification, so that no button stays on the screen that would do nothing.
 - "Uninstall": with no answer nothing is removed, and the question is not kept. Use the menu action again, or run `panpak remove <id>`.

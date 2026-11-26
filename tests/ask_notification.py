@@ -15,7 +15,7 @@ The portal is a fake (PyGObject owns `org.freedesktop.portal.Desktop` on a priva
   4. the service of the desktop (a fake that owns `org.freedesktop.Notifications` next to the fake portal): the question goes to the service and not to the portal,
      with the two buttons as the only actions, no default action and no hint; a button of the service answers (as the broadcast that GNOME Shell sends); the same
      signal sent by another client is not an answer; a notification that the person dismisses ends the wait at once and leaves the question pending; with no answer
-     the notification is closed after the wait.
+     the notification is closed after the wait; a service that does not list "actions" is not used (the portal is).
 """
 import json
 import os
@@ -105,7 +105,8 @@ def on_call(conn, sender, path, iface, method, params, inv):
         note({'close': p[0]})
         inv.return_value(None)
     else:
-        inv.return_value(GLib.Variant('(as)', (['actions', 'body'],)))
+        caps = open(log + '.caps').read().split() if os.path.exists(log + '.caps') else ['actions', 'body']
+        inv.return_value(GLib.Variant('(as)', (caps,)))
 def poll():
     if os.path.exists(cmd) and conn_box and last:
         text = open(cmd).read().strip()
@@ -408,6 +409,20 @@ def main():
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button of the service ends the question')
             assert os.readlink(appdir / 'current') == bad
             print('4e. the second button of the service: nothing changed, not pending: ok')
+            # A service that does not list "actions" shows no buttons: the question goes to the portal and the service is not asked.
+            caps = Path(str(slog) + '.caps')
+            caps.write_text('body persistence')
+            n, portal_adds = len(notifies()), len([r for r in records(log) if 'add' in r])
+            run(install_v2, env)
+            for _ in range(2):
+                run(start, env, ok=False)
+            wait_for(lambda: len([r for r in records(log) if 'add' in r]) > portal_adds and (appdir / 'pending-question').exists(), 'the question goes to the portal')
+            assert len(notifies()) == n, 'the service without "actions" was asked'
+            settled_askers()
+            put_click(click, 'yes')
+            wait_for(lambda: os.readlink(appdir / 'current') == good and not (appdir / 'pending-question').exists(), 'the portal button goes back')
+            caps.unlink()
+            print('4f. a service without "actions" is not used: the portal is: ok')
             # "Uninstall" through the service: "Cancel" removes nothing; the answer "Remove" removes the app (the last thing of this test).
             for key, removed in (('no', False), ('yes', True)):
                 time.sleep(3)  # the router of the private bus of the app stays 1.5 s after the last copy, and an app that is open is not removed
@@ -422,7 +437,7 @@ def main():
                 assert appdir.exists() != removed, f'{key}: removed={not appdir.exists()}'
                 if not removed:
                     assert 'cancelled: nothing was removed' in out, out
-            print('4f. uninstall through the service: Cancel removes nothing, Remove removes: ok')
+            print('4g. uninstall through the service: Cancel removes nothing, Remove removes: ok')
             if os.environ.get('PANPAK_ASKN_DUMP_TEST'):
                 raise AssertionError('forced, to see the diagnostics')
         except BaseException:

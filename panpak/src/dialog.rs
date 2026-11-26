@@ -102,6 +102,12 @@ pub fn read_signal(m: &panpak_core::dbus::Message, owner: &str, id: u32) -> Opti
 }
 
 /// The question as a notification of the desktop's notification service. `None` when the service is not there or does not take it (the portal is tried then).
+/// Whether the reply of `GetCapabilities` lists "actions", the buttons.
+fn shows_buttons(body: &[panpak_core::dbus::Value]) -> bool {
+    use panpak_core::dbus::Value;
+    matches!(body, [Value::Array(_, caps)] if caps.iter().any(|c| matches!(c, Value::Str(s) if s == "actions")))
+}
+
 fn ask_by_service(title: &str, text: &str, ok: &str, cancel: &str) -> Option<Answer> {
     use panpak_core::dbus::{Connection, Value};
     let mut conn = Connection::session(std::time::Duration::from_secs(3)).ok()?;
@@ -110,9 +116,15 @@ fn ask_by_service(title: &str, text: &str, ok: &str, cancel: &str) -> Option<Ans
         [Value::Str(n)] => n.clone(),
         _ => return None,
     };
+    // A service that does not list "actions" shows no buttons: the portal is the way then.
+    let caps = conn.call(&owner, "/org/freedesktop/Notifications", FDO, "GetCapabilities", vec![], vec![]).ok()?;
+    if !shows_buttons(&caps.body) {
+        return None;
+    }
+    // Without both subscriptions the press would never arrive: the portal is the way then.
     for member in ["ActionInvoked", "NotificationClosed"] {
         let rule = format!("type='signal',sender='{FDO}',interface='{FDO}',member='{member}'");
-        let _ = conn.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", vec![Value::str(&rule)], vec![]);
+        conn.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch", vec![Value::str(&rule)], vec![]).ok()?;
     }
     let id = match conn.call(&owner, "/org/freedesktop/Notifications", FDO, "Notify", notify_args(title, text, ok, cancel), vec![]).ok()?.body.as_slice() {
         [Value::U32(i)] => *i,
@@ -193,6 +205,16 @@ pub fn ask(title: &str, text: &str, ok: &str, cancel: &str) -> Answer {
 mod tests {
     use super::*;
     use panpak_core::dbus::Value;
+
+    #[test]
+    fn the_service_must_list_actions() {
+        let caps = |l: &[&str]| vec![Value::Array("s".into(), l.iter().map(|c| Value::str(c)).collect())];
+        assert!(shows_buttons(&caps(&["body", "actions"])));
+        assert!(!shows_buttons(&caps(&["body", "persistence"])));
+        assert!(!shows_buttons(&caps(&[])));
+        assert!(!shows_buttons(&[]));
+        assert!(!shows_buttons(&[Value::str("actions")]));
+    }
 
     #[test]
     fn the_notification_has_two_buttons_and_no_default_action() {
