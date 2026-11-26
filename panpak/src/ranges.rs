@@ -345,8 +345,10 @@ mod tests {
                         }
                         _ => range_reply(&head, &data, wrong_range_at == Some(n)),
                     };
-                    let _ = s.write_all(&reply);
+                    // Out of the count before the reply is written: once the client has the reply it may start its next request at once, and a
+                    // request that is still counted then would be seen as one more in flight than the client ever has (7 with 6 workers).
                     inf.fetch_sub(1, Ordering::SeqCst);
+                    let _ = s.write_all(&reply);
                 });
             }
         });
