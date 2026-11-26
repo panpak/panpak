@@ -140,6 +140,11 @@ fn shows_buttons(body: &[panpak_core::dbus::Value]) -> bool {
 
 fn ask_by_service(title: &str, text: &str, ok: &str, cancel: &str, shown: &mut dyn FnMut(&str, &str)) -> Option<Answer> {
     use panpak_core::dbus::{Connection, Value};
+    // A debug build can skip the service, to try the portal on a desktop that has one (`PANPAK_TEST_NO_SERVICE`).
+    #[cfg(debug_assertions)]
+    if std::env::var_os("PANPAK_TEST_NO_SERVICE").is_some() {
+        return None;
+    }
     let mut conn = Connection::session(std::time::Duration::from_secs(3)).ok()?;
     // The owner of the name first: after `Notify` nothing else is called before the wait, because a call drops the signals that arrive during it.
     let owner = match conn.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner", vec![Value::str(FDO)], vec![]).ok()?.body.as_slice() {
