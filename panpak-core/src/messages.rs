@@ -123,6 +123,8 @@ pub const NO_START_TITLE: &str = "{name} doesn't start";
 pub const NO_START_BODY: &str = "After the update to {new} it failed to start twice. You can go back to {old}, which worked.\nYour documents stay as they are.";
 pub const NO_START_GO_BACK: &str = "Go back to {old}";
 pub const NO_START_TRY_AGAIN: &str = "Try again";
+pub const ROLLBACK_DONE: &str = "{name} is back to version {old}. Your documents stay as they are.";
+pub const ROLLBACK_FAILED: &str = "{name} could not go back to version {old}: {reason}";
 pub const ROLLED_BACK: &str = "Back to {name} {old}. Your documents are not touched; settings changed by the newer version may not work in this one.";
 
 /// Every message above, for the template of the translations and its test.
@@ -241,5 +243,7 @@ pub const ALL: &[&str] = &[
     NO_START_BODY,
     NO_START_GO_BACK,
     NO_START_TRY_AGAIN,
+    ROLLBACK_DONE,
+    ROLLBACK_FAILED,
     ROLLED_BACK,
 ];

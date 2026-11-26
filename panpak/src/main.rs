@@ -1027,6 +1027,33 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     Ok(prev_t)
 }
 
+/// The notification after "Go back": the title is the name of the app, the body says that it is back (`name`, `old`), or that it could not go back and why. The reason is
+/// the first line of the error, without control characters and at most 200 characters; it comes from Panpak, never from the app.
+fn rollback_notice(name: &str, old: &str, done: std::result::Result<(), &anyhow::Error>) -> (String, String) {
+    rollback_notice_in(panpak_core::i18n::current(), name, old, done)
+}
+
+/// `rollback_notice` in the language of the catalog `cat` (`None`: English), so that a test does not depend on the language of the machine.
+fn rollback_notice_in(cat: Option<&panpak_core::i18n::Catalog>, name: &str, old: &str, done: std::result::Result<(), &anyhow::Error>) -> (String, String) {
+    use panpak_core::i18n::{fill, tr_in};
+    use panpak_core::messages as m;
+    let vals = |extra: Option<String>| {
+        let mut v = vec![("name", name.to_string()), ("old", old.to_string())];
+        if let Some(r) = extra {
+            v.push(("reason", r));
+        }
+        v
+    };
+    let body = match done {
+        Ok(()) => fill(&tr_in(cat, m::ROLLBACK_DONE), &vals(None)),
+        Err(e) => {
+            let reason: String = panpak_core::err_text(e).lines().next().unwrap_or("").chars().filter(|c| !c.is_control()).take(200).collect();
+            fill(&tr_in(cat, m::ROLLBACK_FAILED), &vals(Some(reason)))
+        }
+    };
+    (name.to_string(), body)
+}
+
 /// `panpak rollback --ask <app-id>`: the window that the stub opens when the installed version failed to start twice in a row (`panpak_core::starts`) and an
 /// earlier version that worked is still there. "Go back" is `panpak rollback`; "Try again" starts the app again. No window tool, or no earlier version: nothing happens.
 fn cmd_rollback_ask(app_id: &str) -> Result<()> {
@@ -1063,6 +1090,9 @@ fn cmd_rollback_ask(app_id: &str) -> Result<()> {
             // the lock and ends, instead of asking the same question again between the answer and the change.
             let done = cmd_rollback(app_id);
             panpak_core::starts::clear_pending(&appdir);
+            // The person pressed a button and sees a spinner: tell them how it ended (nothing is told after "Try again": the app itself is the answer).
+            let (title, body) = rollback_notice(&vals[0].1, &vals[2].1, done.as_ref().map(|_| ()));
+            crate::remove::notify(&title, &body);
             done?;
         }
         crate::dialog::Answer::No => {
@@ -6181,6 +6211,31 @@ mod tests {
         assert_eq!(cmp_versions("1.0", "1.0.1"), Less);
         assert_eq!(cmp_versions("1.0-rc1", "1.0"), Less);
         assert_eq!(cmp_versions("0.1.0", "0.1.0"), Equal);
+    }
+
+    #[test]
+    fn the_notification_after_go_back_says_that_it_is_back_or_why_it_is_not() {
+        // success: the title is the name of the app, the body is the approved sentence
+        let (t, b) = rollback_notice_in(None, "Ask App", "1.0", Ok(()));
+        assert_eq!((t.as_str(), b.as_str()), ("Ask App", "Ask App is back to version 1.0. Your documents stay as they are."));
+        // failure: the reason is the first line of the error, with no control character, at most 200 characters
+        let e = anyhow::anyhow!("open /store/x.rec: No such file\u{7} or directory").context("the files of the previous version are missing\nsecond line");
+        let (t, b) = rollback_notice_in(None, "Ask App", "1.0", Err(&e));
+        assert_eq!(t, "Ask App");
+        assert_eq!(b, "Ask App could not go back to version 1.0: the files of the previous version are missing");
+        let long = anyhow::anyhow!("{}", "x".repeat(500));
+        let (_, b) = rollback_notice_in(None, "A", "1", Err(&long));
+        assert_eq!(b.chars().count(), "A could not go back to version 1: ".len() + 200);
+        assert!(b.ends_with(&"x".repeat(200)));
+        let ctl = anyhow::anyhow!("a\u{1b}[31mb");
+        assert_eq!(rollback_notice_in(None, "A", "1", Err(&ctl)).1, "A could not go back to version 1: a[31mb");
+        // the Italian catalog has both texts (the sentences are in `po/it.po`): they are not the English ones, and they keep the placeholders that the program fills
+        let it = panpak_core::i18n::pick(&["it"], panpak_core::i18n::catalogs());
+        assert!(it.is_some());
+        let (_, done_it) = rollback_notice_in(it, "Ask App", "1.0", Ok(()));
+        let (_, failed_it) = rollback_notice_in(it, "Ask App", "1.0", Err(&ctl));
+        assert!(done_it.contains("Ask App") && done_it.contains("1.0") && done_it != rollback_notice_in(None, "Ask App", "1.0", Ok(())).1);
+        assert!(failed_it.contains("Ask App") && failed_it.contains("1.0") && failed_it.ends_with("a[31mb") && failed_it != rollback_notice_in(None, "Ask App", "1.0", Err(&ctl)).1);
     }
 
     #[test]

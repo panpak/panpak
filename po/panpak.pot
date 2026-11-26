@@ -532,7 +532,13 @@ msgstr ""
 msgid "{name} asks for new permissions, but there is no window to show them to you. To update, open a terminal and type: panpak update {id}"
 msgstr ""
 
+msgid "{name} could not go back to version {old}: {reason}"
+msgstr ""
+
 msgid "{name} doesn't start"
+msgstr ""
+
+msgid "{name} is back to version {old}. Your documents stay as they are."
 msgstr ""
 
 msgid "{name} is in protected mode: links do not open until you update."

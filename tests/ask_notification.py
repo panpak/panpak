@@ -5,7 +5,7 @@ service of the desktop (`org.freedesktop.Notifications`) when there is one and o
 
 Usage: python3 tests/ask_notification.py   (debug musl binaries built first; an isolated HOME; a private bus; no real window or notification)
 The portal is a fake (PyGObject owns `org.freedesktop.portal.Desktop` on a private bus, records `AddNotification` and `RemoveNotification`, and sends
-`ActionInvoked` when told). `PANPAK_TEST_TOOLS_DIR` is an empty folder, so no window tool exists.
+`ActionInvoked` when told). `PANPAK_TEST_TOOLS_DIR` holds no window tool, only a stand-in `notify-send` that records what it is told.
 
   1. two failed starts of a new version: the notification is shown with the two buttons and the question is pending; the button "Go back" goes back and the
      pending file is gone;
@@ -16,7 +16,8 @@ The portal is a fake (PyGObject owns `org.freedesktop.portal.Desktop` on a priva
      with the two buttons and a `default` action that is no answer, the hint `resident`; a button of the service answers (as the broadcast that GNOME Shell sends); the same
      signal sent by another client is not an answer; a notification that the person dismisses ends the wait at once and leaves the question pending; with no answer
      the notification is closed after the wait; a click on the body (the key `default`) is no answer and withdraws nothing; a service that does not list
-     "actions" is not used (the portal is); out of a scope of an app (`PANPAK_TEST_CGROUP`) the portal is not asked and the way to answer is told on the standard error.
+     "actions" is not used (the portal is); out of a scope of an app (`PANPAK_TEST_CGROUP`) the portal is not asked and the way to answer is told on the standard error;
+  5. after "Go back" the person is told in a notification (a stand-in `notify-send`): the app is back, or why it could not go back; after "Try again" nothing.
 """
 import json
 import os
@@ -228,6 +229,13 @@ def main():
         runtime.mkdir(mode=0o700)
         tools = tmp / 'notools'
         tools.mkdir()
+        # A stand-in `notify-send`: it records its arguments (one JSON list per line). The notices that `panpak` says with it (what happened after "Go back") are read from there.
+        told_log = tmp / 'told.log'
+        (tools / 'notify-send').write_text(f"#!{sys.executable}\nimport json, sys\nopen({str(told_log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n")
+        (tools / 'notify-send').chmod(0o755)
+
+        def told():
+            return [json.loads(l) for l in told_log.read_text().splitlines()] if told_log.exists() else []
         bus_addr = f'unix:path={tmp}/bus'
         env = dict(os.environ, HOME=str(home), XDG_DATA_HOME=str(home / '.local/share'), XDG_CACHE_HOME=str(home / '.cache'), XDG_CONFIG_HOME=str(home / '.config'),
                    XDG_RUNTIME_DIR=str(runtime), LC_ALL='C', PANPAK_QUICK_SECS='0.3', PANPAK_NO_BACKGROUND='1', PANPAK_TEST_TOOLS_DIR=str(tools),
@@ -308,6 +316,7 @@ def main():
             put_click(click, 'yes')
             wait_for(lambda: os.readlink(appdir / 'current') == good, 'the button "Go back" goes back')
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the question is no longer pending')
+            wait_for(lambda: ['--app-name=Panpak', '--', 'Ask App', 'Ask App is back to version 1.0. Your documents stay as they are.'] in told(), 'the person is told that the app is back')
             # A rollback forgets the failed starts: a start of the other version that is counted late does not count (its version is not the installed one any more).
             time.sleep(0.5)
             assert failed_starts(appdir) == 0, f'a rollback forgets the failed starts: {failed_starts(appdir)}'
@@ -335,6 +344,7 @@ def main():
             run(start, env, ok=False)
             assert failed_starts(appdir) == 1, f'a start while the question waits is counted: {failed_starts(appdir)}'
             settled_askers()
+            told_before = len(told())
             put_click(click, 'no')
             wait_for(lambda: not (appdir / 'pending-question').exists(), 'the second button ends the question')
             assert os.readlink(appdir / 'current') == bad, 'Try again does not go back'
@@ -342,6 +352,7 @@ def main():
             time.sleep(1.0)
             assert len([r for r in records(log) if 'add' in r]) == n2, 'a new notification appeared after Try again'
             assert not (appdir / 'pending-question').exists(), 'the question came back after Try again'
+            assert len(told()) == told_before, f'something was said after Try again: {told()[told_before:]}'
             assert failed_starts(appdir) == 1, f'after Try again the start that follows is the first failure: {failed_starts(appdir)}'
             print('1b. button 2: nothing changed, not pending, the failed starts forgotten, no new question for a second: ok')
             # One more failed start (a second in a row) asks again; the answer "Go back" ends it.
@@ -449,6 +460,21 @@ def main():
             assert f'panpak rollback {ID}' in p.stderr, p.stderr
             caps.unlink()
             print('4g. out of a scope of an app the portal is not asked: nothing shown, pending, said on stderr: ok')
+            # "Go back" that cannot go back: the records of the version that comes back (`last_good` and `previous`) are taken away while the question waits. The person is told why, and the question is
+            # not left pending.
+            ask_again()
+            settled_askers()
+            for link in ('last_good', 'previous'):
+                if (appdir / link).is_symlink() and os.path.exists(os.path.realpath(appdir / link)):
+                    os.unlink(os.path.realpath(appdir / link))
+            told_before = len(told())
+            send('action yes')
+            wait_for(lambda: len(told()) > told_before, 'the person is told that the app could not go back')
+            said = told()[-1]
+            assert said[:3] == ['--app-name=Panpak', '--', 'Ask App'] and said[3].startswith('Ask App could not go back to version 1.0: ') and '\n' not in said[3], said
+            wait_for(lambda: not (appdir / 'pending-question').exists(), 'the question is not left pending after a failure')
+            assert os.readlink(appdir / 'current') == bad, 'a failed rollback changed the version'
+            print('1d. "Go back" is followed by a notice: back, or why not; nothing after "Try again": ok')
             # "Uninstall" through the service: "Cancel" removes nothing; the answer "Remove" removes the app (the last thing of this test).
             for key, removed in (('no', False), ('yes', True)):
                 time.sleep(3)  # the router of the private bus of the app stays 1.5 s after the last copy, and an app that is open is not removed

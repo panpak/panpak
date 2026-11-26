@@ -574,6 +574,12 @@ msgstr "Torna alla versione {old}"
 msgid "Try again"
 msgstr "Riprova"
 
+msgid "{name} is back to version {old}. Your documents stay as they are."
+msgstr "{name} è tornata alla versione {old}. I tuoi documenti restano come sono."
+
+msgid "{name} could not go back to version {old}: {reason}"
+msgstr "{name} non è potuta tornare alla versione {old}: {reason}"
+
 msgid "Back to {name} {old}. Your documents are not touched; settings changed by the newer version may not work in this one."
 msgstr "Tornato a {name} {old}. I tuoi documenti non sono toccati; le impostazioni cambiate dalla versione più recente potrebbero non funzionare in questa."
 
