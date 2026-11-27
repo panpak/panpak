@@ -135,9 +135,9 @@ def main():
             report(case, '2b ... then touch the applications folder', wait_for(lambda s: s['actions'] == ['Uninstall'], ''))
             run('update-desktop-database', APPS)
             report(case, '2c ... then update-desktop-database', wait_for(lambda s: s['actions'] == ['Uninstall'], ''))
-        # 3. A new version with icons: install writes the entry, which names the icon of the new tree by path.
+        # 3. A new version with icons: install writes the entry, which names the icon by the stable path <store>/apps/<id>/icon.png (a link to the icon of the tree).
         run(BIN / 'panpak', 'install', '--yes', '--trust-first-key', pack('2', True))
-        report(case, '3 install with icons: Icon= changes', wait_for(lambda s: s['icon'] and '/trees/' in s['icon'], ''))
+        report(case, '3 install with icons: Icon= changes', wait_for(lambda s: s['icon'] and s['icon'].endswith(f'/apps/{ID}/icon.png'), ''))
     cleanup()
     print('summary:', 'all seen' if all(r[2] for r in results) else 'some changes were NOT seen: ' + '; '.join(f'{c}/{s}' for c, s, ok in results if not ok))
 
