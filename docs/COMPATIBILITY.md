@@ -111,7 +111,7 @@ not on the versions of a distribution.
 |---|---|---|
 | gnome-desktop (thumbnails) | in builds with bubblewrap support the thumbnail command is wrapped in `bwrap`; `bwrap` fails; no fallback | **the thumbnail helpers do not start**: no thumbnail is made |
 | WebKitGTK (web content) | WebKit tries `bwrap`, which fails ("Unable to spawn a new child process"); no fallback | **the web processes do not start**: an app with a web view of the host's WebKitGTK shows no pages. Not supported yet |
-| glycin (image loading) | tries `bwrap`, sees that it does not work and goes on without its own sandbox, with a warning | the app works; the loader has every right of the app (KL-32 in the threat model) |
+| glycin (image loading) | tries `bwrap`, sees that it does not work and goes on without its own sandbox, with a warning | expected: the app keeps working and the loader has every right of the app (KL-32 in the threat model); not tried in the view yet (test S6 of the plan) |
 
 Nothing in Panpak sets `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS` or pretends to be a container, a Flatpak or `bwrap` to get around
 this: an app whose library does not work in the view is "not yet supported". Known limit KL-9. The refusal of the clone of glycin's

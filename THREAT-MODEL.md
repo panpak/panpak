@@ -756,9 +756,14 @@ Status of the project: pre-beta.
   refused with `EPERM`. This was seen on 2026-11-27 on the Fedora VM, once, on one Electron app, under `strace`, **with a test
   build of the filter (not `main`)**; with `main` that app stopped earlier, on the SUID helper of Chromium, so glycin was never
   reached. `main` is expected to refuse the same way, because its filter refuses every namespace flag on `clone` (test
-  `namespaces_refused_through_clone_and_unshare`). After the refusal the loader of glycin started directly. In the versions of
-  glycin whose source was read (3.0.1 and 4.0.5; 2.0.1 has no such fallback) glycin then goes on without its own sandbox, prints a
-  warning on its standard error (not seen in that run) and starts the loader with no memory limit and no seccomp filter of its own.
+  `namespaces_refused_through_clone_and_unshare`). After the refusal the loader of glycin started directly. What glycin does
+  then was read in the published source of two versions, not run: in `glycin` 3.0.1 (`src/util.rs:81-100`, `src/sandbox.rs:627-685`
+  for the test of bubblewrap, `src/sandbox.rs:487-507` for the launch) and in `glycin-core` 4.0.5 (`src/util.rs:141-180`,
+  `src/sandbox.rs:652-731`, `src/sandbox.rs:521-541`), when its test finds that bubblewrap is blocked glycin goes on without its
+  own sandbox, prints a warning on its standard error (not seen in the run above), and starts the loader with a clean
+  environment and a signal on the death of its parent, with no memory limit (`set_memory_limit` is called only in the bubblewrap
+  path) and no seccomp filter (used only in that path). In `glycin` 2.0.1 (`src/util.rs:41-48`) there is no such test: bubblewrap
+  is always used outside Flatpak, so there the loader does not start in the view. No other version was read.
   A loader that is taken over by a hostile image has every right of the app: its private home, the folders, sockets, devices and
   buses the app was given, and the network if the app has it. It does not get more than the app, because the view, Landlock and
   Panpak's filter stay around it. Flatpak gives the loader a sub-sandbox of its own (`flatpak-spawn --sandbox`: read in the source
