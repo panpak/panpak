@@ -450,13 +450,19 @@ fn remove_integration(id: &str, removed: &mut Vec<String>, kept: &mut Vec<String
             }
         }
     }
-    let gone = crate::icons::remove(id, &[])?;
-    if !gone.is_empty() {
-        let bytes: u64 = gone.iter().map(|(_, b)| b).sum();
-        if let [(p, _)] = gone.as_slice() {
-            removed.push(format!("icon {}", p.display()));
-        } else {
-            removed.push(format!("icons: {} files ({}), for example {}", gone.len(), human(bytes), gone[0].0.display()));
+    // The icon of the app is a file of its tree (nothing is copied since the entry names it by path); what an earlier panpak copied to the user's hicolor
+    // goes, when its bytes are an icon of a version the store still names (this runs before the store is touched).
+    if let Ok(store) = crate::store_dir() {
+        let (gone, left) = crate::icons::forget_legacy(&store, id)?;
+        if !gone.is_empty() {
+            if let [p] = gone.as_slice() {
+                removed.push(format!("icon {}", p.display()));
+            } else {
+                removed.push(format!("icons: {} files, for example {}", gone.len(), gone[0].display()));
+            }
+        }
+        for p in left {
+            kept.push(format!("{} (not an icon that panpak made: not touched)", p.display()));
         }
     }
     let mut touched = false;

@@ -52,15 +52,28 @@ icons = ["usr/share/icons/hicolor/256x256/apps/audacity.png", "usr/share/icons/h
 
 ### Where it goes
 
-`~/.local/share/icons/hicolor/<W>x<H>/apps/panpak.<id>.png`, icon name `panpak.<id>`, so `Icon=panpak.<id>`.
-The prefix keeps it apart from the icon of a Flatpak or distribution app with the same upstream id, and it
-matches the `.desktop` file name. `install` and `update` write it with the same temporary file, fsync and
-rename as the `.desktop` file; `update` removes the sizes the new version no longer has. `remove` deletes
-exactly the `panpak.<id>.png` files in the size folders (never a recursive delete there) and says so.
+Nowhere: the icon is **not copied**. The entry says `Icon=<absolute path>` of a PNG file that is already in the installed tree of the app
+(`<store>/trees/<root>/...`, one of the files that `[desktop] icons` names; the package puts them in `.panpak/icons/<side>.png`). The rule is one and
+deterministic (`panpak_core::desktop::icon_in_tree`): **of the PNG files named, the one with the largest side; of two with the same side, the first in the
+list.** A file counts only if it is a regular file reached without a link (no component of the path below the tree is a link: the path stays inside the
+store), of at most 256 KiB, and its header says a square PNG of 16 to 1024 pixels (the whole file was checked when the version was installed or updated). **An
+SVG is never chosen** (see "SVG: decision" below: the host would parse an untrusted document outside the sandbox); a tree whose only icon is an SVG gets the
+generic icon unless the packager gives a PNG. **An app without a usable icon** gets `Icon=application-x-executable`, the themed icon of every theme.
+`install`, `update`, `repair` and the lazy rewrite at the start of an app write the entry; the entry is written atomically (temporary file, rename) after
+`current` names the new version and before anything of the old one can be collected (the old tree stays as `previous`), so a start never finds an entry
+that names a tree that is gone. Because the path changes with every version (a new tree), `update` tells the usual NOTE that an app already started in
+the session may keep the old entry until the next login.
+What is given up against a themed name in the user's `hicolor`: the toolkit no longer chooses a size (one PNG is scaled; GNOME Shell never scales a file up
+beyond its own pixels, so the largest one is used), a theme or the user cannot override the icon of the app by name, and there are no symbolic or dark variants
+(Panpak ships none today). Where it works, by the sources (GNOME Shell and GLib: a path becomes a `GFileIcon`; KDE: `KIconLoader` takes an absolute path as it
+is; notifications of GNOME and KDE accept a path): the menu, the dock, the overview, alt-tab, the window of the app (matched by `StartupWMClass`, not by `Icon=`),
+and notifications. Not verified: the task manager of Plasma, the dialogs of the portals, other desktops.
 
-The icon cache: `~/.local/share/icons/hicolor` has no `index.theme` of its own, so there is no cache to
-rebuild; GTK reads the folder with the system `hicolor` theme and watches it. To be checked in the VM
-(section 4); `gtk-update-icon-cache` is not run unless the test shows it is needed.
+**Earlier versions of panpak copied the icons** to `~/.local/share/icons/hicolor/<W>x<H>/apps/panpak.<id>.png` (`Icon=panpak.<id>`). Those copies are taken away
+at the first `update`, `repair` or `remove` of the app, and only the ones that panpak made: a regular file with that name in a `<S>x<S>/apps` folder whose bytes
+are an icon of a version that the store still names (`current`, `previous`, `pending`; the BLAKE3 hash of the file is compared). A file with that name and other
+bytes, a link, the icon of another app and anything else in the folder stay (the command says which one stays); no folder is removed. An entry written by an
+earlier panpak (`DESKTOP_VERSION` 1) is rewritten at the next start of the app or command, with the path of the tree.
 
 ### Safety
 
@@ -589,6 +602,8 @@ inside the app. `strace -f` on QOwnNotes, for the file system calls only:
 Cause: Qt reads `icon-theme.cache` of the system `hicolor` (3 calls) but finds none in the user's, so it tests each icon name in each size folder one at a time (20,640 tries in
 the size folders, and the `@2` and `scalable` ones). Only the themes Qt actually searches matter: `hicolor` is always searched, so it always costs; a theme in use that has
 no cache would cost the same natively.
+
+(Since the entries name the icon in the tree and nothing is copied, a user with only apps installed by this panpak has no `hicolor` of Panpak's making in that folder, and the Qt apps of the system do not pay this cost; the rule below stays for the folder that other programs fill.)
 
 Rule: **the user's `hicolor` is not given to the app** (`~/.local/share/icons/hicolor` and `~/.icons/hicolor`); the other theme folders are, one by one, so that a theme the user chose
 still reaches the app. Alternatives: generate `icon-theme.cache` at install (needs `gtk-update-icon-cache` and an `index.theme`, and goes stale at every install and remove: discarded);

@@ -244,9 +244,13 @@ class Run:
             f.write_text(text)
 
     def icon_ok(self):
-        icons = list((self.home / ".local/share/icons/hicolor").glob(f"*/apps/panpak.{self.app.id}.png"))
         entry = self.home / ".local/share/applications" / f"panpak.{self.app.id}.desktop"
-        return bool(icons) and entry.exists() and f"Icon=panpak.{self.app.id}" in entry.read_text()
+        if not entry.exists():
+            return False
+        value = next((l[len("Icon="):] for l in entry.read_text().splitlines() if l.startswith("Icon=")), "")
+        icon = Path(value)
+        # The entry names, by absolute path, a PNG file of the installed tree (nothing is copied to the user's hicolor).
+        return icon.is_absolute() and icon.is_file() and not icon.is_symlink() and icon.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" and "/trees/" in value
 
     def start_once(self, disp, timeout=90):
         """Start the app, wait for its first window, end it. Returns the seconds to the window (None if none came) and the exit status of the launcher."""

@@ -1861,7 +1861,7 @@ fn share_start_files(args: Vec<String>, app_id: &str, runtime_dir: Option<&Path>
 /// The lazy update of the menu entry and the launcher (docs/DESKTOP-INTEGRATION.md, section 3): when the entry is older
 /// than the template of this runtime, it is rewritten. Usually this reads 128 bytes and goes on. A failure is only
 /// reported with `PANPAK_DEBUG`; it never stops the start.
-fn refresh_menu_entry(store: &Path, man: &panpak_core::Manifest) {
+fn refresh_menu_entry(store: &Path, tree: &Path, man: &panpak_core::Manifest) {
     use panpak_core::desktop::{refresh_entry, Refresh};
     let Some(dir) = dirs::data_dir().map(|d| d.join("applications")) else { return };
     let schemes = man.desktop.as_ref().and_then(|d| d.schemes.clone()).unwrap_or_default();
@@ -1869,7 +1869,12 @@ fn refresh_menu_entry(store: &Path, man: &panpak_core::Manifest) {
     let class = man.desktop.as_ref().and_then(|d| d.wm_class.as_deref());
     let Ok(launcher) = panpak_core::desktop::launcher_path(&man.app.id) else { return };
     let twin = panpak_core::desktop::twin_of(&man.app.id, class).is_some();
-    match refresh_entry(store, &dir, &launcher, &man.app.id, &man.app.name, &schemes, &mimes, class, twin) {
+    let icon = panpak_core::desktop::icon_in_tree(tree, man);
+    // The tree is not there (yet) or its icon cannot be used: leave the entry as it is rather than write the generic icon over a good one.
+    if icon.is_none() && man.desktop.as_ref().and_then(|d| d.icons.as_ref()).is_some_and(|i| !i.is_empty()) {
+        return;
+    }
+    match refresh_entry(store, &dir, &launcher, &man.app.id, &man.app.name, &schemes, &mimes, class, icon.as_deref(), twin) {
         Ok(Refresh::Rewritten) if panpak_core::debug_enabled() => eprintln!("panpak: debug: the menu entry of {} was older and is rewritten", man.app.id),
         Ok(_) => {}
         Err(e) if panpak_core::debug_enabled() => eprintln!("panpak: debug: menu entry not refreshed: {e:#}"),
@@ -2400,7 +2405,7 @@ fn real_main() -> Result<()> {
     }
     stage("package checked");
     if installed_mode {
-        refresh_menu_entry(&store, &man);
+        refresh_menu_entry(&store, &store.join("trees").join(hex(&ft.root)), &man);
         stage("menu entry checked");
     }
     let (chunks, entries) = parse_index(&raw_index)?;

@@ -262,40 +262,26 @@ fn a_new_runtime_reaches_the_launcher_through_the_link() {
 }
 
 #[test]
-fn icons_are_installed_replaced_and_removed() {
+fn an_install_copies_no_icon_and_remove_leaves_the_files_of_the_others() {
+    // The runtime of these tests is a script (no tree is made), so the path of the icon in the tree is checked in `tests/update_icons.py` and in
+    // `convert_icons.rs`, with the real runtime; here: nothing is copied to the user's hicolor, whatever the version, and `remove` touches only what it made.
     let e = env("icons");
     let (i16, i48) = (fixture("ok-16-rgba.png"), fixture("ok-48-rgba.png"));
     let toml = "[desktop]\nicons = [\"icons/a.png\", \"icons/b.png\"]\n";
     let o = e.install("1", toml, &[("icons/a.png", i16.clone()), ("icons/b.png", i48.clone())]);
     assert!(o.status.success(), "{}", text(&o));
-    assert!(!text(&o).contains("NOTE: the menu entry changed"), "{}", text(&o));
-    assert_eq!(fs::read(e.icon(16)).unwrap(), i16);
-    assert_eq!(fs::read(e.icon(48)).unwrap(), i48);
-    assert_eq!(fs::metadata(e.icon(48)).unwrap().permissions().mode() & 0o777, 0o644);
-    assert!(e.entry().contains(&format!("\nIcon=panpak.{ID}\n")), "{}", e.entry());
-    // A version with one icon: the size it no longer has goes away.
-    let o = e.install("2", "[desktop]\nicons = [\"icons/b.png\"]\n", &[("icons/b.png", i48.clone())]);
-    assert!(o.status.success(), "{}", text(&o));
-    assert!(!text(&o).contains("NOTE: the menu entry changed"), "same entry: {}", text(&o));
-    assert!(!e.icon(16).exists() && e.icon(48).is_file());
-    // A version without any: the entry goes back to the generic icon and no file stays.
-    let o = e.install("3", "", &[]);
-    assert!(o.status.success(), "{}", text(&o));
-    assert!(text(&o).contains("NOTE: the menu entry changed") && text(&o).contains("log in again"), "{}", text(&o));
-    assert!(!e.icon(48).exists(), "an icon of an older version stays");
+    assert!(!e.icon(16).exists() && !e.icon(48).exists(), "no copy in hicolor");
+    assert!(!e.home.join(".local/share/icons").exists(), "the folder of the user's icons is not even made");
+    assert!(e.install("2", "", &[]).status.success());
     assert!(e.entry().contains("\nIcon=application-x-executable\n"), "{}", e.entry());
-    // With icons again, then remove: the files go and the report says so.
-    assert!(e.install("4", toml, &[("icons/a.png", i16), ("icons/b.png", i48)]).status.success());
-    let o = cli(&e.home, &["remove", ID]);
-    assert!(o.status.success(), "{}", text(&o));
-    assert!(!e.icon(16).exists() && !e.icon(48).exists());
-    assert!(text(&o).contains("icons: 2 files"), "{}", text(&o));
-    // Files of other apps in the same folders are not touched.
+    // A file of another app in the same folders is not touched, by install, update or remove.
     let other = e.home.join(".local/share/icons/hicolor/48x48/apps/panpak.org.example.other.png");
     fs::create_dir_all(other.parent().unwrap()).unwrap();
     fs::write(&other, "x").unwrap();
-    assert!(e.install("5", "", &[]).status.success());
-    assert!(cli(&e.home, &["remove", ID]).status.success());
+    assert!(e.install("3", toml, &[("icons/a.png", i16), ("icons/b.png", i48)]).status.success());
+    let o = cli(&e.home, &["remove", ID]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert!(!e.home.join(format!(".local/share/applications/panpak.{ID}.desktop")).exists());
     assert!(other.is_file());
 }
 
@@ -310,8 +296,7 @@ fn another_app_with_the_same_id_gives_the_entry_a_name_of_its_own_and_it_follows
     assert!(o.status.success(), "{}", text(&o));
     assert!(!text(&o).contains("same id"), "{}", text(&o));
     let plain = e.entry();
-    assert!(plain.contains("\nName=Icon App\n") && plain.contains(&format!("\nIcon=panpak.{ID}\n")) && !plain.contains("Twin"), "{plain}");
-    assert_eq!(fs::read(e.icon(16)).unwrap(), i16, "the plain icon is the one of the package");
+    assert!(plain.contains("\nName=Icon App\n") && plain.contains("\nIcon=") && !plain.contains("Twin"), "{plain}");
     // The same app installed another way appears (a Flatpak export, a distribution package): the next install says so and names the entry.
     let other = e.home.join("sysdata/applications");
     fs::create_dir_all(&other).unwrap();
@@ -320,7 +305,7 @@ fn another_app_with_the_same_id_gives_the_entry_a_name_of_its_own_and_it_follows
     assert!(o.status.success(), "{}", text(&o));
     assert!(text(&o).contains("another app with the same id") && text(&o).contains("\"Icon App (Panpak)\""), "{}", text(&o));
     let marked = e.entry();
-    assert!(marked.contains("\nName=Icon App (Panpak)\n") && marked.contains(&format!("\nIcon=panpak.{ID}\n")), "{marked}");
+    assert!(marked.contains("\nName=Icon App (Panpak)\n") && marked.contains("\nIcon="), "{marked}");
     assert_eq!(marked.lines().nth(2), Some("X-Panpak-Twin=1"), "{marked}");
     // It goes: the entry is plain again.
     fs::remove_file(other.join(format!("{ID}.desktop"))).unwrap();
@@ -345,7 +330,7 @@ fn an_app_without_an_icon_gets_the_generic_one() {
 }
 
 #[test]
-fn a_link_in_place_of_the_icon_stops_the_install_before_the_store_is_touched() {
+fn a_link_where_an_earlier_panpak_put_an_icon_is_never_followed_or_touched() {
     let e = env("iconlink");
     let victim = e.home.join("victim");
     fs::write(&victim, "keep").unwrap();
@@ -353,9 +338,13 @@ fn a_link_in_place_of_the_icon_stops_the_install_before_the_store_is_touched() {
     fs::create_dir_all(dest.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&victim, &dest).unwrap();
     let o = e.install("1", "[desktop]\nicons = [\"i.png\"]\n", &[("i.png", fixture("ok-16-rgba.png"))]);
-    assert!(!o.status.success() && text(&o).contains("PANPAK-E2001") && text(&o).contains("symbolic link"), "{}", text(&o));
+    assert!(o.status.success(), "{}", text(&o));
     assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
-    assert!(!e.store().join("apps").join(ID).exists(), "the store was touched");
+    assert!(fs::symlink_metadata(&dest).unwrap().file_type().is_symlink(), "the link is still there");
+    let o = cli(&e.home, &["remove", ID]);
+    assert!(o.status.success(), "{}", text(&o));
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+    assert!(fs::symlink_metadata(&dest).unwrap().file_type().is_symlink(), "remove does not touch a link either");
 }
 
 #[test]
@@ -395,13 +384,10 @@ fn pack_cleans_an_icon_and_says_which_chunks_it_removed() {
     let t2 = e.tree("9", "[desktop]\nicons = [\"b.png\"]\n", &[("b.png", icc_png.clone())]);
     let (o2, _) = e.pack(&t2, "icc.panpak");
     assert!(o2.status.success() && String::from_utf8_lossy(&o2.stderr).contains("icon b.png: removed the chunks iCCP"), "{}", text(&o2));
-    // The file in the tree is not changed; the package holds the cleaned icon and install writes it.
+    // The file in the tree is not changed; the package holds the cleaned icon (the install of it is checked with the real runtime in `convert_icons.rs`).
     assert_eq!(fs::read(t.join("a.png")).unwrap(), text_png);
     let o = cli(&e.home, &["install", "--yes", "--trust-first-key", pkg.to_str().unwrap()]);
     assert!(o.status.success(), "{}", text(&o));
-    let a = fs::read(e.icon(32)).unwrap();
-    assert_ne!(a, text_png);
-    assert!(!a.windows(4).any(|w| w == b"tEXt" || w == b"iCCP"));
     // Packing again gives the same package: the cleaning is deterministic.
     let (o2, pkg2) = e.pack(&t, "2.panpak");
     assert!(o2.status.success());

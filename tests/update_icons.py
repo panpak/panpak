@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""`panpak update` with icons: a changed icon, a removed icon, a new size, and no icons at all.
+"""`panpak update` with icons: a changed icon, a removed icon, a new size, and no icons at all. The entry names the largest icon of the tree by absolute path
+(nothing is copied to the user's hicolor); the copies that an earlier panpak made there are taken away at the first update, only the ones that panpak made.
 
 Usage: python3 tests/update_icons.py        (build the release binaries first)
 Everything happens in a scratch HOME. Four versions of one app are packed with `[desktop] icons`; the first is installed
@@ -84,11 +85,30 @@ def main():
             text = (tmp / f'data/applications/panpak.{ID}.desktop').read_text()
             return next(l for l in text.splitlines() if l.startswith('Icon='))
 
+        def need_icon(side, seed, step):
+            """The entry names, by absolute path, a regular file of the tree (no link on the way) that holds the icon of this side."""
+            v = entry_icon()[len('Icon='):]
+            need(v.startswith('/'), f'{step}: Icon= is not an absolute path: {v}')
+            f = Path(v)
+            need(f.is_file() and not f.is_symlink() and f.read_bytes() == png(side, seed), f'{step}: {v} is not the icon of side {side}')
+            need(f.resolve() == f, f'{step}: the path of the icon goes through a link: {v}')
+            need('/trees/' in v and f.name == f'{side}.png', f'{step}: the icon is not a file of the tree: {v}')
+            need(set(icon_dir.glob(f'*/apps/panpak.{ID}.png')) <= set(placed), f'{step}: an icon was copied to the hicolor folder')
+
         # A file of another app in the same folders must never be touched.
         other = icon_file(48, OTHER)
         other.parent.mkdir(parents=True)
         other.write_bytes(b'not ours')
 
+        # The copies that an earlier panpak made for this app (the bytes of version 1) and one that someone changed: only the first two go.
+        icon_file(16).parent.mkdir(parents=True, exist_ok=True)
+        icon_file(16).write_bytes(png(16, 1))
+        icon_file(48).write_bytes(png(48, 1))
+        icon_file(256).parent.mkdir(parents=True, exist_ok=True)
+        icon_file(256).write_bytes(b'changed by somebody')
+        placed = [icon_file(16), icon_file(48), icon_file(256)]      # panpak copies nothing: the files of the folder stay among these
+        icon_file(64, OTHER).parent.mkdir(parents=True, exist_ok=True)
+        icon_file(64, OTHER).write_bytes(png(16, 1))
         v = {
             '1': pack('1', [(16, 1), (48, 1)]),
             '2': pack('2', [(16, 2), (32, 1)]),     # 16 changed, 48 removed, 32 new
@@ -96,8 +116,8 @@ def main():
             '4': pack('4', [(48, 4), (256, 4)]),     # icons again, other sizes
         }
         run(BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', v['1'])
-        need(icon_file(16).read_bytes() == png(16, 1) and icon_file(48).read_bytes() == png(48, 1), 'install: icons are not there')
-        need(entry_icon() == f'Icon=panpak.{ID}', entry_icon())
+        need_icon(48, 1, 'install')
+        need(icon_file(16).exists() and icon_file(48).exists(), 'install: the old copies went before the first update')
 
         server = subprocess.Popen([sys.executable, ROOT / 'tests/range_server.py', tmp, str(port), 'normal'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
@@ -108,29 +128,26 @@ def main():
                 run(BIN / 'panpak', 'update', '--allow-insecure-http', '--timeout', '10', ID)
 
             update('2')
-            need(icon_file(16).read_bytes() == png(16, 2), 'update 2: the changed icon was not replaced')
-            need(icon_file(32).read_bytes() == png(32, 1), 'update 2: the new size is missing')
-            need(not icon_file(48).exists(), 'update 2: the icon of the removed size is still there')
-            need(entry_icon() == f'Icon=panpak.{ID}', entry_icon())
-            print('  update with a changed icon, a removed size and a new size: ok')
+            need_icon(32, 1, 'update 2')       # 16 changed, 48 removed, 32 new: the largest is the new 32
+            need(not icon_file(16).exists() and not icon_file(48).exists(), 'update 2: the copies that panpak made (bytes of version 1) are still in hicolor')
+            need(icon_file(256).read_bytes() == b'changed by somebody', 'update 2: a file with our name and other bytes was taken away')
+            need(icon_file(64, OTHER).exists(), 'update 2: the file of another app was taken away')
+            print('  update: the entry names the largest icon of the tree; the old copies of panpak go, the changed one and the other app stay: ok')
 
             update('3')
-            need(not any(icon_dir.glob(f'*/apps/panpak.{ID}.png')), 'update 3: icons are left although the new version has none')
             need(entry_icon() == 'Icon=application-x-executable', entry_icon())
-            print('  update to a version with no icons: all removed, generic icon: ok')
+            print('  update to a version with no icons: generic icon: ok')
 
             update('4')
-            need(icon_file(48).read_bytes() == png(48, 4) and icon_file(256).read_bytes() == png(256, 4), 'update 4: icons are missing')
-            need(not icon_file(16).exists() and not icon_file(32).exists(), 'update 4: old sizes came back')
-            need(entry_icon() == f'Icon=panpak.{ID}', entry_icon())
-            print('  update back to icons of other sizes: ok')
+            need_icon(256, 4, 'update 4')
+            print('  update back to icons of other sizes: the largest of the tree: ok')
         finally:
             server.terminate()
         need(other.read_bytes() == b'not ours', 'the icon of another app was touched')
         run(BIN / 'panpak', 'remove', ID)
-        need(not any(icon_dir.glob(f'*/apps/panpak.{ID}.png')), 'remove: icons are left')
-        need(other.read_bytes() == b'not ours', 'remove: the icon of another app was touched')
-        print('remove deletes the icons and leaves the other app alone: ok')
+        need(not (tmp / f'data/applications/panpak.{ID}.desktop').exists(), 'remove: the entry is left')
+        need(other.read_bytes() == b'not ours' and icon_file(256).read_bytes() == b'changed by somebody', 'remove: a file that panpak did not make was touched')
+        print('remove takes the entry and leaves the other files alone: ok')
     print('all update icon tests passed')
 
 

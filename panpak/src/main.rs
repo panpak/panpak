@@ -480,8 +480,7 @@ fn cmd_update(app_id: &str, yes: bool, accept_new: bool, allow: panpak_core::rel
             }
         }
         // The icons of the new version, from its tree, are checked before anything is staged.
-        let new_icons = icons::read_from_tree(&new_tree, &man)?;
-        icons::check_destinations(app_id, &new_icons)?;
+        icons::read_from_tree(&new_tree, &man)?;
         // Staged: the state first, then the link (the link is what an apply looks for).
         panpak_core::pending::write_state(&appdir, panpak_core::pending::State { needs_accept: stage_only && !added.is_empty(), security: panpak_core::record::open_verified(&dest).is_ok_and(|o| panpak_core::record::security_mark(&o, old_man.release.as_ref().map_or(0, |r| r.revision))), accepted: false })?;
         panpak_core::durable::replace_symlink(&dest, &panpak_core::pending::link_path(&appdir))?;
@@ -640,8 +639,8 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
         Err(e) => return Err(e),
     };
     let new_tree = store.join("trees").join(&new_root);
-    let new_icons = icons::read_from_tree(&new_tree, man)?;
-    icons::check_destinations(app_id, &new_icons)?;
+    icons::read_from_tree(&new_tree, man)?;
+    let new_icon = panpak_core::desktop::icon_in_tree(&new_tree, man);
 
     // A key that is being replaced is in the pin file with the old one for the time between the two links, so that a stop at any point leaves a start that
     // works (the stub accepts either line).
@@ -682,9 +681,8 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
     let mimes = manifest_mime_types(man);
     if desktop.exists() || legacy_desktop_path(app_id)?.exists() || !schemes.is_empty() || !mimes.is_empty() {
         fs::create_dir_all(desktop.parent().unwrap())?;
-        icons::install(app_id, &new_icons)?;
         let twin = twin_state(man);
-        let text = entry_text(&store, app_id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(man), !new_icons.is_empty(), twin)?;
+        let text = entry_text(&store, app_id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(man), new_icon.as_deref(), twin)?;
         let before = fs::read_to_string(&desktop).ok();
         write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
         note_stale_menu(before.as_deref(), &text);
@@ -692,6 +690,8 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
         if !schemes.is_empty() || !mimes.is_empty() || moved {
             refresh_desktop_database(desktop.parent().unwrap());
         }
+        // The entry names the icon of the new tree now: the copies that an earlier panpak made in the user's hicolor are no longer used.
+        icons::forget_legacy_told(&store, app_id);
     }
     if at_start {
         eprintln!("panpak: {app_id} updated from {} to {} (it was staged)", old_man.app.version, man.app.version);
@@ -870,6 +870,9 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
     if complete && bad.is_empty() {
         println!("{app_id} {}: the files match the signed index; nothing to repair", rec.manifest.app.version);
         clear_damaged(&appdir);
+        // The menu entry names the icon of the tree; the copies that an earlier panpak made in the user's hicolor go (nothing else is touched).
+        refresh_menu_entry(app_id);
+        icons::forget_legacy_told(&store, app_id);
         return Ok(());
     }
     if complete {
@@ -946,6 +949,8 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
     }
     println!("repaired {app_id} {}", rec.manifest.app.version);
     clear_damaged(&appdir);
+    refresh_menu_entry(app_id);
+    icons::forget_legacy_told(&store, app_id);
     Ok(())
 }
 
@@ -3429,7 +3434,8 @@ fn reconcile_app(store: &Path, stub: &Path, id: &str) -> Result<()> {
     let twin = dsk::twin_of(id, class).is_some();
     let Some(dir) = dirs::data_dir().map(|d| d.join("applications")) else { return Ok(()) };
     ensure_stable_panpak(store)?;
-    let done = dsk::refresh_entry_with(store, &dir, &launcher, id, &man.app.name, &schemes, &mimes, class, twin, true)?;
+    let icon = current_icon(store, id);
+    let done = dsk::refresh_entry_with(store, &dir, &launcher, id, &man.app.name, &schemes, &mimes, class, icon.as_deref(), twin, true)?;
     if matches!(done, dsk::Refresh::Rewritten) && (!schemes.is_empty() || !mimes.is_empty()) {
         refresh_desktop_database(&dir);
     }
@@ -3439,7 +3445,7 @@ fn reconcile_app(store: &Path, stub: &Path, id: &str) -> Result<()> {
 
 /// The text of the entry of an app: the stable `panpak` of the store gives the menu action, when it is there.
 #[allow(clippy::too_many_arguments)] // every field of the entry
-fn entry_text(store: &Path, app_id: &str, name: &str, launcher: &Path, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, icon: bool, twin: bool) -> Result<String> {
+fn entry_text(store: &Path, app_id: &str, name: &str, launcher: &Path, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, icon: Option<&Path>, twin: bool) -> Result<String> {
     let panpak = dsk::stable_panpak(store);
     let panpak = panpak.is_file().then_some(panpak);
     dsk::desktop_file(&dsk::Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon, twin, protected: panpak_core::release::menu_state(&store.join("apps").join(app_id)) })
@@ -3458,6 +3464,13 @@ fn twin_state(man: &panpak_core::Manifest) -> bool {
     true
 }
 
+/// The icon of the installed (current) version of an app: a file of its tree (`panpak_core::desktop::icon_in_tree`), or `None`.
+fn current_icon(store: &Path, app_id: &str) -> Option<PathBuf> {
+    let rec = panpak_core::durable::resolve_link(&store.join("apps").join(app_id).join("current")).ok()?;
+    let rec = panpak_core::record::open_verified(&rec).ok()?;
+    panpak_core::desktop::icon_in_tree(&store.join("trees").join(panpak_core::hex(&rec.footer.root)), &rec.manifest)
+}
+
 /// Write the menu entry of an installed app again (protected mode adds or takes away an action of it). Nothing is said and nothing fails: an entry that is
 /// not there, or not ours, is left alone.
 fn refresh_menu_entry(app_id: &str) {
@@ -3471,7 +3484,7 @@ fn refresh_menu_entry(app_id: &str) {
         let launcher = dirs::home_dir().context("no home dir")?.join(".local/bin").join(app_id);
         let wm_class = manifest_wm_class(&man);
         let twin = dsk::twin_of(&man.app.id, wm_class).is_some();
-        let text = entry_text(&store, app_id, &man.app.name, &launcher, &manifest_schemes(&man), &manifest_mime_types(&man), wm_class, !icons::present(app_id).is_empty(), twin)?;
+        let text = entry_text(&store, app_id, &man.app.name, &launcher, &manifest_schemes(&man), &manifest_mime_types(&man), wm_class, current_icon(&store, app_id).as_deref(), twin)?;
         write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))
     })();
     let _ = done;
@@ -4226,8 +4239,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     check_replaceable(&launcher, "launcher", &|s| launcher_is_ours(s, &man.app.id))?;
     check_replaceable(&desktop, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
     // The icons are read and checked now, before the store is touched.
-    let new_icons = icons::read_from_package(&mut f, &raw_index, &man)?;
-    icons::check_destinations(&man.app.id, &new_icons)?;
+    icons::read_from_package(&mut f, &raw_index, &man)?;
     let new_trust = panpak_core::trust::require(&man)?;
     let key = new_trust.root.first().context("[trust] has no root")?;
     let fp = panpak_core::fingerprint(&panpak_core::parse_pubkey(key)?);
@@ -4421,9 +4433,8 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     fs::create_dir_all(desktop.parent().unwrap())?;
     let schemes = manifest_schemes(&man);
     let mimes = manifest_mime_types(&man);
-    icons::install(&man.app.id, &new_icons)?;
     let twin = twin_state(&man);
-    let text = entry_text(&store, &man.app.id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(&man), !new_icons.is_empty(), twin)?;
+    let text = entry_text(&store, &man.app.id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(&man), panpak_core::desktop::icon_in_tree(&store.join("trees").join(panpak_core::hex(&ft.root)), &man).as_deref(), twin)?;
     let before = fs::read_to_string(&desktop).ok();
     write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
     note_stale_menu(before.as_deref(), &text);
@@ -6494,7 +6505,7 @@ mod tests {
         assert!(!launcher_is_ours("#!/bin/sh\necho mine\n", "org.x"));
         // Written before the marker existed.
         assert!(launcher_is_ours("#!/bin/sh\n# Generated by `panpak install`: do not edit.\n# Points to apps/<id>/current; x\n", "org.x"));
-        let d = dsk::desktop_file(&dsk::Entry { app_id: "org.x", name: "X", launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false, protected: None }).unwrap();
+        let d = dsk::desktop_file(&dsk::Entry { app_id: "org.x", name: "X", launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: None, twin: false, protected: None }).unwrap();
         assert!(desktop_is_ours(&d, "org.x", l));
         assert!(!desktop_is_ours(&d, "org.y", l));
         assert!(!desktop_is_ours("[Desktop Entry]\nType=Application\nName=Mine\nExec=/bin/mine\n", "org.x", l));

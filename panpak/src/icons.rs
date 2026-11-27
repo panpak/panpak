@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The icon files of an installed app: `~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<id>.png`.
-//! Rules: docs/DESKTOP-INTEGRATION.md, section 1. Every file passes `panpak_icon::check` before it is written.
+//! The icon of an installed app is a file of its tree, named by absolute path in the `Icon=` line of the entry (`panpak_core::desktop::icon_in_tree`);
+//! nothing is copied. Every icon passes `panpak_icon::check` when a version is installed or updated. Earlier versions of panpak copied the icons to
+//! `~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<id>.png`: this module finds those copies and takes away the ones that panpak made.
+//! Rules: docs/DESKTOP-INTEGRATION.md, section 1.
 
 use anyhow::{Context, Result};
-use panpak_core::{bail_code, ErrorCode};
 use std::{
+    collections::HashSet,
     ffi::OsStr,
     fs::{self, File},
     path::{Path, PathBuf},
@@ -22,10 +24,6 @@ pub fn hicolor() -> Result<PathBuf> {
 
 fn file_name(app_id: &str) -> String {
     format!("{}.png", panpak_core::desktop::icon_name(app_id))
-}
-
-pub fn path_of(app_id: &str, side: u32) -> Result<PathBuf> {
-    Ok(hicolor()?.join(format!("{side}x{side}")).join("apps").join(file_name(app_id)))
 }
 
 /// Read and check the icons a manifest lists, from a verified package. A bad icon is an error: the package is refused.
@@ -60,75 +58,140 @@ pub fn read_from_tree(tree: &Path, man: &panpak_core::Manifest) -> Result<Vec<Ch
     Ok(out)
 }
 
-/// A destination that is a link or not a regular file is not replaced.
-fn check_destination(path: &Path) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(m) if m.file_type().is_symlink() => bail_code!(ErrorCode::E2001, "refusing to replace icon {}: it is a symbolic link", path.display()),
-        Ok(m) if !m.file_type().is_file() => bail_code!(ErrorCode::E2001, "refusing to replace icon {}: not a regular file", path.display()),
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).with_context(|| format!("inspect {}", path.display())),
+/// The BLAKE3 hashes of the icon files of every version of the app that the store still names (`current`, `previous`, `pending`): what an earlier
+/// panpak could have copied to `hicolor`. A copy is ours only when its bytes are one of these (the name `panpak.<id>.png` alone is not enough: a file
+/// that someone changed or put there stays).
+fn known_hashes(store: &Path, app_id: &str) -> HashSet<[u8; 32]> {
+    let appdir = store.join("apps").join(app_id);
+    let mut out = HashSet::new();
+    for link in ["current", "previous", "pending"] {
+        let Ok(rec_path) = panpak_core::durable::resolve_link(&appdir.join(link)) else { continue };
+        let Ok(rec) = panpak_core::record::open_verified(&rec_path) else { continue };
+        let tree = store.join("trees").join(panpak_core::hex(&rec.footer.root));
+        for c in read_from_tree(&tree, &rec.manifest).unwrap_or_default() {
+            out.insert(*blake3::hash(&c.data).as_bytes());
+        }
     }
+    out
 }
 
-/// Check the destinations before anything is written.
-pub fn check_destinations(app_id: &str, icons: &[Checked]) -> Result<()> {
-    for i in icons {
-        check_destination(&path_of(app_id, i.side)?)?;
-    }
-    Ok(())
+/// The copies of the icons of the app that an earlier panpak made in the user's `hicolor`: `(path, bytes, ours)`, where `ours` says that the file is a
+/// regular file whose bytes are an icon of a version in `known`. Found by folder descriptors that do not follow links.
+fn legacy_copies(app_id: &str, known: &HashSet<[u8; 32]>, delete: bool) -> Result<Vec<(PathBuf, u64, bool)>> {
+    legacy_copies_in(&hicolor()?, app_id, known, delete)
 }
 
-/// Write the icons (each in one rename) and remove the sizes of the app that are not among them.
-/// Returns the paths written.
-pub fn install(app_id: &str, icons: &[Checked]) -> Result<Vec<PathBuf>> {
-    check_destinations(app_id, icons)?;
-    let mut written = Vec::new();
-    for i in icons {
-        let path = path_of(app_id, i.side)?;
-        fs::create_dir_all(path.parent().unwrap())?;
-        panpak_core::desktop::write_file_lazy(&path, &i.data, 0o644).with_context(|| format!("write icon {}", path.display()))?;
-        written.push(path);
-    }
-    let keep: Vec<u32> = icons.iter().map(|i| i.side).collect();
-    remove(app_id, &keep)?;
-    Ok(written)
-}
-
-/// Delete the icon files of the app, except the sizes in `keep`. Only a regular file of the exact name is
-/// deleted, found by folder descriptors that do not follow links. Returns `(path, bytes)` of what went.
-pub fn remove(app_id: &str, keep: &[u32]) -> Result<Vec<(PathBuf, u64)>> {
-    walk(app_id, keep, true)
-}
-
-/// The icon files the app has now, with their sizes in bytes.
-pub fn present(app_id: &str) -> Vec<(PathBuf, u64)> {
-    walk(app_id, &[], false).unwrap_or_default()
-}
-
-fn walk(app_id: &str, keep: &[u32], delete: bool) -> Result<Vec<(PathBuf, u64)>> {
+fn legacy_copies_in(root: &Path, app_id: &str, known: &HashSet<[u8; 32]>, delete: bool) -> Result<Vec<(PathBuf, u64, bool)>> {
     use panpak_core::safefs::{Dir, Kind};
-    let root = hicolor()?;
-    let Ok(dir) = Dir::open_path(&root) else { return Ok(Vec::new()) };
+    use std::io::Read;
+    let Ok(dir) = Dir::open_path(root) else { return Ok(Vec::new()) };
     let name = file_name(app_id);
-    let mut gone = Vec::new();
+    let mut found = Vec::new();
     for size in dir.list().unwrap_or_default() {
         let Some(s) = size.to_str() else { continue };
         let Some((w, h)) = s.split_once('x') else { continue };
-        let (Ok(w), Ok(h)) = (w.parse::<u32>(), h.parse::<u32>()) else { continue };
-        if w != h || keep.contains(&w) {
+        if !matches!((w.parse::<u32>(), h.parse::<u32>()), (Ok(w), Ok(h)) if w == h) {
             continue;
         }
         let Ok(Some(sizedir)) = dir.open_dir_opt(&size) else { continue };
         let Ok(Some(apps)) = sizedir.open_dir_opt(OsStr::new("apps")) else { continue };
-        if let Ok(Some(st)) = apps.lstat(OsStr::new(&name)) {
-            if st.kind == Kind::File {
-                if delete {
-                    apps.unlink(OsStr::new(&name)).with_context(|| format!("remove {}", root.join(s).join("apps").join(&name).display()))?;
-                }
-                gone.push((root.join(s).join("apps").join(&name), st.size));
-            }
+        let Ok(Some(st)) = apps.lstat(OsStr::new(&name)) else { continue };
+        if st.kind != Kind::File {
+            continue;
+        }
+        let path = root.join(s).join("apps").join(&name);
+        let mut data = Vec::new();
+        let ours = st.size <= panpak_icon::MAX_FILE as u64
+            && apps.open_file(OsStr::new(&name)).and_then(|f| f.take(panpak_icon::MAX_FILE as u64 + 1).read_to_end(&mut data)).is_ok()
+            && known.contains(blake3::hash(&data).as_bytes());
+        if ours && delete {
+            apps.unlink(OsStr::new(&name)).with_context(|| format!("remove {}", path.display()))?;
+        }
+        found.push((path, st.size, ours));
+    }
+    Ok(found)
+}
+
+/// The copies of icons that an earlier panpak put in the user's `hicolor` and that are still there, with their sizes in bytes.
+pub fn present(app_id: &str) -> Vec<(PathBuf, u64)> {
+    legacy_copies(app_id, &HashSet::new(), false).unwrap_or_default().into_iter().map(|(p, n, _)| (p, n)).collect()
+}
+
+/// Take away from the user's `hicolor` the icons that an earlier panpak copied there for this app: only a regular file named `panpak.<id>.png` in a
+/// `<S>x<S>/apps` folder whose bytes are an icon of a version the store still names; nothing else in that folder is touched, and no folder is removed.
+/// Returns the paths taken away and the paths left because the file is not one that panpak made.
+pub fn forget_legacy(store: &Path, app_id: &str) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
+    let known = known_hashes(store, app_id);
+    let (mut gone, mut left) = (Vec::new(), Vec::new());
+    for (p, _, ours) in legacy_copies(app_id, &known, true)? {
+        if ours {
+            gone.push(p);
+        } else {
+            left.push(p);
         }
     }
-    Ok(gone)
+    Ok((gone, left))
+}
+
+/// `forget_legacy` for `install`, `update`, `repair` and `remove`: told, and never an error that stops the command.
+pub fn forget_legacy_told(store: &Path, app_id: &str) {
+    match forget_legacy(store, app_id) {
+        Ok((gone, left)) => {
+            if !gone.is_empty() {
+                println!("icons: took {} icon file(s) that an earlier panpak copied to {} (the menu entry now names the icon in the app's tree)", gone.len(), hicolor().map(|h| h.display().to_string()).unwrap_or_default());
+            }
+            for p in left {
+                eprintln!("panpak: {} is not one of the icons that panpak made for {app_id}: left as it is", p.display());
+            }
+        }
+        Err(e) => eprintln!("panpak: the old icon copies of {app_id} were not taken away: {}", panpak_core::err_text(&e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("target").join(format!("icons-test-{tag}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn put(root: &Path, rel: &str, bytes: &[u8]) {
+        let p = root.join(rel);
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(p, bytes).unwrap();
+    }
+
+    #[test]
+    fn only_the_copies_that_panpak_made_go_and_nothing_else_in_the_folder() {
+        let root = temp("legacy").join("hicolor");
+        let ours = b"the icon that an earlier panpak copied".to_vec();
+        let known: HashSet<[u8; 32]> = HashSet::from([*blake3::hash(&ours).as_bytes()]);
+        let name = file_name("org.x");
+        put(&root, &format!("48x48/apps/{name}"), &ours);
+        put(&root, &format!("256x256/apps/{name}"), b"same name, bytes changed by someone");
+        put(&root, &format!("64x64/apps/{}", file_name("org.other")), &ours);
+        put(&root, "48x48/apps/another-program.png", &ours);
+        put(&root, "index.theme", b"[Icon Theme]");
+        std::os::unix::fs::symlink(root.join("48x48/apps/another-program.png"), root.join("32x32")).unwrap_or(());
+        fs::create_dir_all(root.join("128x128/apps")).unwrap();
+        std::os::unix::fs::symlink("/etc/hostname", root.join(format!("128x128/apps/{name}"))).unwrap();
+        // Looking changes nothing.
+        let seen = legacy_copies_in(&root, "org.x", &known, false).unwrap();
+        assert_eq!(seen.len(), 2, "the two regular files named for the app: {seen:?}");
+        assert!(root.join(format!("48x48/apps/{name}")).exists());
+        // Taking away: only the one whose bytes are an icon of a known version.
+        let done = legacy_copies_in(&root, "org.x", &known, true).unwrap();
+        assert_eq!(done.iter().filter(|(_, _, ours)| *ours).count(), 1);
+        assert!(!root.join(format!("48x48/apps/{name}")).exists(), "the copy of panpak is gone");
+        assert!(root.join(format!("256x256/apps/{name}")).exists(), "a file with the name but other bytes stays");
+        assert!(fs::symlink_metadata(root.join(format!("128x128/apps/{name}"))).unwrap().file_type().is_symlink(), "a link is not touched");
+        assert!(root.join(format!("64x64/apps/{}", file_name("org.other"))).exists(), "the icon of another app stays, whatever its bytes");
+        assert!(root.join("48x48/apps/another-program.png").exists() && root.join("index.theme").exists(), "nothing else is touched");
+        assert!(root.join("48x48/apps").is_dir(), "no folder is removed");
+        let _ = fs::remove_dir_all(root.parent().unwrap());
+    }
 }

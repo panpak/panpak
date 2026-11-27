@@ -175,12 +175,14 @@ fn an_appimage_with_usr_linked_to_dot_gets_its_icons_cleaned_in_the_package() {
     assert_eq!(first, fs::read(pkg2).unwrap(), "the same AppImage always gives the same package");
     let o = l.install(&pkg);
     assert!(o.status.success(), "{}", text(&o));
-    assert_eq!(l.icons_installed(), [16, 32, 256]);
-    assert_eq!(fs::read(l.icon(256)).unwrap(), fixture("ok-256-rgba.png"));
-    let cleaned = fs::read(l.icon(32)).unwrap();
+    assert_eq!(l.icons_installed(), Vec::<u32>::new(), "nothing is copied to the user's hicolor");
+    // The entry names the largest icon of the tree (256) by absolute path; the 32-pixel icon of the tree is the cleaned one.
+    let icon = l.entry().lines().find_map(|x| x.strip_prefix("Icon=").map(PathBuf::from)).unwrap();
+    assert!(icon.is_absolute() && icon.starts_with(l.home.join(".local/share/panpak/trees")), "{}", icon.display());
+    assert_eq!(fs::read(&icon).unwrap(), fixture("ok-256-rgba.png"));
+    let cleaned = fs::read(icon.with_file_name("32.png")).unwrap();
     assert_ne!(cleaned, fixture("bad-text.png"));
     assert!(!cleaned.windows(4).any(|w| w == b"tEXt"));
-    assert!(l.entry().contains(&format!("\nIcon=panpak.{ID}\n")), "{}", l.entry());
     // Converting once more, with the app installed, makes the release after the installed one.
     let (o, pkg3) = l.convert(&appimage(real_layout()), &[]);
     assert!(o.status.success(), "{}", text(&o));
@@ -270,7 +272,8 @@ fn the_icon_option_replaces_what_the_appimage_has_and_is_read_from_outside_the_t
     assert!(text(&o).contains("removed the chunks iCCP"), "{}", text(&o));
     assert!(l.manifest(&pkg).contains("icons = [\".panpak/icons/32.png\"]"), "{}", l.manifest(&pkg));
     assert!(l.install(&pkg).status.success());
-    assert_eq!(l.icons_installed(), [32]);
+    assert!(l.entry().contains("/.panpak/icons/32.png\n"), "the entry names the icon of the tree: {}", l.entry());
+    assert!(l.icons_installed().is_empty());
     // A bad file given with --icon is an error, and so is a missing one.
     fs::write(&mine, "<svg/>").unwrap();
     let (o, _) = l.convert(&appimage(real_layout()), &["--icon", mine.to_str().unwrap()]);
@@ -409,7 +412,8 @@ fn only_a_dir_icon_link_is_enough() {
     assert!(o.status.success(), "{}", text(&o));
     assert!(l.manifest(&pkg).contains("icons = [\".panpak/icons/32.png\"]"), "{}", l.manifest(&pkg));
     assert!(l.install(&pkg).status.success());
-    assert_eq!(l.icons_installed(), [32]);
+    assert!(l.entry().contains("/.panpak/icons/32.png\n"), "the entry names the icon of the tree: {}", l.entry());
+    assert!(l.icons_installed().is_empty());
 }
 
 #[test]

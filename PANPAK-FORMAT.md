@@ -544,12 +544,14 @@ touched, and `tRNS` is kept so that the transparency stays. Each chunk of the in
 checksum. The tool prints which chunks it removed from which icon. The file in the tree is not changed by `pack`; the package holds
 the cleaned file. A reader (`install`) does not clean: it accepts only a file that is already in this form. The image is square, 16 to 1024 pixels on a side, 8 bits per channel, colour type 0, 2, 3, 4 or 6, not interlaced,
 and the inflated image data is exactly `height * (1 + width * channels)` bytes, each row starting with a filter type from 0 to 4,
-with nothing after the end of the zlib stream. SVG and every other format are refused. The file is installed as it is (never
-re-encoded) as `~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<app.id>.png`, where `<S>` is the side taken from the image
-header; of two files with the same side the first one is used. `install` and `update` remove the sizes of the app that the new
-version no longer has; `remove` deletes exactly these files. A destination that is a link or not a regular file stops the command
-with `PANPAK-E2001`. The entry says `Icon=panpak.<app.id>` when at least one icon is installed and `Icon=application-x-executable`
-otherwise.
+with nothing after the end of the zlib stream. SVG and every other format are refused. The file stays as it is in the tree (never
+re-encoded), and nothing is copied: the entry says `Icon=<absolute path>` of one PNG file of the installed tree (`<store>/trees/<root>/...`): of the files
+named by `[desktop] icons`, the one with the largest side, and of two with the same side the first in the list; only a regular file reached without a link, of
+at most 256 KiB, whose header says a square PNG of 16 to 1024 pixels, counts; an SVG is never chosen. An app with no usable icon gets
+`Icon=application-x-executable`. `install`, `update` and `repair` write the entry atomically after `current` names the version. This is behaviour of the
+program, not of the package. **Earlier copies:** panpak versions before this one copied the icons to
+`~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<app.id>.png`; at the first `update`, `repair` or `remove` the files with that name whose bytes are an icon of
+a version that the store still names are taken away, and nothing else in that folder is touched.
 
 The desktop entry is `panpak.<app.id>.desktop` (not `<app.id>.desktop`): the portals know the app as `panpak.<app.id>` (§9.5)
 and look for the entry of that name, and the prefix keeps the entry apart from the Flatpak or distribution entry of an
@@ -1058,8 +1060,7 @@ with the process, so a builder that dies never blocks the others. Temporary blob
 number, since two trees can write the same blob at the same time.
 
 Outside the store: launcher `~/.local/bin/<id>` (`exec <store>/bin/panpak-stub run
-<store>/apps/<id>/current "$@"`), `~/.local/share/applications/panpak.<id>.desktop` and the icons
-`~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<id>.png` (§3.1.3).
+<store>/apps/<id>/current "$@"`) and `~/.local/share/applications/panpak.<id>.desktop`, whose `Icon=` names a file of the tree (§3.1.3; earlier versions also wrote icons to the user's `hicolor`).
 
 `install-runtime` installs the stub of the runtime, switches `bin/panpak-stub` to the best ABI with one `rename` of a new link, and,
 from a release tarball, replaces `bin/panpak` with the `panpak` of the release; every file is written through a temporary file and

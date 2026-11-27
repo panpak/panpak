@@ -14,8 +14,48 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// The icon of an installed app, as the path of a file inside its tree (`store/trees/<root>`), or `None` (the generic icon).
+///
+/// The rule, the same everywhere: of the PNG files that `[desktop] icons` names, the one with the largest side; of two with the same side, the first
+/// in the list. Only a regular file counts, found without following a link (no component of the path below the tree is a link: the path stays inside
+/// the store), at most 256 KiB, whose header says a square PNG of 16 to 1024 pixels. The file was checked in full when the version was installed or
+/// updated (`panpak install` refuses a bad icon); here only its header is read, so that the stub can use this too. An SVG is never chosen: the host would
+/// parse an untrusted document outside the sandbox (THREAT-MODEL.md, the row on icons).
+pub fn icon_in_tree(tree: &Path, man: &crate::Manifest) -> Option<PathBuf> {
+    let mut best: Option<(u32, PathBuf)> = None;
+    for rel in man.desktop.as_ref().and_then(|d| d.icons.as_deref()).unwrap_or_default() {
+        let Ok(rel) = crate::safe_path(rel) else { continue };
+        let Some(side) = png_side_below(tree, &rel) else { continue };
+        if best.as_ref().is_none_or(|(b, _)| side > *b) {
+            best = Some((side, tree.join(&rel)));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// The side of the PNG at `tree/rel`, or `None` when it is not a regular file reached without a link, or its header is not a square PNG of 16 to 1024 pixels.
+fn png_side_below(tree: &Path, rel: &Path) -> Option<u32> {
+    let mut at = tree.to_path_buf();
+    let comps: Vec<_> = rel.components().collect();
+    for (i, c) in comps.iter().enumerate() {
+        at.push(c);
+        let m = fs::symlink_metadata(&at).ok()?;
+        if m.file_type().is_symlink() || (i + 1 < comps.len() && !m.is_dir()) || (i + 1 == comps.len() && (!m.is_file() || m.len() > 256 * 1024)) {
+            return None;
+        }
+    }
+    let mut f = fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&at).ok()?;
+    let mut h = [0u8; 24];
+    f.read_exact(&mut h).ok()?;
+    if &h[..8] != b"\x89PNG\r\n\x1a\n" || &h[12..16] != b"IHDR" {
+        return None;
+    }
+    let (w, ht) = (u32::from_be_bytes(h[16..20].try_into().ok()?), u32::from_be_bytes(h[20..24].try_into().ok()?));
+    (w == ht && (16..=1024).contains(&w)).then_some(w)
+}
+
 /// The version of the entry and the launcher. Raise it when the template changes.
-pub const DESKTOP_VERSION: u32 = 1;
+pub const DESKTOP_VERSION: u32 = 2;
 /// Only this many bytes of the entry are read to find its version.
 pub const VERSION_WINDOW: usize = 128;
 pub const VERSION_KEY: &str = "X-Panpak-Desktop-Version=";
@@ -123,8 +163,8 @@ pub struct Entry<'a> {
     pub wm_class: Option<&'a str>,
     /// The stable `panpak` of the store, for the menu action "Uninstall". Without one there is no action.
     pub panpak: Option<&'a Path>,
-    /// Whether an icon file of the app is installed.
-    pub icon: bool,
+    /// The icon of the app: the absolute path of a PNG file of the installed tree (see [`icon_in_tree`]); `None` gives the generic icon.
+    pub icon: Option<&'a Path>,
     /// Another app with the same id is installed (see [`find_twin`]): the name gets [`TWIN_SUFFIX`] and the entry carries [`TWIN_KEY`].
     pub twin: bool,
     /// The app is in protected mode (see `release::menu_state`): the menu gets a second action to turn the internet back on (`Some(false)`) or off again
@@ -172,7 +212,10 @@ pub fn desktop_file(e: &Entry) -> Result<String> {
         }
         None => (String::new(), String::new()),
     };
-    let icon = if e.icon { icon_name(e.app_id) } else { GENERIC_ICON.to_string() };
+    let icon = match e.icon {
+        Some(p) => path_text(p)?.to_string(),
+        None => GENERIC_ICON.to_string(),
+    };
     let (name, twin) = if e.twin { (format!("{}{TWIN_SUFFIX}", e.name), format!("{TWIN_KEY}1\n")) } else { (e.name.to_string(), String::new()) };
     Ok(format!(
         "[Desktop Entry]\n{VERSION_KEY}{DESKTOP_VERSION}\n{twin}Type=Application\nName={}\nExec={} %U\nIcon={}\nTerminal=false\nCategories=Utility;\n{mime}{class}{actions}{DESKTOP_MARKER}{}\n{action}",
@@ -383,14 +426,14 @@ fn read_limited(f: &mut fs::File, max: usize) -> Option<Vec<u8>> {
 /// [`VERSION_WINDOW`] bytes and closes it. `store` is the per-user store, `launcher` the path of the launcher; the stable stub link must be there for
 /// the launcher to work, otherwise nothing is touched.
 #[allow(clippy::too_many_arguments)] // every field of the entry
-pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &str, name: &str, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, twin: bool) -> Result<Refresh> {
-    refresh_entry_with(store, entry_dir, launcher, app_id, name, schemes, mime_types, wm_class, twin, false)
+pub fn refresh_entry(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &str, name: &str, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, icon: Option<&Path>, twin: bool) -> Result<Refresh> {
+    refresh_entry_with(store, entry_dir, launcher, app_id, name, schemes, mime_types, wm_class, icon, twin, false)
 }
 
 /// The same, and with `force` the entry is rewritten even when its version is current (a store that was copied to another path: the entry and the launcher
 /// name the old one). Only an entry that panpak wrote is touched.
 #[allow(clippy::too_many_arguments)] // every field of the entry
-pub fn refresh_entry_with(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &str, name: &str, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, twin: bool, force: bool) -> Result<Refresh> {
+pub fn refresh_entry_with(store: &Path, entry_dir: &Path, launcher: &Path, app_id: &str, name: &str, schemes: &[String], mime_types: &[String], wm_class: Option<&str>, icon: Option<&Path>, twin: bool, force: bool) -> Result<Refresh> {
     let path = entry_dir.join(format!("panpak.{app_id}.desktop"));
     let mut f = match fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&path) {
         Ok(f) => f,
@@ -416,10 +459,9 @@ pub fn refresh_entry_with(store: &Path, entry_dir: &Path, launcher: &Path, app_i
     drop(f);
     let stub = stable_stub(store);
     ensure!(fs::symlink_metadata(&stub).is_ok(), "no stable stub in the store at {}", stub.display());
-    let have_icon = old.lines().any(|l| l.strip_prefix("Icon=") == Some(icon_name(app_id).as_str()));
     let panpak = stable_panpak(store);
     let panpak = fs::metadata(&panpak).is_ok_and(|m| m.is_file()).then_some(panpak);
-    let text = desktop_file(&Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon: have_icon, twin, protected: crate::release::menu_state(&store.join("apps").join(app_id)) })?;
+    let text = desktop_file(&Entry { app_id, name, launcher, schemes, mime_types, wm_class, panpak: panpak.as_deref(), icon, twin, protected: crate::release::menu_state(&store.join("apps").join(app_id)) })?;
     // The launcher first: the entry must never name one that is older than itself.
     let current = store.join("apps").join(app_id).join("current");
     let sh = launcher_sh(app_id, &stub, &current)?;
@@ -440,14 +482,14 @@ mod tests {
     use super::*;
 
     fn entry<'a>(l: &'a Path, name: &'a str) -> Entry<'a> {
-        Entry { app_id: "org.x", name, launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false, protected: None }
+        Entry { app_id: "org.x", name, launcher: l, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: None, twin: false, protected: None }
     }
 
     #[test]
     fn the_version_is_the_second_line_and_inside_the_window() {
         let l = Path::new("/home/u/.local/bin/org.x");
         let d = desktop_file(&entry(l, "X")).unwrap();
-        assert_eq!(d.lines().nth(1), Some("X-Panpak-Desktop-Version=1"));
+        assert_eq!(d.lines().nth(1), Some("X-Panpak-Desktop-Version=2"));
         assert_eq!(entry_version(d.as_bytes()), Some(DESKTOP_VERSION));
         assert_eq!(entry_version(&d.as_bytes()[..VERSION_WINDOW.min(d.len())]), Some(DESKTOP_VERSION));
     }
@@ -496,7 +538,7 @@ mod tests {
     fn the_icon_line_names_the_app_icon_or_the_generic_one() {
         let l = Path::new("/home/u/.local/bin/org.x");
         assert!(desktop_file(&entry(l, "X")).unwrap().contains("\nIcon=application-x-executable\n"));
-        assert!(desktop_file(&Entry { icon: true, ..entry(l, "X") }).unwrap().contains("\nIcon=panpak.org.x\n"));
+        assert!(desktop_file(&Entry { icon: Some(Path::new("/s/trees/r/icon.png")), ..entry(l, "X") }).unwrap().contains("\nIcon=/s/trees/r/icon.png\n"));
     }
 
     #[test]
@@ -550,7 +592,7 @@ mod tests {
         let p = Path::new("/h/.local/share/panpak/bin/panpak");
         let schemes = vec!["org-x".to_string()];
         let mimes = vec!["text/plain".to_string(), "application/x-bittorrent".to_string()];
-        let full = Entry { schemes: &schemes, mime_types: &mimes, wm_class: Some("Org X"), panpak: Some(p), icon: true, ..entry(l, "X") };
+        let full = Entry { schemes: &schemes, mime_types: &mimes, wm_class: Some("Org X"), panpak: Some(p), icon: Some(Path::new("/s/trees/r/icon.png")), ..entry(l, "X") };
         keys_ok(&desktop_file(&full).unwrap());
         let text = desktop_file(&full).unwrap();
         assert!(text.contains("MimeType=x-scheme-handler/org-x;text/plain;application/x-bittorrent;\n"), "{text}");
@@ -641,25 +683,25 @@ mod tests {
             self.apps.join("panpak.org.x.desktop")
         }
         fn current(&self) -> String {
-            let e = Entry { app_id: "org.x", name: "X", launcher: &self.launcher, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: false, twin: false, protected: None };
+            let e = Entry { app_id: "org.x", name: "X", launcher: &self.launcher, schemes: &[], mime_types: &[], wm_class: None, panpak: None, icon: None, twin: false, protected: None };
             desktop_file(&e).unwrap()
         }
         fn refresh(&self) -> Result<Refresh> {
-            refresh_entry(&self.store, &self.apps, &self.launcher, "org.x", "X", &[], &[], None, false)
+            refresh_entry(&self.store, &self.apps, &self.launcher, "org.x", "X", &[], &[], None, None, false)
         }
         fn refresh_twin(&self, twin: bool) -> Result<Refresh> {
-            refresh_entry(&self.store, &self.apps, &self.launcher, "org.x", "X", &[], &[], None, twin)
+            refresh_entry(&self.store, &self.apps, &self.launcher, "org.x", "X", &[], &[], None, None, twin)
         }
     }
 
     #[test]
     fn another_app_with_the_same_id_changes_the_name_and_one_line_in_the_first_bytes() {
         let l = Path::new("/home/u/.local/bin/org.x");
-        let plain = desktop_file(&Entry { icon: true, ..entry(l, "X") }).unwrap();
-        assert!(plain.contains("\nName=X\n") && !plain.contains("Twin") && plain.contains("\nIcon=panpak.org.x\n"));
+        let plain = desktop_file(&Entry { icon: Some(Path::new("/s/trees/r/icon.png")), ..entry(l, "X") }).unwrap();
+        assert!(plain.contains("\nName=X\n") && !plain.contains("Twin") && plain.contains("\nIcon=/s/trees/r/icon.png\n"));
         assert!(!entry_twin(plain.as_bytes()));
-        let twin = desktop_file(&Entry { icon: true, twin: true, ..entry(l, "X") }).unwrap();
-        assert!(twin.contains("\nName=X (Panpak)\n") && twin.contains("\nIcon=panpak.org.x\n"), "{twin}");
+        let twin = desktop_file(&Entry { icon: Some(Path::new("/s/trees/r/icon.png")), twin: true, ..entry(l, "X") }).unwrap();
+        assert!(twin.contains("\nName=X (Panpak)\n") && twin.contains("\nIcon=/s/trees/r/icon.png\n"), "{twin}");
         // The line is in the window the start of an app reads, with the version, and the version is still found.
         assert!(entry_twin(&twin.as_bytes()[..VERSION_WINDOW]) && entry_version(twin.as_bytes()) == Some(DESKTOP_VERSION));
         // The name of the app is checked as before, with the suffix.
@@ -800,12 +842,16 @@ mod tests {
     }
 
     #[test]
-    fn the_icon_of_an_old_entry_is_kept() {
+    fn an_old_entry_gets_the_icon_that_the_caller_names_and_the_generic_one_without() {
         let l = lab("icon");
         let e = old_entry(&l.launcher).replace("Terminal=false", "Icon=panpak.org.x\nTerminal=false");
-        fs::write(l.entry_path(), e).unwrap();
+        fs::write(l.entry_path(), &e).unwrap();
+        let icon = Path::new("/s/trees/r/share/icon.png");
+        assert_eq!(refresh_entry_with(&l.store, &l.apps, &l.launcher, "org.x", "X", &[], &[], None, Some(icon), false, false).unwrap(), Refresh::Rewritten);
+        assert!(fs::read_to_string(l.entry_path()).unwrap().contains("\nIcon=/s/trees/r/share/icon.png\n"), "the path of the icon in the tree, not the name of a copy");
+        fs::write(l.entry_path(), &e).unwrap();
         assert_eq!(l.refresh().unwrap(), Refresh::Rewritten);
-        assert!(fs::read_to_string(l.entry_path()).unwrap().contains("\nIcon=panpak.org.x\n"));
+        assert!(fs::read_to_string(l.entry_path()).unwrap().contains("\nIcon=application-x-executable\n"));
         let _ = fs::remove_dir_all(&l.root);
     }
 
@@ -872,5 +918,44 @@ mod tests {
         assert_eq!(fs::metadata(&dest).unwrap().permissions().mode() & 0o777, 0o644);
         assert_eq!(fs::read_dir(&d).unwrap().count(), 2, "no temporary file stays");
         let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A PNG header of a square image of `side` pixels (the rest of the file is not read by `icon_in_tree`).
+    fn png_header(side: u32) -> Vec<u8> {
+        let mut b = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        b.extend_from_slice(&side.to_be_bytes());
+        b.extend_from_slice(&side.to_be_bytes());
+        b.extend_from_slice(&[8, 6, 0, 0, 0]);
+        b
+    }
+
+    fn manifest_with_icons(icons: &[&str]) -> crate::Manifest {
+        let list: Vec<String> = icons.iter().map(|i| format!("\"{i}\"")).collect();
+        toml::from_str(&format!("[app]\nid = \"org.x\"\nname = \"X\"\nversion = \"1\"\nentry = \"bin/a\"\n[desktop]\nicons = [{}]\n", list.join(", "))).unwrap()
+    }
+
+    #[test]
+    fn the_icon_is_the_largest_png_of_the_tree_found_without_a_link() {
+        let dir = std::env::temp_dir().join(format!("panpak-icon-in-tree-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let tree = dir.join("trees/r");
+        fs::create_dir_all(tree.join("share/icons")).unwrap();
+        fs::write(tree.join("share/icons/a48.png"), png_header(48)).unwrap();
+        fs::write(tree.join("share/icons/a256.png"), png_header(256)).unwrap();
+        fs::write(tree.join("share/icons/b256.png"), png_header(256)).unwrap();
+        fs::write(tree.join("share/icons/bad.png"), b"not a png at all, 24 bytes").unwrap();
+        fs::write(tree.join("share/icons/wide.png"), { let mut b = png_header(64); b[20..24].copy_from_slice(&32u32.to_be_bytes()); b }).unwrap();
+        let m = manifest_with_icons(&["share/icons/a48.png", "share/icons/a256.png", "share/icons/b256.png", "share/icons/bad.png", "share/icons/wide.png", "share/icons/missing.png"]);
+        assert_eq!(icon_in_tree(&tree, &m), Some(tree.join("share/icons/a256.png")), "the largest side; of two equal sides the first in the list");
+        // A link, below the tree or in a folder of the path, is never followed: the path stays inside the store.
+        fs::write(dir.join("outside.png"), png_header(512)).unwrap();
+        std::os::unix::fs::symlink(dir.join("outside.png"), tree.join("share/icons/link.png")).unwrap();
+        std::os::unix::fs::symlink(&dir, tree.join("share/up")).unwrap();
+        let m = manifest_with_icons(&["share/icons/a48.png", "share/icons/link.png", "share/up/outside.png"]);
+        assert_eq!(icon_in_tree(&tree, &m), Some(tree.join("share/icons/a48.png")), "the links to 512-pixel files outside are not chosen");
+        // No icon, no usable icon, an unsafe path: the generic icon (None).
+        assert_eq!(icon_in_tree(&tree, &manifest_with_icons(&[])), None);
+        assert_eq!(icon_in_tree(&tree, &manifest_with_icons(&["share/icons/bad.png", "../outside.png", "/etc/passwd"])), None);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
