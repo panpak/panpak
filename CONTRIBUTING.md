@@ -45,7 +45,13 @@ In the description of the pull request, say which documents you updated, or why 
 
 ## Before you push
 
-- **Run the checks of the CI here first, with one command: `scripts/ci-local.sh`** (`--quick` for the static checks, clippy, cargo-deny and gitleaks only). It runs the DCO check, SPDX headers,
+- **Run the checks of the CI here first, with one command: `scripts/ci-local.sh`.** It has levels, and the first line of its output says which one ran and why:
+  - **no flag**: when every file changed in `BASE...HEAD` is documentation (the rule of `scripts/ci-changes.sh`, the same that the CI uses) the level is `docs`: the static checks, clippy,
+    cargo-deny and gitleaks, and the double build only when `REPRODUCIBLE-HASHES.md` changed; no build and no test (the CI runs none either for such a change). Otherwise the level is `full`.
+  - **`--full`**: the full run. **It is the one that must pass on the last commit before every push of a change that touches code, tests or scripts.**
+  - **`--round[=REF]`**: for a round of corrections after a review, between two full runs: the quick set, the debug build, `cargo test` of the crates that changed in `REF..HEAD` (default `HEAD~1`)
+    and the scripts of `tests/` that changed there. It prints that it is not the full run. It is refused when the round touches Cargo files, `scripts/`, `tools/` or the workflow: use `--full`.
+  - **`--quick`**: the static checks, clippy, cargo-deny and gitleaks only (no build; it does not need Zig). It runs the DCO check, SPDX headers,
   large files, copies of zstd, the rules of the workflow, the date of `REPRODUCIBLE-HASHES.md`, formatting (when rustfmt is installed), clippy with `-D warnings`, cargo-deny, gitleaks,
   `cargo test` on musl through the runner of the CI, the scripts of `tests/` that the workflow runs, and the double build of the reproducible hashes, under `nice` and `ionice`
   (`PANPAK_LOWRUN=<wrapper>` puts your own wrapper, for example a systemd scope with a memory cap, in front; `PANPAK_ZIG_VENV=<folder>` names a Python venv that holds the pinned `ziglang` wheel, when `zig` is not on `PATH`, see `scripts/zig-env.sh`). If it fails here, do not push.

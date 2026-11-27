@@ -334,6 +334,7 @@ jobs:
         timeout-minutes: 3
         run: |
           python3 tests/with_timeout.py 120 tests/isolation_test.py
+          python3 tests/with_timeout.py 120 tests/ci_local_levels.py
           python3 tests/with_timeout_test.py
           python3 tests/apt_install_test.py
       - name: The isolated view, end to end (full level only, 2.5 minutes)

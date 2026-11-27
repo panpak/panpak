@@ -2,9 +2,19 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # The checks of the CI, run here, in one command, before every push:
 #
-#   scripts/ci-local.sh [--quick] [BASE]
+#   scripts/ci-local.sh [--full | --quick | --round[=REF]] [--print-level] [BASE]
 #
 # BASE is the branch the pull request goes to (default main). Run it on a clean tree, with everything committed: the checks read the commits.
+#
+# Levels (the line at the top of the output says which one ran and why):
+#   (no flag)   automatic: when every file changed in BASE...HEAD is documentation (`scripts/ci-changes.sh`, the rule the CI uses), the level is `docs`: the static checks,
+#               clippy, cargo-deny and gitleaks, and the double build only when `REPRODUCIBLE-HASHES.md` changed; no build and no test, as in the CI. Otherwise `full`.
+#   --full      the full run, whatever changed. It is the one that must pass on the LAST commit before every push of a change that touches code.
+#   --quick     the static checks, clippy, cargo-deny and gitleaks only.
+#   --print-level  say the level and stop (used by the test of the levels).
+#   --round[=REF]  a round of corrections (REF defaults to HEAD~1): the quick set, the debug build, `cargo test` of the crates that changed in REF..HEAD and the scripts of
+#               `tests/` that changed there. It says at the end that it is NOT the full run. A round that touches Cargo files, scripts/, tools/ or the workflow is refused:
+#               use `--full`.
 # The order is the one of the CI: DCO, the static checks (SPDX header, large files, links of the documents, copies of zstd, the rules of the workflow
 # itself), the date of the reproducible reference, formatting, clippy with `-D warnings` (musl), cargo-deny, gitleaks, then the tests (`cargo test` on musl through
 # the runner with the canary, and every `tests/*.py` that the workflow runs), and last the double build of the reproducible hashes. `--quick` stops after clippy,
@@ -25,22 +35,64 @@
 # desktop out of the environment of the tests (CONTRIBUTING.md).
 set -u
 cd "$(dirname "$0")/.."
-quick=0
+mode=auto
+print_level=0
+round_ref=HEAD~1
 base=main
 for a in "$@"; do
 	case "$a" in
-	--quick) quick=1 ;;
+	--quick) mode=quick ;;
+	--print-level) print_level=1 ;;
+	--full) mode=full ;;
+	--round) mode=round ;;
+	--round=*) mode=round; round_ref="${a#--round=}" ;;
 	-h | --help) sed -n '2,/^set -u/p' "$0" | sed '$d'; exit 0 ;;
 	*) base="$a" ;;
 	esac
 done
+
+# The level of this run. The classification is the one of the CI (`scripts/ci-changes.sh`, fail closed: when it cannot tell, the run is full).
+level=full
+reason="the default"
+heavy=true
+repro_changed=false
+if cls=$(./scripts/ci-changes.sh "$base" "$(git rev-parse HEAD)" false 2>/dev/null); then
+	heavy=$(printf '%s\n' "$cls" | sed -n 's/^heavy=//p')
+	repro_changed=$(printf '%s\n' "$cls" | sed -n 's/^repro=//p')
+fi
+case "$mode" in
+quick) level=quick; reason="--quick" ;;
+round) level=round; reason="--round=$round_ref" ;;
+full) level=full; reason="--full" ;;
+*)
+	if [ "$heavy" = false ]; then
+		level=docs
+		reason="only documentation changed in $base...HEAD (the CI decides the same: no build and no test runs there)"
+	else
+		reason="code, tests or scripts changed in $base...HEAD"
+	fi
+	;;
+esac
+echo "ci-local: level $level ($reason)"
+[ "$print_level" = 1 ] && [ "$level" != round ] && exit 0
+changed=""
+if [ "$level" = round ]; then
+	changed=$(git diff --name-only --no-renames "$round_ref" HEAD) || { echo "ci-local: '$round_ref' is not a commit." >&2; exit 2; }
+	if printf '%s\n' "$changed" | grep -qE '^(Cargo\.(toml|lock)|rust-toolchain\.toml|scripts/|tools/|\.github/|\.cargo/)'; then
+		echo "This round touches Cargo files, scripts/, tools/ or the workflow: the build or the CI itself changed. Use --full." >&2
+		exit 2
+	fi
+fi
+[ "$print_level" = 1 ] && exit 0
+need_zig=false
+case "$level" in full | round) need_zig=true ;; docs) [ "$repro_changed" = true ] && need_zig=true ;; esac
 
 # The Zig that builds for musl: the one of the pinned wheel (scripts/zig-env.sh finds it); a venv of it on PATH is allowed, but not its python3 (it would hide the system one).
 if [ -n "${PANPAK_ZIG_VENV:-}" ]; then
 	zigdir=$("$PANPAK_ZIG_VENV/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' 2>/dev/null) && export PATH="$zigdir:$PATH"
 fi
 # The steps that build for musl need Zig. Say it now, not at a step far down.
-if [ "$quick" = 0 ] && [ -z "${PANPAK_ZIG:-}" ] && ! command -v zig >/dev/null 2>&1 && ! python3 -c 'import ziglang' >/dev/null 2>&1; then
+if [ "$need_zig" = true ] && [ -z "${PANPAK_ZIG:-}" ] && ! command -v zig >/dev/null 2>&1 && ! python3 -c 'import ziglang' >/dev/null 2>&1; then
 	echo "Zig was not found: put \`zig\` on PATH, or set PANPAK_ZIG (the zig executable) or PANPAK_ZIG_VENV (a Python venv that holds the pinned ziglang wheel, tools/requirements-zig.txt). \`--quick\` does not need it." >&2
 	exit 2
 fi
@@ -120,7 +172,11 @@ step "large files" ./scripts/check-large-files.sh
 step "no tracked file names a private folder" ./scripts/check-private-paths.sh
 step "copies of zstd" ./scripts/check-zstd-copies.sh
 step "the rules of the workflow, and every test in a level of the CI" python3 -I tests/ci-workflow-test.py
-step "the date of REPRODUCIBLE-HASHES.md is the one of the last code commit" ./scripts/check-repro-date.sh "$base" "$head"
+if [ "$level" = round ]; then
+	skip "the date of REPRODUCIBLE-HASHES.md" "the hashes commit comes last: the full run checks it"
+else
+	step "the date of REPRODUCIBLE-HASHES.md is the one of the last code commit" ./scripts/check-repro-date.sh "$base" "$head"
+fi
 if cargo fmt --version >/dev/null 2>&1; then
 	step "formatting (cargo fmt --check)" cargo fmt --all --check
 else
@@ -138,7 +194,35 @@ else
 	skip "gitleaks" "not installed"
 fi
 
-if [ "$quick" = 0 ]; then
+if [ "$level" = round ]; then
+	step "build for the tests that start the programs (debug, musl)" lowrun cargo build --locked --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
+	crates=()
+	for c in panpak-core panpak-stub panpak panpak-icon; do
+		printf '%s\n' "$changed" | grep -q "^$c/" && crates+=(-p "$c")
+	done
+	if [ "${#crates[@]}" -gt 0 ]; then
+		step "cargo test of the changed crates (${crates[*]}) (musl, with the canary bus)" lowrun python3 tests/with_timeout.py 600 cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl "${crates[@]}"
+	fi
+	# The scripts of tests/ that changed in the round, each as the workflow runs it (its own timeout).
+	for t in $(grep -oE 'python3 tests/with_timeout\.py [0-9]+ tests/[a-z_0-9]+\.py' .github/workflows/ci.yml | awk '{print $3" "$4}' | awk '!seen[$2]++' | tr ' ' ':'); do
+		secs=${t%%:*}
+		script=${t##*:}
+		printf '%s\n' "$changed" | grep -qx "$script" || continue
+		case "$script" in
+		tests/failpoints.py | tests/apps/*) skip "$script" "needs the build with test points, run by the CI" ;;
+		tests/privbus.py | tests/dbus_filter.py | tests/wayland_sway.py | tests/gtk_filechooser.py) skip "$script" "needs a bus, portals or a Sway of its own: the jobs private-bus and sway" ;;
+		*) step "$script" lowrun python3 tests/with_timeout.py "$secs" "$script" ;;
+		esac
+	done
+	# The scripts and tests of the app harness that changed.
+	if printf '%s\n' "$changed" | grep -q '^tests/apps/'; then
+		step "python3 -m unittest discover -s tests/apps -p 'test_*.py'" python3 -m unittest discover -s tests/apps -p 'test_*.py'
+	fi
+fi
+if [ "$level" = docs ] && [ "$repro_changed" = true ]; then
+	step "reproducible build: the reference is what the script makes (REPRODUCIBLE-HASHES.md changed)" bash -c 'lowrun() { "$@"; }; out=$(./scripts/repro-build.sh --update | tee /dev/stderr) && printf "%s\n" "$out" | grep -q IDENTICAL && git diff --exit-code -- REPRODUCIBLE-HASHES.md'
+fi
+if [ "$level" = full ]; then
 	step "build for the tests that start the programs (debug, musl)" lowrun cargo build --locked --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
 	step "cargo test (musl, with the canary bus)" lowrun python3 tests/with_timeout.py 600 cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl
 	step "release build" lowrun cargo build --locked --release --target x86_64-unknown-linux-musl
@@ -181,4 +265,9 @@ if [ "${#failed[@]}" -gt 0 ]; then
 	echo "Do not push. If a step failed in the infrastructure (a download, apt), say so in tests/UNSTABLE.md."
 	exit 1
 fi
-echo "all the checks that can be run here passed: push."
+case "$level" in
+full) echo "all the checks that can be run here passed: push." ;;
+docs) echo "all the checks of a documentation-only change passed (level docs: no build and no test, as in the CI): push." ;;
+quick) echo "the quick checks passed. This is NOT the full run: run scripts/ci-local.sh (or --full) on the last commit before the push." ;;
+round) echo "the round of corrections passed. This is NOT the full run: run scripts/ci-local.sh --full on the last commit before the push." ;;
+esac
