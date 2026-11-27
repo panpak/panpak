@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
-"""`panpak update` with icons: a changed icon, a removed icon, a new size, and no icons at all. The entry names the largest icon of the tree by absolute path
+"""`panpak update` with icons: a changed icon, a removed icon, a new size, and no icons at all. The entry names the largest icon of the tree by the stable path
 (nothing is copied to the user's hicolor); the copies that an earlier panpak made there are taken away at the first update, only the ones that panpak made.
 
 Usage: python3 tests/update_icons.py        (build the release binaries first)
@@ -146,7 +146,7 @@ def main():
             need_icon(48, 1, 'rollback then gc')
             update('2')
             need_icon(32, 1, 'update 2 again')
-            print('  rollback: the entry names the icon of the tree that is current again, and gc keeps that file: ok')
+            print('  rollback: the stable path reaches the icon of the tree that is current again, and gc keeps that file: ok')
 
             update('3')
             need(entry_icon() == 'Icon=application-x-executable', entry_icon())

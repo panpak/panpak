@@ -249,8 +249,11 @@ class Run:
             return False
         value = next((l[len("Icon="):] for l in entry.read_text().splitlines() if l.startswith("Icon=")), "")
         icon = Path(value)
-        # The entry names, by absolute path, a PNG file of the installed tree (nothing is copied to the user's hicolor).
-        return icon.is_absolute() and icon.is_file() and not icon.is_symlink() and icon.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n" and "/trees/" in value
+        # The entry names the stable link `<store>/apps/<id>/icon.png` (the same path for every version); it must reach, inside the store's trees, a PNG file.
+        stable = self.home / ".local/share/panpak/apps" / self.app.id / "icon.png"
+        real = icon.resolve() if icon.is_symlink() else icon
+        return (icon == stable and icon.is_symlink() and real.is_file() and real.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+                and str(real).startswith(str((self.home / ".local/share/panpak/trees").resolve())))
 
     def start_once(self, disp, timeout=90):
         """Start the app, wait for its first window, end it. Returns the seconds to the window (None if none came) and the exit status of the launcher."""

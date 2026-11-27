@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The icon of an installed app is a file of its tree, named by absolute path in the `Icon=` line of the entry (`panpak_core::desktop::icon_in_tree`);
+//! The icon of an installed app is a file of its tree, reached by the stable link `<store>/apps/<id>/icon.png` that the `Icon=` line of the entry names (`panpak_core::desktop::point_icon`);
 //! nothing is copied. Every icon passes `panpak_icon::check` when a version is installed or updated. Earlier versions of panpak copied the icons to
 //! `~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<id>.png`: this module finds those copies and takes away the ones that panpak made.
 //! Rules: docs/DESKTOP-INTEGRATION.md, section 1.

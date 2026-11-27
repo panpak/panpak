@@ -874,7 +874,7 @@ fn cmd_repair(app_id: &str, from: Option<&Path>, allow_insecure: bool, timeout_s
     if complete && bad.is_empty() {
         println!("{app_id} {}: the files match the signed index; nothing to repair", rec.manifest.app.version);
         clear_damaged(&appdir);
-        // The menu entry names the icon of the tree; the copies that an earlier panpak made in the user's hicolor go (nothing else is touched).
+        // The menu entry names the stable icon link, moved to the icon of the tree; the copies that an earlier panpak made in the user's hicolor go (nothing else is touched).
         refresh_menu_entry(app_id);
         icons::forget_legacy_told(&store, app_id);
         return Ok(());
@@ -3473,6 +3473,18 @@ fn twin_state(man: &panpak_core::Manifest) -> bool {
 
 /// The icon of the installed (current) version of an app: the stable link `<store>/apps/<id>/icon.png`, made to point at the icon of the tree of that
 /// version (`panpak_core::desktop::point_icon`), or `None` (the generic icon).
+/// The stable icon link of the version being installed (`panpak_core::desktop::point_icon`), told when it cannot be made (a file or a folder named `icon.png` there
+/// is not ours); `None` gives the generic icon.
+fn install_icon(store: &Path, man: &panpak_core::Manifest, root: &[u8; 32]) -> Option<PathBuf> {
+    match panpak_core::desktop::point_icon(store, &man.app.id, &store.join("trees").join(panpak_core::hex(root)), man) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("panpak: the icon of {} was not linked: {}", man.app.id, panpak_core::err_text(&e));
+            None
+        }
+    }
+}
+
 fn current_icon(store: &Path, app_id: &str) -> Option<PathBuf> {
     let rec = panpak_core::durable::resolve_link(&store.join("apps").join(app_id).join("current")).ok()?;
     let rec = panpak_core::record::open_verified(&rec).ok()?;
@@ -4452,7 +4464,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     let schemes = manifest_schemes(&man);
     let mimes = manifest_mime_types(&man);
     let twin = twin_state(&man);
-    let text = entry_text(&store, &man.app.id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(&man), panpak_core::desktop::point_icon(&store, &man.app.id, &store.join("trees").join(panpak_core::hex(&ft.root)), &man).ok().flatten().as_deref(), twin)?;
+    let text = entry_text(&store, &man.app.id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(&man), install_icon(&store, &man, &ft.root).as_deref(), twin)?;
     let before = fs::read_to_string(&desktop).ok();
     write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
     note_stale_menu(before.as_deref(), &text);

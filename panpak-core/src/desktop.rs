@@ -192,7 +192,7 @@ pub struct Entry<'a> {
     pub wm_class: Option<&'a str>,
     /// The stable `panpak` of the store, for the menu action "Uninstall". Without one there is no action.
     pub panpak: Option<&'a Path>,
-    /// The icon of the app: the absolute path of a PNG file of the installed tree (see [`icon_in_tree`]); `None` gives the generic icon.
+    /// The icon of the app: the stable link `<store>/apps/<id>/icon.png` (see [`point_icon`]), or a PNG file of the installed tree in a test; `None` gives the generic icon.
     pub icon: Option<&'a Path>,
     /// Another app with the same id is installed (see [`find_twin`]): the name gets [`TWIN_SUFFIX`] and the entry carries [`TWIN_KEY`].
     pub twin: bool,
