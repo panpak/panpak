@@ -742,6 +742,29 @@ Status of the project: pre-beta.
   on its SUID helper. The seccomp filter now refuses `unshare` and `clone` with `CLONE_NEWUSER` too, so no program
   in the view can make a user namespace, with or without the view (WebKitGTK's own bubblewrap, `flatpak` and
   `bwrap` run by an app fail the same way). See `docs/COMPATIBILITY.md` (Defects).
+  The libraries of the host that start their own programs in bubblewrap fail for the same reason: the filter of
+  Panpak refuses the namespace flags that bubblewrap needs (`clone` and `unshare`, `EPERM`), and a process that Landlock has
+  closed could not `mount` or `pivot_root` either (kernel documentation, Landlock), so bubblewrap cannot nest in the view.
+  What follows was read in the public sources of those libraries (their development branches, WebKit `main` and gnome-desktop
+  `master`, on 2026-11-27; not the versions of a distribution) and was not run for this text: the web processes of WebKitGTK do
+  not start in the view (WebKit tests bubblewrap only in a container it recognises, otherwise uses it, and when it fails the
+  launch fails), and the thumbnail helpers of gnome-desktop do not run in builds with bubblewrap support (the command is wrapped in
+  `bwrap`, with no test and no fallback), so no thumbnail is made. Apps that need these are not supported yet, and
+  `docs/COMPATIBILITY.md` says so. glycin is a different case, see KL-32.
+- **KL-32 Image decoding by the host's glycin runs without glycin's own sandbox in the view.** glycin (the image loading
+  library of GNOME) starts each image loader in bubblewrap. In the view the `clone` with seven namespaces that bubblewrap makes is
+  refused with `EPERM`. This was seen on 2026-11-27 on the Fedora VM, once, on one Electron app, under `strace`, **with a test
+  build of the filter (not `main`)**; with `main` that app stopped earlier, on the SUID helper of Chromium, so glycin was never
+  reached. `main` is expected to refuse the same way, because its filter refuses every namespace flag on `clone` (test
+  `namespaces_refused_through_clone_and_unshare`). After the refusal the loader of glycin started directly. In the versions of
+  glycin whose source was read (3.0.1 and 4.0.5; 2.0.1 has no such fallback) glycin then goes on without its own sandbox, prints a
+  warning on its standard error (not seen in that run) and starts the loader with no memory limit and no seccomp filter of its own.
+  A loader that is taken over by a hostile image has every right of the app: its private home, the folders, sockets, devices and
+  buses the app was given, and the network if the app has it. It does not get more than the app, because the view, Landlock and
+  Panpak's filter stay around it. Flatpak gives the loader a sub-sandbox of its own (`flatpak-spawn --sandbox`: read in the source
+  of glycin, not checked in Flatpak's), so on this point Panpak is weaker than Flatpak for every app that uses the host's glycin,
+  not only for browsers. Not measured yet: the processes of a loader in the view; the statements about glycin and Flatpak come from
+  the source of glycin.
 - **KL-10 Seccomp is a deny list.** (Except `socket` and `socketpair`: only the families local, IPv4, IPv6 and netlink pass, and of netlink only NETLINK_ROUTE; the rest return `EAFNOSUPPORT` or `EPROTONOSUPPORT`. Without the uevent socket an app does not hear of devices that come and go (a game pad plugged in while the app runs, a camera or a microphone in a call): `permissions.devices = true` gives it that socket, and nothing else of netlink.) System calls that are not on the list of `PANPAK-FORMAT.md` §9.8 stay
   available, and a kernel bug in one of them is not stopped. In particular `memfd_create`, `seccomp` and `landlock_*`
   are open on purpose, and `modify_ldt` (Wine) on x86-64. The view hides other processes with its own PID

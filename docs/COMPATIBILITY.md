@@ -100,6 +100,23 @@ Open, in the converter unless noted:
 - Medium, resolution (defect 26, not the converter): Cura (PyInstaller) gets `libc.so.6` from the farm and fails with `GLIBC_2.38 not found`: a libc of the bundle is chosen next to libraries that need a newer one.
 - Medium, launch (defect 27): Etcher aborts on the Chromium SUID sandbox (`chrome-sandbox` found, not setuid; user namespaces cannot be nested in the view). Other Electron apps ran without `--no-sandbox`. Needs a launch option or a documented flag.
 
+## Libraries of the host that sandbox their own helpers (read in their sources 2026-11-27, not run)
+
+Bubblewrap cannot start inside the view: the filter of Panpak refuses the namespace flags that it needs, and a process that Landlock
+has closed cannot `mount` or `pivot_root` either. A library of the host that wraps its helpers in bubblewrap therefore ends in one of
+two ways there. The sources were read on their development branches (WebKit `main`, gnome-desktop `master`; glycin 3.0.1 and 4.0.5),
+not on the versions of a distribution.
+
+| Library | In the view | What it means for an app |
+|---|---|---|
+| gnome-desktop (thumbnails) | in builds with bubblewrap support the thumbnail command is wrapped in `bwrap`; `bwrap` fails; no fallback | **the thumbnail helpers do not start**: no thumbnail is made |
+| WebKitGTK (web content) | WebKit tries `bwrap`, which fails ("Unable to spawn a new child process"); no fallback | **the web processes do not start**: an app with a web view of the host's WebKitGTK shows no pages. Not supported yet |
+| glycin (image loading) | tries `bwrap`, sees that it does not work and goes on without its own sandbox, with a warning | the app works; the loader has every right of the app (KL-32 in the threat model) |
+
+Nothing in Panpak sets `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS` or pretends to be a container, a Flatpak or `bwrap` to get around
+this: an app whose library does not work in the view is "not yet supported". Known limit KL-9. The refusal of the clone of glycin's
+bubblewrap was seen once, with a test build of the filter, not with `main` (see KL-32).
+
 ## The standard error of an installed app (measured 2026-11-26)
 
 Since the notification "the app did not start" (PR 121), the stub of an installed app passes the standard error of the app through a pipe that it reads for the whole life of the app, copies at once to its own standard error, and of which it keeps the last 16 KiB for the log of a failed start. When the standard error of the start is a terminal nothing changes (the app keeps its terminal). What an app can see and a person can notice:
