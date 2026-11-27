@@ -130,6 +130,21 @@ jobs:
     if: ${{ !cancelled() && needs.changes.outputs.heavy == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    # Four shards of the same steps, run at once (the job was one run of 500 to 720 s, the longest of the workflow): `unit` and `cli` split `cargo test` by crate (every member of
+    # the workspace is in one of them: tests/ci-workflow-test.py checks it), `scripts` runs the test scripts that need the debug and release builds, `points` the test points.
+    # Every step below carries an `if:` on the shard that runs it; the job id and the result that `gate` reads (`needs.rust-tests.result`: the matrix as a whole) do not change.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: unit
+            packages: "-p panpak-core -p panpak-icon -p panpak-stub"
+          - shard: cli
+            packages: "-p panpak"
+          - shard: scripts
+            packages: ""
+          - shard: points
+            packages: ""
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 5
@@ -188,22 +203,30 @@ jobs:
         timeout-minutes: 3
         run: cargo build --locked --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
       - name: Test (musl)
+        if: ${{ matrix.shard == 'unit' || matrix.shard == 'cli' }}
         timeout-minutes: 11
         # --no-fail-fast: one failing test does not hide the others (the first run with PANPAK_CI=1 shows every test that used to skip).
         env:
           PANPAK_SKIP_LOG: /tmp/panpak-known-skips.txt
+          # The crates of this shard (a constant of the matrix above), split into words on purpose.
+          PACKAGES: ${{ matrix.packages }}
         # Under the runner with the canary: a test that reaches the session bus fails the run (tests/bus_guard.py).
-        run: python3 tests/with_timeout.py 600 cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl
+        # shellcheck disable=SC2086
+        run: python3 tests/with_timeout.py 600 cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl $PACKAGES
       - name: Protected mode, the way it is shown (the notification and its button, the windows, the questions of the terminal; fakes of the tools and the service)
+        if: ${{ matrix.shard == 'scripts' }}
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/protected_ui.py
       - name: Kept versions (three good starts, two failed ones ask, the rollback goes to the version that worked; debug build, a stand-in window tool)
+        if: ${{ matrix.shard == 'scripts' }}
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/kept_versions.py
       - name: Questions without a window tool (the notification of the service and of the portal with two buttons, withdrawn when nobody presses, the pending question, the notice and the log of an app that did not start; a fake service and portal)
+        if: ${{ matrix.shard == 'scripts' }}
         timeout-minutes: 5
         run: python3 tests/with_timeout.py 240 tests/ask_notification.py
       - name: The tests that cannot run on this runner (named, never silent)
+        if: ${{ matrix.shard == 'unit' || matrix.shard == 'cli' }}
         timeout-minutes: 3
         run: |
           {
@@ -211,9 +234,11 @@ jobs:
             sort -u /tmp/panpak-known-skips.txt 2>/dev/null || echo "(none)"
           } | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Release build (conformance and artifacts)
+        if: ${{ matrix.shard == 'scripts' || matrix.shard == 'points' }}
         timeout-minutes: 4
         run: cargo build --locked --release --target x86_64-unknown-linux-musl
       - name: Test points (every command stopped at every named point; a release has none)
+        if: ${{ matrix.shard == 'points' }}
         timeout-minutes: 11
         run: |
           cargo build --locked --release --target x86_64-unknown-linux-musl --target-dir target/failpoints --features panpak/failpoints,panpak-stub/failpoints -p panpak -p panpak-stub
@@ -221,17 +246,21 @@ jobs:
           ./scripts/check-no-failpoints.sh --expect target/failpoints/x86_64-unknown-linux-musl/release/panpak target/failpoints/x86_64-unknown-linux-musl/release/panpak-stub
           python3 tests/with_timeout.py 600 tests/failpoints.py
       - name: The confirmation of the domain of an author (a local HTTPS server and a test authority; confirmed, not confirmed, contradicted, certificates that never confirm, Punycode, the release without the test hook)
+        if: ${{ matrix.shard == 'scripts' }}
         timeout-minutes: 5
         run: python3 tests/with_timeout.py 300 tests/domain_confirm.py
       - name: A blob is visible only when it is on disk (a kill between writing and naming)
+        if: ${{ matrix.shard == 'scripts' }}
         timeout-minutes: 24
         run: |
           ./scripts/apt-install.sh --no-update strace
           python3 tests/with_timeout.py 120 tests/blob_visibility.py
       - name: Lock files left by an app that stops on a signal
+        if: ${{ matrix.shard == 'scripts' }}
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/stale_lock_exit.py
       - name: Update with icons (changed, removed, new sizes, none)
+        if: ${{ matrix.shard == 'scripts' }}
         timeout-minutes: 3
         run: python3 tests/with_timeout.py 120 tests/update_icons.py
 

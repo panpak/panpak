@@ -155,6 +155,32 @@ for b in blocks:
         t = re.search(r'timeout-minutes: (\d+)', st)
         if 'fuzz run' in st and t and secs and int(t.group(1)) * 60 < max(secs) + 180:
             bad.append(f'the fuzz step has a limit of {t.group(1)} minutes and runs the fuzzer for {max(secs)} s: it needs at least {(max(secs) + 180 + 59) // 60} minutes with the build')
+# The shards of rust-tests (a matrix): every member of the workspace is tested by one of the shards, and every step after the common preparation says which shard runs it.
+members = re.findall(r'"([\w-]+)"', re.search(r'members = \[([^\]]*)\]', (root / 'Cargo.toml').read_text()).group(1))
+for b in blocks:
+    if not re.match(r'\n?  rust-tests:\n', b) or 'matrix:' not in b:
+        continue
+    covered = set(re.findall(r'-p ([\w-]+)', ' '.join(re.findall(r'packages: "([^"]*)"', b))))
+    for member in members:
+        if member not in covered:
+            bad.append(f'the workspace member {member} is in no shard of rust-tests (a `packages:` of the matrix): its tests would not run')
+    shards = set(re.findall(r'- shard: (\w+)', b))
+    used = set(re.findall(r"matrix\.shard == '(\w+)'", b))
+    for sh in shards - used:
+        bad.append(f'the shard {sh} of rust-tests has no step of its own')
+    for sh in used - shards:
+        bad.append(f'a step of rust-tests names the shard {sh}, which the matrix does not have')
+    steps = re.split(r'\n(?=      - name: )', b.split('\n    steps:', 1)[1])
+    after_prep = False
+    for st in steps:
+        name = re.match(r'\s*- name: ([^\n]*)', st)
+        if not name:
+            continue
+        if name.group(1).startswith('The programs that some tests start'):
+            after_prep = True
+            continue
+        if after_prep and "matrix.shard ==" not in st.split('run:', 1)[0]:
+            bad.append(f'the step "{name.group(1)[:50]}" of rust-tests runs in no shard (it has no `if:` on matrix.shard)')
 if not any('ci-coverage' in b or 'runs in no workflow' in b for b in bad):
     print(f'ok   every test runs in a level of the CI or is listed with a reason ({len(listed)} listed)')
 for b in bad:
