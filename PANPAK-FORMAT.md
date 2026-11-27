@@ -545,10 +545,11 @@ checksum. The tool prints which chunks it removed from which icon. The file in t
 the cleaned file. A reader (`install`) does not clean: it accepts only a file that is already in this form. The image is square, 16 to 1024 pixels on a side, 8 bits per channel, colour type 0, 2, 3, 4 or 6, not interlaced,
 and the inflated image data is exactly `height * (1 + width * channels)` bytes, each row starting with a filter type from 0 to 4,
 with nothing after the end of the zlib stream. SVG and every other format are refused. The file stays as it is in the tree (never
-re-encoded), and nothing is copied: the entry says `Icon=<absolute path>` of one PNG file of the installed tree (`<store>/trees/<root>/...`): of the files
+re-encoded), and nothing is copied: the entry says `Icon=<store>/apps/<id>/icon.png`, a link that the runtime keeps pointing (relative to its folder, replaced by one rename) at one PNG file of the installed tree
+(`<store>/trees/<root>/...`), so that the entry is the same for every version: of the files
 named by `[desktop] icons`, the one with the largest side, and of two with the same side the first in the list; only a regular file reached without a link, of
 at most 256 KiB, whose header says a square PNG of 16 to 1024 pixels, counts; an SVG is never chosen. An app with no usable icon gets
-`Icon=application-x-executable`. `install`, `update` and `repair` write the entry atomically after `current` names the version. This is behaviour of the
+`Icon=application-x-executable`. `install`, `update`, `rollback` and `repair` point the link and write the entry atomically after `current` names the version. This is behaviour of the
 program, not of the package. **Earlier copies:** panpak versions before this one copied the icons to
 `~/.local/share/icons/hicolor/<S>x<S>/apps/panpak.<app.id>.png`; at the first `update`, `repair` or `remove` the files with that name whose bytes are an icon of
 a version that the store still names are taken away, and nothing else in that folder is touched.

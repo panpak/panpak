@@ -52,17 +52,23 @@ icons = ["usr/share/icons/hicolor/256x256/apps/audacity.png", "usr/share/icons/h
 
 ### Where it goes
 
-Nowhere: the icon is **not copied**. The entry says `Icon=<absolute path>` of a PNG file that is already in the installed tree of the app
-(`<store>/trees/<root>/...`, one of the files that `[desktop] icons` names; the package puts them in `.panpak/icons/<side>.png`). The rule is one and
-deterministic (`panpak_core::desktop::icon_in_tree`): **of the PNG files named, the one with the largest side; of two with the same side, the first in the
-list.** A file counts only if it is a regular file reached without a link (no component of the path below the tree is a link: the path stays inside the
-store), of at most 256 KiB, and its header says a square PNG of 16 to 1024 pixels (the whole file was checked when the version was installed or updated). **An
-SVG is never chosen** (see "SVG: decision" below: the host would parse an untrusted document outside the sandbox); a package that lists an SVG in `[desktop] icons` is refused by `pack`, `install` and
-`update` (the packager gives a PNG), and a tree with no listed icon gets the generic icon. **An app without a usable icon** gets `Icon=application-x-executable`, the themed icon of every theme.
-`install`, `update`, `repair` and the lazy rewrite at the start of an app write the entry; the entry is written atomically (temporary file, rename) after
-`current` names the new version and before anything of the old one can be collected (the old tree stays as `previous`), so a start never finds an entry
-that names a tree that is gone. Because the path changes with every version (a new tree), `update` tells the usual NOTE that an app already started in
-the session may keep the old entry until the next login.
+Nowhere: the icon is **not copied**. The entry says `Icon=<store>/apps/<id>/icon.png`, **the same path for every version of the app**: a link that the runtime
+keeps pointing (relative, so the store can be moved) at a PNG file of the installed tree (`<store>/trees/<root>/...`; the package puts the files that
+`[desktop] icons` names in `.panpak/icons/<side>.png`). The rule for the file is one and deterministic (`panpak_core::desktop::icon_in_tree`): **of the PNG files
+named, the one with the largest side; of two with the same side, the first in the list.** A file counts only if it is a regular file reached without a link
+(no component of the path below the tree is a link: the path stays inside the store), of at most 256 KiB, and its header says a square PNG of 16 to 1024 pixels
+(the whole file was checked when the version was installed or updated). **An SVG is never chosen** (see "SVG: decision" below: the host would parse an untrusted
+document outside the sandbox); a package that lists an SVG in `[desktop] icons` is refused by `pack`, `install` and `update` (the packager gives a PNG), and a
+tree with no listed icon gets the generic icon. **An app without a usable icon** gets `Icon=application-x-executable`, the themed icon of every theme, and the
+link is taken away.
+*Why a link and not the path of the tree:* the path of a tree changes with every version, so every `update` changed the entry (and asked the person to log in
+again, because the shell keeps the old entry of an app already started in the session), and the dock icon of that app broke when the old tree was collected.
+With the stable path the entry of an update does not change at all (no NOTE about the menu for the icon), and what the link names is always in the store: the
+link is moved by one rename (`panpak_core::desktop::point_icon`) by `install`, `update`, `rollback`, `repair`, the lazy rewrite at the start of an app, and
+`reconcile`, after `current` names the version and before anything of the old one can be collected; it goes with the folder of the app at `remove`. The folder
+`apps/<id>` is in the store, which an app cannot write (its own files are in `userdata/<id>`), so the app never chooses what the link names. A file or a folder
+at the name `icon.png` is not ours: it is not replaced, and the command says so. If an update changes the icon itself, a desktop that has already loaded the
+file may show the old picture until the next login (not seen; the path is the same).
 What is given up against a themed name in the user's `hicolor`: the toolkit no longer chooses a size (one PNG is scaled; GNOME Shell never scales a file up
 beyond its own pixels, so the largest one is used), a theme or the user cannot override the icon of the app by name, and there are no symbolic or dark variants
 (Panpak ships none today). Where it works, by the sources (GNOME Shell and GLib: a path becomes a `GFileIcon`; KDE: `KIconLoader` takes an absolute path as it

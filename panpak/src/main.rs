@@ -640,7 +640,6 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
     };
     let new_tree = store.join("trees").join(&new_root);
     icons::read_from_tree(&new_tree, man)?;
-    let new_icon = panpak_core::desktop::icon_in_tree(&new_tree, man);
 
     // A key that is being replaced is in the pin file with the old one for the time between the two links, so that a stop at any point leaves a start that
     // works (the stub accepts either line).
@@ -682,6 +681,11 @@ fn cmd_apply(app_id: &str, yes: bool, accept_new: bool, at_start: bool, allow: p
     if desktop.exists() || legacy_desktop_path(app_id)?.exists() || !schemes.is_empty() || !mimes.is_empty() {
         fs::create_dir_all(desktop.parent().unwrap())?;
         let twin = twin_state(man);
+        // The stable link names the icon of the new tree before the entry is written (the entry itself does not change when only the version does).
+        let new_icon = panpak_core::desktop::point_icon(&store, app_id, &new_tree, man).unwrap_or_else(|e| {
+            eprintln!("panpak: the icon of {app_id} was not linked: {}", panpak_core::err_text(&e));
+            None
+        });
         let text = entry_text(&store, app_id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(man), new_icon.as_deref(), twin)?;
         let before = fs::read_to_string(&desktop).ok();
         write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, app_id, &launcher))?;
@@ -3467,11 +3471,19 @@ fn twin_state(man: &panpak_core::Manifest) -> bool {
     true
 }
 
-/// The icon of the installed (current) version of an app: a file of its tree (`panpak_core::desktop::icon_in_tree`), or `None`.
+/// The icon of the installed (current) version of an app: the stable link `<store>/apps/<id>/icon.png`, made to point at the icon of the tree of that
+/// version (`panpak_core::desktop::point_icon`), or `None` (the generic icon).
 fn current_icon(store: &Path, app_id: &str) -> Option<PathBuf> {
     let rec = panpak_core::durable::resolve_link(&store.join("apps").join(app_id).join("current")).ok()?;
     let rec = panpak_core::record::open_verified(&rec).ok()?;
-    panpak_core::desktop::icon_in_tree(&store.join("trees").join(panpak_core::hex(&rec.footer.root)), &rec.manifest)
+    let tree = store.join("trees").join(panpak_core::hex(&rec.footer.root));
+    match panpak_core::desktop::point_icon(store, app_id, &tree, &rec.manifest) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("panpak: the icon of {app_id} was not linked: {}", panpak_core::err_text(&e));
+            None
+        }
+    }
 }
 
 /// Write the menu entry of an installed app again (protected mode adds or takes away an action of it). Nothing is said and nothing fails: an entry that is
@@ -4440,7 +4452,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     let schemes = manifest_schemes(&man);
     let mimes = manifest_mime_types(&man);
     let twin = twin_state(&man);
-    let text = entry_text(&store, &man.app.id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(&man), panpak_core::desktop::icon_in_tree(&store.join("trees").join(panpak_core::hex(&ft.root)), &man).as_deref(), twin)?;
+    let text = entry_text(&store, &man.app.id, &man.app.name, &launcher, &schemes, &mimes, manifest_wm_class(&man), panpak_core::desktop::point_icon(&store, &man.app.id, &store.join("trees").join(panpak_core::hex(&ft.root)), &man).ok().flatten().as_deref(), twin)?;
     let before = fs::read_to_string(&desktop).ok();
     write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
     note_stale_menu(before.as_deref(), &text);

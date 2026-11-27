@@ -1869,7 +1869,7 @@ fn refresh_menu_entry(store: &Path, tree: &Path, man: &panpak_core::Manifest) {
     let class = man.desktop.as_ref().and_then(|d| d.wm_class.as_deref());
     let Ok(launcher) = panpak_core::desktop::launcher_path(&man.app.id) else { return };
     let twin = panpak_core::desktop::twin_of(&man.app.id, class).is_some();
-    let icon = panpak_core::desktop::icon_in_tree(tree, man);
+    let icon = panpak_core::desktop::point_icon(store, &man.app.id, tree, man).ok().flatten();
     // The tree is not there (yet) or its icon cannot be used: leave the entry as it is rather than write the generic icon over a good one.
     if icon.is_none() && man.desktop.as_ref().and_then(|d| d.icons.as_ref()).is_some_and(|i| !i.is_empty()) {
         return;

@@ -85,14 +85,17 @@ def main():
             text = (tmp / f'data/applications/panpak.{ID}.desktop').read_text()
             return next(l for l in text.splitlines() if l.startswith('Icon='))
 
+        store = tmp / 'data/panpak'
+        stable = f'Icon={store}/apps/{ID}/icon.png'
+
         def need_icon(side, seed, step):
-            """The entry names, by absolute path, a regular file of the tree (no link on the way) that holds the icon of this side."""
-            v = entry_icon()[len('Icon='):]
-            need(v.startswith('/'), f'{step}: Icon= is not an absolute path: {v}')
-            f = Path(v)
-            need(f.is_file() and not f.is_symlink() and f.read_bytes() == png(side, seed), f'{step}: {v} is not the icon of side {side}')
-            need(f.resolve() == f, f'{step}: the path of the icon goes through a link: {v}')
-            need('/trees/' in v and f.name == f'{side}.png', f'{step}: the icon is not a file of the tree: {v}')
+            """The entry names the stable link of the app, which reaches a regular file of the tree (inside the store) that holds the icon of this side."""
+            need(entry_icon() == stable, f'{step}: {entry_icon()} is not the stable path {stable}')
+            f = Path(stable[len('Icon='):])
+            need(f.is_symlink() and os.readlink(f).startswith('../../trees/'), f'{step}: the stable path is not a relative link into the trees: {os.readlink(f) if f.is_symlink() else f}')
+            real = f.resolve()
+            need(real.is_file() and str(real).startswith(str((store / 'trees').resolve())) and real.read_bytes() == png(side, seed), f'{step}: {f} does not reach the icon of side {side} in the store')
+            need(real.name == f'{side}.png', f'{step}: {real} is not a file of the tree for side {side}')
             need(set(icon_dir.glob(f'*/apps/panpak.{ID}.png')) <= set(placed), f'{step}: an icon was copied to the hicolor folder')
 
         # A file of another app in the same folders must never be touched.
@@ -126,16 +129,17 @@ def main():
 
             def update(version):
                 shutil.copy(v[version], tmp / 'remote.panpak')
-                run(BIN / 'panpak', 'update', '--allow-insecure-http', '--timeout', '10', ID)
+                return run(BIN / 'panpak', 'update', '--allow-insecure-http', '--timeout', '10', ID)
 
-            update('2')
+            o = update('2')
+            need('menu entry changed' not in o.stdout, f'update 2 asks to log in again although the entry did not change: {o.stdout}')
             need_icon(32, 1, 'update 2')       # 16 changed, 48 removed, 32 new: the largest is the new 32
             need(not icon_file(16).exists() and not icon_file(48).exists(), 'update 2: the copies that panpak made (bytes of version 1) are still in hicolor')
             need(icon_file(256).read_bytes() == b'changed by somebody', 'update 2: a file with our name and other bytes was taken away')
             need(icon_file(64, OTHER).exists(), 'update 2: the file of another app was taken away')
             print('  update: the entry names the largest icon of the tree; the old copies of panpak go, the changed one and the other app stay: ok')
 
-            # A rollback names the other tree in the entry, and a collection afterwards does not take the file the entry names.
+            # A rollback moves the stable link to the other tree, and a collection afterwards does not take the file the link reaches.
             run(BIN / 'panpak', 'rollback', ID)
             need_icon(48, 1, 'rollback')
             run(BIN / 'panpak', 'gc')
@@ -150,6 +154,10 @@ def main():
 
             update('4')
             need_icon(256, 4, 'update 4')
+            run(BIN / 'panpak', 'gc')
+            need_icon(256, 4, 'update 4 then gc')
+            run(BIN / 'panpak', 'gc')
+            need_icon(256, 4, 'update 4, gc again')
             print('  update back to icons of other sizes: the largest of the tree: ok')
         finally:
             server.terminate()

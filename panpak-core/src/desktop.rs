@@ -33,6 +33,35 @@ pub fn icon_in_tree(tree: &Path, man: &crate::Manifest) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
+/// The path that the entry names in `Icon=`: `<store>/apps/<id>/icon.png`, a link that the runtime keeps pointing at the icon of the version that is current (see
+/// [`point_icon`]). It is the same for every version of the app, so an update changes neither the entry nor what the desktop has loaded from it.
+pub fn icon_link(store: &Path, app_id: &str) -> PathBuf {
+    store.join("apps").join(app_id).join("icon.png")
+}
+
+/// Make `<store>/apps/<id>/icon.png` point at the icon of `tree` (see [`icon_in_tree`]) and return its path, or take the link away and return `None` when the tree
+/// has no usable icon. The link is relative to its folder (the store can be moved), made beside its name and renamed (never a moment without it), and it is
+/// replaced only when it is a link: a file or a folder at that name is an error, not ours. The folder `apps/<id>` is in the store: an app has no write access
+/// to it (its own files are in `userdata/<id>`), so what the link names is never chosen by the app.
+pub fn point_icon(store: &Path, app_id: &str, tree: &Path, man: &crate::Manifest) -> Result<Option<PathBuf>> {
+    let link = icon_link(store, app_id);
+    let Some(target) = icon_in_tree(tree, man) else {
+        if fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink()) {
+            fs::remove_file(&link).with_context(|| format!("remove {}", link.display()))?;
+        }
+        return Ok(None);
+    };
+    let dir = link.parent().context("icon link without a folder")?;
+    let want = if target.is_absolute() && dir.is_absolute() { crate::durable::relative_to(&target, dir) } else { target.clone() };
+    if fs::read_link(&link).ok().as_deref() != Some(want.as_path()) {
+        if let Ok(m) = fs::symlink_metadata(&link) {
+            ensure!(m.file_type().is_symlink(), "{} is not a link that panpak made: not replaced", link.display());
+        }
+        crate::durable::replace_symlink(&target, &link)?;
+    }
+    Ok(Some(link))
+}
+
 /// The side of the PNG at `tree/rel`, or `None` when it is not a regular file reached without a link, or its header is not a square PNG of 16 to 1024 pixels.
 fn png_side_below(tree: &Path, rel: &Path) -> Option<u32> {
     let mut at = tree.to_path_buf();
@@ -956,6 +985,38 @@ mod tests {
         // No icon, no usable icon, an unsafe path: the generic icon (None).
         assert_eq!(icon_in_tree(&tree, &manifest_with_icons(&[])), None);
         assert_eq!(icon_in_tree(&tree, &manifest_with_icons(&["share/icons/bad.png", "../outside.png", "/etc/passwd"])), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_stable_link_follows_the_tree_and_goes_when_there_is_no_icon() {
+        let dir = std::env::temp_dir().join(format!("panpak-point-icon-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let store = dir.join("store");
+        fs::create_dir_all(store.join("apps/org.x")).unwrap();
+        let (t1, t2) = (store.join("trees/r1"), store.join("trees/r2"));
+        for (t, side) in [(&t1, 48), (&t2, 256)] {
+            fs::create_dir_all(t.join(".panpak/icons")).unwrap();
+            fs::write(t.join(format!(".panpak/icons/{side}.png")), png_header(side)).unwrap();
+        }
+        let m1 = manifest_with_icons(&[".panpak/icons/48.png"]);
+        let m2 = manifest_with_icons(&[".panpak/icons/256.png"]);
+        let link = icon_link(&store, "org.x");
+        assert_eq!(point_icon(&store, "org.x", &t1, &m1).unwrap(), Some(link.clone()));
+        assert_eq!(fs::read_link(&link).unwrap(), Path::new("../../trees/r1/.panpak/icons/48.png"), "relative: the store can be moved");
+        assert_eq!(fs::read(&link).unwrap(), png_header(48));
+        // The next version: the same path names the new icon, and the old tree can go.
+        assert_eq!(point_icon(&store, "org.x", &t2, &m2).unwrap(), Some(link.clone()));
+        fs::remove_dir_all(&t1).unwrap();
+        assert_eq!(fs::read(&link).unwrap(), png_header(256));
+        // The same call again changes nothing; a version without an icon takes the link away.
+        assert_eq!(point_icon(&store, "org.x", &t2, &m2).unwrap(), Some(link.clone()));
+        assert_eq!(point_icon(&store, "org.x", &t2, &manifest_with_icons(&[])).unwrap(), None);
+        assert!(fs::symlink_metadata(&link).is_err());
+        // A file at that name is not ours: an error, and it stays.
+        fs::write(&link, b"someone's").unwrap();
+        assert!(point_icon(&store, "org.x", &t2, &m2).is_err());
+        assert_eq!(fs::read(&link).unwrap(), b"someone's");
         let _ = fs::remove_dir_all(&dir);
     }
 }
