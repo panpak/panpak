@@ -1359,7 +1359,9 @@ only: it takes `lib*.so*`, the loader and any file with `.so` in its name. The r
 
 For each decided SONAME the stub creates a symlink in `farms/<root>/`
 (to host or bundle), and one for every other library of the tree (a name that has `.so` in it and that the inventory of the tree holds: a library of a
-plug-in or a module; the link goes to the copy the inventory keeps, in name order; programs and plug-in executables are not linked), and launches with that
+plug-in or a module; the link goes to the copy the inventory keeps, in name order; programs, plug-in executables and the loader are not linked). A library name is one plain file name: an
+empty name, `.`, `..`, and a name with `/` or a control character are never used (a name that the resolution decided stops the start; one that nothing asked for is left out), because the runtime removes what is at the path of a link
+before it makes it. The runtime launches with that
 `LD_LIBRARY_PATH`, which is the farm alone (written relative to the program, section 7.1): per-lib control, one folder to search, and the same list at every
 start (earlier the value also named a folder of the tree for each folder that held a library, in an order that changed from one resolution to the next). The loader (`ld-*`,
 libc's own `DT_NEEDED`) is not part of the farm: it is the plan's
@@ -1367,7 +1369,7 @@ libc's own `DT_NEEDED`) is not part of the farm: it is the plan's
 
 The decision closes over the transitive closure at a fixed point: the
 `DT_NEEDED` of already-decided libs (read from the real files, host
-or bundle) are decided with the same policy. Without this, bundle
+or bundle) are decided with the same policy. Without this (in the time when `LD_LIBRARY_PATH` named the folders of the tree), bundle
 libdirs in `LD_LIBRARY_PATH` would shadow system libs for transitives,
 mixing versions (observed: newer host libgio + older bundle
 libmount). Never a silent fallback: a missing library that a program needs stays a hard
@@ -1425,7 +1427,7 @@ defines, after the symbol check above. See also Appendix C.
 
 ### 7.1 The library path of the app [NORMATIVE]
 
-The runtime puts the farm, and nothing else, in `LD_LIBRARY_PATH` of the app (the farm has a link for every library of the package, section 7). An absolute list reaches
+The runtime puts the farm, and nothing else, in `LD_LIBRARY_PATH` of the app (the farm has a link for every library of the package that has `.so` in its name, section 7). An absolute list reaches
 every program that the app starts, system programs included (a shell, `zenity`, `flatpak`), and those load the package's
 libraries instead of their own: `symbol lookup error`, `no version information available`. So the value is relative to the
 program that is run:
@@ -1450,7 +1452,7 @@ LD_LIBRARY_PATH=/$ORIGIN/.panpak-lib-<h>/.farm
   without a message and the app would start with other libraries than the ones chosen.
 - **For a program of the host** the folder is `/usr/bin` or alike, where `.panpak-lib-<h>` does not exist, and the loader skips
   the entry: the program uses its own libraries. The cost is a failed `stat` and `open` for each entry and library
-  (measured: +0.1 to +0.3 ms for a start of `grep` or `zenity` with 11 entries).
+  (measured when the value held a folder of the tree for each folder with a library: +0.1 to +0.3 ms for a start of `grep` or `zenity` with 11 entries; the value is one entry now).
 - **musl** does not expand `$ORIGIN` and takes a relative entry as a path under the current folder: a value without the slash in
   front loads a library from `./$ORIGIN/.panpak-lib-<h>/` when the folder holds one (measured). With the slash the entry is an
   absolute path in the root of the file system, where only the administrator writes, and the current folder does not matter.

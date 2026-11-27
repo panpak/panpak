@@ -89,3 +89,28 @@ fn the_same_call_gives_the_same_farm_and_a_stale_link_goes() {
     apply(&lab.dir.join("store"), "root", &tree, &lab.decisions(), &smaller).unwrap();
     assert!(!farm_of(&lab).join("libplugin-a.so").exists() && fs::symlink_metadata(farm_of(&lab).join("libplugin-a.so")).is_err());
 }
+
+#[test]
+fn a_name_that_is_not_a_file_name_is_never_a_link_and_the_loader_is_not_in_the_farm() {
+    let lab = Lab::new("hostile");
+    let tree = lab.dir.join("tree");
+    // A file outside the farm that a hostile name could reach: it must stay.
+    let victim = lab.dir.join("store/victim.so.desktop");
+    fs::write(&victim, b"mine").unwrap();
+    let mut bundled = lab.bundled();
+    for bad in ["../victim.so.desktop", "../../store/victim.so.desktop", "/etc/x.so", "a/b.so", "..", ".", "", "x\n.so", "ld-linux-x86-64.so.2", "ld.so"] {
+        bundled.insert(bad.to_string(), PathBuf::from("lib/libcore.so.1"));
+    }
+    let plan = apply(&lab.dir.join("store"), "root", &tree, &lab.decisions(), &bundled).unwrap();
+    assert_eq!(plan.ld_path, vec![farm_of(&lab)]);
+    assert_eq!(fs::read(&victim).unwrap(), b"mine", "a file outside the farm is not touched");
+    assert!(fs::symlink_metadata(lab.dir.join("store/victim.so.desktop")).unwrap().file_type().is_file());
+    let names: Vec<String> = listing(&farm_of(&lab)).into_iter().map(|(n, _)| n).collect();
+    assert_eq!(names, ["libcore.so.1", "libhost.so.1", "libplugin-a.so", "libplugin-b.so.2"], "only plain names, and not the loader");
+    // A decided name that is not a file name stops the start.
+    let mut decisions = lab.decisions();
+    decisions.push(("../victim.so.desktop".to_string(), Source::Bundled(PathBuf::from("lib/libcore.so.1"))));
+    let err = apply(&lab.dir.join("store"), "root", &tree, &decisions, &lab.bundled()).err().expect("a decided name that is not a file name stops the start");
+    assert!(format!("{err:#}").contains("cannot be a file name"), "{err:#}");
+    assert_eq!(fs::read(&victim).unwrap(), b"mine");
+}

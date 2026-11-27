@@ -3663,6 +3663,12 @@ pub mod abi {
         // decided are linked in name order, to the copy the inventory keeps. Programs and plug-in executables are not libraries and are not linked.
         let mut links: Vec<(&str, PathBuf)> = Vec::new();
         let decided: HashSet<&str> = decisions.iter().map(|(name, _)| name.as_str()).collect();
+        // A name becomes a file name in the farm, and the runtime (outside the view, with the rights of the user) removes what is at that path before it
+        // makes the link. The names of the inventory are read from the files of the tree (a `DT_SONAME` is any bytes), so a name that is not one file name is
+        // never used: a decided one stops the start, one that nothing asked for is left out.
+        for (name, _) in decisions {
+            anyhow::ensure!(valid_farm_name(name), "the library name {name:?} cannot be a file name of the farm of the app");
+        }
         for (soname, src) in decisions {
             let target = match src {
                 Source::Host(p) => p.clone(),
@@ -3670,7 +3676,9 @@ pub mod abi {
             };
             links.push((soname.as_str(), target));
         }
-        let mut others: Vec<(&String, &PathBuf)> = bundled.iter().filter(|(n, _)| n.contains(".so") && !decided.contains(n.as_str())).collect();
+        // The loader is not part of the farm: it is the `loader` of the plan (a name of the loader family is left out).
+        let is_loader = |n: &str| n.starts_with("ld-linux") || n == "ld.so";
+        let mut others: Vec<(&String, &PathBuf)> = bundled.iter().filter(|(n, _)| n.contains(".so") && !is_loader(n) && valid_farm_name(n) && !decided.contains(n.as_str())).collect();
         others.sort();
         for (name, rel) in others {
             links.push((name.as_str(), tree.join(rel)));
@@ -3702,6 +3710,11 @@ pub mod abi {
         let has_libc = bundled.keys().any(|n| n.starts_with("libc.so"));
         let loader = has_libc.then(|| find_loader(tree)).transpose()?;
         Ok(Plan { loader, ld_path: libdirs })
+    }
+
+    /// Is `name` one plain file name: not empty, not `.` or `..`, no `/`, no NUL and no control character?
+    fn valid_farm_name(name: &str) -> bool {
+        !name.is_empty() && name != "." && name != ".." && !name.chars().any(|c| c == '/' || c.is_control())
     }
 
     fn find_loader(tree: &Path) -> Result<PathBuf> {
