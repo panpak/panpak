@@ -256,6 +256,18 @@ out['procs'] = len([d for d in os.listdir('/proc') if d.isdigit()])
 out['own_pid'] = os.getpid()
 out['sid'] = os.getsid(0)
 out['uid_map'] = ' '.join(open('/proc/self/uid_map').read().split())
+
+# `/proc/sys` is a read-only mount of its own in every view: the sysctl files cannot be written, and the mount cannot be changed by the app.
+out['proc_sys_mount'] = 'absent'
+for _l in open('/proc/self/mountinfo'):
+    _f = _l.split()
+    if _f[4] == '/proc/sys':
+        out['proc_sys_mount'] = 'ro' if 'ro' in _f[5].split(',') else 'rw'
+try:
+    open('/proc/sys/net/ipv4/ip_forward', 'w').close()
+    out['proc_sys_write'] = 'ok'
+except OSError as e:
+    out['proc_sys_write'] = f'err{e.errno}'
 out['uid'] = os.getuid()
 
 # A file given with `panpak open`: the argument is the path.
@@ -521,6 +533,8 @@ def main():
             assert rep['tcp_self'] == 'ok', rep['tcp_self']
             assert int(rep['procs']) < 12, f'the app sees {rep["procs"]} processes'
             assert rep['resolv_conf'] == 'ok'
+            # `/proc/sys` is a read-only mount in every view: a write of a sysctl file of the network namespace of the view fails with EROFS (30).
+            check(rep, proc_sys_mount='ro', proc_sys_write='err30')
             check(rep, read_secret='err2', no_new_privs='1')
             check(rep, sock_lxd_snap='absent', sock_lxd_lib='absent', sock_outside_run='absent')
             print('sockets of containers, snap and LXD, and one in /var/tmp: not reachable')

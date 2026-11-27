@@ -786,7 +786,12 @@ Status of the project: pre-beta.
   `install` says "play sounds and record from the microphone".
 - **KL-11 `/proc`, `/sys` and `/run` are readable without the view.** The app can list
   processes and read the system bus socket directory. With the view `/proc` shows only the
-  app, and `/run` holds only the allowed sockets. Render nodes of the GPU are shared with
+  app, and `/run` holds only the allowed sockets. In the view `/proc/sys` is also a
+  read-only mount of its own, for every app: the sysctl files of the network namespace of
+  the view cannot be written (a write gives `EROFS`; before this, `ip_forward` of a network
+  namespace that the app made for itself was writable by a process that is the administrator
+  of that namespace, as seen on a test build), and the app cannot remount it, because
+  Landlock and the seccomp filter refuse `mount`. Render nodes of the GPU are shared with
   the whole desktop. See §3.
 - **KL-12 Stale lock files in formats Panpak does not recognise.** After a kill or a crash
   the runtime removes the lock files it recognises by content (Chromium, Qt `QLockFile`,

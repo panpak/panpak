@@ -403,6 +403,9 @@ fn view_args(plan: &ViewPlan) -> Vec<OsString> {
     // `ptmx`), not the host's: a terminal emulator or an IDE opens a pty, and it must get one that belongs to the view, never
     // the host's devpts, where it would see the terminals of the user. The GPU nodes are put back by name.
     a.extend(["--dev", "/dev", "--dev-bind-try", "/dev/dri", "/dev/dri", "--proc", "/proc"].map(os));
+    // `/proc/sys` is read-only by mount, for every app: a process that is the administrator of a network namespace of its own
+    // cannot write the sysctl files of that namespace (an unprivileged bubblewrap does not cover it by itself), and it cannot remount.
+    a.extend(["--ro-bind", "/proc/sys", "/proc/sys"].map(os));
     a.extend([os("--size"), plan.tmp_size.to_string().into(), os("--tmpfs"), os("/tmp")]);
     a.extend(["--tmpfs", "/run"].map(os));
     if let Some(shm) = &plan.shared_shm {
@@ -753,6 +756,10 @@ mod tests {
         assert_eq!(&a[..5], ["--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc"]);
         assert!(pos(&a, &["--ro-bind", "/usr", "/usr"]).unwrap() < pos(&a, &["--tmpfs", "/tmp"]).unwrap());
         assert!(pos(&a, &["--dev", "/dev", "--dev-bind-try", "/dev/dri", "/dev/dri", "--proc", "/proc"]).is_some());
+        assert!(
+            pos(&a, &["--proc", "/proc", "--ro-bind", "/proc/sys", "/proc/sys"]).is_some(),
+            "/proc/sys is read-only by mount, right after /proc is mounted"
+        );
         assert!(pos(&a, &["--dev-bind", "/dev", "/dev"]).is_none(), "the host /dev is never mounted whole");
         // The host root is never mounted whole, and /var is a new tmpfs with the two links.
         assert!(pos(&a, &["--ro-bind", "/", "/"]).is_none() && pos(&a, &["--bind", "/", "/"]).is_none());
