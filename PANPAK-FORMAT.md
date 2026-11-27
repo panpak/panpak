@@ -1358,8 +1358,10 @@ only: it takes `lib*.so*`, the loader and any file with `.so` in its name. The r
   from the host.
 
 For each decided SONAME the stub creates a symlink in `farms/<root>/`
-(to host or bundle) and launches with that `LD_LIBRARY_PATH` (written relative to the program, section 7.1):
-per-lib control despite the per-directory path. The loader (`ld-*`,
+(to host or bundle), and one for every other library of the tree (a name that has `.so` in it and that the inventory of the tree holds: a library of a
+plug-in or a module; the link goes to the copy the inventory keeps, in name order; programs and plug-in executables are not linked), and launches with that
+`LD_LIBRARY_PATH`, which is the farm alone (written relative to the program, section 7.1): per-lib control, one folder to search, and the same list at every
+start (earlier the value also named a folder of the tree for each folder that held a library, in an order that changed from one resolution to the next). The loader (`ld-*`,
 libc's own `DT_NEEDED`) is not part of the farm: it is the plan's
 `loader`.
 
@@ -1423,13 +1425,13 @@ defines, after the symbol check above. See also Appendix C.
 
 ### 7.1 The library path of the app [NORMATIVE]
 
-The runtime puts the farm and the library folders of the package in `LD_LIBRARY_PATH` of the app. An absolute list reaches
+The runtime puts the farm, and nothing else, in `LD_LIBRARY_PATH` of the app (the farm has a link for every library of the package, section 7). An absolute list reaches
 every program that the app starts, system programs included (a shell, `zenity`, `flatpak`), and those load the package's
 libraries instead of their own: `symbol lookup error`, `no version information available`. So the value is relative to the
 program that is run:
 
 ```
-LD_LIBRARY_PATH=/$ORIGIN/.panpak-lib-<h>/.farm:/$ORIGIN/.panpak-lib-<h>/lib:...
+LD_LIBRARY_PATH=/$ORIGIN/.panpak-lib-<h>/.farm
 ```
 
 - `<h>` is the first 8 hex digits of the BLAKE3 hash of `app.id`. It is not derived from the root hash: the links below are part

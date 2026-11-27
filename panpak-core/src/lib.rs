@@ -3658,25 +3658,36 @@ pub mod abi {
     ) -> Result<Plan> {
         let farm = store.join("farms").join(root_hex);
         fs::create_dir_all(&farm)?;
-        let wanted: HashSet<&str> = decisions.iter().map(|(name, _)| name.as_str()).collect();
+        // The farm holds a link for every decided name, and for every other library of the tree (a plug-in library, a module's own library): the list the
+        // loader gets is the farm alone, so a library that is only in a folder of the tree must be in the farm to be found by name. The names that are not
+        // decided are linked in name order, to the copy the inventory keeps. Programs and plug-in executables are not libraries and are not linked.
+        let mut links: Vec<(&str, PathBuf)> = Vec::new();
+        let decided: HashSet<&str> = decisions.iter().map(|(name, _)| name.as_str()).collect();
+        for (soname, src) in decisions {
+            let target = match src {
+                Source::Host(p) => p.clone(),
+                Source::Bundled(rel) => tree.join(rel),
+            };
+            links.push((soname.as_str(), target));
+        }
+        let mut others: Vec<(&String, &PathBuf)> = bundled.iter().filter(|(n, _)| n.contains(".so") && !decided.contains(n.as_str())).collect();
+        others.sort();
+        for (name, rel) in others {
+            links.push((name.as_str(), tree.join(rel)));
+        }
+        let wanted: HashSet<&str> = links.iter().map(|(n, _)| *n).collect();
         for entry in fs::read_dir(&farm)? {
             let entry = entry?;
             if !wanted.contains(entry.file_name().to_string_lossy().as_ref()) {
                 fs::remove_file(entry.path())?;
             }
         }
-        for (soname, src) in decisions {
-            let target = match src {
-                Source::Host(p) => p.clone(),
-                Source::Bundled(rel) => tree.join(rel),
-            };
+        for (soname, target) in links {
             let link = farm.join(soname);
-            // A library of the bundle is named relative to the farm (`../../trees/<root>/...`), so that the store works after it is moved; a library of
+            // A library of the tree is named relative to the farm (`../../trees/<root>/...`), so that the store works after it is moved; a library of
             // the system keeps its absolute path.
-            let target = match src {
-                Source::Bundled(_) if farm.is_absolute() && target.is_absolute() => crate::durable::relative_to(&target, &farm),
-                _ => target,
-            };
+            let in_tree = target.starts_with(tree);
+            let target = if in_tree && farm.is_absolute() && target.is_absolute() { crate::durable::relative_to(&target, &farm) } else { target };
             if fs::read_link(&link).ok().as_ref() != Some(&target) {
                 // Host/bundle decisions can change after host updates;
                 // a stale farm must not keep obsolete links.
@@ -3685,16 +3696,8 @@ pub mod abi {
                     .with_context(|| format!("farm {soname}"))?;
             }
         }
-        // Included-lib dirs, for the bundle's transitive dependencies.
-        let mut libdirs = vec![farm.clone()];
-        let mut seen = HashSet::new();
-        for rel in bundled.values() {
-            if let Some(d) = rel.parent() {
-                if seen.insert(d.to_path_buf()) {
-                    libdirs.push(tree.join(d));
-                }
-            }
-        }
+        // The library path is the farm alone: short, and the same at every start.
+        let libdirs = vec![farm.clone()];
         // Included loader? glibc in the bundle => use it for everything.
         let has_libc = bundled.keys().any(|n| n.starts_with("libc.so"));
         let loader = has_libc.then(|| find_loader(tree)).transpose()?;
