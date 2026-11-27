@@ -73,13 +73,18 @@ full) level=full; reason="--full" ;;
 	fi
 	;;
 esac
+if [ "$level" = docs ] && git diff -z --name-only --no-renames "$base...HEAD" | tr '\0' '\n' | grep -qxE 'README\.md|docs/ERRORS\.md'; then
+	level=full
+	reason="README.md or docs/ERRORS.md changed: two cargo tests read them"
+fi
 echo "ci-local: level $level ($reason)"
 [ "$print_level" = 1 ] && [ "$level" != round ] && exit 0
 changed=""
 if [ "$level" = round ]; then
-	changed=$(git diff --name-only --no-renames "$round_ref" HEAD) || { echo "ci-local: '$round_ref' is not a commit." >&2; exit 2; }
-	if printf '%s\n' "$changed" | grep -qE '^(Cargo\.(toml|lock)|rust-toolchain\.toml|scripts/|tools/|\.github/|\.cargo/)'; then
-		echo "This round touches Cargo files, scripts/, tools/ or the workflow: the build or the CI itself changed. Use --full." >&2
+	git rev-parse --verify --quiet "$round_ref^{commit}" >/dev/null || { echo "ci-local: '$round_ref' is not a commit." >&2; exit 2; }
+	changed=$(git diff -z --name-only --no-renames "$(git rev-parse "$round_ref^{commit}")" HEAD | tr '\0' '\n')
+	if printf '%s\n' "$changed" | grep -qE '^"|(^|/)(Cargo\.(toml|lock)|build\.rs|deny\.toml|about\.toml|rust-toolchain\.toml)$|^(scripts|tools|\.github|\.cargo)/'; then
+		echo "This round touches a Cargo file, a build.rs, deny.toml, scripts/, tools/ or the workflow (or a file with an unusual name): the build or the CI itself changed. Use --full." >&2
 		exit 2
 	fi
 fi
@@ -93,7 +98,7 @@ if [ -n "${PANPAK_ZIG_VENV:-}" ]; then
 fi
 # The steps that build for musl need Zig. Say it now, not at a step far down.
 if [ "$need_zig" = true ] && [ -z "${PANPAK_ZIG:-}" ] && ! command -v zig >/dev/null 2>&1 && ! python3 -c 'import ziglang' >/dev/null 2>&1; then
-	echo "Zig was not found: put \`zig\` on PATH, or set PANPAK_ZIG (the zig executable) or PANPAK_ZIG_VENV (a Python venv that holds the pinned ziglang wheel, tools/requirements-zig.txt). \`--quick\` does not need it." >&2
+	echo "Zig was not found: put \`zig\` on PATH, or set PANPAK_ZIG (the zig executable) or PANPAK_ZIG_VENV (a Python venv that holds the pinned ziglang wheel, tools/requirements-zig.txt). \`--quick\` and the level docs (unless the hashes file changed) do not need it." >&2
 	exit 2
 fi
 
@@ -198,7 +203,8 @@ if [ "$level" = round ]; then
 	step "build for the tests that start the programs (debug, musl)" lowrun cargo build --locked --target x86_64-unknown-linux-musl -p panpak -p panpak-stub
 	crates=()
 	for c in panpak-core panpak-stub panpak panpak-icon; do
-		printf '%s\n' "$changed" | grep -q "^$c/" && crates+=(-p "$c")
+		# po/ is compiled into panpak-core, testsupport/ and data/ into every test binary.
+		printf '%s\n' "$changed" | grep -qE "^($c|po|testsupport|data)/" && crates+=(-p "$c")
 	done
 	if [ "${#crates[@]}" -gt 0 ]; then
 		step "cargo test of the changed crates (${crates[*]}) (musl, with the canary bus)" lowrun python3 tests/with_timeout.py 600 cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl "${crates[@]}"
@@ -214,6 +220,9 @@ if [ "$level" = round ]; then
 		*) step "$script" lowrun python3 tests/with_timeout.py "$secs" "$script" ;;
 		esac
 	done
+	# What the round did not test: the full run does.
+	untested=$(printf '%s\n' "$changed" | grep -vE '^(panpak-core|panpak-stub|panpak|panpak-icon|po|testsupport|data)/|\.md$|^docs/|^tests/[a-z_0-9]+\.py$|^tests/apps/' || true)
+	[ -z "$untested" ] || echo "ci-local: changed and not tested by this round: $(printf '%s' "$untested" | tr '\n' ' ')" >&2
 	# The scripts and tests of the app harness that changed.
 	if printf '%s\n' "$changed" | grep -q '^tests/apps/'; then
 		step "python3 -m unittest discover -s tests/apps -p 'test_*.py'" python3 -m unittest discover -s tests/apps -p 'test_*.py'

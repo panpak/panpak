@@ -73,6 +73,22 @@ def main():
         git(repo, 'commit', '-q', '-m', 'script')
         rc, out = level(repo, '--round')
         need(rc == 2 and 'Use --full' in out, f'a round that touches scripts/ must be refused (exit 2, with the advice), got {rc}: {out}')
+        # A crate's own Cargo.toml and a build.rs are refused too, and a REF that looks like an option is not a commit.
+        git(repo, 'reset', '-q', '--hard', 'HEAD~1')
+        (repo / 'panpak-core/Cargo.toml').write_text('[package]\n')
+        git(repo, 'add', '-A')
+        git(repo, 'commit', '-q', '-m', 'crate manifest')
+        rc, out = level(repo, '--round')
+        need(rc == 2 and 'Use --full' in out, f'a round that touches a crate Cargo.toml must be refused: {rc} {out}')
+        rc, out = level(repo, '--round=--output=x')
+        need(rc == 2 and 'not a commit' in out and not (repo / 'x').exists(), f'an option as REF: {rc} {out}')
+        # README.md is read by a cargo test: the level is full.
+        git(repo, 'checkout', '-q', '-b', 'readme', 'main')
+        (repo / 'README.md').write_text('y\n')
+        git(repo, 'add', '-A')
+        git(repo, 'commit', '-q', '-m', 'readme')
+        rc, out = level(repo)
+        need(rc == 0 and 'level full' in out and 'README.md' in out, out)
         # An unknown base is not a reason to skip anything: the level is full.
         rc, out = level(repo, 'no-such-branch')
         need(rc == 0 and 'level full' in out, out)

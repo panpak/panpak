@@ -331,7 +331,7 @@ jobs:
         timeout-minutes: 3
         run: python3 -m unittest discover -s tests/apps -p 'test_*.py'
       - name: The helpers of the tests (a work folder with read-only trees is removed whole)
-        timeout-minutes: 3
+        timeout-minutes: 6
         run: |
           python3 tests/with_timeout.py 120 tests/isolation_test.py
           python3 tests/with_timeout.py 120 tests/ci_local_levels.py
