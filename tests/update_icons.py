@@ -100,15 +100,7 @@ def main():
         other.parent.mkdir(parents=True)
         other.write_bytes(b'not ours')
 
-        # The copies that an earlier panpak made for this app (the bytes of version 1) and one that someone changed: only the first two go.
-        icon_file(16).parent.mkdir(parents=True, exist_ok=True)
-        icon_file(16).write_bytes(png(16, 1))
-        icon_file(48).write_bytes(png(48, 1))
-        icon_file(256).parent.mkdir(parents=True, exist_ok=True)
-        icon_file(256).write_bytes(b'changed by somebody')
-        placed = [icon_file(16), icon_file(48), icon_file(256)]      # panpak copies nothing: the files of the folder stay among these
-        icon_file(64, OTHER).parent.mkdir(parents=True, exist_ok=True)
-        icon_file(64, OTHER).write_bytes(png(16, 1))
+        placed = []      # the copies the test puts in hicolor itself, to stand for those of an earlier panpak
         v = {
             '1': pack('1', [(16, 1), (48, 1)]),
             '2': pack('2', [(16, 2), (32, 1)]),     # 16 changed, 48 removed, 32 new
@@ -117,7 +109,16 @@ def main():
         }
         run(BIN / 'panpak', 'install', '--yes', '--trust-first-key', '--runtime', BIN / 'panpak-stub', v['1'])
         need_icon(48, 1, 'install')
-        need(icon_file(16).exists() and icon_file(48).exists(), 'install: the old copies went before the first update')
+        # An app installed by an earlier panpak has copies of its icons (the bytes of version 1) in hicolor, and there is one that someone changed: at the first
+        # update only the first two go.
+        icon_file(16).parent.mkdir(parents=True, exist_ok=True)
+        icon_file(16).write_bytes(png(16, 1))
+        icon_file(48).write_bytes(png(48, 1))
+        icon_file(256).parent.mkdir(parents=True, exist_ok=True)
+        icon_file(256).write_bytes(b'changed by somebody')
+        placed.extend([icon_file(16), icon_file(48), icon_file(256)])      # panpak copies nothing: the files of the folder stay among these
+        icon_file(64, OTHER).parent.mkdir(parents=True, exist_ok=True)
+        icon_file(64, OTHER).write_bytes(png(16, 1))
 
         server = subprocess.Popen([sys.executable, ROOT / 'tests/range_server.py', tmp, str(port), 'normal'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
@@ -133,6 +134,15 @@ def main():
             need(icon_file(256).read_bytes() == b'changed by somebody', 'update 2: a file with our name and other bytes was taken away')
             need(icon_file(64, OTHER).exists(), 'update 2: the file of another app was taken away')
             print('  update: the entry names the largest icon of the tree; the old copies of panpak go, the changed one and the other app stay: ok')
+
+            # A rollback names the other tree in the entry, and a collection afterwards does not take the file the entry names.
+            run(BIN / 'panpak', 'rollback', ID)
+            need_icon(48, 1, 'rollback')
+            run(BIN / 'panpak', 'gc')
+            need_icon(48, 1, 'rollback then gc')
+            update('2')
+            need_icon(32, 1, 'update 2 again')
+            print('  rollback: the entry names the icon of the tree that is current again, and gc keeps that file: ok')
 
             update('3')
             need(entry_icon() == 'Icon=application-x-executable', entry_icon())

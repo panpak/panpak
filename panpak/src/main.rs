@@ -1023,6 +1023,9 @@ fn cmd_rollback(app_id: &str) -> Result<PathBuf> {
     if let Err(e) = panpak_core::cachewipe::after_change(app_id) {
         eprintln!("panpak: the cache of {app_id} was not emptied: {}", panpak_core::err_text(&e));
     }
+    // The entry names the icon in the tree of the version that is current: after a rollback that is the other tree, and the one that was left is
+    // `previous`, which the next collection can take away.
+    refresh_menu_entry(app_id);
     {
         use panpak_core::i18n::{fill, tr};
         let name: String = back_name.chars().filter(|c| !c.is_control()).collect();
@@ -4414,6 +4417,9 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     let dest = packages.join(panpak_core::record::record_name(&man.app.id, &man.app.version, &panpak_core::hex(&ft.root)));
     panpak_core::durable::write_file(&dest, &panpak_core::record::make_record(&mut f, &ft)?, 0o644)?;
     panpak_core::failpoint!("install.record_written");
+    // Installing over an installed app: the copies of icons that an earlier panpak made for the version being replaced go now, while that version is still
+    // named by `current` (after the switch its bytes are no longer known).
+    icons::forget_legacy_told(&store, &man.app.id);
     // current -> record: launchers follow it, update/rollback move it.
     let current = appdir.join("current");
     panpak_core::durable::replace_symlink(&dest, &current)?;
@@ -4438,6 +4444,7 @@ fn cmd_install(pkg: &Path, yes: bool, accept_new: bool, runtime_opt: Option<&Pat
     let before = fs::read_to_string(&desktop).ok();
     write_replacing(&desktop, &text, 0o644, "desktop entry", &|s| desktop_is_ours(s, &man.app.id, &launcher))?;
     note_stale_menu(before.as_deref(), &text);
+    icons::forget_legacy_told(&store, &man.app.id);
     // An entry written under the old name by an earlier version is replaced by this one.
     let moved = remove_legacy_desktop(&man.app.id, &launcher)?;
     if moved {

@@ -57,8 +57,8 @@ Nowhere: the icon is **not copied**. The entry says `Icon=<absolute path>` of a 
 deterministic (`panpak_core::desktop::icon_in_tree`): **of the PNG files named, the one with the largest side; of two with the same side, the first in the
 list.** A file counts only if it is a regular file reached without a link (no component of the path below the tree is a link: the path stays inside the
 store), of at most 256 KiB, and its header says a square PNG of 16 to 1024 pixels (the whole file was checked when the version was installed or updated). **An
-SVG is never chosen** (see "SVG: decision" below: the host would parse an untrusted document outside the sandbox); a tree whose only icon is an SVG gets the
-generic icon unless the packager gives a PNG. **An app without a usable icon** gets `Icon=application-x-executable`, the themed icon of every theme.
+SVG is never chosen** (see "SVG: decision" below: the host would parse an untrusted document outside the sandbox); a package that lists an SVG in `[desktop] icons` is refused by `pack`, `install` and
+`update` (the packager gives a PNG), and a tree with no listed icon gets the generic icon. **An app without a usable icon** gets `Icon=application-x-executable`, the themed icon of every theme.
 `install`, `update`, `repair` and the lazy rewrite at the start of an app write the entry; the entry is written atomically (temporary file, rename) after
 `current` names the new version and before anything of the old one can be collected (the old tree stays as `previous`), so a start never finds an entry
 that names a tree that is gone. Because the path changes with every version (a new tree), `update` tells the usual NOTE that an app already started in
@@ -92,10 +92,9 @@ and in file dialogs, Qt in KDE). Rules, applied by `install` and `update` before
   does not use this code) and must give exactly `height * (1 + row bytes)` bytes, no more and no less. A
   decompression bomb stops at that bound. We do not decode pixels; we only prove that a standard decoder
   will find the stream it expects.
-- The file is written as read, after the check. Nothing is re-encoded: a re-encoder would be a second
-  parser to trust.
-- The destination is never a link and never followed (`O_NOFOLLOW`, rename into place). If `panpak.<id>.png`
-  exists and is a link or not a regular file, install stops with `PANPAK-E2001`, as for the launcher.
+- The file stays as it is in the tree, after the check. Nothing is re-encoded: a re-encoder would be a second
+  parser to trust. Nothing is copied: the entry names the file of the tree by path, and the tree is read-only (write bits stripped, Landlock, a
+  read-only mount in the view), so the host decodes the bytes that were checked.
 - Fuzz target `fuzz_icon` on the validator (same corpus style as `fuzz_wayland`), plus unit tests for each rule
   above and a test that every valid PNG from a small corpus (several encoders) is accepted.
 

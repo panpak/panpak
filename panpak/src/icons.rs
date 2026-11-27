@@ -133,12 +133,12 @@ pub fn forget_legacy(store: &Path, app_id: &str) -> Result<(Vec<PathBuf>, Vec<Pa
     Ok((gone, left))
 }
 
-/// `forget_legacy` for `install`, `update`, `repair` and `remove`: told, and never an error that stops the command.
+/// `forget_legacy` for `install` (before and after the switch to the new version), `update`, `repair` and `remove`: told, and never an error that stops the command.
 pub fn forget_legacy_told(store: &Path, app_id: &str) {
     match forget_legacy(store, app_id) {
         Ok((gone, left)) => {
             if !gone.is_empty() {
-                println!("icons: took {} icon file(s) that an earlier panpak copied to {} (the menu entry now names the icon in the app's tree)", gone.len(), hicolor().map(|h| h.display().to_string()).unwrap_or_default());
+                println!("icons: took {} icon file(s) that an earlier panpak copied to the user's hicolor folder (the menu entry now names the icon in the app's tree)", gone.len());
             }
             for p in left {
                 eprintln!("panpak: {} is not one of the icons that panpak made for {app_id}: left as it is", p.display());

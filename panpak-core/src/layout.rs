@@ -162,8 +162,8 @@ pub fn readonly_user_paths() -> Vec<PathBuf> {
 
 /// The user's icon folders hold themes, one folder each. The app may read every theme but `hicolor`.
 ///
-/// `hicolor` is the theme that the toolkits always search, and it is where `panpak install` puts the icons of the apps
-/// for the menu of the desktop. That folder has no `icon-theme.cache`, so Qt looks up every icon name file by file in each
+/// `hicolor` is the theme that the toolkits always search, and it is where earlier versions of `panpak install` put the icons of
+/// the apps for the menu of the desktop (the entry now names a file of the tree). A folder of that kind has no `icon-theme.cache`, so Qt looks up every icon name file by file in each
 /// size folder: QOwnNotes made 40,247 failed `access()` calls and needed 100 ms more to show its window (against 470 calls
 /// without the folder). The same happens with `~/.icons/hicolor`; a theme that is not in use costs nothing. The app has no use
 /// for the icons of the menu, so `hicolor` of the user stays out of the view; the themes the user chose stay in.
