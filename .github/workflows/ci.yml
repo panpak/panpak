@@ -211,7 +211,6 @@ jobs:
           # The crates of this shard (a constant of the matrix above), split into words on purpose.
           PACKAGES: ${{ matrix.packages }}
         # Under the runner with the canary: a test that reaches the session bus fails the run (tests/bus_guard.py).
-        # shellcheck disable=SC2086
         run: python3 tests/with_timeout.py 600 cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl $PACKAGES
       - name: Protected mode, the way it is shown (the notification and its button, the windows, the questions of the terminal; fakes of the tools and the service)
         if: ${{ matrix.shard == 'scripts' }}
@@ -246,7 +245,7 @@ jobs:
           ./scripts/check-no-failpoints.sh --expect target/failpoints/x86_64-unknown-linux-musl/release/panpak target/failpoints/x86_64-unknown-linux-musl/release/panpak-stub
           python3 tests/with_timeout.py 600 tests/failpoints.py
       - name: The confirmation of the domain of an author (a local HTTPS server and a test authority; confirmed, not confirmed, contradicted, certificates that never confirm, Punycode, the release without the test hook)
-        if: ${{ matrix.shard == 'scripts' }}
+        if: ${{ matrix.shard == 'points' }}
         timeout-minutes: 5
         run: python3 tests/with_timeout.py 300 tests/domain_confirm.py
       - name: A blob is visible only when it is on disk (a kill between writing and naming)

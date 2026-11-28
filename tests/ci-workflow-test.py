@@ -179,6 +179,11 @@ for b in blocks:
         if name.group(1).startswith('The programs that some tests start'):
             after_prep = True
             continue
+        # A step that reads the build with the test points (target/failpoints) must run in the shard that makes it: `points`.
+        for tm in re.finditer(r'with_timeout\.py \d+ (tests/[\w/.-]+\.py)', st):
+            tf = root / tm.group(1)
+            if after_prep and tf.is_file() and 'target/failpoints' in tf.read_text() and "matrix.shard == 'points'" not in st.split('run:', 1)[0]:
+                bad.append(f'{tm.group(1)} reads target/failpoints, which only the shard points builds: the step must run in that shard')
         if after_prep and "matrix.shard ==" not in st.split('run:', 1)[0]:
             bad.append(f'the step "{name.group(1)[:50]}" of rust-tests runs in no shard (it has no `if:` on matrix.shard)')
 if not any('ci-coverage' in b or 'runs in no workflow' in b for b in bad):
