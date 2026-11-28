@@ -9,11 +9,11 @@
 # Levels (the line at the top of the output says which one ran and why):
 #   (no flag)   automatic: when every file changed in BASE...HEAD is documentation (`scripts/ci-changes.sh`, the rule the CI uses), the level is `docs`: the static checks,
 #               clippy, cargo-deny and gitleaks, and the double build only when `REPRODUCIBLE-HASHES.md` changed; no build and no test, as in the CI. Otherwise `full`.
-#   --full      the full run, whatever changed. It is the one that must pass on the LAST commit before every push of a change that touches code.
+#   --full      the full run, whatever changed. It is the one that must pass on the last commit before every push of a change that touches code.
 #   --quick     the static checks, clippy, cargo-deny and gitleaks only.
 #   --print-level  say the level and stop (used by the test of the levels).
 #   --round[=REF]  a round of corrections (REF defaults to HEAD~1): the quick set, the debug build, `cargo test` of the crates that changed in REF..HEAD and the scripts of
-#               `tests/` that changed there. It says at the end that it is NOT the full run. A round that touches Cargo files, scripts/, tools/ or the workflow is refused:
+#               `tests/` that changed there. It says at the end that it is not the full run. A round that touches Cargo files, scripts/, tools/ or the workflow is refused:
 #               use `--full`.
 # The order is the one of the CI: DCO, the static checks (SPDX header, large files, links of the documents, copies of zstd, the rules of the workflow
 # itself), the date of the reproducible reference, formatting, clippy with `-D warnings` (musl), cargo-deny, gitleaks, then the tests (`cargo test` on musl through
@@ -206,14 +206,20 @@ if [ "$level" = round ]; then
 		# po/ is compiled into panpak-core, testsupport/ and data/ into every test binary.
 		printf '%s\n' "$changed" | grep -qE "^($c|po|testsupport|data)/" && crates+=(-p "$c")
 	done
+	# Two tests of panpak-core read README.md (the permissions table) and docs/ERRORS.md (the table of codes).
+	if printf '%s\n' "$changed" | grep -qxE 'README\.md|docs/ERRORS\.md' && ! printf '%s ' "${crates[@]}" | grep -q -- '-p panpak-core '; then
+		crates+=(-p panpak-core)
+	fi
 	if [ "${#crates[@]}" -gt 0 ]; then
 		step "cargo test of the changed crates (${crates[*]}) (musl, with the canary bus)" lowrun python3 tests/with_timeout.py 600 cargo test --locked --no-fail-fast --target x86_64-unknown-linux-musl "${crates[@]}"
 	fi
 	# The scripts of tests/ that changed in the round, each as the workflow runs it (its own timeout).
+	ran=""
 	for t in $(grep -oE 'python3 tests/with_timeout\.py [0-9]+ tests/[a-z_0-9]+\.py' .github/workflows/ci.yml | awk '{print $3" "$4}' | awk '!seen[$2]++' | tr ' ' ':'); do
 		secs=${t%%:*}
 		script=${t##*:}
 		printf '%s\n' "$changed" | grep -qx "$script" || continue
+		ran="$ran$script"$'\n'
 		case "$script" in
 		tests/failpoints.py | tests/apps/*) skip "$script" "needs the build with test points, run by the CI" ;;
 		tests/privbus.py | tests/dbus_filter.py | tests/wayland_sway.py | tests/gtk_filechooser.py) skip "$script" "needs a bus, portals or a Sway of its own: the jobs private-bus and sway" ;;
@@ -221,7 +227,7 @@ if [ "$level" = round ]; then
 		esac
 	done
 	# What the round did not test: the full run does.
-	untested=$(printf '%s\n' "$changed" | grep -vE '^(panpak-core|panpak-stub|panpak|panpak-icon|po|testsupport|data)/|\.md$|^docs/|^tests/[a-z_0-9]+\.py$|^tests/apps/' || true)
+	untested=$(printf '%s\n' "$changed" | grep -vE '^(panpak-core|panpak-stub|panpak|panpak-icon|po|testsupport|data)/|\.md$|^docs/|^tests/apps/' | grep -vxF -f <(printf '%s' "$ran") || true)
 	[ -z "$untested" ] || echo "ci-local: changed and not tested by this round: $(printf '%s' "$untested" | tr '\n' ' ')" >&2
 	# The scripts and tests of the app harness that changed.
 	if printf '%s\n' "$changed" | grep -q '^tests/apps/'; then

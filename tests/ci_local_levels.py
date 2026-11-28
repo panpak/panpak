@@ -21,7 +21,7 @@ def need(cond, msg):
 
 
 def git(repo, *args):
-    env = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@example.org', GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@example.org')
+    env = dict(os.environ, GIT_CONFIG_GLOBAL='/dev/null', GIT_CONFIG_NOSYSTEM='1', GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@example.org', GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@example.org')
     return subprocess.run(['git', '-C', str(repo), *args], env=env, check=True, capture_output=True, text=True).stdout
 
 
@@ -82,6 +82,23 @@ def main():
         need(rc == 2 and 'Use --full' in out, f'a round that touches a crate Cargo.toml must be refused: {rc} {out}')
         rc, out = level(repo, '--round=--output=x')
         need(rc == 2 and 'not a commit' in out and not (repo / 'x').exists(), f'an option as REF: {rc} {out}')
+        # The other roots of the build or of the CI are refused too.
+        for bad in ('deny.toml', 'panpak/build.rs', '.github/x.yml', '.cargo/config.toml'):
+            git(repo, 'checkout', '-q', '-b', 'r-' + bad.replace('/', '-'), 'code')
+            (repo / bad).parent.mkdir(parents=True, exist_ok=True)
+            (repo / bad).write_text('x\n')
+            git(repo, 'add', bad)
+            git(repo, 'commit', '-q', '-m', bad)
+            rc, out = level(repo, '--round')
+            need(rc == 2 and 'Use --full' in out, f'a round that touches {bad} must be refused: {rc} {out}')
+        # A name with a newline under scripts/ is refused (the list is read with -z).
+        git(repo, 'checkout', '-q', '-b', 'r-newline', 'code')
+        (repo / 'scripts/a\nb.sh').write_text('x\n')
+        git(repo, 'add', '--', 'scripts/a\nb.sh')
+        git(repo, 'commit', '-q', '-m', 'newline')
+        rc, out = level(repo, '--round')
+        need(rc == 2 and 'Use --full' in out, f'a name with a newline under scripts/: {rc} {out}')
+        git(repo, 'checkout', '-q', 'code')
         # README.md is read by a cargo test: the level is full.
         git(repo, 'checkout', '-q', '-b', 'readme', 'main')
         (repo / 'README.md').write_text('y\n')
